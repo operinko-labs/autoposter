@@ -114,6 +114,24 @@ def test_a_rejected_document_merges_nothing():
     assert base == {"workers": 5}
 
 
+def test_a_library_named_secrets_is_not_rejected():
+    """Roadmap row 92. ``libraries`` is keyed on Plex library NAMES, not
+    config section names -- a library literally named "secrets" is a real
+    library, not an attempt to smuggle an environment secret into the
+    document, and this is the one level the check has to look past."""
+    merged = merge_overrides(
+        {}, {"libraries": {"secrets": {"operations": {"write_to_plex": False}}}}
+    )
+    assert merged["libraries"]["secrets"]["operations"]["write_to_plex"] is False
+
+
+def test_a_secrets_key_inside_a_librarys_own_settings_is_still_rejected():
+    """The exemption is narrow: only the library NAME (the key directly under
+    ``libraries``) is exempt, not a key inside that library's own block."""
+    with pytest.raises(ValueError, match=r"libraries\.Movies\.secrets"):
+        merge_overrides({}, {"libraries": {"Movies": {"secrets": {"x": "y"}}}})
+
+
 # --- the merged load ---------------------------------------------------------
 
 

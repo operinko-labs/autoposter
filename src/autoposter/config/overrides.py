@@ -96,10 +96,16 @@ def _reject_secrets(document: dict, path: str = "") -> None:
     database row and into every config API response that echoes the overrides,
     so this refuses rather than merging it and relying on a redactor further
     down the line to keep it out of sight.
+
+    ``libraries`` (roadmap row 92) is keyed on Plex library NAMES, not config
+    section names, so a library literally named ``secrets`` is a real library
+    rather than an attempt to smuggle one into the document -- the check is
+    exempt at that one level (``path == "libraries"``) and still walks that
+    library's own settings normally.
     """
     for key, value in document.items():
         where = f"{path}.{key}" if path else str(key)
-        if key == "secrets":
+        if key == "secrets" and path != "libraries":
             raise ValueError(
                 f"config overrides must not contain secrets (found at {where}); "
                 "secrets come from the environment only"
