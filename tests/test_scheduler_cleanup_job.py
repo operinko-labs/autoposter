@@ -12,12 +12,14 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from autoposter.config.holder import ConfigHolder
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import MediaItem, Render, Run
 from autoposter.scheduler import jobs
 from autoposter.scheduler.jobs import find_orphaned_assets, make_cleanup_job, move_to_backup
+from autoposter.scheduler.run_history import open_run
 
 _next_rating_key = iter(str(n) for n in range(1, 1_000_000))
 
@@ -442,3 +444,90 @@ def test_move_to_backup_refuses_assets_root_itself(tmp_path):
     assert (outcome.moved, outcome.failed) == (0, 2)
     assert (assets_root / "Movies" / "A Movie (2020)" / "poster.jpg").exists()
     assert not backup_root.exists()
+
+
+async def test_the_cleanup_pass_trims_the_run_history(session, tmp_path, monkeypatch):
+    """C6: the table is bounded by a clause in a pass that already runs, not
+    by a fifth scheduled job nobody asked for."""
+    monkeypatch.setattr(jobs, "RUN_HISTORY_KEEP", 2)
+    for _ in range(3):
+        await open_run(session, kind="scheduled", name="demo")
+    await session.commit()
+
+    assets_root = tmp_path / "assets"
+    backup_root = tmp_path / "backup"
+    kept = assets_root / "Movies" / "Kept Movie (2020)"
+    kept.mkdir(parents=True)
+    (kept / "poster.jpg").write_bytes(b"data")
+    await _make_render(session, kept / "poster.jpg")
+
+    config = _config(assets_root, backup_root, apply=True)
+    job = make_cleanup_job(ConfigHolder(config))
+    summary = await job.run(session)
+    await session.commit()
+
+    remaining = (await session.execute(select(Run))).scalars().all()
+    assert len(remaining) == 2
+    assert "trimmed 1 run history row(s)" in summary
+
+
+async def test_the_run_history_is_trimmed_even_when_the_cleanup_refuses(
+    session, tmp_path, monkeypatch
+):
+    """The trim runs FIRST, before the empty-renders refusal and before the
+    orphan scan's plausibility caps. Those refusals are about the operator's
+    files on an NFS mount and can hold for weeks; retention is about an
+    unbounded table and must not be hostage to them."""
+    monkeypatch.setattr(jobs, "RUN_HISTORY_KEEP", 2)
+    for _ in range(3):
+        await open_run(session, kind="scheduled", name="demo")
+    await session.commit()
+
+    assets_root = tmp_path / "assets"
+    backup_root = tmp_path / "backup"
+    # No renders rows at all -- the loudest refusal the pass has.
+    everything = assets_root / "Movies" / "Some Movie (2020)"
+    everything.mkdir(parents=True)
+    (everything / "poster.jpg").write_bytes(b"data")
+
+    config = _config(assets_root, backup_root, apply=True)
+    job = make_cleanup_job(ConfigHolder(config))
+    summary = await job.run(session)
+    await session.commit()
+
+    assert "refused" in summary
+    assert "trimmed 1 run history row(s)" in summary
+    assert len((await session.execute(select(Run))).scalars().all()) == 2
+
+
+async def test_the_trim_survives_a_raise_later_in_the_pass(
+    session, session_factory, tmp_path, monkeypatch
+):
+    """Important 1: the trim commits in its OWN transaction, immediately --
+    not the rest of the pass's session -- so a later raise (the orphan walk,
+    the move) cannot roll it back with everything else."""
+    monkeypatch.setattr(jobs, "RUN_HISTORY_KEEP", 2)
+    for _ in range(3):
+        await open_run(session, kind="scheduled", name="demo")
+    await session.commit()
+
+    assets_root = tmp_path / "assets"
+    backup_root = tmp_path / "backup"
+    kept = assets_root / "Movies" / "Kept Movie (2020)"
+    kept.mkdir(parents=True)
+    (kept / "poster.jpg").write_bytes(b"data")
+    await _make_render(session, kept / "poster.jpg")
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("NFS mount timed out")
+
+    monkeypatch.setattr(jobs, "find_orphaned_assets", _boom)
+
+    config = _config(assets_root, backup_root, apply=True)
+    job = make_cleanup_job(ConfigHolder(config))
+    with pytest.raises(RuntimeError, match="NFS mount timed out"):
+        await job.run(session)
+
+    async with session_factory() as fresh:
+        remaining = (await fresh.execute(select(Run))).scalars().all()
+    assert len(remaining) == 2, "the trim must survive a raise later in the same pass"

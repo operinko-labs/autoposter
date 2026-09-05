@@ -136,7 +136,7 @@ RequireSession = Depends(require_session)
 # paths answer a key and nothing else does. Matched against request.url.path:
 # the app is mounted at / with no root_path anywhere in the deployment.
 ALLOWLIST: frozenset[str] = frozenset(
-    {"/api/stats/storage", "/api/status", "/api/version"}
+    {"/api/stats/runs", "/api/stats/storage", "/api/status", "/api/version"}
 )
 
 

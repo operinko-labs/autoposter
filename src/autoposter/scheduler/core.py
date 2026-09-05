@@ -27,6 +27,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.models import ScheduledRun
 from autoposter.notify.dispatch import NullNotifier
+from autoposter.scheduler.run_history import (
+    UNRECORDED,
+    close_drained_full_passes,
+    close_run,
+    open_run,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +144,7 @@ class Scheduler:
 
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
+            await self._close_drained_runs()
             for job in self._jobs:
                 if stop_event.is_set():
                     break
@@ -148,6 +155,36 @@ class Scheduler:
                 continue
             else:
                 return
+
+    async def _close_drained_runs(self) -> None:
+        """Close any full pass that has finished draining (roadmap row 53).
+
+        Here rather than as a fifth registered Job, for three reasons. A
+        registered job would need a name in SCHEDULED_JOB_NAMES, a cadence
+        setting and a dashboard row, to run one SELECT; it would write a
+        `runs` row of its own on every pass, which is exactly the history
+        noise the retention clause exists to bound; and it would be gated by
+        `scheduler.enabled`, whereas this loop runs unconditionally (app.py
+        registers stale_job_reclaim outside that gate) -- so a deployment with
+        the maintenance passes off would otherwise leave every full pass
+        `running` forever.
+
+        The cadence is therefore `poll_seconds` (60 by default), which is
+        ample: a full pass takes hours, and a minute of latency on its
+        recorded end is a minute on a duration measured in hours.
+
+        Contained exactly like `_maybe_run`: bookkeeping must never take the
+        scheduler down.
+        """
+        try:
+            async with self._session_factory() as session:
+                closed = await close_drained_full_passes(session)
+                await session.commit()
+        except Exception:
+            logger.warning("scheduler: could not close drained full passes", exc_info=True)
+            return
+        if closed:
+            logger.info("scheduler: closed %d drained full pass(es)", closed)
 
     async def _maybe_run(self, job: Job) -> None:
         """Run one job if due. Never raises -- a failure is recorded and the
@@ -166,6 +203,33 @@ class Scheduler:
         # job (the prune walk, in production) was otherwise silent for its
         # whole run, indistinguishable from a scheduler that never woke up.
         logger.info("scheduler: %s started", job.name)
+
+        # Roadmap row 53's history row, opened at the boundary that already
+        # exists rather than at a new one: the claim above is committed, so
+        # this row describes a run the database already shows in flight. Its
+        # own transaction, and contained the same way the claim is -- run
+        # history is bookkeeping, and failing to record it must never stop the
+        # pass it would have recorded. `run_id` stays None in that case and
+        # the completion write below simply has nothing to close.
+        #
+        # `UNRECORDED` is consulted here, before `open_run` is even called
+        # (fix round 1, Critical): `stale_job_reclaim` is registered
+        # unconditionally and runs every five minutes regardless of
+        # `scheduler.enabled`, while the retention trim only ever runs from
+        # inside the (conditionally-registered) cleanup pass -- recording
+        # this job's passes would grow the table forever with nothing ever
+        # trimming it. `run_id` stays None for an unrecorded name, which
+        # already skips the `close_run` call below.
+        run_id: int | None = None
+        if job.name not in UNRECORDED:
+            try:
+                async with self._session_factory() as session:
+                    run_id = await open_run(session, kind="scheduled", name=job.name)
+                    await session.commit()
+            except Exception:
+                logger.warning(
+                    "scheduler: could not open a run row for %s", job.name, exc_info=True
+                )
 
         # Roadmap row 19's run_start, from the same after-the-commit position
         # the completion send uses: the claim above is committed, so the
@@ -218,6 +282,12 @@ class Scheduler:
                 row.last_finished_at = func.now()
                 row.last_status = status
                 row.last_detail = detail[:2000]
+                if run_id is not None:
+                    # The same status and the same already-narrowed detail the
+                    # row above records (row 213): copied, never re-derived.
+                    # In the same transaction, so the two tables can never
+                    # disagree about how this run ended.
+                    await close_run(session, run_id, status=status, detail=detail)
                 await session.commit()
         except Exception:
             logger.warning("scheduler: could not record %s result", job.name, exc_info=True)

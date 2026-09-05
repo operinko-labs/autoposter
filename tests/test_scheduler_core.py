@@ -11,10 +11,11 @@ from sqlalchemy import select, text
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
 from autoposter.config.schema import NotificationsConfig
-from autoposter.db.models import ScheduledRun
+from autoposter.db.models import Run, ScheduledRun
 from autoposter.notify.dispatch import build_notifier
 from autoposter.scheduler.core import Job, Scheduler, claim_due
 from autoposter.scheduler.jobs import make_drift_job
+from autoposter.scheduler.run_history import FULL_PASS_NAME, open_run
 
 
 def _job(name="demo", interval=3600, run=None):
@@ -302,6 +303,31 @@ async def test_an_empty_job_list_is_harmless(session_factory):
     await asyncio.sleep(0.05)
     stop.set()
     await asyncio.wait_for(task, timeout=2)
+
+
+async def test_the_wired_run_loop_closes_a_drained_full_pass(session_factory):
+    """R2-M4: `close_drained_full_passes` was pinned only through the bare
+    helper (`tests/test_run_history.py`) -- nothing exercised it through
+    `Scheduler.run`'s own poll loop (`core.py:147`), the repository's own
+    recorded defect class where a helper's tests are green and the wired
+    path differs. A real `Scheduler` here, ticking over an open `full_pass`
+    row with no outstanding job, so the row it closes is the one the wired
+    loop found on its own."""
+    async with session_factory() as session:
+        run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+        await session.commit()
+
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [], poll_seconds=0.01)
+    task = asyncio.create_task(scheduler.run(stop))
+    await asyncio.sleep(0.1)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    async with session_factory() as session:
+        row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.status == "ok"
+    assert row.finished_at is not None
 
 
 class _RecordingNotifier:
@@ -707,3 +733,115 @@ async def test_swapping_the_config_changes_when_a_scheduled_job_is_next_due(sess
         "config.scheduler.drift_days instead of dereferencing the holder, so a "
         "cadence edit needs a restart"
     )
+
+
+async def _runs(session):
+    return (await session.execute(select(Run).order_by(Run.id))).scalars().all()
+
+
+async def test_a_scheduled_pass_records_one_run_row_per_execution(session_factory, session):
+    """The history `scheduled_runs` structurally cannot hold: its `name` is
+    UNIQUE and every pass overwrites the same row, so it can produce exactly
+    one duration per job. This is the second point, and the third."""
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    job = _job(name="demo", interval=3600)
+
+    await scheduler._maybe_run(job)
+    # Make it due again rather than waiting an hour.
+    await session.execute(
+        text("UPDATE scheduled_runs SET last_started_at = now() - interval '2 hours'")
+    )
+    await session.commit()
+    await scheduler._maybe_run(job)
+
+    rows = await _runs(session)
+    assert len(rows) == 2
+    assert [row.kind for row in rows] == ["scheduled", "scheduled"]
+    assert [row.name for row in rows] == ["demo", "demo"]
+    assert all(row.status == "ok" for row in rows)
+    assert all(row.finished_at is not None for row in rows)
+
+
+async def test_the_run_row_carries_the_bodys_summary_as_its_detail(session_factory, session):
+    async def _run(session):
+        return "reclaimed 3 stale job(s)"
+
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    await scheduler._maybe_run(_job(name="demo", run=_run))
+
+    row = (await _runs(session))[0]
+    assert row.detail == "reclaimed 3 stale job(s)"
+    assert row.status == "ok"
+
+
+async def test_a_failed_pass_records_the_class_name_only(session_factory, session):
+    """Row 213, on the new surface: the run row's detail is a COPY of the
+    string _maybe_run already narrowed, never a re-derivation. An ordinary
+    exception's str() commonly embeds the URL it failed on -- in some shapes a
+    token -- and this table is served by GET /api/stats/runs."""
+    async def _boom(session):
+        raise RuntimeError("https://plex.example/library?X-Plex-Token=secret")
+
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    await scheduler._maybe_run(_job(name="demo", run=_boom))
+
+    row = (await _runs(session))[0]
+    assert row.status == "failed"
+    assert row.detail == "RuntimeError"
+    assert "secret" not in (row.detail or "")
+    assert "plex.example" not in (row.detail or "")
+
+
+async def test_a_job_that_is_not_due_records_no_run_row(session_factory, session):
+    """The row is opened after the claim, not before it: a poll that claims
+    nothing is the common case (every job, most of the time), and a row per
+    poll would be a history of the scheduler's heartbeat rather than of its
+    work."""
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    job = _job(name="demo", interval=3600)
+
+    await scheduler._maybe_run(job)
+    await scheduler._maybe_run(job)  # not due
+
+    assert len(await _runs(session)) == 1
+
+
+async def test_stale_job_reclaim_writes_no_run_history_row(session_factory, session):
+    """Critical fix: `stale_job_reclaim` is registered unconditionally
+    (app.py:366) and runs every five minutes regardless of
+    `scheduler.enabled`, while the retention trim only ever runs from inside
+    the cleanup pass, which IS gated on that switch (app.py:383). Recording
+    this job's passes would grow `runs` forever with nothing ever trimming
+    it -- so it must write no row at all (`run_history.UNRECORDED`)."""
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    await scheduler._maybe_run(_job(name="stale_job_reclaim"))
+
+    assert await _runs(session) == []
+
+
+async def test_a_differently_named_pass_still_writes_a_run_history_row(
+    session_factory, session
+):
+    """The other half of the same guarantee: only the one allowlisted name is
+    excluded, not scheduled passes in general."""
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    await scheduler._maybe_run(_job(name="plex_prune"))
+
+    rows = await _runs(session)
+    assert len(rows) == 1
+    assert rows[0].name == "plex_prune"
+
+
+async def test_the_counts_stay_null_for_a_scheduled_run(session_factory, session):
+    """Window attribution is honest only where the window IS the run's own
+    work. A scheduled job's window overlaps whatever the worker pool happened
+    to be doing, so its counts are not stamped -- NULL means "not attributed",
+    the renders.size_bytes rule, rather than a zero that reads as a fact."""
+    scheduler = Scheduler(session_factory, [], poll_seconds=1)
+    await scheduler._maybe_run(_job(name="demo"))
+
+    row = (await _runs(session))[0]
+    assert row.processed is None
+    assert row.failed is None
+    assert row.deferred is None
+    assert row.rendered_poster is None

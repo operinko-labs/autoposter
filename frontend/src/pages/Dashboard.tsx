@@ -11,6 +11,7 @@ import {
 } from "../api/types";
 import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
+import { RunCharts } from "./RunCharts";
 import { ScheduledRunStatusPill } from "./ScheduledRunStatus";
 import "./dashboard.css";
 
@@ -193,6 +194,8 @@ export function Dashboard() {
           </div>
         ))}
       </div>
+
+      <RunCharts />
 
       <div className="dashboard-columns">
         <section className="panel">

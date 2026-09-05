@@ -29,6 +29,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test-setup.ts"],
     css: false,
+    // Recharts-mounted Dashboard/App tests exceed the 5s default under a
+    // parallel run on a loaded host.
+    testTimeout: 20000,
     // vi.restoreAllMocks() does not undo vi.stubGlobal, so without this a
     // `fetch` or `localStorage` stub set by one test is still in place for
     // the next one -- including the next test that meant to assert against
