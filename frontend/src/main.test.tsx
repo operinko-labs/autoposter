@@ -82,19 +82,24 @@ it("mounts the routed shell when a session already exists", async () => {
   window.sessionStorage.setItem("autoposter.token", "a-session-token");
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (path: string) =>
-      path.startsWith("/api/events")
-        ? jsonResponse({ events: [] })
-        : jsonResponse({
-            jobs_by_state: {
-              pending: 0, running: 0, deferred: 0, done: 0,
-              failed: 0, parked: 0, dismissed: 0,
-            },
-            workers: 1,
-            processed_last_24h: 0,
-            scheduled_jobs: [],
-          }),
-    ),
+    vi.fn(async (path: string) => {
+      if (path.startsWith("/api/events")) return jsonResponse({ events: [] });
+      // RunCharts' own mount-time fetch, answered so its request does not
+      // fall through to the status-shaped fallback below and hand the chart
+      // a body with no `runs` array.
+      if (path.startsWith("/api/stats/runs")) {
+        return jsonResponse({ runs: [], generated_at: "2026-01-02T03:04:05Z" });
+      }
+      return jsonResponse({
+        jobs_by_state: {
+          pending: 0, running: 0, deferred: 0, done: 0,
+          failed: 0, parked: 0, dismissed: 0,
+        },
+        workers: 1,
+        processed_last_24h: 0,
+        scheduled_jobs: [],
+      });
+    }),
   );
 
   const root = await mountMain();

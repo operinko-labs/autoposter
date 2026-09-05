@@ -1097,3 +1097,52 @@ export interface MetadataOverrideWriteResponse {
   plex?: string;
   queued: boolean;
 }
+
+/** The four art-kind counts on an attributed run. Always all four keys --
+ * api/stats.py's always-all-keys rule -- so a chart never reads a field that
+ * vanished because a pass composited no title cards. */
+export interface RunRendered {
+  poster: number;
+  season_poster: number;
+  background: number;
+  title_card: number;
+}
+
+/** One row of GET /api/stats/runs.
+ *
+ * `rendered`, `processed`, `failed` and `deferred` are null **together**, and
+ * null means "this run's window was not attributed" rather than "nothing
+ * happened". Only a full pass is attributed: a scheduled job's window overlaps
+ * whatever the worker pool was doing, so the server declines to claim that
+ * work as the job's. Charts must skip a null rather than plot it as zero.
+ *
+ * `duration_seconds` is null while `finished_at` is null -- the run is still
+ * open.
+ *
+ * `status` carries a fifth value alongside the four a full pass can reach:
+ * `interrupted` is a scheduled run whose successor found it still open after
+ * a restart (`scheduler/run_history.py`'s `open_run`) -- a full pass never
+ * gets this value, but the union is shared because both kinds share the
+ * column.
+ *
+ * There is deliberately no `detail` field: the server does not serve one
+ * (roadmap row 213). */
+export interface RunEntry {
+  id: number;
+  kind: "scheduled" | "full_pass";
+  name: string;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "ok" | "failed" | "timed_out" | "interrupted";
+  duration_seconds: number | null;
+  rendered: RunRendered | null;
+  processed: number | null;
+  failed: number | null;
+  deferred: number | null;
+}
+
+/** GET /api/stats/runs?limit=. Newest first. */
+export interface RunsResponse {
+  runs: RunEntry[];
+  generated_at: string;
+}
