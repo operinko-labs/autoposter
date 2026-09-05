@@ -262,6 +262,21 @@ PROVENANCE_KEYS = {
 }
 
 
+def _wildcarded(path: str) -> str:
+    """A served path with its library name replaced by the map's wildcard.
+
+    ``field_descriptions`` describes the per-library shape ONCE, under
+    ``libraries.{}.``, because a Plex library name is data and a schema walk
+    cannot enumerate it (roadmap row 92). Substituting here rather than
+    exempting the section keeps the guard's promise intact: every served leaf
+    still has to have a description, including these.
+    """
+    segments = path.split(".")
+    if len(segments) > 2 and segments[0] == "libraries":
+        return ".".join(["libraries", "{}", *segments[2:]])
+    return path
+
+
 async def test_get_config_describes_every_path_it_serves(client, auth_headers):
     """The completeness guard's endpoint half: a row the page renders with no
     description is a setting whose only documentation is the YAML file the
@@ -272,7 +287,9 @@ async def test_get_config_describes_every_path_it_serves(client, auth_headers):
         key: value for key, value in body.items() if key not in PROVENANCE_KEYS
     })
     assert served, "the config response serves no settings at all"
-    undescribed = [path for path in served if path not in descriptions]
+    undescribed = [
+        path for path in served if _wildcarded(path) not in descriptions
+    ]
     assert undescribed == [], f"served with no description: {undescribed}"
 
 
@@ -440,12 +457,23 @@ def test_render_affecting_matches_render_versions_own_input_set():
     unedited. Confirmed to already hold for every one of the example
     config's 29 top-level sections before this test existed: this is a
     regression guard, not a bug fix.
+
+    ``libraries`` (roadmap row 92) is exempt from the walk: the shipped
+    default is `{}`, so unlike every other section it has no leaf at all for
+    this generic mechanism to toggle. Its render-non-effect is proven
+    exhaustively instead, by
+    ``test_library_overrides.py::test_the_libraries_section_moves_no_render_version``,
+    which sets every whitelisted leaf of every configured library and checks
+    all five versions directly.
     """
     base = read_config_document(EXAMPLE)
     before = build_config(base)
+    EXEMPT_EMPTY_SECTIONS = {"libraries"}
 
     checked = 0
     for key, section in base.items():
+        if key in EXEMPT_EMPTY_SECTIONS:
+            continue
         for dotted, leaf in _document_leaves(section, key):
             candidate = _toggled_leaf(leaf)
             if candidate is None or candidate == leaf:
@@ -465,10 +493,11 @@ def test_render_affecting_matches_render_versions_own_input_set():
         else:
             continue
 
-    assert checked == len(base), (
-        f"only {checked} of {len(base)} top-level sections had a leaf this "
-        "walk could safely mutate -- every section in the example config was "
-        "expected to have one"
+    expected_checked = len(base) - len(EXEMPT_EMPTY_SECTIONS)
+    assert checked == expected_checked, (
+        f"only {checked} of {expected_checked} top-level sections had a leaf "
+        "this walk could safely mutate -- every non-exempt section in the "
+        "example config was expected to have one"
     )
 
 

@@ -67,7 +67,7 @@ from autoposter.config.overrides import (
     unknown_key_paths,
     without_migrated_sections,
 )
-from autoposter.config.schema import Config
+from autoposter.config.schema import Config, library_override_refusals
 from autoposter.config.snapshots import capture_snapshot, list_snapshots, load_snapshot
 from autoposter.db.models import (
     ConfigOverride,
@@ -1558,6 +1558,22 @@ async def get_config(
     config = request.app.state.config
     secrets = request.app.state.secrets
     body = config.model_dump(mode="json")
+    # Roadmap row 92. Re-dumped with `exclude_unset` so a library block is
+    # served as the leaves it STATES rather than as the shape of the model
+    # that holds them: the wholesale dump carries a null for every unstated
+    # leaf, and `ConfigNode` is shape-driven, so each one would render as a
+    # read-only "(not set)" row under the matrix.
+    #
+    # `exclude_unset` and not `exclude_none`, and the difference is real: an
+    # operator who writes `user_rating_source: null` for one library has SAID
+    # something ("this library uses no user rating source"), `config_for_library`
+    # merges it, and `exclude_none` would hide the one leaf that is hardest to
+    # explain the absence of. This is the same predicate the seam merges on,
+    # so what is served and what takes effect agree by construction.
+    body["libraries"] = {
+        name: override.model_dump(mode="json", exclude_unset=True)
+        for name, override in config.libraries.items()
+    }
     for path, redact in _REDACTORS.items():
         value = _read_path(body, path)
         if isinstance(value, str) and value:
@@ -1807,6 +1823,19 @@ async def _validated_generation(request: Request, document: dict) -> tuple[dict,
     # pydantic -- sees real values rather than a marker they would each
     # misjudge in their own way.
     document = await _resolve_keep_sentinels(request, document)
+
+    refusals = library_override_refusals(document)
+    if refusals:
+        # Ahead of the unknown-key walk deliberately (roadmap row 92). These
+        # ARE real settings -- they are just structurally global -- so
+        # "unknown setting" would be a true sentence that sent the operator
+        # hunting for a typo that is not there. Same walk the file loader
+        # uses, so the editor and the mounted YAML refuse the same keys for
+        # the same stated reason.
+        raise HTTPException(
+            status_code=422,
+            detail=[_error(path, reason) for path, reason in refusals],
+        )
 
     unknown = unknown_key_paths(document)
     if unknown:
