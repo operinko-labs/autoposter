@@ -1,7 +1,7 @@
 # 2026-09-05 -- seven util-linux 2.42.1-r0 advisories (libblkid, libmount, libuuid) in the
 # python:3.14.7-alpine base. Trivy reports the fix as 2.42.3-r0, but on this
 # date the Alpine v3.24 repository still offers only 2.42.1-r0 (the fixed
-# package exists in edge alone), so `apk upgrade` cannot reach it. Both CVEs
+# package exists in edge alone), so `apk upgrade` cannot reach it. All seven
 # are in the `mount`/`nsenter` helpers, which this container never runs.
 # Remove these lines the day `apk policy libblkid` in the base shows 2.42.3-r0
 # (the Dockerfile's whole-base `apk upgrade` then picks it up unaided).
