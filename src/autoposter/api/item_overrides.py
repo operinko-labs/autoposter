@@ -58,6 +58,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy import select
 
 from autoposter.api.auth import require_session
+from autoposter.config.loader import config_for_library
 from autoposter.db.models import ItemMetadataOverride, MediaItem
 from autoposter.db.models import Session as SessionModel
 from autoposter.plex.item_overrides import (
@@ -75,24 +76,73 @@ router = APIRouter()
 _GATE = "operations.item_overrides_enabled"
 
 
-def _enabled(request: Request) -> bool:
+def _enabled(request: Request, library: str | None = None) -> bool:
     """The LIVE gate. ``config_holder.current`` rather than ``state.config``
     because ``operations`` is not frozen -- a saved override reaches this
-    reader immediately, and the panel says "live" for that reason."""
-    return bool(
-        request.app.state.config_holder.current.operations.item_overrides_enabled
-    )
+    reader immediately, and the panel says "live" for that reason.
+
+    ``library`` resolves the per-library effective config (roadmap row 92)
+    and is passed by every caller that has the item in hand. Without it this
+    answers the GLOBAL gate, which is the right answer to "is this feature on
+    at all" and the wrong one to "may this item have an override": the
+    pipeline honours a library's own value, so an endpoint that did not would
+    accept a row it then never writes.
+    """
+    config = request.app.state.config_holder.current
+    if library is not None:
+        config = config_for_library(config, library)
+    return bool(config.operations.item_overrides_enabled)
 
 
-def _require_enabled(request: Request) -> None:
-    if not _enabled(request):
-        raise HTTPException(
-            status_code=409,
-            detail=(
+def _library_states_the_gate(request: Request, library: str | None) -> bool:
+    """Whether ``library``'s own block states ``item_overrides_enabled``,
+    rather than inheriting the global value.
+
+    Roadmap row 213 fix (branch review Important 1): the refusal sentence
+    must say what actually refused. A library that names no
+    ``item_overrides_enabled`` leaf at all is refused BY THE GLOBAL setting
+    -- it is not "this library's own" refusal, whatever ``config_for_library``
+    resolves it to -- so the global sentence is the true one there.
+    """
+    if library is None:
+        return False
+    override = request.app.state.config_holder.current.libraries.get(library)
+    if override is None or override.operations is None:
+        return False
+    return "item_overrides_enabled" in override.operations.model_fields_set
+
+
+def _require_enabled(request: Request, library: str | None = None) -> None:
+    """Raise the 409 for whichever gate refused: global or this library's own.
+
+    Roadmap row 213's Important 2: the two gates say different things
+    because they ARE different things. The global sentence names the one key
+    every deployment reads on the Settings page. The library-scoped sentence
+    (no library name, no value -- just the fact of a per-library override)
+    tells the operator the refusal came from their ``libraries:`` block
+    instead, so a global ``true`` next to a library ``false`` does not read
+    as a lie.
+
+    Branch review Important 1: the sentence is chosen by whether THIS
+    library's block actually states the leaf, not by whether a library was
+    passed at all. A library that overrides nothing here inherits the global
+    value and, if that value is off, gets the global sentence -- the refusal
+    came from the global key, and saying otherwise would send the operator
+    looking at a ``libraries:`` block that names nothing.
+    """
+    if not _enabled(request, library):
+        if _library_states_the_gate(request, library):
+            detail = (
+                f"{_GATE} is off for this item's library; existing "
+                "overrides are left in place and ignored, and nothing can "
+                "be changed until it is on"
+            )
+        else:
+            detail = (
                 f"{_GATE} is off; existing overrides are left in place and "
                 "ignored, and nothing can be changed until it is on"
-            ),
-        )
+            )
+        raise HTTPException(status_code=409, detail=detail)
 
 
 async def _load_item(session, item_id: int) -> MediaItem:
@@ -134,8 +184,9 @@ async def list_metadata_overrides(
             for row in rows
         ]
         kind = item.kind
+        library = item.library
     return {
-        "enabled": _enabled(request),
+        "enabled": _enabled(request, library),
         "kind": kind,
         "writable": writable_fields(kind),
         "overrides": overrides,
@@ -174,10 +225,15 @@ async def put_metadata_override(
     same one the Re-run button and ``clear-override`` use, deduplicated on the
     intent's own key so pressing Save twice queues one job.
     """
-    _require_enabled(request)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         item = await _load_item(session, item_id)
+        # Roadmap row 92: the library's own answer, now that the item is
+        # loaded. There is no bare global pre-gate any more -- branch review
+        # Important 1: a library that ENABLES item overrides while the
+        # global disables them must be accepted, matching what the pipeline
+        # honours and what the GET on the same resource already reports.
+        _require_enabled(request, item.library)
         # ONE exit for every refusal about the field or the value, so all of
         # them serve the same class-name-only detail (C3/C10). The unwritable
         # case raises rather than returning its own HTTPException precisely so
@@ -273,10 +329,15 @@ async def delete_metadata_override(
     Plex, it just stops taking agent updates -- and disclosed to the
     operator by the response the panel renders (N-1), not silently.
     """
-    _require_enabled(request)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         item = await _load_item(session, item_id)
+        # Roadmap row 92: the library's own answer, now that the item is
+        # loaded. There is no bare global pre-gate any more -- branch review
+        # Important 1: a library that ENABLES item overrides while the
+        # global disables them must be accepted, matching what the pipeline
+        # honours and what the GET on the same resource already reports.
+        _require_enabled(request, item.library)
         row = (
             await session.execute(
                 select(ItemMetadataOverride)
@@ -308,7 +369,9 @@ async def delete_metadata_override(
         try:
             plex_item = await plex.fetch_item(item.rating_key)
             exempt = exemption_reason(
-                request.app.state.config_holder.current.operations,
+                config_for_library(
+                    request.app.state.config_holder.current, item.library,
+                ).operations,
                 item.rating_key, item.imdb_id,
                 getattr(plex_item, "labels", None),
             )

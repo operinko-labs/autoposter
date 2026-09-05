@@ -262,6 +262,21 @@ PROVENANCE_KEYS = {
 }
 
 
+def _wildcarded(path: str) -> str:
+    """A served path with its library name replaced by the map's wildcard.
+
+    ``field_descriptions`` describes the per-library shape ONCE, under
+    ``libraries.{}.``, because a Plex library name is data and a schema walk
+    cannot enumerate it (roadmap row 92). Substituting here rather than
+    exempting the section keeps the guard's promise intact: every served leaf
+    still has to have a description, including these.
+    """
+    segments = path.split(".")
+    if len(segments) > 2 and segments[0] == "libraries":
+        return ".".join(["libraries", "{}", *segments[2:]])
+    return path
+
+
 async def test_get_config_describes_every_path_it_serves(client, auth_headers):
     """The completeness guard's endpoint half: a row the page renders with no
     description is a setting whose only documentation is the YAML file the
@@ -272,7 +287,9 @@ async def test_get_config_describes_every_path_it_serves(client, auth_headers):
         key: value for key, value in body.items() if key not in PROVENANCE_KEYS
     })
     assert served, "the config response serves no settings at all"
-    undescribed = [path for path in served if path not in descriptions]
+    undescribed = [
+        path for path in served if _wildcarded(path) not in descriptions
+    ]
     assert undescribed == [], f"served with no description: {undescribed}"
 
 
@@ -440,12 +457,34 @@ def test_render_affecting_matches_render_versions_own_input_set():
     unedited. Confirmed to already hold for every one of the example
     config's 29 top-level sections before this test existed: this is a
     regression guard, not a bug fix.
+
+    A section whose example value is an empty mapping is skipped by
+    CONDITION rather than by name (roadmap row 92 review, Important 3): an
+    empty mapping has no leaf at all for this generic mechanism to toggle,
+    whatever the section happens to be called. Today that is only
+    ``libraries`` (roadmap row 92; the shipped default is `{}`), so this
+    self-repairs if that ever changes -- a `libraries:` example gaining real
+    content would be walked like any other section instead of staying
+    silently exempted forever. ``section == {}`` rather than ``not
+    section``: ``skip_tba`` is a top-level scalar whose example value is
+    ``False``, which ``not section`` would wrongly skip too.
+
+    ``libraries``' own render-non-effect is proven directly instead, by
+    ``test_library_overrides.py::test_the_libraries_section_moves_no_render_version``,
+    which sets a representative leaf of each of the three whitelisted
+    sections -- 9 of the 27 available leaves -- across the 2 configured
+    libraries and checks all five versions directly. Not exhaustive over
+    every leaf; the wholesale-hash argument
+    (``test_library_overrides.py::test_render_version_hashes_exactly_six_named_inputs``)
+    is what makes a representative leaf enough.
     """
     base = read_config_document(EXAMPLE)
     before = build_config(base)
 
     checked = 0
     for key, section in base.items():
+        if section == {}:
+            continue
         for dotted, leaf in _document_leaves(section, key):
             candidate = _toggled_leaf(leaf)
             if candidate is None or candidate == leaf:
@@ -465,10 +504,11 @@ def test_render_affecting_matches_render_versions_own_input_set():
         else:
             continue
 
-    assert checked == len(base), (
-        f"only {checked} of {len(base)} top-level sections had a leaf this "
-        "walk could safely mutate -- every section in the example config was "
-        "expected to have one"
+    expected_checked = sum(1 for section in base.values() if section != {})
+    assert checked == expected_checked, (
+        f"only {checked} of {expected_checked} top-level sections had a leaf "
+        "this walk could safely mutate -- every non-empty section in the "
+        "example config was expected to have one"
     )
 
 

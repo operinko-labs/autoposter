@@ -255,3 +255,42 @@
     max-width: 100%;
   }
 }
+
+/* Roadmap row 92's matrix. Wide by construction -- one column per library --
+   so the table scrolls inside its own box rather than making the page scroll
+   sideways, and the setting column stays put while it does. */
+.library-overrides-scroll {
+  overflow-x: auto;
+}
+
+.library-overrides-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.library-overrides-table th,
+.library-overrides-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.library-overrides-table th[scope="row"] {
+  font-weight: 400;
+  font-family: var(--font-mono, monospace);
+  position: sticky;
+  left: 0;
+  background: var(--bg-elevated, inherit);
+}
+
+.library-overrides-table select,
+.library-overrides-table input[type="text"] {
+  min-width: 8rem;
+}
+
+.library-cell-note {
+  font-size: 0.85em;
+  margin-left: 0.4rem;
+}

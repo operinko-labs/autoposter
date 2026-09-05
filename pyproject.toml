@@ -117,3 +117,7 @@ select = ["E4", "E7", "E9", "F"]
 # function parameter -- the normal pytest dependency-injection shape -- which
 # ruff reads as redefining an unused import.
 "tests/test_config_safety.py" = ["F811"]
+# Roadmap row 92. Same shape as test_config_safety.py above, for the same
+# reason: this file imports test_api_config_editor's fixtures rather than
+# rebuilding them.
+"tests/test_library_overrides_api.py" = ["F811"]

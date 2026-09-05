@@ -13,7 +13,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from autoposter.config.holder import ConfigHolder
-from autoposter.config.loader import load_config
+from autoposter.config.loader import build_config, load_config, read_config_document
 from autoposter.db.models import ScheduledRun
 from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import make_maintenance_job
@@ -21,9 +21,19 @@ from autoposter.scheduler.jobs import make_maintenance_job
 EXAMPLE = Path("config/autoposter.example.yaml")
 
 
+class RecordingSection:
+    def __init__(self, title: str, calls: list):
+        self.title = title
+        self._calls = calls
+
+    def emptyTrash(self):
+        self._calls.append(f"section:{self.title}")
+
+
 class RecordingLibrary:
     def __init__(self):
         self.calls = []
+        self.sections_asked = []
 
     def cleanBundles(self):
         self.calls.append("cleanBundles")
@@ -33,6 +43,10 @@ class RecordingLibrary:
 
     def optimize(self):
         self.calls.append("optimize")
+
+    def section(self, title):
+        self.sections_asked.append(title)
+        return RecordingSection(title, self.calls)
 
 
 class RecordingServer:
@@ -139,3 +153,136 @@ async def test_a_plex_failure_reaches_last_detail_as_a_class_name_only(
     assert [r.getMessage() for r in warned] == ["maintenance: empty_trash failed"]
     for marker in ("plex.internal", "32400", "/library/clean/bundles", "/mnt/"):
         assert marker in caplog.text
+
+
+def _holder_with_libraries(libraries: dict, **maintenance):
+    """A holder whose config carries a ``libraries:`` block.
+
+    Built through ``build_config`` rather than ``model_copy``, because the
+    block's validators are part of what makes the job's behaviour legal.
+    """
+    document = read_config_document(EXAMPLE)
+    document["libraries"] = libraries
+    if maintenance:
+        document.setdefault("maintenance", {}).update(maintenance)
+    return ConfigHolder(build_config(document))
+
+
+async def test_empty_trash_stays_server_wide_when_no_library_overrides_it(session):
+    """Gate off. A deployment that never opened the matrix must make the one
+    call it made before this row, and must keep reaching sections
+    ``collections.libraries`` does not name."""
+    server = RecordingServer()
+    job = make_maintenance_job(_holder_with_libraries({}, empty_trash=True), lambda: server)
+    summary = await job.run(session)
+    assert server.library.calls == ["emptyTrash"]
+    assert server.library.sections_asked == []
+    assert summary == "ran empty_trash"
+
+
+async def test_empty_trash_runs_only_for_the_libraries_that_enable_it(session):
+    """THE entry-point test for maintenance (C4), through the job the
+    scheduler registers.
+
+    ``Movies`` states ``empty_trash: true``; ``TV Shows`` states nothing and
+    the global is ``false``, so it inherits ``false``. Both halves in one
+    assertion: the stated value wins, and the unstated one is not swept up
+    with it.
+    """
+    server = RecordingServer()
+    job = make_maintenance_job(
+        _holder_with_libraries({"Movies": {"maintenance": {"empty_trash": True}}}),
+        lambda: server,
+    )
+    summary = await job.run(session)
+    assert server.library.calls == ["section:Movies"]
+    # Only the libraries that want it: the flag is resolved off the validated
+    # model BEFORE Plex is asked for a section, so a library that inherits a
+    # false global costs no request at all.
+    assert server.library.sections_asked == ["Movies"]
+    assert "empty_trash" in summary
+
+
+async def test_a_library_can_opt_out_of_a_global_empty_trash(session):
+    """The other direction, which is the one an operator actually asks for:
+    the global says yes, one library says no, and the rest still run."""
+    server = RecordingServer()
+    job = make_maintenance_job(
+        _holder_with_libraries(
+            {"Movies": {"maintenance": {"empty_trash": False}}}, empty_trash=True,
+        ),
+        lambda: server,
+    )
+    await job.run(session)
+    assert server.library.calls == ["section:TV Shows"]
+
+
+async def test_the_two_server_wide_operations_ignore_the_matrix(session):
+    """``clean_bundles`` and ``optimize`` have no per-section form, so they
+    are refused inside a library block at load (roadmap row 92) and the job
+    goes on making one call each. Pinned here so the refusal and the job
+    cannot drift apart into 'refused, and also quietly per-library'."""
+    server = RecordingServer()
+    job = make_maintenance_job(
+        _holder_with_libraries(
+            {"Movies": {"maintenance": {"empty_trash": True}}},
+            clean_bundles=True, optimize=True,
+        ),
+        lambda: server,
+    )
+    await job.run(session)
+    assert server.library.calls == ["cleanBundles", "section:Movies", "optimize"]
+
+
+async def test_a_library_that_wants_nothing_costs_no_section_request(session):
+    """The flag is resolved BEFORE Plex is asked for the section, so a
+    library that has opted out costs no request at all.
+
+    ``Movies`` states ``empty_trash: false``, and this double raises if its
+    section is ever fetched -- an implementation that fetched first and
+    checked after would fail here with that ``RuntimeError`` rather than
+    quietly making a request per library per run.
+    """
+
+    class Refusing(RecordingLibrary):
+        def section(self, title):
+            self.sections_asked.append(title)
+            if title == "Movies":
+                raise RuntimeError("Movies opted out; this must not be fetched")
+            return RecordingSection(title, self.calls)
+
+    server = RecordingServer()
+    server.library = Refusing()
+    job = make_maintenance_job(
+        _holder_with_libraries(
+            {"Movies": {"maintenance": {"empty_trash": False}}}, empty_trash=True,
+        ),
+        lambda: server,
+    )
+    summary = await job.run(session)
+    assert server.library.calls == ["section:TV Shows"]
+    assert server.library.sections_asked == ["TV Shows"]
+    assert summary == "ran empty_trash"
+
+
+async def test_a_same_value_library_override_still_narrows_the_sweep(session):
+    """Task 3 review, Important 1: the switch is on PRESENCE, not on value
+    difference. ``Movies`` states ``empty_trash: true``, which is the SAME
+    value the global already has, and ``TV Shows`` states nothing and
+    inherits that same ``true``. The old, buggy switch (``value !=
+    config.maintenance.empty_trash``) sees no difference anywhere and falls
+    back to the ONE server-wide call -- which would also reach any Plex
+    section outside ``collections.libraries``. Because a library has an
+    opinion at all, the sweep must go section by section instead, even
+    though every resolved value here happens to agree with the global.
+    """
+    server = RecordingServer()
+    job = make_maintenance_job(
+        _holder_with_libraries(
+            {"Movies": {"maintenance": {"empty_trash": True}}}, empty_trash=True,
+        ),
+        lambda: server,
+    )
+    await job.run(session)
+    assert server.library.calls == ["section:Movies", "section:TV Shows"]
+    assert server.library.sections_asked == ["Movies", "TV Shows"]

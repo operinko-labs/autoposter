@@ -10,7 +10,8 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import get_args
+from types import UnionType
+from typing import Union, get_args, get_origin
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -95,10 +96,16 @@ def _reject_secrets(document: dict, path: str = "") -> None:
     database row and into every config API response that echoes the overrides,
     so this refuses rather than merging it and relying on a redactor further
     down the line to keep it out of sight.
+
+    ``libraries`` (roadmap row 92) is keyed on Plex library NAMES, not config
+    section names, so a library literally named ``secrets`` is a real library
+    rather than an attempt to smuggle one into the document -- the check is
+    exempt at that one level (``path == "libraries"``) and still walks that
+    library's own settings normally.
     """
     for key, value in document.items():
         where = f"{path}.{key}" if path else str(key)
-        if key == "secrets":
+        if key == "secrets" and path != "libraries":
             raise ValueError(
                 f"config overrides must not contain secrets (found at {where}); "
                 "secrets come from the environment only"
@@ -151,6 +158,34 @@ def _model_for(annotation) -> type[BaseModel] | None:
     return None
 
 
+def _mapping_model_for(annotation) -> type[BaseModel] | None:
+    """The model behind a ``dict[str, Model]`` annotation, if there is one.
+
+    ``_model_for`` above answers "is there a model named anywhere in here",
+    which is the right question for ``text: TextStyle | None`` and the WRONG
+    one for ``libraries: dict[str, LibraryOverride]``: it recurses through
+    ``get_args`` and hands back ``LibraryOverride``, so the walk below would
+    descend with a Plex LIBRARY NAME in a field name's place and report
+    ``libraries.Movies`` as an unknown setting -- a 422 on every save that
+    names a real library (roadmap row 92).
+
+    So the mapping shape is recognised first, and separately. ``_model_for``
+    is left exactly as it is: its contract is "the model this annotation
+    names", and narrowing it here would be a silent behaviour change to a
+    helper this walk is not the only judge of.
+    """
+    origin = get_origin(annotation)
+    if origin is dict:
+        args = get_args(annotation)
+        return _model_for(args[1]) if len(args) == 2 else None
+    if origin in (Union, UnionType):
+        for arg in get_args(annotation):
+            found = _mapping_model_for(arg)
+            if found is not None:
+                return found
+    return None
+
+
 def unknown_key_paths(document: dict, model: type[BaseModel] = Config, path: str = "") -> list[str]:
     """Dotted paths in ``document`` that no field of the config schema matches.
 
@@ -170,6 +205,11 @@ def unknown_key_paths(document: dict, model: type[BaseModel] = Config, path: str
     A dict under a field that is not a nested model is left alone: that is a
     type error, and pydantic's own message for it is better than anything this
     walk could say.
+
+    A dict under a field whose annotation is ``dict[str, Model]`` is walked
+    key by key instead, with the key as a path segment: the keys there are
+    data (Plex library names, roadmap row 92), so a key is never reported and
+    a typo BENEATH one is reported at full depth.
     """
     unknown: list[str] = []
     for key, value in document.items():
@@ -177,6 +217,20 @@ def unknown_key_paths(document: dict, model: type[BaseModel] = Config, path: str
         field = model.model_fields.get(key)
         if field is None:
             unknown.append(where)
+            continue
+        mapping = _mapping_model_for(field.annotation)
+        if mapping is not None:
+            # Checked BEFORE `_model_for`, which would answer with this
+            # mapping's value model and make the walk read every key as a
+            # field name. Each key is DATA -- a Plex library name -- so it
+            # becomes a path segment and is never itself reportable; what is
+            # reportable is a typo inside one.
+            if isinstance(value, dict):
+                for name, entry in value.items():
+                    if isinstance(entry, dict):
+                        unknown.extend(
+                            unknown_key_paths(entry, mapping, f"{where}.{name}")
+                        )
             continue
         nested = _model_for(field.annotation)
         if nested is not None and isinstance(value, dict):

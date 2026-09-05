@@ -26,6 +26,7 @@ import type {
 } from "../api/types";
 import { ProviderAttribution } from "../ProviderAttribution";
 import { ConfigSafetyPanel } from "./ConfigSafetyPanel";
+import { LibraryOverridesPanel } from "./LibraryOverridesPanel";
 import "./settings.css";
 
 /** The attribution block and its required wording live with the component now
@@ -132,7 +133,7 @@ function frozenReason(
 
 /** Everything a row needs to be editable. `null` in a row's place of this is
  * how the secrets panel stays read-only. */
-interface Editor {
+export interface Editor {
   document: OverridesDocument;
   overridden: string[];
   frozen: Record<string, string>;
@@ -884,6 +885,9 @@ export function Settings() {
         </section>
       )}
 
+      {config !== null && (
+        <LibraryOverridesPanel config={config} editor={editor} />
+      )}
       {config !== null && <ConfigSections config={config} editor={editor} />}
     </>
   );
