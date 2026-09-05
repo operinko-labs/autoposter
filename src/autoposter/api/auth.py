@@ -115,6 +115,86 @@ async def require_session(
 RequireSession = Depends(require_session)
 
 
+# --- The read-only API key (roadmap row 51) ---------------------------------
+#
+# A second credential for callers that have no browser session -- a Homepage
+# ``customapi`` widget, a script -- on a small allowlist of GET routes. It is
+# additive: every /api route but /api/login has required a session since the
+# Web UI shipped, and nothing here loosens that. Scope is the dependency's
+# placement (only the handlers ALLOWLIST names take it) AND the check inside
+# it (the request must be a GET whose path is in ALLOWLIST), so a misplaced
+# Depends fails closed to session-only rather than opening a route.
+#
+# No rate limiter: LoginRateLimiter exists to bound bcrypt CPU; one
+# compare_digest over forty-odd bytes has no such cost to bound.
+
+# The GET routes a correct X-API-Key may read, by path. Every other route --
+# every other GET, every write -- keeps Depends(require_session) and answers
+# a key with the same 401 it answers no credential with. A later stats router
+# extends this by adding its paths to the literal and giving those handlers
+# Depends(api_key_or_session); tests/test_api_key.py pins that exactly these
+# paths answer a key and nothing else does. Matched against request.url.path:
+# the app is mounted at / with no root_path anywhere in the deployment.
+ALLOWLIST: frozenset[str] = frozenset({"/api/status", "/api/version"})
+
+
+class ApiKeyPrincipal:
+    """What ``api_key_or_session`` returns for a keyed request: not a session
+    row -- there is none -- and not ``None``, which would read as a failure.
+    Handlers on the allowlist accept either and use neither."""
+
+    __slots__ = ()
+
+
+API_KEY_PRINCIPAL = ApiKeyPrincipal()
+
+
+def _key_matches(presented: str | None, configured: str) -> bool:
+    # One comparison on every call -- an absent header, an empty one and a
+    # wrong one take the same path -- and bytes rather than str, because
+    # compare_digest raises TypeError on non-ASCII str input (the
+    # intake/routes.py form). ``and configured`` comes AFTER the compare and
+    # is what keeps an unset key closed: with nothing configured, an empty
+    # header would otherwise compare equal to it.
+    return bool(
+        secrets_module.compare_digest(
+            (presented or "").encode("utf-8"), configured.encode("utf-8")
+        )
+        and configured
+    )
+
+
+async def api_key_or_session(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> Session | ApiKeyPrincipal:
+    """FastAPI dependency for the allowlisted GET routes: a valid session
+    bearer OR a correct ``X-API-Key`` header. 401 with the same fixed
+    sentence as ``require_session`` on everything else -- a wrong key, an
+    unset key, a key on a route outside ALLOWLIST -- and never a 403: there
+    is no authenticated-but-forbidden principal to name, and naming one would
+    tell a key-holder which routes exist.
+
+    The header is the only place the key is read; the query string is never
+    consulted, so ``?api_key=`` cannot succeed and never needs scrubbing.
+    """
+    if authorization is not None and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ")
+        session_factory = request.app.state.session_factory
+        async with session_factory() as db_session:
+            row = await session_for_token(db_session, token)
+        if row is not None:
+            return row
+    if (
+        request.method == "GET"
+        and request.url.path in ALLOWLIST
+        and _key_matches(x_api_key, request.app.state.secrets.api_key)
+    ):
+        return API_KEY_PRINCIPAL
+    raise HTTPException(status_code=401, detail="not authenticated")
+
+
 class LoginRateLimiter:
     """A fixed window of login attempts per client IP, held in memory.
 

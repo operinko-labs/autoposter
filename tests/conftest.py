@@ -59,6 +59,7 @@ DEEP_SUITES = frozenset(
         "test_api_full_pass.py",
         "test_api_item_overrides.py",
         "test_api_jobs.py",
+        "test_api_key.py",
         "test_api_library.py",
         "test_api_login.py",
         "test_api_logs.py",
