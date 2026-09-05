@@ -135,7 +135,9 @@ RequireSession = Depends(require_session)
 # Depends(api_key_or_session); tests/test_api_key.py pins that exactly these
 # paths answer a key and nothing else does. Matched against request.url.path:
 # the app is mounted at / with no root_path anywhere in the deployment.
-ALLOWLIST: frozenset[str] = frozenset({"/api/status", "/api/version"})
+ALLOWLIST: frozenset[str] = frozenset(
+    {"/api/stats/storage", "/api/status", "/api/version"}
+)
 
 
 class ApiKeyPrincipal:

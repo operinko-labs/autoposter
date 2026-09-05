@@ -36,6 +36,7 @@ from autoposter.api.playlists import router as playlists_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.testing import router as testing_router
 from autoposter.api.version import router as version_router
+from autoposter.api.stats import router as stats_router
 from autoposter.api.auth import (
     ApiKeyPrincipal,
     api_key_or_session,
@@ -97,6 +98,7 @@ logger = logging.getLogger(__name__)
 # tests/test_api_scheduled_runs.py's agreement guard now catches in either
 # direction.
 SCHEDULED_JOB_NAMES = frozenset({
+    "asset_stats",
     "collections_reconcile",
     "ratings_drift_sweep",
     "credits_scan",
@@ -224,6 +226,14 @@ router.include_router(mismatches_router)
 # operator config that must not reach a log or a response, and the rules that
 # keep it out of both are the substance of it.
 router.include_router(version_router)
+
+# The storage stats (roadmap row 52): how many artifacts this service has
+# rendered per library and art kind, and how many bytes they occupy. Its own
+# module because it is the only endpoint here that answers from a column the
+# render pipeline stamps and a scheduled pass back-fills, and because the rule
+# that makes it safe -- it never touches the filesystem, on an NFS assets_root
+# -- is the substance of it.
+router.include_router(stats_router)
 
 # The Action Center (roadmap rows 11a/11b): the curation queue over the
 # artwork this service chose and rendered. Its own module because the queries
