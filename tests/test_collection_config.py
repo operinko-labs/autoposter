@@ -237,6 +237,24 @@ def test_the_params_error_names_the_offending_field():
             "is an absolute path",
             id="text_file",
         ),
+        pytest.param(
+            "imdb_id",
+            {"ids": ["https://example.com/x?apikey=SECRET"]},
+            "not an IMDb id",
+            id="imdb_id",
+        ),
+        pytest.param(
+            "tmdb_movie",
+            {"ids": ["https://example.com/x?apikey=SECRET"]},
+            "not a TMDb id",
+            id="tmdb_id",
+        ),
+        pytest.param(
+            "tvdb_movie",
+            {"ids": ["https://example.com/x?apikey=SECRET"]},
+            "not a TVDb id",
+            id="tvdb_id",
+        ),
     ],
 )
 def test_a_credential_bearing_param_is_refused_without_echoing_it(
@@ -246,11 +264,11 @@ def test_a_credential_bearing_param_is_refused_without_echoing_it(
     verbatim, and `api/routes.py`'s ValidationError seam serves exactly those
     `msg` values on five config endpoints -- so a validator that interpolated
     `{value!r}` handed an operator's pasted API key back on all five. Pinned
-    against all five of the changed validators (`mdblist_list`, `imdb_list`,
-    `imdb_watchlist`, `tvdb_list`, `text_file`): each case's pasted value
-    carries `SECRET`, so if that validator's `f"{value!r} "` head were
-    restored, `SECRET` would reappear in `served` and the assertion below
-    would fail.
+    against all eight of the changed validators (`mdblist_list`, `imdb_list`,
+    `imdb_watchlist`, `tvdb_list`, `text_file`, `imdb_id`, `tmdb_movie`,
+    `tvdb_movie`): each case's pasted value carries `SECRET`, so if that
+    validator's `f"{value!r} "` head were restored, `SECRET` would reappear in
+    `served` and the assertion below would fail.
 
     Asserted against `errors()[…]["msg"]`, which is what is served, rather than
     `str(exc)`: pydantic appends its own `input_value=` tail to that string and

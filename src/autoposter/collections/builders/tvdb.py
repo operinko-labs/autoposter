@@ -131,7 +131,7 @@ class TvdbIdParams(BaseModel):
         for value in values:
             if not value.isdigit():
                 raise ValueError(
-                    f"{value!r} is not a TVDb id: TVDb ids are numbers, like "
+                    "that is not a TVDb id: TVDb ids are numbers, like "
                     "'81189'. An id starting 'tt' is an IMDb id -- use the imdb_id "
                     "builder for those."
                 )

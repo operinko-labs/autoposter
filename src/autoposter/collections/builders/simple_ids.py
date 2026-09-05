@@ -65,7 +65,7 @@ class ImdbIdParams(_IdListParams):
         for value in values:
             if not _IMDB_ID.match(value):
                 raise ValueError(
-                    f"{value!r} is not an IMDb id: IMDb ids look like 'tt0111161'. "
+                    "that is not an IMDb id: IMDb ids look like 'tt0111161'. "
                     "A bare number is a TMDb or TVDb id, which belongs to a "
                     "builder for that namespace."
                 )
@@ -79,7 +79,7 @@ class TmdbIdParams(_IdListParams):
         for value in values:
             if not value.isdigit():
                 raise ValueError(
-                    f"{value!r} is not a TMDb id: TMDb ids are numbers, like "
+                    "that is not a TMDb id: TMDb ids are numbers, like "
                     "'438631'. An id starting 'tt' is an IMDb id -- use the "
                     "imdb_id builder for those."
                 )
