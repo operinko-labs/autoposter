@@ -54,6 +54,7 @@ from autoposter.collections import groups
 from autoposter.collections.poster_title import poster_title_parts
 from autoposter.collections.posters import apply_poster, posters_enabled
 from autoposter.collections.reconcile import (
+    COLLECTION_TYPES,
     LIBTYPES,
     _clear_collection_summary,
     _edit_collection_summary,
@@ -186,10 +187,17 @@ def create_smart_collection(section, libtype: str, title: str, url: str):
     Returns the created collection, re-read through plexapi: the POST answers
     with the collection's XML but not through a route plexapi will build an
     object from, and every step after this one is an ordinary plexapi edit.
+
+    ``libtype`` is the collection's own kind and may be a season or an episode
+    since search-tail E-2 -- the last place in this package that answered
+    those two with "show", which is the bug ``reconcile.COLLECTION_TYPES``'s
+    own comment describes (row 88). An unknown value is a ``KeyError`` here
+    rather than a real collection of the wrong kind, created and reported as a
+    success.
     """
     server = section._server
     args = {
-        "type": 1 if libtype == "movie" else 2,
+        "type": COLLECTION_TYPES[libtype],
         "title": title,
         "smart": 1,
         "sectionId": section.key,
@@ -267,6 +275,7 @@ async def reconcile_smart_collection(
     config=None,
     settings=None,
     sort_prefix: str | None = None,
+    level: str = "item",
     poster_kind: str | None = None,
     poster_key: str | None = None,
 ) -> list[str]:
@@ -319,6 +328,11 @@ async def reconcile_smart_collection(
     definition that names its own ``sort_title`` keeps it; None derives nothing,
     which is what a direct caller with no pass around it gets.
 
+    ``level`` is the definition's ``builder_level`` (search-tail E-2). It
+    decides the ``type`` on the create POST and nothing else: the stored
+    filter already carries its own ``type=``, built by ``build_search_url``
+    from the same field, and ``update_smart_collection`` sends no type at all.
+
     ``poster_kind``/``poster_key`` name this collection's default artwork, the
     way ``BuilderResult``'s two fields of the same name do on the list path.
     They default to None and every caller that passes nothing keeps exactly the
@@ -339,6 +353,11 @@ async def reconcile_smart_collection(
     # and the sort title would never be written at all.
     settings = groups.with_derived_sort_title(settings, sort_prefix, title)
     libtype = LIBTYPES[library_type]
+    # The collection's own kind: the library's, unless the definition asked for
+    # the seasons or episodes inside it (search-tail E-2). Kept beside the
+    # libtype rather than folded into it -- ``libtype`` is still the library's
+    # kind everywhere else in this function.
+    collection_type = libtype if level == "item" else level
     listing = existing if existing is not None else {
         collection.title: collection for collection in section.collections()
     }
@@ -398,7 +417,7 @@ async def reconcile_smart_collection(
             )
         else:
             if collection is None:
-                collection = create_smart_collection(section, libtype, title, url)
+                collection = create_smart_collection(section, collection_type, title, url)
                 # Back into the shared listing, exactly as ``lists.py:283``
                 # does it: the map is the pass's, so a later definition
                 # reading it has to see a collection this pass created rather

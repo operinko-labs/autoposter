@@ -736,9 +736,10 @@ async def _run_one(
     # satisfies every one of them and would otherwise reach `restricted_members`
     # / `tag_members` / `sync_membership` below with season/episode members. An
     # episode's TVDB id and a series' TVDB id share one integer namespace, so a
-    # numeric collision there is a live write to the wrong series. No shipped
-    # builder sets `result.level` today, but nothing else stands between one
-    # that does and this refusal.
+    # numeric collision there is a live write to the wrong series. Since
+    # search-tail E-2 `plex_search` sets `result.level` from the definition's
+    # own `builder_level`, so this is now a reachable refusal and not only a
+    # standing one.
     if level != "item" and (
         definition.radarr_restrict
         or definition.sonarr_restrict

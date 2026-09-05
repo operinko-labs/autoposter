@@ -19,6 +19,7 @@ from autoposter.collections.smart import (
     SmartCollectionUnavailable,
     SmartFilterMatchedNothing,
     count_matches,
+    create_smart_collection,
     reconcile_smart_collection,
     smart_definition_hash,
     smart_filter_uri,
@@ -726,3 +727,34 @@ async def test_a_list_collection_under_a_smart_definition_refuses(session):
     assert len(actions) == 1
     assert "shape conflict" in actions[0]
     assert await _row(session, "Movies", TITLE) is None
+
+
+# --- search-tail E-2: the creation type comes from the level, not the library kind
+
+
+def test_the_creation_type_comes_from_the_collection_types_table():
+    """``smart.py``'s last surviving ``1 if libtype == 'movie' else 2``. Row 88
+    replaced the same expression in ``reconcile.create_blank_collection`` and
+    its comment says why in as many words: that expression answered 'season'
+    and 'episode' with 'show', creating a real collection of the wrong kind and
+    reporting it as a success. A KeyError on an unknown libtype is the loud
+    failure that replaces it."""
+    from autoposter.collections.reconcile import COLLECTION_TYPES
+
+    assert COLLECTION_TYPES == {"movie": 1, "show": 2, "season": 3, "episode": 4}
+    section = FakeSection(matches=7)
+    create_smart_collection(section, "episode", TITLE, URL)
+    assert "type=4" in section._server.queries[0][0]
+
+
+async def test_an_episode_level_smart_create_posts_type_four(session):
+    """End to end through the reconciler, which is the seam ``smart_filter``
+    actually uses: the level chooses the POST's ``type``, and the library kind
+    no longer does."""
+    section = FakeSection(matches=7)
+    await reconcile_smart_collection(
+        session, section, "TV Shows", "Show", TITLE, URL, LABEL,
+        dry_run=False, level="episode",
+    )
+    assert "type=4" in section._server.queries[0][0]
+    assert section._server.queries[0][1] == "POST"

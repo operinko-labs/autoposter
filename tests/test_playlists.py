@@ -121,15 +121,26 @@ class FakePlaylist:
 
 
 class FakeSection:
-    def __init__(self, items, section_type="movie"):
+    key = 1
+
+    def __init__(self, items, section_type="movie", by_libtype=None, fetch_items=None):
         self._items = list(items)
         self.type = section_type
+        self._by_libtype = by_libtype
+        self._fetch_items = fetch_items
+        self.fetch_calls: list[str] = []
 
     def all(self):
         return list(self._items)
 
     def search(self, libtype=None):
+        if self._by_libtype is not None and libtype in self._by_libtype:
+            return list(self._by_libtype[libtype])
         return list(self._items)
+
+    def fetchItems(self, key):
+        self.fetch_calls.append(key)
+        return list(self._items if self._fetch_items is None else self._fetch_items)
 
 
 class FakeLibrary:
@@ -803,6 +814,39 @@ async def test_episode_level_members_are_allowed_when_every_library_is_a_show_on
 
     assert run.playlists[0].failed is False
     assert [i.ratingKey for i in server.created[0].items()] == ["21"]
+
+
+async def test_a_plex_search_playlist_at_episode_level_resolves_episodes(
+    session, config_factory
+):
+    """Facts C2: collections AND playlists. The playlist path carries its own
+    ported copy of the engine's level logic (``playlists.py``, the
+    declared-vs-result check and the Show-library guard), so ``plex_search``
+    becoming level-aware has to be proven here too -- through the real
+    ``reconcile_playlists``, with the real builder, not a stand-in."""
+    episode = FakeItem("31", ["tvdb://7645236"], item_type="episode")
+    section = FakeSection(
+        [SHOW_A], section_type="show",
+        by_libtype={"episode": [episode]}, fetch_items=[episode],
+    )
+    server = FakeServer({"Movies": FakeSection([MOVIE_A]), "TV Shows": section})
+    config = _config(
+        config_factory, apply_to_plex=True,
+        definitions=[_definition(
+            builder="plex_search",
+            params={"all": {"episode_title.begins": "Pilot"}},
+            builder_level="episode",
+            libraries=["TV Shows"],
+        )],
+    )
+
+    run = await reconcile_playlists(session, server, config)
+
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=4&sort=titleSort&episode.title%3C=Pilot"
+    ]
+    assert run.playlists[0].failed is False
+    assert [i.ratingKey for i in server.created[0].items()] == ["31"]
 
 
 # --- the sweep ---------------------------------------------------------------

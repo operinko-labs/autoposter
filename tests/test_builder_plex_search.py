@@ -6,6 +6,7 @@ touches: which spellings load, which refuse and what they say, what the builder
 asks Plex, and how many times it asks.
 """
 import datetime as dt
+from types import SimpleNamespace
 from xml.etree import ElementTree
 
 import pytest
@@ -13,7 +14,11 @@ import requests
 from plexapi.exceptions import NotFound
 from pydantic import ValidationError
 
-from autoposter.collections.builders.base import BuilderContext, SourceClients
+from autoposter.collections.builders.base import (
+    BuilderContext,
+    LibraryTypeMismatch,
+    SourceClients,
+)
 from autoposter.collections.builders.plex_search import (
     LibraryTagResolver,
     PlexSearchParams,
@@ -106,6 +111,7 @@ def test_the_type_key_is_refused_by_name():
     message = str(error.value)
     assert "'type' is not accepted here" in message
     assert "season, episode, album or track" in message
+    assert "builder_level" in message
 
 
 def test_an_unknown_params_key_is_refused():
@@ -246,13 +252,14 @@ class FakeSection:
         return self._items
 
 
-def context(section, *, library_type="Movie", config=None, run_cache=None):
+def context(section, *, library_type="Movie", config=None, run_cache=None, definition=None):
     return BuilderContext(
         library="Movies",
         library_type=library_type,
         config=config or {},
         run_cache=run_cache if run_cache is not None else {},
         sources=SourceClients(plex=PlexSectionAccess(section, lambda: {})),
+        definition=definition,
     )
 
 
@@ -532,6 +539,71 @@ async def test_a_plex_failure_is_reported_by_class_name_and_nothing_else():
     assert "Boom" in message
     assert "SECRET" not in message
     assert "X-Plex-Token" not in message
+
+
+async def test_an_episode_builder_level_searches_at_type_four():
+    """Search-tail E-2, and the whole row in one assertion: the definition's
+    ``builder_level`` becomes the search's ``type=``, while the predicate is
+    still scoped by the LIBRARY's kind (``episode.title``, not a bare
+    ``title``). ``episode_title`` is a ``str`` row, so nothing here needs a tag
+    lookup."""
+    section = FakeSection()
+    ctx = context(
+        section, library_type="Show",
+        config={"all": {"episode_title.begins": "Pilot"}},
+        definition=SimpleNamespace(builder_level="episode"),
+    )
+    result = await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=4&sort=titleSort&episode.title%3C=Pilot"
+    ]
+    assert result.level == "episode"
+
+
+async def test_a_season_builder_level_searches_at_type_three():
+    section = FakeSection()
+    ctx = context(
+        section, library_type="Show",
+        config={"all": {"episode_title.begins": "Pilot"}},
+        definition=SimpleNamespace(builder_level="season"),
+    )
+    await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls[0].startswith("/library/sections/1/all?type=3&")
+
+
+async def test_an_item_builder_level_is_byte_identical_to_before():
+    """Gate-off byte-identity, stated as a test rather than claimed: a
+    definition that writes nothing, and a context with no definition at all
+    (a direct caller), both build the URL they built before E-2."""
+    for definition in (None, SimpleNamespace(builder_level="item")):
+        section = FakeSection(choices={("genre", "movie"): GENRES})
+        ctx = context(
+            section, config={"all": {"genre": "Horror"}}, definition=definition
+        )
+        result = await PlexSearchBuilder().build(ctx)
+        assert section.fetch_calls == [
+            "/library/sections/1/all?type=1&sort=titleSort&genre=1138"
+        ]
+        assert result.level == "item"
+
+
+async def test_a_non_item_level_on_a_movie_library_refuses_inside_build():
+    """The refusal has to live HERE, beside ``require_library_type``, and not
+    in the engine: the engine's own "seasons and episodes exist only in a Show
+    library" guard runs AFTER ``builder.build(ctx)``, so a Movie library with
+    ``builder_level: episode`` would otherwise reach ``SORT_TYPES["episode"]``
+    and send a ``type=4`` query at a movie section before anything refused."""
+    section = FakeSection()
+    ctx = context(
+        section, library_type="Movie",
+        config={"all": {"genre": "Horror"}},
+        definition=SimpleNamespace(builder_level="episode"),
+    )
+    with pytest.raises(LibraryTypeMismatch) as error:
+        await PlexSearchBuilder().build(ctx)
+    message = str(error.value)
+    assert "episode" in message and "Movie library" in message
+    assert section.fetch_calls == [], "nothing may be asked of Plex before the refusal"
 
 
 async def test_a_language_code_expands_to_every_variant_the_library_carries():
