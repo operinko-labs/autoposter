@@ -925,3 +925,18 @@ async def test_the_collections_job_is_not_registered_when_both_are_off(
         assert "plex_prune" in names
 
     assert "collections_reconcile" not in names
+
+
+async def test_the_asset_stats_job_is_registered_by_the_lifespan(
+    session_factory, secrets, stubbed_background_services
+):
+    """Roadmap row 52. The backfill only ever runs if the lifespan registers
+    it, and the sweep is the ONLY thing that fills in the ~16k render rows
+    written before ``size_bytes`` existed -- a factory nothing appends is a
+    feature that is configured, documented, and silently never runs."""
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
+
+    async with app.router.lifespan_context(app):
+        names = {job.name for job in app.state.scheduler_jobs}
+        assert "asset_stats" in names
+        assert app.state.scheduler_intervals["asset_stats"] == 7 * 24 * 3600

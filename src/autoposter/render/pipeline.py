@@ -1530,10 +1530,37 @@ async def render_artifact(
     # A real render just happened, so the adoption no longer describes reality:
     # this row now has a source URL and a fingerprint that covers it.
     render.adopted = False
+    # Roadmap row 52: how many bytes the artifact just published occupies.
+    # Here rather than inside _publish because this is the write-back -- the
+    # one place that owns the row -- and because both publish arms (verbatim
+    # and styled) converge on it, so one line covers both. Offloaded like
+    # every other stat of assets_root. `target` is the file that was just
+    # written; the "unchanged" short-circuit above returns before this point,
+    # so a pass that wrote nothing never restamps.
+    render.size_bytes = await asyncio.to_thread(_asset_size, target)
     # Database clock, per the global constraint: the app and database clocks drift.
     render.rendered_at = func.now()
     await session.commit()
     return render
+
+
+def _asset_size(target: Path) -> int | None:
+    """``target``'s size in bytes, or ``None`` when it cannot be stat'ed.
+
+    A stat that fails costs the SIZE, never the render: the artifact is on
+    disk and uploaded, and a filesystem hiccup at this instant must not turn a
+    successful pass into a failed job. The row stays NULL and the scheduled
+    ``asset_stats`` pass (scheduler/jobs.py) picks it up on its next run --
+    which is the same path every row written before roadmap row 52 takes.
+
+    Synchronous and called from a thread, like every other touch of
+    ``assets_root`` here: it can be an NFS mount and a hung one must not stall
+    the event loop.
+    """
+    try:
+        return os.stat(target).st_size
+    except OSError:
+        return None
 
 
 def _publish(working: Path, target: Path, backup_root: Path | None, assets_root: Path) -> None:

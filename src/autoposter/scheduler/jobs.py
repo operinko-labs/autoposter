@@ -872,3 +872,99 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
         interval_seconds=lambda: holder.current.scheduler.cleanup_days * 24 * 3600,
         run=run,
     )
+
+
+def _stat_sizes(rows: list[tuple[int, str]]) -> tuple[list[tuple[int, int]], int]:
+    """``(render id, size)`` for every row, plus how many could not be stat'ed.
+
+    A row whose file cannot be stat'ed (missing, or any other ``OSError``) is
+    stamped ``0`` rather than left NULL: it occupies no storage, which is
+    exactly what the aggregate should report, and the render pipeline
+    restamps the real size the next time this artifact is published -- so
+    every run makes progress and the backfill converges instead of
+    re-selecting the same dead rows forever.
+
+    Synchronous and called from one ``asyncio.to_thread``: ``assets_root`` is
+    typically NFS, and stat-ing up to a batch of files is exactly the kind of
+    latency that must not sit on the event loop the worker pool and the Plex
+    liveness probe share.
+    """
+    sizes: list[tuple[int, int]] = []
+    unreadable = 0
+    for render_id, asset_path in rows:
+        try:
+            size = os.stat(asset_path).st_size
+        except OSError:
+            size = 0
+            unreadable += 1
+        sizes.append((render_id, size))
+    return sizes, unreadable
+
+
+def make_asset_stats_job(holder: ConfigHolder) -> Job:
+    """Fill in ``renders.size_bytes`` for rows that have none (roadmap row 52).
+
+    ``render/pipeline.py`` stamps the size of every artifact it publishes, so
+    the only rows this pass ever sees are the grandfathered ones -- everything
+    written before the column existed, every adopted row, and the occasional
+    row whose stat failed at publish time. Once the library is measured this
+    finds nothing and costs one indexed SELECT a week.
+
+    **Bounded and off the request path.** ``GET /api/stats/storage`` never
+    touches the filesystem (see ``api/stats.py``); this is the only thing in
+    row 52 that does, it takes at most ``scheduler.asset_stats_batch_size``
+    rows per run, and it reads both the batch size and its own cadence off the
+    holder so an edit reaches it on the next pass.
+
+    **No transaction across the walk.** The SELECT opens one; holding it while
+    stat-ing hundreds of files on an NFS mount pins a pooled connection and
+    the vacuum horizon for the whole walk, which is the defect
+    ``scheduler/prune.py`` and ``scheduler/merge.py`` both carry a
+    ``session.rollback()`` for. The rows come back as plain tuples, not ORM
+    instances, so nothing here is expired by that rollback.
+
+    Row 213: the summary is counts only -- never a path, a filename or a root.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        batch_size = holder.current.scheduler.asset_stats_batch_size
+        rows = [
+            (row.id, row.asset_path)
+            for row in (
+                await session.execute(
+                    select(Render.id, Render.asset_path)
+                    .where(
+                        # Kept in lockstep with api/stats.py's _COUNTED_STATUS:
+                        # this must measure exactly the population the
+                        # endpoint reports.
+                        Render.status == "rendered",
+                        Render.size_bytes.is_(None),
+                        Render.asset_path != "",
+                    )
+                    .order_by(Render.id)
+                    .limit(batch_size)
+                )
+            ).all()
+        ]
+        if not rows:
+            return "no render row is missing a size"
+
+        await session.rollback()
+
+        sizes, unreadable = await asyncio.to_thread(_stat_sizes, rows)
+        for render_id, size in sizes:
+            await session.execute(
+                update(Render).where(Render.id == render_id).values(size_bytes=size)
+            )
+        await session.commit()
+
+        summary = f"stamped {len(sizes)} render row(s) missing a size"
+        if unreadable:
+            summary += f"; {unreadable} unreadable asset(s) recorded as 0 bytes"
+        return summary
+
+    return Job(
+        name="asset_stats",
+        interval_seconds=lambda: holder.current.scheduler.asset_stats_days * 24 * 3600,
+        run=run,
+    )

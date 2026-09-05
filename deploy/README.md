@@ -221,8 +221,8 @@ variables:
 - `AUTOPOSTER_API_KEY` — optional; the MDBList key's posture for booting and
   the admin hash's for refusing: unset, every request that presents an
   `X-API-Key` is refused (`401`) and nothing is opened. The read-only key a
-  Homepage widget or a script presents on `GET /api/status` and
-  `GET /api/version`, and nowhere else; see "Read-only API key" under "Web UI
+  Homepage widget or a script presents on `GET /api/status`,
+  `GET /api/version`, `GET /api/stats/storage`, and nowhere else; see "Read-only
   authentication" below for the header rule, the recipe and rotation.
 
 ### The sidebar's update check
@@ -326,7 +326,7 @@ in again. Sessions are rows in the `sessions` table, not signed cookies, so
 expire.
 
 Everything under `/api` except `/api/login` requires a valid session — or,
-on exactly the two GET routes "Read-only API key" below names, the
+on exactly the three GET routes "Read-only API key" below names, the
 `X-API-Key` header instead. The routes outside `/api` are authenticated
 differently or deliberately open:
 `/healthz` and `/metrics` stay open so Kubernetes probes and Prometheus
@@ -349,12 +349,13 @@ adds is a way to read exactly two routes without logging in:
   table
 - `GET /api/version` — the running version and whether Harbor has a newer
   one
+- `GET /api/stats/storage` — how many artifacts this service has rendered per
+  library and art kind, and how many bytes they occupy
 
 Everything else — the config, the logs, items, artwork, every write — still
 answers a key with `401`, the same `401` it gives a request with no
 credential at all. There is no `403`: a key-holder learns nothing about
-which routes exist beyond the two above. The stats endpoints (roadmap row
-52) will join this list — `ALLOWLIST` in `api/auth.py` — when they ship.
+which routes exist beyond the three above.
 
 Set it as `AUTOPOSTER_API_KEY` in the same ExternalSecret as the other
 `AUTOPOSTER_*` secrets. It is **not** a config file setting, the same rule
@@ -419,6 +420,93 @@ the key never crosses the ingress.
 `jobs_by_state` always carries all seven states (`pending`, `running`,
 `deferred`, `done`, `failed`, `parked`, `dismissed`), so a mapping never
 points at a missing field.
+
+#### Storage stats (`GET /api/stats/storage`)
+
+Per-library, per-art-kind counts and byte totals for the artwork this service
+has rendered:
+
+```json
+{
+  "totals": {"items": 15794, "assets": 30112, "bytes": 41203998720, "unknown_size": 0},
+  "by_library": {
+    "Movies": {
+      "assets": 3904, "bytes": 9812345678, "unknown_size": 0,
+      "by_art_kind": {
+        "poster":        {"assets": 1952, "bytes": 4900000000, "unknown_size": 0},
+        "season_poster": {"assets": 0,    "bytes": 0,          "unknown_size": 0},
+        "background":    {"assets": 1952, "bytes": 4912345678, "unknown_size": 0},
+        "title_card":    {"assets": 0,    "bytes": 0,          "unknown_size": 0}
+      }
+    }
+  },
+  "generated_at": "2026-09-05T09:14:02.113847+00:00"
+}
+```
+
+Three rules worth knowing before you wire a dashboard to it:
+
+- **It is SQL, not a scan.** Every number comes from three queries over
+  `renders` joined to `media_items`. The endpoint never opens a directory and
+  never stats a file — `assets_root` is an NFS mount, and a widget polling
+  every sixty seconds must not be able to make a request wait on it.
+- **`unknown_size` is the honest half.** The byte count of an artifact is
+  recorded when it is rendered. Rows written before that column existed — on a
+  first deploy of this version, that is every row you already have, plus
+  everything the adoption run created — have no size yet, are counted in
+  `assets`, contribute nothing to `bytes`, and are counted in `unknown_size`.
+  They are filled in by the `asset_stats` scheduled pass (see "Periodic
+  scheduler"), `asset_stats_batch_size` rows a week by default, so
+  `unknown_size` reaches zero after about `ceil(assets / asset_stats_batch_size)`
+  weekly passes — around 7 passes for a 30k-asset library at the default of
+  5000. Raise `asset_stats_batch_size` to finish sooner. **A `bytes` total
+  read while `unknown_size` is non-zero is a floor, not a measurement.** A row
+  zeroed by a transient read error is corrected only when that artifact is
+  next re-rendered — a real write, not the pipeline's own "unchanged"
+  short-circuit, which returns before the size is ever touched, so a pass
+  that wrote nothing never restamps.
+- **Every art-kind key is always present**, zero-filled — a mapping never
+  points at a field that vanished because a library has no title cards.
+
+`assets` counts artifacts, whether or not the file is still readable on disk;
+`items` counts distinct library items: one show with a poster, a background
+and twelve title cards is one item and fourteen assets.
+
+#### Homepage `customapi` recipe: storage
+
+The same rules as the recipe above — the key rides the `headers:` block, never
+the URL — with Homepage's `bytes` format on the byte fields so `41203998720`
+renders as `38.4 GB`:
+
+```yaml
+- Autoposter storage:
+    icon: mdi-harddisk
+    widget:
+      type: customapi
+      url: http://autoposter.media.svc.cluster.local:8080/api/stats/storage
+      headers:
+        X-API-Key: "{{HOMEPAGE_VAR_AUTOPOSTER_API_KEY}}"
+      refreshInterval: 300000
+      mappings:
+        - field: totals.assets
+          label: Artifacts
+          format: number
+        - field: totals.bytes
+          label: On disk
+          format: bytes
+        - field: by_library.Movies.bytes
+          label: Movies
+          format: bytes
+        - field: by_library.TV Shows.bytes
+          label: TV
+          format: bytes
+```
+
+`by_library` is keyed by the library's own name, so a mapping names the
+library instead of guessing an array index — and a library renamed in Plex
+changes the key, which is the one thing to re-check after a rename. A five
+minute `refreshInterval` rather than the ten-second default: the numbers move
+when a render pass runs, not between polls.
 
 ## Metadata operations config
 
@@ -1126,6 +1214,24 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   the ones it cannot. **Whether it deletes is not a `scheduler` setting** —
   see `prune.apply` below, which defaults to `false` (dry run: report which
   rows would go).
+- `asset_stats_days` (default `7`) — cadence for the asset-size backfill: the
+  pass that fills in `renders.size_bytes` for rows that have none, which is
+  what `GET /api/stats/storage` reports as `unknown_size`. A render stamps its
+  own artifact's size, so this pass only ever catches up rows written before
+  that column existed (every row on a first deploy of this version, plus every
+  adopted row) and the occasional row whose file could not be read at publish
+  time. Once the library is measured it finds nothing and costs one indexed
+  query a week. It only reads: it stats the paths `renders` rows already name,
+  writes nothing to disk and moves nothing.
+- `asset_stats_batch_size` (default `5000`) — the safety valve on that pass. A
+  batch here is `os.stat` calls, not renders, so it costs seconds on an NFS
+  mount rather than the minutes a batch of full renders would — each run
+  measures at most this many rows and leaves the rest for the next one, so
+  `unknown_size` reaches zero after about `ceil(assets / asset_stats_batch_size)`
+  weekly passes rather than in one run. Raise it to finish sooner. A file that
+  cannot be read is stamped `0` bytes rather than left unmeasured, so the
+  batch does not re-select the same dead row on every future run — the pass
+  converges instead of stalling on the first artifact it cannot reach.
 - `merge_days` (default `7`) — cadence for the `media_items` twin merge: a
   pure-SQL scan for pairs of rows carrying one identity under two rating keys,
   reconciling each pair onto the surviving row. **Whether it merges is not a
