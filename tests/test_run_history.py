@@ -344,9 +344,13 @@ async def test_a_scheduled_run_is_never_closed_by_the_drain_watcher(session):
 async def test_an_older_still_draining_full_pass_blocks_a_younger_one_from_closing(
     session,
 ):
-    """I-1: `open_runs` is oldest-first and stops at the first row still
-    draining, so a younger row never closes ahead of an older one that is
-    still in flight -- they close together, on the same drain, which is what
+    """I-1: `open_runs` is oldest-first and the loop `break`s at the first row
+    still draining rather than `continue`ing past it, so a younger row with
+    nothing outstanding of its own does not close ahead of an older row that
+    is still in flight. Only the older row has an outstanding job here --
+    that is what makes `continue` and `break` diverge: the pre-fix `continue`
+    would skip the older row and let this younger one close on this very
+    tick. They close together instead, on the same drain, which is what
     `api/routes.py`'s docstring promises a second press does."""
     older_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
     older_job = Job(kind="process_item", payload={}, state="pending")
@@ -354,11 +358,9 @@ async def test_an_older_still_draining_full_pass_blocks_a_younger_one_from_closi
     await session.commit()
 
     younger_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
-    # The younger pass has its own job in flight too -- it is not, by itself,
-    # the zero-queue case covered below.
-    younger_job = Job(kind="process_item", payload={}, state="pending")
-    session.add(younger_job)
     await session.commit()
+    # No job created after younger's started_at -- only the older row has
+    # outstanding work.
 
     assert await close_drained_full_passes(session) == 0
     await session.commit()
@@ -368,7 +370,6 @@ async def test_an_older_still_draining_full_pass_blocks_a_younger_one_from_closi
     assert rows[younger_id].status == "running"
 
     older_job.state = "done"
-    younger_job.state = "done"
     await session.commit()
 
     assert await close_drained_full_passes(session) == 2

@@ -15,6 +15,7 @@ from autoposter.db.models import Run, ScheduledRun
 from autoposter.notify.dispatch import build_notifier
 from autoposter.scheduler.core import Job, Scheduler, claim_due
 from autoposter.scheduler.jobs import make_drift_job
+from autoposter.scheduler.run_history import FULL_PASS_NAME, open_run
 
 
 def _job(name="demo", interval=3600, run=None):
@@ -302,6 +303,31 @@ async def test_an_empty_job_list_is_harmless(session_factory):
     await asyncio.sleep(0.05)
     stop.set()
     await asyncio.wait_for(task, timeout=2)
+
+
+async def test_the_wired_run_loop_closes_a_drained_full_pass(session_factory):
+    """R2-M4: `close_drained_full_passes` was pinned only through the bare
+    helper (`tests/test_run_history.py`) -- nothing exercised it through
+    `Scheduler.run`'s own poll loop (`core.py:147`), the repository's own
+    recorded defect class where a helper's tests are green and the wired
+    path differs. A real `Scheduler` here, ticking over an open `full_pass`
+    row with no outstanding job, so the row it closes is the one the wired
+    loop found on its own."""
+    async with session_factory() as session:
+        run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+        await session.commit()
+
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [], poll_seconds=0.01)
+    task = asyncio.create_task(scheduler.run(stop))
+    await asyncio.sleep(0.1)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    async with session_factory() as session:
+        row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.status == "ok"
+    assert row.finished_at is not None
 
 
 class _RecordingNotifier:

@@ -43,8 +43,10 @@ _DETAIL_WIDTH = 2000
 # `stale_job_reclaim` is the one job `app.py` registers unconditionally
 # (app.py:366) rather than behind `scheduler.enabled` -- it runs every
 # STALE_RECLAIM_INTERVAL_SECONDS (five minutes) regardless of that switch,
-# while `trim_run_history` only ever runs from inside the cleanup pass, which
-# IS gated on `scheduler.enabled` (app.py:383). Recording stale_job_reclaim's
+# while `trim_run_history`'s only *unconditional* caller is the cleanup pass,
+# which IS gated on `scheduler.enabled` (app.py:383) -- the drain watcher's
+# own call, scoped to `kind="full_pass"`, would never bound a
+# stale_job_reclaim row anyway. Recording stale_job_reclaim's
 # passes would grow this table forever, untrimmed, in that first-class
 # supported configuration -- exactly what C6 exists to prevent. It is also
 # not an operator-visible pass: nothing serves its history the way the other
