@@ -47,9 +47,20 @@ from autoposter.collections.builders.base import (
     SmartContext,
     SourceClients,
 )
+from autoposter.collections.builders.plex_search import (
+    LibraryTagResolver,
+    PlexSearchUnavailable,
+)
 from autoposter.collections.enrichment import ensure_tags
 from autoposter.collections.filter_values import PlexItemView
-from autoposter.collections.filters import batched_attributes, evaluate, parse_filters
+from autoposter.collections.filters import (
+    FilterPredicate,
+    batched_attributes,
+    evaluate,
+    parse_filters,
+    tag_predicates,
+    without_values,
+)
 from autoposter.collections.lists import member_diff, reconcile_list_collection
 from autoposter.collections.reconcile import (
     LIBTYPES,
@@ -441,6 +452,16 @@ async def run_library(
             # the caller's per-library rollback rather than being swallowed here
             # as a dead source.
             #
+            # One more thing can escape, in principle: a builder's own internal
+            # params re-validation (``smart_url.search_url``'s
+            # ``SmartUrlParams.model_validate``, ``dynamic``'s own
+            # ``DynamicParams.model_validate``) raises ``pydantic.ValidationError``,
+            # which every builder's ``REFUSALS`` tuple deliberately excludes
+            # (``dynamic.py:220-222``). It cannot happen for a definition that
+            # already loaded and validated, so an escape here is a defect
+            # signal, not an operator refusal, and aborting the whole pass is
+            # the right failure mode for it.
+            #
             # Row 186: the tmdb_summary pull happens HERE, where ``summaries``
             # lives, through the same ``_summary_for`` every list definition
             # uses -- for every smart builder that refuses ``tmdb_summary`` at
@@ -755,11 +776,18 @@ async def _run_one(
         # nothing.
         tags = None
         needed: tuple[str, ...] = ()
+        # Parsed ONCE for this stage now (roadmap row 158 needs the tree too,
+        # and re-parsing for each consumer would compile the same regexes
+        # three times). ``_passing`` still parses for itself when this hands
+        # it nothing, so every other caller of that function is unchanged.
+        parsed = None
         try:
-            needed = batched_attributes(parse_filters(definition.filters))
+            parsed = parse_filters(definition.filters)
+            needed = batched_attributes(parsed)
         except Exception:
             # A filter that does not parse is _passing's own report; the
             # enrichment pre-step stays out of its way.
+            parsed = None
             needed = ()
         if needed:
             # ``ratingKey`` off a resolved item is reload-safe: it is never
@@ -797,8 +825,19 @@ async def _run_one(
                 )
             else:
                 tags = fetched
+        # Roadmap row 158, after the enrichment and before the evaluation. In
+        # that order deliberately: the enrichment's own refusal is a HARD
+        # failure (a definition whose batched read skipped items must not
+        # evaluate at all), and warning an operator about the spelling of a
+        # filter that is not going to run would be noise about a definition
+        # nothing is applying.
+        if not filter_failed and parsed is not None:
+            parsed, vocabulary_actions = _known_tag_values(
+                parsed, ctx, section, library, definition
+            )
+            outcome.actions += vocabulary_actions
         if not filter_failed:
-            kept = _passing(definition, items, library, tags=tags)
+            kept = _passing(definition, items, library, tags=tags, parsed=parsed)
             if kept is None:
                 outcome.failed = True
                 filter_failed = True
@@ -973,8 +1012,190 @@ async def _run_one(
     return outcome
 
 
+def _known_tag_values(parsed, ctx, section, library, definition):
+    """Roadmap row 158: the definition's tag values, against this library's own.
+
+    Returns ``(tree, actions)`` -- the parsed filter with every unknown value
+    pruned out, and the lines to report. Never raises: the check is ADVISORY,
+    and every outcome below leaves the membership either identical to what the
+    pre-158 evaluation would have produced or narrower.
+
+    **Why here and not in ``parse_filters``.** ``OverlayDefinition.condition``
+    shares that parser (``overlays/schema.py:76-83``) and the badge pass holds
+    one item, not a library -- there is no section and no
+    ``listFilterChoices`` to call. So the vocabulary lives at the one stage
+    that has a library in hand.
+
+    **Why here and not at config LOAD.** A definition with no ``libraries:``
+    key runs against EVERY library in the pass, so which vocabulary applies is
+    not known until now -- the same argument ``require_library_type`` makes.
+
+    **Why warn-and-drop rather than Kometa's refusal** (facts C2). Kometa
+    raises (``Plex Error: {attribute}: {value} not found``,
+    builder.py:4433-4437) and can afford to, because its own regional defaults
+    ENUMERATE the library's vocabulary rather than naming values
+    (``both_content_rating_uk.yml:20-22``). This catalog names them: 50 of the
+    106 shipped preset collections carry a ``filters:`` block and seven of the
+    eight presets involved are regional content-rating lists, switched on one
+    region at a time by design. A faithful refusal would turn all of them red
+    on the normal case. So this is Kometa's own ``validate: false``
+    degradation (:4437-4438) applied unconditionally -- and it is NOT an
+    operator-facing ``validate:`` knob, because row 90's cell records that 9c
+    refused exactly that error-downgrade class.
+
+    **Three outcomes, and the third is the one to read twice.**
+
+    1. the value resolves -- nothing happens, at the cost of one memoised
+       ``listFilterChoices`` per ``(library, libtype-scope, field)`` per PASS;
+    2. the value does not resolve -- one warning naming the attribute and the
+       value (Global Constraint 7: an operator's own written value is not a
+       third-party exception message and echoing it is the whole diagnostic),
+       and the value is dropped. A predicate that loses all of them becomes
+       ``filters.MATCHES_NOTHING``, warned once more;
+    3. the vocabulary cannot be READ -- Plex would not answer, or has no such
+       filter for this library. That is ``PlexSearchUnavailable``, the
+       resolver's own wrap, and it is MEMOISED there like a success. Nothing is
+       dropped and nothing is refused: the definition evaluates exactly as it
+       did before this row, which is a correct membership for every
+       correctly-spelled value. The alternative -- failing the definition --
+       would let one Plex hiccup take 50 preset collections down over a check
+       that changes no membership when it succeeds. Reported once per
+       attribute, and the resolver's message is already class-name-only.
+
+    A FOURTH outcome is caught separately, and deliberately does not share
+    outcome 3's wording. The resolver lets anything outside its five wrapped
+    plexapi classes propagate raw and un-memoised, so an exception reaching
+    that clause is a fault in THIS service rather than a fact about the
+    library. It is logged with its traceback and reported as "could not be
+    CHECKED", never as "Plex would not answer" -- same containment, no
+    misattribution.
+    """
+    written = tag_predicates(parsed)
+    if not written:
+        return parsed, []
+    libtype = ctx.library_type.lower()
+    resolve = LibraryTagResolver(ctx, section, libtype)
+    actions: list[str] = []
+    unknown: set[tuple[str, str]] = set()
+    unavailable: set[str] = set()
+    checkable: list[FilterPredicate] = []
+
+    for predicate in written:
+        row = predicate.attribute
+        # A row this libtype has no Plex search field for cannot be resolved at
+        # all -- ``LibraryTagResolver._field_and_scope`` calls ``field_for``,
+        # which raises rather than guessing. Skipped explicitly here so it
+        # never reaches the blanket ``except Exception`` below, which would
+        # otherwise fold it into a "could not be checked" action instead of
+        # the real bug it is (Task 2 review, Minor 5). No shipped row reaches
+        # this today: all seven evaluable tag rows are searchable on both
+        # libtypes, and the other seven refuse at config load.
+        if not row.searchable or libtype not in row.search_kinds:
+            continue
+        checkable.append(predicate)
+        for value in predicate.values:
+            pair = (row.name, str(value))
+            if row.name in unavailable or pair in unknown:
+                continue
+            try:
+                known = resolve.known(row.name, str(value))
+            except PlexSearchUnavailable as error:
+                # The resolver's OWN wrap, and the only failure it MEMOISES:
+                # ``NotFound``/``BadRequest`` ("Plex has no such filter for
+                # this library") and the blanket ``PlexApiException`` /
+                # ``RequestException`` / ``ParseError`` clause ("Plex would not
+                # answer at all") -- ``plex_search.py:455-500``. Both are
+                # already class-name-only inside it, so this message carries no
+                # Plex URL and is safe to log in full. Because the resolver
+                # memoises it, a second definition naming this attribute costs
+                # no second round trip either.
+                unavailable.add(row.name)
+                logger.warning(
+                    "%s: %r: could not read this library's %s vocabulary (%s), "
+                    "so its filter values were used as written",
+                    library, definition.title, row.name, error,
+                )
+                actions.append(
+                    "%r: this library's %s vocabulary could not be read, so the "
+                    "filter's values were used as written and not checked this "
+                    "pass" % (definition.title, row.name)
+                )
+                continue
+            except Exception:
+                # A DIFFERENT thing, and calling it the same would send an
+                # operator to look at Plex for a bug in this process. The
+                # resolver deliberately lets anything outside its five wrapped
+                # plexapi classes propagate raw and UN-memoised, so an
+                # exception reaching here is this service, not the library. The
+                # containment still holds -- one definition's check is skipped,
+                # never the pass -- but the traceback goes to the log and the
+                # action string says something else. Nothing derived from the
+                # exception reaches that string, which is the rule every other
+                # catch in this module keeps.
+                unavailable.add(row.name)
+                logger.exception(
+                    "%s: %r: checking the %s filter values raised",
+                    library, definition.title, row.name,
+                )
+                actions.append(
+                    "%r: the %s filter values could not be checked this pass, "
+                    "so they were used as written"
+                    % (definition.title, row.name)
+                )
+                continue
+            if known:
+                continue
+            unknown.add(pair)
+            logger.warning(
+                "%s: %r: %s: %r is not one of the %s values this library uses; "
+                "it was dropped from the filter",
+                library, definition.title, predicate.field, value, row.name,
+            )
+            actions.append(
+                "%r: %s: %r is not one of the %s values this library uses, so "
+                "it was dropped from the filter. Check the spelling against "
+                "the library's own list"
+                % (definition.title, predicate.field, value, row.name)
+            )
+
+    if not unknown:
+        return parsed, actions
+
+    # Deduped by (attribute, its written values) -- not by predicate identity
+    # -- so the same values named twice (``any: [{content_rating: X}, {content_
+    # rating: X}]``) get one line rather than two substantively identical ones
+    # differing only in which ``filters.any[i]`` wrote them (Task 2 review,
+    # Minor 1).
+    emptied: set[tuple[str, tuple[str, ...]]] = set()
+    for predicate in checkable:
+        name = predicate.attribute.name
+        key = (name, tuple(str(value) for value in predicate.values))
+        if key in emptied or not all((name, value) in unknown for value in key[1]):
+            continue
+        emptied.add(key)
+        logger.warning(
+            "%s: %r: every %s value in %s is unknown to this library",
+            library, definition.title, name, predicate.field,
+        )
+        actions.append(
+            "%r: every %s value in %s is unknown to this library, so it "
+            "matches nothing and no members were kept"
+            % (definition.title, name, predicate.field)
+        )
+
+    pruned = without_values(
+        parsed,
+        lambda predicate, value: (predicate.attribute.name, str(value)) in unknown,
+    )
+    return pruned, actions
+
+
 def _passing(
-    definition: CollectionDefinition, items: list, library: str, tags: dict | None = None
+    definition: CollectionDefinition,
+    items: list,
+    library: str,
+    tags: dict | None = None,
+    parsed=None,
 ) -> list | None:
     """The items this definition's ``filters:`` keeps, or None if it could not
     be evaluated at all.
@@ -1013,9 +1234,17 @@ def _passing(
     because the model is copied by expansion, and a compiled regex would not
     survive the copy; it is microseconds against a pass that has just walked
     the library.
+
+    ``parsed`` is the already-parsed, already-pruned tree when the engine has
+    one -- row 158's vocabulary stage builds it, and handing it here is what
+    makes a dropped value actually reach the evaluation. None means "parse it
+    yourself", which is what every caller outside ``_run_one`` does and what
+    ``_run_one`` itself falls back to when the filter did not parse (so the
+    report below is still this function's).
     """
     try:
-        parsed = parse_filters(definition.filters)
+        if parsed is None:
+            parsed = parse_filters(definition.filters)
         # One moment for the whole collection. ``evaluate`` would otherwise
         # read the clock per item, and a long pass would measure the first half
         # of a relative window (``added: 30``) against one instant and the

@@ -316,6 +316,14 @@ collections:
   #       # resolution, audience_rating, critic_rating, content_rating,
   #       # added, release, duration and studio; any other attribute
   #       # refuses when the config loads, naming it and why.
+  #       # Row 158: a TAG value (genre, label, collection, content_rating,
+  #       # resolution, audio_language, subtitle_language) is checked against
+  #       # the library's own list of that tag when the pass runs. A value
+  #       # this library does not use is reported and DROPPED, and the rest of
+  #       # the filter still applies -- so a typo says so instead of quietly
+  #       # building an empty collection, and a regional rating list stays
+  #       # usable on a library that only uses part of it. A filter whose
+  #       # values ALL drop matches nothing, and says that too.
   #       filters:
   #         year.gte: 2000
   #         content_rating: [PG-13, R]
@@ -379,6 +387,25 @@ collections:
   #         ids: ["54321"]
   #       libraries: [TV Shows]
   #       builder_level: episode
+  #     # A Plex-native smart collection from a query PLEX built (row 184).
+  #     # Build the search in Plex Web, copy the whole address bar, paste it
+  #     # here -- the query in it is extracted and stored as the collection's
+  #     # filter, and Plex evaluates the membership live from then on. It is a
+  #     # spelling of `smart_filter`, not a second grammar: the same paste and
+  #     # the equivalent `smart_filter` definition store an identical filter.
+  #     # A pasted URL carrying an X-Plex-Token is REFUSED at config load --
+  #     # remove the X-Plex-Token query parameter; the server's own token is
+  #     # used, so it is never needed here.
+  #     # Copy the `https://app.plex.tv/desktop/#!/server/...` form: a
+  #     # `.../web/index.html#!/...` address keeps its query in the URL
+  #     # fragment, where nothing can read it.
+  #     # `sort`, `limit`, `sync_mode`, `item_label` and `filters` are refused
+  #     # on a smart definition, by name, when the config loads -- Plex owns
+  #     # this membership, so there is nothing here to cap, sync or label.
+  #     - title: Pasted Horror
+  #       builder: smart_url
+  #       params:
+  #         url: "https://app.plex.tv/desktop/#!/server/abc123/com.plexapp.plugins.library?key=%2Flibrary%2Fsections%2F1%2Fall%3Ftype%3D1%26sort%3Drandom%26genre%3D1138"
   definitions: []
 
 playlists:
@@ -536,6 +563,8 @@ scheduler:
   drift_batch_size: 500 # items enqueued per sweep; the safety valve against enqueuing everything at once
   credits_scan_days: 7 # library credits scan cadence; whole-library per run, no batch valve
   maintenance_days: 7 # Plex maintenance pass cadence
+  asset_stats_days: 7 # asset-size backfill cadence; stats render rows with no recorded size
+  asset_stats_batch_size: 5000 # render rows stat'ed per sweep (os.stat calls, not renders); the valve against one long walk
   cleanup_days: 7 # orphaned asset cleanup cadence
   prune_days: 7 # media_items prune cadence
   merge_days: 7 # media_items twin merge cadence

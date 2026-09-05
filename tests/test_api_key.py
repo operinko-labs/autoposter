@@ -35,7 +35,7 @@ PASSWORD = "correct horse battery staple"
 FAKE_KEY = "test-api-key-0123456789abcdef"
 KEYED = {"X-API-Key": FAKE_KEY}
 REFUSED = {"detail": "not authenticated"}
-EXPECTED_ALLOWLIST = frozenset({"/api/status", "/api/version"})
+EXPECTED_ALLOWLIST = frozenset({"/api/stats/storage", "/api/status", "/api/version"})
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 
@@ -266,6 +266,10 @@ def test_the_secret_is_documented_in_both_places_an_operator_looks():
     assert "AUTOPOSTER_API_KEY" in readme
     assert "X-API-Key" in readme
     assert "customapi" in readme
+    # Two recipes carry this exact header line now -- row 51's own widget and
+    # row 52's storage-stats widget (deploy/README.md's second `customapi`
+    # recipe) -- both proving the same header-not-URL rule, never a query
+    # string.
     assert (
-        readme.count('X-API-Key: "{{HOMEPAGE_VAR_AUTOPOSTER_API_KEY}}"') == 1
+        readme.count('X-API-Key: "{{HOMEPAGE_VAR_AUTOPOSTER_API_KEY}}"') == 2
     )

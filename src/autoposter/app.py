@@ -49,6 +49,7 @@ from autoposter.render.pipeline import SourceRefused, fetch_plex_generated_base,
 from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import (
     make_arr_sync_job,
+    make_asset_stats_job,
     make_cleanup_job,
     make_collections_job,
     make_credits_job,
@@ -380,6 +381,11 @@ def create_app(
             scheduler_jobs.append(make_credits_job(holder, server_factory))
             scheduler_jobs.append(make_maintenance_job(holder, server_factory))
             scheduler_jobs.append(make_cleanup_job(holder))
+            # Roadmap row 52's backfill, beside the cleanup sweep because they
+            # are the two passes that read the asset tree. It needs nothing but
+            # the holder: no Plex, no HTTP, no provider clients -- it stats the
+            # paths renders rows already name.
+            scheduler_jobs.append(make_asset_stats_job(holder))
             # The prune sweep needs a PlexClient rather than a raw PlexServer:
             # "gone" here means "the pipeline cannot resolve it", which is
             # PlexClient's section-constrained search and its library

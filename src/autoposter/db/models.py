@@ -104,6 +104,15 @@ class Render(Base):
         String(24), default="pending", server_default="pending"
     )
     asset_path: Mapped[str] = mapped_column(Text)
+    # Bytes on disk for the artifact ``asset_path`` names (roadmap row 52).
+    # Stamped by render/pipeline.py the moment the file is published -- the
+    # one place in this tree that writes a renders asset -- and NULL until
+    # then. Nullable with no server_default on purpose: NULL means "never
+    # measured", which is exactly what ADD COLUMN gives every row that
+    # predates this column, and exactly what GET /api/stats/storage reports
+    # as `unknown_size`. A default of 0 would be a lie about every
+    # grandfathered row and would make the asset_stats backfill invisible.
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     # pending | rendered | truncated | no_art | failed | skipped
     #
     # `skipped` was missing from this list while render/pipeline.py wrote it

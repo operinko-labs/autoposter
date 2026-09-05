@@ -63,7 +63,9 @@ from autoposter.collections.builders.base import (
 )
 from autoposter.collections.filters import (
     BY_NAME,
+    LANGUAGE_FOLD_ATTRIBUTES,
     base_language_code,
+    language_fold_key,
     parse_filters,
     resolve_search_values,
 )
@@ -406,13 +408,50 @@ class LibraryTagResolver:
 
     def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]:
         scope, name = self._field_and_scope(attribute)
-        if attribute in ("audio_language", "subtitle_language"):
+        if attribute in LANGUAGE_FOLD_ATTRIBUTES:
             return self._language_keys(attribute, scope, name, value)
         choices = self._choices(attribute, scope, name)
         for spelling in (str(value), str(value).lower()):
             if spelling in choices:
                 return (choices[spelling],)
         return ()
+
+    def known(self, attribute: str, value: str, /) -> bool:
+        """Whether ``value`` is one this library's vocabulary recognises for
+        ``attribute`` -- row 158's question, and a DIFFERENT one from
+        ``__call__``'s "what Plex search term does this become".
+
+        For the two language attributes this folds BOTH the written value and
+        the library's own vocabulary to the base ISO 639-1 code
+        (``filters.language_fold_key``), the same reduction the evaluator
+        compares at (``filters._matches_one``), so a REGIONAL written value
+        (``pt-BR``) agrees with a library whose stream tag is only the base
+        code (``pt``) here exactly as it will at evaluation. ``__call__``
+        cannot answer that: its search semantics accept a regional value only
+        under its own exact spelling, which is right for building a Plex
+        query and wrong for asking "is this word known" (Task 2 review,
+        Important 1). Every other attribute keeps ``__call__``'s existing
+        match.
+        """
+        scope, name = self._field_and_scope(attribute)
+        if attribute in LANGUAGE_FOLD_ATTRIBUTES:
+            wanted = language_fold_key(value)
+            return any(
+                language_fold_key(choice.key) == wanted
+                for choice in self._raw_choices(attribute, scope, name)
+            )
+        # Compared with ``.casefold()`` against the raw choices, matching
+        # ``filters._matches_one``'s own comparison (``tag.casefold() ==
+        # want.casefold()``) exactly -- not ``__call__``'s ``.lower()``,
+        # whose search semantics stay untouched. The two differ only for a
+        # handful of characters (``ß``, final ``ς``), but row 158 promises
+        # membership never narrows against what the evaluator would actually
+        # match (M2).
+        wanted = str(value).casefold()
+        return any(
+            wanted in (str(choice.title).casefold(), str(choice.key).casefold())
+            for choice in self._raw_choices(attribute, scope, name)
+        )
 
     def choices(self, attribute: str, /) -> tuple[tuple[str, str], ...]:
         """Every ``(key, title)`` this library reports for ``attribute``.
