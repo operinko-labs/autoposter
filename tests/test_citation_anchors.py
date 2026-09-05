@@ -72,6 +72,8 @@ ROOT = Path(__file__).resolve().parent.parent
 ORACLE = ROOT / "tests" / "oracle" / "9b" / "kometa_build_filter.py"
 SURFACES = (
     ROOT / "src" / "autoposter" / "collections" / "filters.py",
+    ROOT / "src" / "autoposter" / "collections" / "search_sorts.py",
+    ROOT / "src" / "autoposter" / "collections" / "search_url.py",
     ROOT / "src" / "autoposter" / "collections" / "builders" / "plex_search.py",
     ROOT / "tests" / "test_collection_filters.py",
     ROOT / "tests" / "test_builder_plex_search.py",
@@ -103,6 +105,22 @@ SURFACES = (
 # file to SURFACES -- plus one brand-new citation, the FAMILY_E header's
 # added M-6 clause in filters.py noting Kometa's kind gate is keyed on
 # ``name.modifier`` (kometa_build_filter.py:914).
+#
+# Search-tail E-2 (roadmap rows 173/179) adds ``search_sorts.py`` and
+# ``search_url.py`` to SURFACES -- the same move the branch-review fix wave
+# made for ``test_collection_search_url.py`` above, for the same class of
+# reason: both files gained by-line citations into Kometa's builder.py/plex.py
+# with the season/episode matrices and the kind/search-type split. Measured
+# by re-running this guard rather than by hand (C9): the census does NOT move.
+# Every one of those new citations names ``builder.py`` or ``plex.py`` --
+# Kometa's ORIGINAL module names -- and never the vendored file's own name
+# (``kometa_build_filter.py``), so ``_oracle_refs``'s antecedent tracking
+# (above, "a tracker that only remembered the oracle's name would
+# mis-resolve...") sets a different antecedent for every one of them and
+# counts none. Widening SURFACES still matters -- a FUTURE citation in either
+# file spelled ``kometa_build_filter.py:<n>`` is now guarded rather than
+# invisible -- it is only THIS branch's own citations that happen to land
+# outside what gets counted.
 EXPECTED_REF_COUNT = 114
 
 _FILE_REF = re.compile(r"\b([\w./-]+\.(?:py|md|ts|tsx|yml|yaml)):(\d+)(?:-(\d+))?")

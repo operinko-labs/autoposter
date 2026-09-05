@@ -53,6 +53,11 @@ KOMETA_POST_8 = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collect
 URL_15 = "?type=1&sort=titleSort&genre!=1138&and=1&studio!%3D=A24&and=1&studio%3E=Pictures%20%26%20Co&and=1&label=3&and=1&collection=77&and=1&viewCount%3E%3E=3&and=1&viewCount%3C=10"
 KOMETA_POST_15 = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=1&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26genre%21%3D1138%26and%3D1%26studio%21%253D%3DA24%26and%3D1%26studio%253E%3DPictures%2520%2526%2520Co%26and%3D1%26label%3D3%26and%3D1%26collection%3D77%26and%3D1%26viewCount%253E%253E%3D3%26and%3D1%26viewCount%253C%3D10"
 
+# The digest ``smart_definition_hash`` produces for config 1's URI with no
+# summary, no settings and no config. Recorded at d2a332c, BEFORE search-tail
+# E-2 touched search_url.py, and unchanged by it.
+SHIPPED_ITEM_LEVEL_HASH = "a0b9ad71f00bbf4de576642440659bb0de5acbdb6baace2529313cc9e961d820"
+
 
 class FakeContainer:
     """What ``PlexServer.query`` hands back -- an ElementTree element. The
@@ -779,3 +784,18 @@ async def test_a_smart_collection_that_exists_at_another_level_is_refused(sessio
         "episode level -- delete it and let the next pass recreate it"
     ]
     assert await _row(session, "TV Shows", TITLE) is None
+
+
+def test_the_item_level_smart_hash_is_unmoved():
+    """Facts C8, the only leg of the storm guard search-tail E-2 could have
+    moved. ``smart_definition_hash`` hashes the BUILT URI, and every
+    item-level URI is byte-identical after the kind/search-type split -- so no
+    existing smart collection re-writes its filter on the first pass after this
+    ships. A definition that NEWLY sets ``builder_level`` gets a different URI
+    and a legitimately different hash, which is a definition the operator just
+    edited rather than a storm.
+
+    A literal rather than a recomputation: recomputing the sha256 here would be
+    a second implementation of the thing being pinned, and would agree with any
+    change to the payload."""
+    assert smart_definition_hash(URL, None) == SHIPPED_ITEM_LEVEL_HASH
