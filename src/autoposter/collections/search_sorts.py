@@ -38,7 +38,7 @@ The season and episode matrices (plex.py:668-715) arrived with search-tail
 E-2 (roadmap rows 173/179), which is the thing that can reach them: a
 ``builder_level: season``/``episode`` definition searches at that level, so
 ``SORT_TYPES`` now holds four rows and the ``type=`` byte is 1/2/3/4. The
-artist, album and track matrices (plex.py:715-778) are still deliberately
+artist, album and track matrices (plex.py:716-778) are still deliberately
 absent, on the argument that used to cover all five: v1 searches movie and
 show libraries, and a table nothing can reach is a table nobody checks.
 
@@ -150,7 +150,7 @@ SHOW_SORTS: Mapping[str, str] = MappingProxyType({
     "random": "random",
 })
 
-# modules/plex.py:668-690. Four directional pairs plus ``random`` = 9.
+# modules/plex.py:668-678. Four directional pairs plus ``random`` = 9.
 #
 # Unlike the two tables above, several values here carry ``%2C`` INSIDE
 # themselves: a season sort is a tie-break chain, not one field. That is why
@@ -170,7 +170,7 @@ SEASON_SORTS: Mapping[str, str] = MappingProxyType({
     "random": "random",
 })
 
-# modules/plex.py:691-714. Seventeen directional pairs plus ``random`` = 35.
+# modules/plex.py:679-715. Seventeen directional pairs plus ``random`` = 35.
 EPISODE_SORTS: Mapping[str, str] = MappingProxyType({
     "title.asc": "titleSort",
     "title.desc": "titleSort%3Adesc",
@@ -322,8 +322,15 @@ def require_sort_for_libtype(libtype: str, sort_by: Sequence[str]) -> None:
                 f"{libtype}` search needs {article} {libtype} sort. Options: "
                 + ", ".join(sorted(table))
             )
-        if others:
-            kinds = " or ".join(others)
+        # Library kinds only: ``others`` above is drawn from all four
+        # SORT_TYPES, but this branch's sentence is about LIBRARIES, and there
+        # is no such thing as a season or an episode library. Intersecting
+        # keeps "duration.asc" on a show library naming "movie" (which has the
+        # column and which `libraries:` can select) rather than "episode or
+        # movie" (which cannot).
+        library_others = [other for other in others if other in ("movie", "show")]
+        if library_others:
+            kinds = " or ".join(library_others)
             raise SortNotAvailable(
                 f"sort_by {name!r} is a {kinds} sort, but this pass is running "
                 f"against a {libtype} library, which has no such column. Narrow "

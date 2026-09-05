@@ -119,6 +119,20 @@ def test_a_movie_only_sort_refuses_on_a_show_library():
         require_sort_for_libtype("show", ["duration.asc"])
 
 
+def test_a_movie_show_refusal_names_library_kinds_only():
+    """Task 2 review I-1: ``others`` used to draw from all four ``SORT_TYPES``,
+    so ``duration.asc`` (a MOVIE and an EPISODE sort) refused on a show library
+    named "episode or movie" and told the operator to narrow `libraries:` onto
+    an episode library, which does not exist. The library branch only ever
+    names library kinds now."""
+    with pytest.raises(SortNotAvailable) as error:
+        require_sort_for_libtype("show", ["duration.asc"])
+    message = str(error.value)
+    assert "is a movie sort" in message
+    assert "episode" not in message
+    assert "only targets movie libraries" in message
+
+
 def test_a_sort_both_tables_carry_is_accepted_on_both():
     require_sort_for_libtype("movie", ["added.desc"])
     require_sort_for_libtype("show", ["added.desc"])
