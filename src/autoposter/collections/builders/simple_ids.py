@@ -62,12 +62,12 @@ class ImdbIdParams(_IdListParams):
     @field_validator("ids")
     @classmethod
     def _must_look_like_imdb_ids(cls, values: list[str]) -> list[str]:
-        for value in values:
+        for index, value in enumerate(values, start=1):
             if not _IMDB_ID.match(value):
                 raise ValueError(
-                    "that is not an IMDb id: IMDb ids look like 'tt0111161'. "
-                    "A bare number is a TMDb or TVDb id, which belongs to a "
-                    "builder for that namespace."
+                    f"entry {index} is not an IMDb id: IMDb ids look like "
+                    "'tt0111161'. A bare number is a TMDb or TVDb id, which "
+                    "belongs to a builder for that namespace."
                 )
         return values
 
@@ -76,12 +76,12 @@ class TmdbIdParams(_IdListParams):
     @field_validator("ids")
     @classmethod
     def _must_look_like_tmdb_ids(cls, values: list[str]) -> list[str]:
-        for value in values:
+        for index, value in enumerate(values, start=1):
             if not value.isdigit():
                 raise ValueError(
-                    "that is not a TMDb id: TMDb ids are numbers, like "
-                    "'438631'. An id starting 'tt' is an IMDb id -- use the "
-                    "imdb_id builder for those."
+                    f"entry {index} is not a TMDb id: TMDb ids are numbers, "
+                    "like '438631'. An id starting 'tt' is an IMDb id -- use "
+                    "the imdb_id builder for those."
                 )
         return values
 

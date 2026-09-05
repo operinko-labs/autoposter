@@ -287,6 +287,21 @@ async def test_an_imdb_id_under_a_tvdb_builder_is_refused(builder, library_type)
 
 
 @pytest.mark.parametrize("builder,library_type", [("tvdb_show", "Show"), ("tvdb_movie", "Movie")])
+async def test_a_tvdb_refusal_names_the_offending_entrys_position(builder, library_type):
+    """On a list of many, the message must point at *which* entry is wrong --
+    not repeat the bad value, which could be a pasted credential-bearing URL
+    (see test_collection_config's leaked-credential pin)."""
+    with pytest.raises(ValidationError) as error:
+        await REGISTRY[builder].build(
+            _ctx(SourceClients(), library_type=library_type, ids=["81189", "tt0903747"])
+        )
+
+    msg = error.value.errors()[0]["msg"]
+    assert "entry 2" in msg
+    assert "tt0903747" not in msg
+
+
+@pytest.mark.parametrize("builder,library_type", [("tvdb_show", "Show"), ("tvdb_movie", "Movie")])
 async def test_an_empty_id_list_is_refused(builder, library_type):
     with pytest.raises(ValidationError):
         await REGISTRY[builder].build(
