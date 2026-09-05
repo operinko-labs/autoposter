@@ -217,3 +217,70 @@ async def test_every_served_per_library_leaf_has_a_description(
             wildcard = f"libraries.{{}}.{section}.{name}"
             assert wildcard in descriptions, wildcard
             assert descriptions[wildcard].strip()
+
+
+async def test_the_export_import_envelope_carries_a_libraries_block(
+    client, auth_headers,
+):
+    """The envelope absorbs a new section by construction, and this says so.
+
+    ``OVERRIDES_EXPORT_FORMAT`` is bumped only when the shape of ``document``
+    changes in a way an older reader would misread; adding a config section
+    is not that, because the document is a delta whose shape is the config's
+    own. Exported, re-imported, and served back identical -- which is what a
+    backup taken before this row and restored after it has to do.
+    """
+    stored = {"libraries": {"Movies": {
+        "operations": {"write_to_plex": False},
+        "badges": {"enabled": False},
+        "maintenance": {"empty_trash": True},
+    }}}
+    assert (await _put(client, auth_headers, stored)).status_code == 200
+
+    exported = (
+        await client.get("/api/config/overrides/export", headers=auth_headers)
+    ).json()
+    assert exported["autoposter_overrides"] == 1
+    assert exported["document"] == stored
+
+    # Cleared, then restored from the file, with confirm because clearing
+    # three paths and then re-adding them goes through the same drop guard
+    # any other operator would meet.
+    assert (await _put(client, auth_headers, {}, confirm=True)).status_code == 200
+
+    imported = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={
+            "autoposter_overrides": exported["autoposter_overrides"],
+            "exported_at": exported["exported_at"],
+            "document": exported["document"],
+        },
+    )
+    assert imported.status_code == 200, imported.text
+
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert sorted(body["overridden_paths"]) == [
+        "libraries.Movies.badges.enabled",
+        "libraries.Movies.maintenance.empty_trash",
+        "libraries.Movies.operations.write_to_plex",
+    ]
+
+
+async def test_an_imported_block_naming_an_unknown_library_is_refused(
+    client, auth_headers,
+):
+    """An import is a SAVE and runs every guard a save runs -- including this
+    row's two refusals. A backup taken on a deployment whose libraries were
+    named differently must fail loudly rather than land as a block that
+    overrides nothing."""
+    response = await client.post(
+        "/api/config/overrides/import",
+        headers=auth_headers,
+        json={
+            "autoposter_overrides": 1,
+            "document": {"libraries": {"Elsewhere": {"badges": {"enabled": False}}}},
+        },
+    )
+    assert response.status_code == 422
+    assert "collections.libraries" in str(response.json()["detail"])

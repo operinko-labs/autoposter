@@ -157,6 +157,80 @@ Practical consequences:
     carries `@pytest.mark.imagemagick`; the compositor is stubbed
     throughout.
 
+### Per-library overrides
+
+A library can do some things differently from the rest of the server. The
+Settings page's **Per-library overrides** panel is a matrix: one row per
+setting, one column per library in `collections.libraries`, and every cell is
+either **inherit** — this library uses the global setting — or a value of its
+own. In the config file it looks like this:
+
+```yaml
+libraries:
+  TV Shows:
+    operations:
+      write_to_plex: false
+    badges:
+      upload_to_plex: false
+```
+
+Anything a library does not name is the global setting. A library that names
+nothing at all, or no library block at all, is exactly the behaviour this
+service had before the feature existed.
+
+**What can be overridden.** The metadata `operations` settings, the `badges`
+settings, and `maintenance.empty_trash`. Ten settings cannot be, and each is
+refused at load with the reason rather than being quietly ignored:
+
+| Setting | Why it is server-wide |
+|---|---|
+| `operations.imdb_refresh_enabled`, `.imdb_refresh_hours`, `.imdb_miss_refresh_minutes` | one IMDb refresh loop, started once when the process starts |
+| `operations.tmdb_backoff_seconds` | one TMDb rate budget, built once with the facts client |
+| `operations.metadata_backup_enabled`, `.metadata_backup_root` | the backup writes one file tree for the whole server |
+| `badges.definitions` | a list replaces wholesale, so a per-library list would drop every global definition; a definition names its own libraries instead |
+| `badges.definition_image_max_bytes` | a download safety bound, not a preference |
+| `maintenance.clean_bundles`, `maintenance.optimize` | Plex offers these on the server only; there is no per-library form to call |
+
+Artwork settings cannot be overridden per library either. That one is not a
+refusal you will meet — there is no `artwork` key under a library block at
+all — and the reason is worth knowing: the render version every stored
+fingerprint is compared against is a hash of the whole `artwork` section, so
+a per-library artwork setting would either re-render every library or never
+invalidate anything. It is filed as its own roadmap row.
+
+**How values combine.** Setting by setting, not section by section. A library
+that names `operations.write_to_plex` changes that one setting and inherits
+the other nineteen. A **list** replaces the global list rather than adding to
+it, so `ignore_labels: []` for one library means "no labels", not "the global
+ones" — this is the same rule the Settings editor's own overrides follow. A
+**mapping** — `genre_mapper`, `content_rating_mapper`, `field_verbs` — merges
+key by key, so a library can add one mapping without restating the rest.
+
+**A library name must be one of `collections.libraries`.** A name that is not
+is refused when the config loads, because this file holds library names and
+nothing that says whether a name is real — a typo and a rename look identical,
+and a block that silently overrode nothing would be worse than an error.
+
+**Clearing a setting removes it.** In the panel, choosing *inherit* deletes
+that setting from the library rather than writing today's global value into
+it. That distinction matters: a copy would freeze the library at today's
+value, and the next change to the deployed `autoposter.yaml` would silently
+stop reaching it. Clearing several settings at once is refused unless you
+confirm, exactly as any other destructive settings save is.
+
+**One thing to know about `maintenance.empty_trash`.** With no library
+overriding it, this service makes one server-wide "empty trash" call, which
+reaches every Plex section — including any this config does not name. As soon
+as ANY library overrides it, the sweep goes library by library over
+`collections.libraries` instead, and a Plex section outside that list is no
+longer swept. If you have a library Plex knows about and this config does
+not, add it to `collections.libraries` before you override this setting.
+
+**Nothing here re-renders artwork.** A per-library override changes how items
+in that library are written to Plex, badged and swept; it does not change what
+a poster, background or title card looks like, and the Settings page's impact
+preview correctly reports no re-renders for one.
+
 ## Secrets
 
 Secrets come from an ExternalSecret providing the `AUTOPOSTER_*` environment
