@@ -38,6 +38,9 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException
 
 from autoposter.api.auth import require_session
 from autoposter.api.candidates import (
@@ -59,6 +62,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 URL_SCHEMES = ("http://", "https://")
+
+# The served refusals for the upload route. Fixed sentences, every one of them:
+# a size, a part count, a content type or a file name in a response body is a
+# reflector, and these bodies are read out of a browser console and pasted into
+# tickets (row 213).
+UPLOAD_TOO_LARGE = "the upload exceeds the size cap"
+UPLOAD_MALFORMED = "the upload is not a usable multipart form"
+UPLOAD_NO_FILE = "the upload has no file part"
+UPLOAD_NO_LOGO = "a logo cannot be uploaded; give a URL or a mount path instead"
+
+# Room for the boundary lines, the part's own headers and the closing
+# delimiter, on top of the image itself. It bounds the READ; the exact cap is
+# still applied to the part's own bytes below, so this number never decides
+# whether an image is too large.
+UPLOAD_ENVELOPE_BYTES = 16 * 1024
+
+# Read size for copying the part out of Starlette's spool. The same order of
+# magnitude httpx streams a download in; nothing depends on the value.
+UPLOAD_CHUNK_BYTES = 64 * 1024
+
+
+class _UploadTooLarge(Exception):
+    """The request body passed its budget while it was still arriving."""
 
 
 class ManualSource(BaseModel):
@@ -203,6 +229,100 @@ def _logo_suffix(source: str) -> str:
         name = source
     suffix = Path(name).suffix.lower()
     return suffix if suffix in LOGO_OVERRIDE_SUFFIXES else ".png"
+
+
+def _budgeted_receive(receive, budget: int):
+    """``receive``, refusing to hand over more than ``budget`` bytes of body.
+
+    This wrapper is the difference between a cap and a promise. Starlette's
+    ``max_part_size`` bounds only the parts that have NO file name
+    (``formparsers.MultiPartParser.on_part_data``); a file part is spooled to a
+    ``SpooledTemporaryFile`` with no limit at all, and FastAPI's
+    ``UploadFile``/``File()`` declaration spools the WHOLE body before a handler
+    is ever entered. So a route that declared its body and checked the size
+    afterwards would answer 413 to a request that had already filled the disk.
+
+    Refusing inside ``receive`` stops the read at the wire instead: the parser
+    never sees another chunk, and the spooled part it had accumulated is bounded
+    by the budget and released as the exception unwinds.
+    """
+    remaining = budget
+
+    async def budgeted():
+        nonlocal remaining
+        message = await receive()
+        if message["type"] == "http.request":
+            remaining -= len(message.get("body", b""))
+            if remaining < 0:
+                raise _UploadTooLarge
+        return message
+
+    return budgeted
+
+
+async def _uploaded_source(request: Request, workspace: Path) -> Path:
+    """The one uploaded part, on local disk, under the same cap a URL gets.
+
+    Two ceilings, doing two jobs. The budget on ``receive`` bounds the READ, so
+    an endless body is dropped rather than spooled. The running total in the
+    copy loop is the exact cap -- ``PICK_MAX_BYTES``, the same number
+    ``net/guard.store_body`` enforces on a URL -- checked BEFORE each chunk is
+    written, so the staged file cannot hold more than the cap even for an
+    instant.
+
+    Nothing about the part except its bytes is read. Its ``Content-Type`` is a
+    client claim (``_prepare_jpeg``'s decode is the only content check) and its
+    file name is a browser's own string that this service has no use for: the
+    stored name comes from ``manual_override_target`` alone.
+    """
+    bounded = Request(
+        request.scope, _budgeted_receive(request.receive, PICK_MAX_BYTES + UPLOAD_ENVELOPE_BYTES)
+    )
+    try:
+        # max_files=1/max_fields=0: one part, named `file`, and nothing else.
+        form = await bounded.form(max_files=1, max_fields=0)
+    except _UploadTooLarge:
+        logger.warning("refused a manual upload: past the byte budget")
+        raise HTTPException(status_code=413, detail=UPLOAD_TOO_LARGE) from None
+    except MultiPartException as exc:
+        # The parser's own message names sizes and part counts; the class name
+        # is all that is written down and a fixed sentence is all that is served.
+        logger.warning("refused a manual upload: %s", type(exc).__name__)
+        raise HTTPException(status_code=422, detail=UPLOAD_MALFORMED) from None
+    except StarletteHTTPException as exc:
+        # Starlette's own Request._get_form catches MultiPartException itself
+        # and re-raises it as HTTPException(400, exc.message) whenever the
+        # request scope carries an "app" key -- true for every real request --
+        # so the MultiPartException branch above is unreachable in practice.
+        # Its message carries the same sizes and part counts and is withheld
+        # the same way. Caught by the STARLETTE base class rather than
+        # fastapi's: fastapi.HTTPException subclasses it, so the instance
+        # Starlette itself raises here is never caught by the subclass alone.
+        if exc.status_code == 400:
+            logger.warning("refused a manual upload: malformed multipart body")
+            raise HTTPException(status_code=422, detail=UPLOAD_MALFORMED) from None
+        raise
+
+    try:
+        part = form.get("file")
+        if not isinstance(part, UploadFile):
+            raise HTTPException(status_code=422, detail=UPLOAD_NO_FILE)
+        destination = workspace / "source"
+        size = 0
+        with destination.open("wb") as handle:
+            while chunk := await part.read(UPLOAD_CHUNK_BYTES):
+                size += len(chunk)
+                if size > PICK_MAX_BYTES:
+                    # Before the write, exactly as store_body does it: the file
+                    # on disk never holds more than the cap allows.
+                    logger.warning("refused a manual upload: past the size cap")
+                    raise HTTPException(status_code=413, detail=UPLOAD_TOO_LARGE)
+                handle.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=422, detail=UPLOAD_NO_FILE)
+    finally:
+        await form.close()
+    return destination
 
 
 async def _target_item(session_factory, item_id: int, art_kind: str) -> ResolvedItem:
@@ -473,3 +593,57 @@ async def install_collection_poster(
         await session.commit()
 
     return {"status": "installed", "applies": "next reconcile"}
+
+
+@router.post("/items/{item_id}/renders/{art_kind}/manual/upload")
+async def upload_manual_source(
+    item_id: int,
+    art_kind: str,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Make an image from the operator's own machine this item's base artwork.
+
+    The third form of ``install_manual_source``'s request and the same tail:
+    what the URL branch proves with ``net/guard`` and the path branch proves
+    with double-``realpath`` containment, this branch proves with a byte budget
+    and a decode. There is nothing to contain -- the bytes never had a path --
+    and nothing to guard against -- no request leaves this process.
+
+    Declared with no body parameter on purpose. ``UploadFile``/``File()`` would
+    put the whole body on disk before this function ran, which is the one thing
+    the cap exists to prevent; ``_uploaded_source`` reads the form itself under
+    a budget instead. That also keeps this route off the
+    ``RequestValidationError`` path entirely: every refusal below is a fixed
+    sentence written here.
+
+    Session-only, like every other write on this router, and deliberately NOT
+    in ``api/auth.ALLOWLIST``: an API key opens three GETs and nothing else, and
+    ``tests/test_api_key.py``'s sweep fails if that ever stops being true.
+
+    No logo: ``_logo_suffix`` derives a logo's stored name from the SOURCE's own
+    name, and an upload's name is a browser's string this endpoint is not
+    allowed to read or keep. A logo still installs from a URL or a mount path.
+
+    And never a Plex upload. This writes to ``manual_assets_root`` and stops,
+    exactly as the other two sources do -- an ``upload://`` entry cannot be
+    deleted through Plex's API (rows 241/242), so a browser-originated Plex
+    write would be unrecoverable.
+    """
+    resolved = await _target_item(request.app.state.session_factory, item_id, art_kind)
+    if art_kind == art.LOGO:
+        raise HTTPException(status_code=422, detail=UPLOAD_NO_LOGO)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        workspace = Path(tmpdir)
+        staged = await _uploaded_source(request, workspace)
+        return await _install_and_record(
+            request, item_id, art_kind, resolved, staged, workspace,
+            # Never reached: the logo branch is refused above. Named anyway so
+            # the helper's contract has no optional half.
+            logo_suffix=".png",
+            # The caller's file, so the caller's fault -- the same 422 a bad
+            # file on the mount earns, never the 502 a failing far end does.
+            unusable_status=422,
+            source_kind="upload",
+        )
