@@ -524,9 +524,9 @@ show_sorts = {
 }
 
 # --- modules/plex.py:779-787 --------------------------------------------------
-# REMOVED: the "season", "episode", "artist", "album" and "track" entries. Their
-# sort matrices (plex.py:668-778) are not transcribed -- v1 searches movie and
-# show libraries, and no config names another libtype.
+# REMOVED HERE: the "season", "episode", "artist", "album" and "track" entries.
+# "season" and "episode" are RESTORED in the appendix at the foot of this file
+# (search-tail E-2); artist/album/track stay absent -- no config names them.
 sort_types = {
     "movie": ("title.asc", 1, movie_sorts),
     "show": ("title.asc", 2, show_sorts),
@@ -838,7 +838,7 @@ def validate_attribute(attribute, modifier, final, data, plex_search=False, plex
 # ``smart_filter`` call site does -- ``default_sort="random"``
 # (modules/builder.py:1478) -- so it is restored here, defaulting to None
 # exactly as upstream does, which leaves all fifteen 9b goldens untouched.
-def build_filter(method, plex_filter, sort_type, default_sort=None):
+def build_filter(method, plex_filter, sort_type, default_sort=None, library_kind=None):
     if plex_filter is None:
         raise Failed(f"{TYPE} Error: {method} attribute is blank")
     if not isinstance(plex_filter, dict):
@@ -849,8 +849,8 @@ def build_filter(method, plex_filter, sort_type, default_sort=None):
     if "any" in filter_alias and "all" in filter_alias:
         raise Failed(f"{TYPE} Error: Cannot have more than one base")
 
-    is_movie = sort_type == "movie"
-    is_show = sort_type == "show"
+    is_movie = (library_kind or sort_type) == "movie"
+    is_show = (library_kind or sort_type) == "show"
 
     type_default_sort, type_key, sorts = sort_types[sort_type]
 
@@ -979,6 +979,69 @@ def build_filter(method, plex_filter, sort_type, default_sort=None):
     else:
         raise Failed(f"{TYPE} Error: No Plex Filter Created")
     return type_key, filter_url
+
+
+# --- modules/plex.py:668-715 (season_sorts, episode_sorts) --------------------
+# APPENDED HERE rather than beside ``sort_types`` at :526, and the reason is
+# mechanical: ten by-line citations into this file point at lines below :530,
+# so an insertion there moves every one of them onto a different construct
+# while still resolving -- the exact failure
+# ``tests/test_citation_anchors.py``'s own docstring exists to describe.
+# ``sort_types`` is read INSIDE ``build_filter`` at call time, so two entries
+# added after the function is defined are in the table by the time it runs.
+# Verbatim from v2.4.8; the values carry ``%2C`` inside themselves, which is
+# what the shipped movie/show tables do not.
+season_sorts = {
+    "season.asc": "season.index%2Cseason.titleSort",
+    "season.desc": "season.index%3Adesc%2Cseason.titleSort",
+    "show.asc": "show.titleSort%2Cindex",
+    "show.desc": "show.titleSort%3Adesc%2Cindex",
+    "user_rating.asc": "userRating",
+    "user_rating.desc": "userRating%3Adesc",
+    "added.asc": "addedAt",
+    "added.desc": "addedAt%3Adesc",
+    "random": "random",
+}
+episode_sorts = {
+    "title.asc": "titleSort",
+    "title.desc": "titleSort%3Adesc",
+    "show.asc": "show.titleSort%2Cseason.index%3AnullsLast%2Cepisode.index%3AnullsLast%2Cepisode.originallyAvailableAt%3AnullsLast%2Cepisode.titleSort%2Cepisode.id",
+    "show.desc": "show.titleSort%3Adesc%2Cseason.index%3AnullsLast%2Cepisode.index%3AnullsLast%2Cepisode.originallyAvailableAt%3AnullsLast%2Cepisode.titleSort%2Cepisode.id",
+    "year.asc": "year",
+    "year.desc": "year%3Adesc",
+    "originally_available.asc": "originallyAvailableAt",
+    "originally_available.desc": "originallyAvailableAt%3Adesc",
+    "episode_originally_available.asc": "episode.originallyAvailableAt",
+    "episode_originally_available.desc": "episode.originallyAvailableAt%3Adesc",
+    "release.asc": "originallyAvailableAt",
+    "release.desc": "originallyAvailableAt%3Adesc",
+    "episode_release.asc": "episode.originallyAvailableAt",
+    "episode_release.desc": "episode.originallyAvailableAt%3Adesc",
+    "critic_rating.asc": "rating",
+    "critic_rating.desc": "rating%3Adesc",
+    "audience_rating.asc": "audienceRating",
+    "audience_rating.desc": "audienceRating%3Adesc",
+    "user_rating.asc": "userRating",
+    "user_rating.desc": "userRating%3Adesc",
+    "duration.asc": "duration",
+    "duration.desc": "duration%3Adesc",
+    "progress.asc": "viewOffset",
+    "progress.desc": "viewOffset%3Adesc",
+    "plays.asc": "viewCount",
+    "plays.desc": "viewCount%3Adesc",
+    "added.asc": "addedAt",
+    "added.desc": "addedAt%3Adesc",
+    "viewed.asc": "lastViewedAt",
+    "viewed.desc": "lastViewedAt%3Adesc",
+    "resolution.asc": "mediaHeight",
+    "resolution.desc": "mediaHeight%3Adesc",
+    "bitrate.asc": "mediaBitrate",
+    "bitrate.desc": "mediaBitrate%3Adesc",
+    "random": "random",
+}
+# --- modules/plex.py:779-787, the two entries the note at :527 removed --------
+sort_types["season"] = ("season.asc", 3, season_sorts)
+sort_types["episode"] = ("title.asc", 4, episode_sorts)
 
 
 # --- the seventeen configs, in KOMETA'S spelling -----------------------------

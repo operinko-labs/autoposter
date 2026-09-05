@@ -497,3 +497,51 @@ def test_current_year_matches_kometas_own_transcribed_algorithm():
     assert evaluate(bare, {"year": moment.year - 1}, now=moment) is False
     assert evaluate(offset, {"year": moment.year - 5}, now=moment) is True
     assert evaluate(offset, {"year": moment.year}, now=moment) is False
+
+
+def test_the_driver_defaults_its_library_kind_to_its_sort_type():
+    """Search-tail E-2 (facts C4). The driver conflated two things Kometa keeps
+    apart: ``is_show = sort_type == "show"`` (kometa_build_filter.py:853) drove
+    ``show_translation`` and the kind gates, which Kometa derives from
+    ``self.library.is_show`` (modules/builder.py:4176-4181) and NOT from the
+    search level. Un-conflating them is a signature change to a vendored
+    transcription, so the first thing pinned is that it changed nothing: with
+    ``library_kind`` left at its default every one of the 22 configs produces
+    the byte it produced before.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kometa_oracle_driver", ORACLE_DRIVER)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+
+    for libtype, plex_filter in driver.CONFIGS:
+        _, defaulted = driver.build_filter("plex_search", plex_filter, libtype)
+        _, explicit = driver.build_filter(
+            "plex_search", plex_filter, libtype, library_kind=libtype
+        )
+        assert defaulted == explicit
+
+
+def test_the_driver_types_by_the_sort_type_and_scopes_by_the_library_kind():
+    """The half the default cannot prove. A ``type=4`` search on a SHOW library
+    must still render ``episode.title`` and ``show.unmatched`` -- Kometa applies
+    ``show_translation`` because ``self.library.is_show``, whatever the search
+    level is -- while the ``type=`` term comes from the level. A driver that
+    kept the conflation would answer this with a bare ``title``.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kometa_oracle_driver", ORACLE_DRIVER)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+
+    _, url = driver.build_filter(
+        "plex_search",
+        {"all": {"episode_title.begins": "Pilot", "show_unmatched": False}},
+        "episode",
+        library_kind="show",
+    )
+    assert url.startswith("?type=4&")
+    assert "episode.title%3C=Pilot" in url
+    assert "show.unmatched!=1" in url
