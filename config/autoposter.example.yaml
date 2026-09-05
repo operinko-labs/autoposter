@@ -658,6 +658,44 @@ artwork:
       add_stroke: false
       newline_on_symbols: []
       newline_words: {}
+    # Roadmap row 78 (Posterizarr's ShowTitleOnSeasonPosterPart). The SHOW's
+    # own name, drawn one line above the season text -- a season's own Plex
+    # title is "Season 2" or "Specials", so without this a season poster never
+    # says which show it belongs to. Off, as upstream ships it.
+    #
+    # `font` is ours: the upstream part carries no font key and inherits a
+    # global one. `text_offset` AND `gravity` below are IGNORED once the gate
+    # is on: the block is always drawn one fitted line of the SEASON text
+    # plus 10px above the SEASON block's own text_offset, at the SEASON
+    # block's own gravity (render/pipeline.py's stacked_above and its caller)
+    # -- that is what "stacked above the season text" means, and it is our
+    # adjudication, not a transcription: upstream gives this block the same
+    # +300/south as the season text and the two would overlap. Shipped at
+    # +120 here, deliberately DIFFERENT from the season block's +300, so a
+    # config that swapped which block's offset feeds the stacking rule would
+    # draw at a visibly different position instead of matching by
+    # coincidence. Both fields below become live again on the one path where
+    # there is no season text to stack above -- a blanked season for this
+    # show under artwork.title_card.season_name_overrides.
+    #
+    # Turning this on moves the season_poster art kind's render version, so
+    # every season poster re-renders once through the provider ladder. Posters,
+    # backgrounds and title cards are untouched. The editor's preview says
+    # exactly how many that is before you commit to it.
+    show_title:
+      font: Comfortaa-Medium.ttf
+      all_caps: true
+      font_color: white
+      min_point_size: 45
+      max_point_size: 300
+      max_width: 1900
+      max_height: 500
+      text_offset: "+120"
+      gravity: south
+      add_text: false
+      add_stroke: false
+      newline_on_symbols: []
+      newline_words: {}
 
   background:
     enabled: true

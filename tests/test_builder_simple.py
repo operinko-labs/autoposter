@@ -45,6 +45,18 @@ async def test_imdb_id_refuses_an_id_that_is_not_shaped_like_an_imdb_id():
         await REGISTRY["imdb_id"].build(_ctx(ids=["tt"]))
 
 
+async def test_imdb_id_refusal_names_the_offending_entrys_position():
+    """On a list of many, the message must point at *which* entry is wrong --
+    not repeat the bad value, which could be a pasted credential-bearing URL
+    (see test_collection_config's leaked-credential pin)."""
+    with pytest.raises(ValidationError) as error:
+        await REGISTRY["imdb_id"].build(_ctx(ids=["tt0111161", "438631"]))
+
+    msg = error.value.errors()[0]["msg"]
+    assert "entry 2" in msg
+    assert "438631" not in msg
+
+
 async def test_imdb_id_refuses_an_empty_list():
     """Raising, not returning empty -- empty is "make no changes" downstream."""
     with pytest.raises(ValidationError):
@@ -80,6 +92,15 @@ async def test_tmdb_movie_refuses_an_imdb_id():
 async def test_tmdb_movie_refuses_an_empty_list():
     with pytest.raises(ValidationError):
         await REGISTRY["tmdb_movie"].build(_ctx(ids=[]))
+
+
+async def test_tmdb_movie_refusal_names_the_offending_entrys_position():
+    with pytest.raises(ValidationError) as error:
+        await REGISTRY["tmdb_movie"].build(_ctx(ids=["438631", "tt0111161"]))
+
+    msg = error.value.errors()[0]["msg"]
+    assert "entry 2" in msg
+    assert "tt0111161" not in msg
 
 
 async def test_tmdb_show_returns_the_ids_in_order():

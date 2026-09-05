@@ -113,7 +113,7 @@ class MdblistListParams(BaseModel):
     def _must_be_a_list_reference(cls, value: str) -> str:
         if not _LIST_REFERENCE.match(value):
             raise ValueError(
-                f"{value!r} is not an MDBList list: write either the numeric list "
+                "that is not an MDBList list: write either the numeric list "
                 "id (list: 14) or the user and list name from its URL "
                 "(list: someone/their-list)"
             )

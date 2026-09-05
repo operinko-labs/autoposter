@@ -528,3 +528,113 @@ async def test_an_unrelated_edit_counts_no_collection_posters(session, config, v
     await _seed_collections(session, 3)
     after = variant({"workers": 9})
     assert await count_collection_posters(session, config, after) == 0
+
+
+async def test_the_impact_walk_reads_the_shows_title_through_the_parent_join(
+    session, config,
+):
+    """Roadmap row 78's impact obligation, and the reason it is a JOIN rather
+    than a third declared overcount.
+
+    This module's docstring already names two approximations -- the logo case
+    and ``use_original_title`` -- each "honest and one-directional … an
+    overcount, never an undercount". A third would say that every season_poster
+    row reports as affected whatever the edit is, permanently, for a whole art
+    kind. ``MediaItem.parent_id`` exists and ``render/pipeline.py`` populates
+    it, so the show's title is one outer join away and the preview stays exact.
+
+    Seeded with the fingerprint the REAL pipeline would have written for an
+    item carrying the show title, so a walk that fed ``None`` where the render
+    fed "A Show" reports this unchanged row as affected and this test goes red.
+    """
+    config.artwork.season_poster.show_title.add_text = True
+    show = MediaItem(
+        rating_key="rk-show", library="TV Shows", kind="show", title="A Show",
+        year=1999, tmdb_id=1399, root_folder="A Show (1999)",
+    )
+    session.add(show)
+    await session.flush()
+    season_item = ResolvedItem(
+        rating_key="rk-season", library="TV Shows", kind="season", title="Season 1",
+        year=1999, season_number=1, episode_number=None,
+        root_folder="A Show (1999)", file_path=None, art_url=None,
+        tmdb_id=1399, tvdb_id=None, imdb_id=None,
+        parent_rating_key="rk-show", show_title="A Show",
+    )
+    season = MediaItem(
+        rating_key="rk-season", library="TV Shows", kind="season", title="Season 1",
+        year=1999, tmdb_id=1399, season_number=1, root_folder="A Show (1999)",
+        parent_id=show.id,
+    )
+    session.add(season)
+    await session.flush()
+    base_sha = "b" * 64
+    session.add(
+        Render(
+            item_id=season.id, art_kind="season_poster",
+            asset_path="/assets/A Show/season_poster.jpg", status="rendered",
+            source_url="https://example/season_poster", base_sha256=base_sha,
+            fingerprint=await _stored_fingerprint(
+                config, season_item, "season_poster", base_sha
+            ),
+        )
+    )
+    await session.commit()
+
+    impact = await count_affected(session, config)
+
+    assert impact.affected == 0, (
+        "the walk fed a different show title than the render did -- the parent "
+        "join is missing or wrong"
+    )
+    assert impact.of_total == 1
+
+
+def test_show_title_for_row_is_the_parent_title_only_for_a_season():
+    """``MediaItem.parent_id`` means a different thing per kind: the SHOW for
+    a season, but the SEASON for an episode (``plex/client.py``). Harmless
+    today -- ``show_title_for`` reads this field only for ``season_poster``
+    rows, which are always seasons -- but the walk's whole contract is to say
+    digit for digit what the pipeline says, so an episode row must not get a
+    season's title mislabelled as the show's."""
+    from autoposter.config.impact import _show_title_for_row
+
+    assert _show_title_for_row("season", "A Show") == "A Show"
+    assert _show_title_for_row("episode", "Season 1") is None
+    assert _show_title_for_row("movie", "A Show") is None
+    assert _show_title_for_row("season", None) is None
+
+
+@pytest.mark.parametrize(
+    "art_kind,item",
+    [
+        (
+            "season_poster",
+            ResolvedItem(
+                rating_key="rk-season", library="TV Shows", kind="season",
+                title="Season 1", year=1999, season_number=1, episode_number=None,
+                root_folder="A Show (1999)", file_path=None, art_url=None,
+                tmdb_id=1399, tvdb_id=None, imdb_id=None,
+                parent_rating_key="rk-show", show_title="A Show",
+            ),
+        ),
+    ],
+)
+async def test_the_impact_inputs_match_the_pipelines_with_the_show_title_on(
+    config, art_kind, item,
+):
+    """The duplicated-computation pin, extended to the gate this row adds.
+
+    ``test_the_fingerprint_inputs_and_the_version_match_the_pipeline_s`` above
+    runs at the
+    shipped defaults, where the show-title block is off and both
+    implementations trivially agree. This runs the same comparison with the
+    block ON, which is the configuration in which the two can diverge: the
+    font gate is a THIRD place the two assemblies have to say the same thing.
+    """
+    from autoposter.config.impact import _fingerprint_inputs
+
+    config.artwork.season_poster.show_title.add_text = True
+    expected = await gather_fingerprint_inputs(config, item, art_kind)
+    assert await _fingerprint_inputs(config, item, art_kind, {}) == expected
+    assert "A Show" in expected[0], "the gate really was on for this comparison"

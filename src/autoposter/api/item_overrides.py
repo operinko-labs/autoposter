@@ -34,14 +34,16 @@ necessary are the substance of the module:
    only matches a URL scheme, and the commonest Plex failure -- a connection
    error -- has none, so it would serve the internal host and port verbatim.
 
-   **The residual, stated rather than papered over:** FastAPI validates the
-   body before this handler runs, and its own 422 echoes the submitted input.
-   The PUT therefore takes the body as a plain ``dict`` and type-checks
-   ``value`` itself, so ``{"value": 123}`` -- the realistic wrong shape -- is
-   refused here like any other bad value. A body that is not a JSON object at
-   all (``"a string"``, ``[1,2]``) is still refused by FastAPI's own echoing
-   422; no panel sends that shape and it carries no field value, but the claim
-   above is true of this handler and not of the framework in front of it.
+   **The residual, stated rather than papered over:** FastAPI validates a
+   declared body type before this handler runs, going through pydantic's own
+   error path to do it. The PUT therefore takes the body as a plain ``dict``
+   and type-checks ``value`` itself, so ``{"value": 123}`` -- the realistic
+   wrong shape -- is refused here like any other bad value, never touching
+   pydantic's error path at all; the app-level handler now also strips
+   ``input`` from that surface. A body that is not a JSON object at all
+   (``"a string"``, ``[1,2]``) is still refused by FastAPI's own 422; no
+   panel sends that shape and it carries no field value, but the claim above
+   is true of this handler and not of the framework in front of it.
 
 **The gate is a 409 on the writes and a flag on the read.** Off means the
 panel is READ-ONLY, not absent: an operator whose overrides silently stopped
@@ -147,11 +149,13 @@ async def put_metadata_override(
     request: Request,
     # A plain ``dict`` rather than ``value: str = Body(..., embed=True)``, and
     # the difference is the served-string law rather than a style choice:
-    # FastAPI validates a declared body type BEFORE this function runs, and
-    # its own 422 echoes the submitted input. Taking the object and checking
-    # ``value``'s type below keeps the realistic wrong shape -- a JSON number
-    # -- inside this handler's own class-name-only refusal. (A body that is
-    # not an object at all is still FastAPI's; see the module docstring.)
+    # FastAPI validates a declared body type BEFORE this function runs, going
+    # through pydantic's own error path to do it. Taking the object here
+    # keeps the body out of that error path -- the app-level handler now also
+    # strips ``input`` from that surface -- and checking ``value``'s type
+    # below keeps the realistic wrong shape -- a JSON number -- inside this
+    # handler's own class-name-only refusal. (A body that is not an object at
+    # all is still FastAPI's; see the module docstring.)
     payload: dict = Body(...),
     _: SessionModel = Depends(require_session),
 ) -> dict:

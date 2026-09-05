@@ -331,6 +331,26 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     assert season_render.base_sha256 == hashlib.sha256(b"season-poster").hexdigest()
 
 
+def test_the_adoption_walk_carries_the_shows_title_onto_each_season():
+    """The third producer. ``_resolve_section`` already holds the show (``top``)
+    and passes it into ``_resolved_season``, so this is a field to thread, not
+    a request to buy -- and it must agree with what ``PlexClient.resolve``
+    produces or an adopted fingerprint and the pipeline's would disagree the
+    first time the gate is turned on."""
+    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1)
+    season = FakeSeason("20", "Season 1", season_number=1, episodes=[episode])
+    show = FakeShow("10", "Breaking Bad", "/tv/Breaking Bad (2008)", seasons=[season])
+    section = FakeSection("TV Shows", ["/tv"], [show])
+
+    resolved = walk._resolve_section(section)
+    by_kind = {r.kind: r for r in resolved}
+
+    assert by_kind["season"].title == "Season 1"
+    assert by_kind["season"].show_title == "Breaking Bad"
+    assert by_kind["show"].show_title is None
+    assert by_kind["episode"].show_title is None
+
+
 # --- every plexapi attribute is read inside the worker thread ----------------
 
 

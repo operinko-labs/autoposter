@@ -184,4 +184,11 @@ ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml
 ARG GIT_SHA=""
 ENV AUTOPOSTER_VERSION=sha-${GIT_SHA}
 EXPOSE 8080
-CMD ["sh", "-c", "alembic upgrade head && python -m autoposter.main"]
+# `exec` so python replaces sh as PID 1, rather than relying on ash's
+# tail-call optimisation (which already replaces sh here in practice, verified
+# by `docker top` showing the same PID move from the `sh -c` line to
+# `python -m autoposter.main` the moment alembic exits) to make python the
+# process that receives the kubelet's SIGTERM. Defensive, not a fix: without
+# it, whether SIGTERM reaches python at all depends on shell-implementation
+# behaviour this Dockerfile does not otherwise depend on.
+CMD ["sh", "-c", "alembic upgrade head && exec python -m autoposter.main"]

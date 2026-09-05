@@ -699,6 +699,35 @@ async def test_a_preview_rejects_an_invalid_document_the_same_way(client, auth_h
     assert [e["path"] for e in response.json()["detail"]] == ["wrokers"]
 
 
+async def test_a_preview_refuses_a_credential_bearing_param_without_echoing_it(
+    client, auth_headers
+):
+    """The builder-params refusal through a real served surface. `_validated_generation`
+    is shared by save, preview and apply, so pinning it here pins all three --
+    and the served `detail[…]["message"]` is the composed `msg`, which is the
+    string the validator's own sentence lands in."""
+    response = await client.post(
+        "/api/config/preview", headers=auth_headers,
+        json={"document": {"collections": {"definitions": [
+            {
+                "title": "Leaky",
+                "builder": "mdblist_list",
+                "params": {"list": "https://mdblist.com/lists/a/b?apikey=SECRET"},
+            },
+        ]}}},
+    )
+
+    assert response.status_code == 422
+    assert "SECRET" not in response.text, "the preview handed the pasted key back"
+    detail = response.json()["detail"]
+    # The definition's own `model_validator` raises at the model's location, one
+    # level below the freezing guard's hardcoded "collections.definitions" (see
+    # `test_the_preview_refuses_the_same_document_the_save_does`) -- this error
+    # comes from the list item itself, so its `loc` carries the index.
+    assert detail[0]["path"] == "collections.definitions.0"
+    assert "not an MDBList list" in detail[0]["message"]
+
+
 async def test_a_preview_of_api_docs_enabled_reports_it_as_inert_not_restart_required(
     client, auth_headers
 ):
@@ -1413,6 +1442,61 @@ async def test_the_preview_refuses_the_unwrapped_body_the_same_way(
         "/api/config/preview", headers=auth_headers, json=THE_INCIDENT_DOCUMENT
     )
     assert response.status_code == 422
+
+
+# --- the request-body 422 does not echo the body back (C1) ------------------
+#
+# FastAPI's default handler returns `jsonable_encoder(exc.errors())`, and
+# pydantic puts the rejected `input` in every entry -- for the `missing` arm
+# that input is the WHOLE body, so one refused paste hands back every
+# credential-capable field the operator had in the document. `GET /api/config`
+# reduces `notifications.url` to its host; this 422 used to hand the same class
+# of value back in full. The handler in `app.py` keeps `type`/`loc`/`msg` (what
+# `fieldErrors` renders) and drops the rest.
+
+A_TOKEN_BEARING_DOCUMENT = {
+    "plex": {"url": "http://plex.lan:32400/?X-Plex-Token=SEKRIT"},
+    "scheduler": {},
+}
+
+
+async def test_an_unwrapped_body_is_refused_without_echoing_the_document(
+    client, auth_headers
+):
+    """The incident's own body shape, carrying a token. The refusal must still
+    name the missing field and the extras -- that is what the editor renders --
+    without repeating one character of the document."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json=A_TOKEN_BEARING_DOCUMENT
+    )
+
+    assert response.status_code == 422
+    assert "SEKRIT" not in response.text, "the 422 handed the operator's token back"
+    detail = response.json()["detail"]
+    locs = [entry["loc"] for entry in detail]
+    assert ["body", "document"] in locs, response.text
+    assert ["body", "plex"] in locs, response.text
+    assert all(entry["msg"] for entry in detail)
+    assert all("input" not in entry for entry in detail)
+    assert all("url" not in entry for entry in detail)
+
+
+async def test_a_string_document_is_refused_without_echoing_the_paste(
+    client, auth_headers
+):
+    """The second repro: `document` sent as pasted YAML rather than an object.
+    One entry, whose `input` was the whole paste."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": "plex:\n  url: http://plex.lan:32400/?X-Plex-Token=SEKRIT\n"},
+    )
+
+    assert response.status_code == 422
+    assert "SEKRIT" not in response.text
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["body", "document"]
+    assert "valid dictionary" in detail[0]["msg"]
+    assert "input" not in detail[0]
 
 
 async def test_emptying_a_non_empty_store_needs_confirm(

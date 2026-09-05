@@ -212,6 +212,22 @@ def _parse_bare(value: str) -> ParsedSource:
             "first segment carries a ':' or an '@'), and it is not repeated "
             "back in case it carries credentials -- supported: " + SUPPORTED
         )
+    if "?" in value or "#" in value:
+        # The same defect class as the guard above, one character away from
+        # being covered by it. A bare id and an MDBList ``<user>/<slug>`` have no
+        # query and no fragment -- ``_SEGMENT``, ``_LIST_ID``, ``_USER_ID`` and
+        # ``_INTEGER`` admit neither character -- so nothing valid is refused
+        # here, and every URL shape that legitimately carries one
+        # (``imdb.com/list/ls1?ref_=hm``) is resolved by the ``_HOSTS`` table
+        # and never reaches this function. What DID reach it was
+        # ``abc/def?apikey=SECRET``, whose head is dotless and carries no ':'
+        # or '@', so it passed the guard above and went to
+        # ``MdblistListParams``, whose error string used to interpolate it.
+        raise SourceUrlRefused(
+            "that carries a query string or a fragment ('?' or '#'), which no "
+            "bare id or MDBList reference does, and it is not repeated back in "
+            "case it carries credentials -- supported: " + SUPPORTED
+        )
     if "/" in value and "." not in head:
         # user/slug, MDBList's own two-part reference. A dotted first segment
         # reads as a host this parser does not know, not as a user name.

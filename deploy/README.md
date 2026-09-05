@@ -119,6 +119,43 @@ Practical consequences:
   and `artwork.output_quality` are members of every kind's payload by
   construction. The editor's preview says exactly how many renders that is,
   and which kinds, before you commit to it.
+  - Roadmap row 78 added `artwork.season_poster.show_title`. Adding the key
+    moved the `season_poster` art kind's render version once, so every season
+    poster re-rendered once through the provider ladder on the deploy that
+    landed it — with the block still off, and off is how it ships. Posters,
+    backgrounds and title cards were untouched. `config.version` (the
+    wholesale hash the Settings page shows as "version A to B") also moved.
+    Since row 111 that value is not a component of any per-kind fingerprint,
+    so nothing re-composites because of it — but it IS what row 111's dual
+    read computes a pre-111 row's legacy candidate from, so any artifact that
+    had not yet migrated off its pre-111 fingerprint took the grandfather's
+    `unchanged` arm on its next pass: the per-kind fingerprint was re-stamped
+    and nothing else happened. No composite, no provider request, no upload,
+    once per row. Adoption is not a mitigation for any of it — the adoption
+    walk refuses to clobber a real fingerprint, so a re-adopt after the move
+    re-fingerprints nothing.
+  - Turning the gate on stacks the show's title one fitted line of the
+    season text plus a 10px gutter above it, at the season block's own
+    gravity: the offset is ADDED under a south* gravity (case-insensitive —
+    `South`/`SOUTHEAST` both count) and clears the season block's FITTED
+    point size, not its configured maximum — the show-title block's own
+    `text_offset` AND `gravity` are IGNORED once the gate is on; the
+    stacking rule owns the position AND the anchor, so the show title is
+    always drawn at the season block's own gravity regardless of what the
+    show-title block itself is set to. The shipped example deliberately
+    ships `show_title.text_offset: "+120"` against the season block's
+    `"+300"` (Posterizarr gives both the same `"+300"`, which would overlap)
+    so the wiring is exercised by two different numbers rather than one that
+    happens to agree. Both ignored fields are live again on the one path
+    where there is no season text to stack above — a blanked season for that
+    show under `artwork.title_card.season_name_overrides`. **Limitation:**
+    the clearance is one fitted point size, not the season block's rendered
+    height, so a season title that wraps to two lines is only cleared past
+    its bottom line. For an episode, the impact preview's show title is
+    always `None` — episodes carry `title_card` rows only, and
+    `season_poster` rows are always seasons. No test for this feature
+    carries `@pytest.mark.imagemagick`; the compositor is stubbed
+    throughout.
 
 ## Secrets
 
@@ -181,6 +218,12 @@ variables:
 
   Unset, only the definitions that read the account report themselves failed;
   the rest of the pass is unaffected.
+- `AUTOPOSTER_API_KEY` — optional; the MDBList key's posture for booting and
+  the admin hash's for refusing: unset, every request that presents an
+  `X-API-Key` is refused (`401`) and nothing is opened. The read-only key a
+  Homepage widget or a script presents on `GET /api/status` and
+  `GET /api/version`, and nowhere else; see "Read-only API key" under "Web UI
+  authentication" below for the header rule, the recipe and rotation.
 
 ### The sidebar's update check
 
@@ -282,8 +325,10 @@ in again. Sessions are rows in the `sessions` table, not signed cookies, so
 `POST /api/logout` can revoke one immediately rather than waiting for it to
 expire.
 
-Everything under `/api` except `/api/login` requires a valid session. The
-routes outside `/api` are authenticated differently or deliberately open:
+Everything under `/api` except `/api/login` requires a valid session — or,
+on exactly the two GET routes "Read-only API key" below names, the
+`X-API-Key` header instead. The routes outside `/api` are authenticated
+differently or deliberately open:
 `/healthz` and `/metrics` stay open so Kubernetes probes and Prometheus
 scraping keep working without credentials; `/webhook/radarr` and
 `/webhook/sonarr` are authenticated by the `X-Autoposter-Token` header, not
@@ -291,6 +336,89 @@ a session (see "Radarr / Sonarr webhooks" below); and the SPA's static
 pages are public by design — they are just the login page and the built
 bundle, and every piece of data they show comes through the
 session-protected `/api` routes.
+
+### Read-only API key (Homepage widgets, scripts)
+
+A second credential, for callers that have no browser session: a
+[gethomepage](https://gethomepage.dev) `customapi` widget, a script. It is
+**additive** — every `/api` route except `/api/login` has required a
+session since the Web UI shipped, and the key loosens none of that. What it
+adds is a way to read exactly two routes without logging in:
+
+- `GET /api/status` — queue counts by state, worker count, the scheduled-job
+  table
+- `GET /api/version` — the running version and whether Harbor has a newer
+  one
+
+Everything else — the config, the logs, items, artwork, every write — still
+answers a key with `401`, the same `401` it gives a request with no
+credential at all. There is no `403`: a key-holder learns nothing about
+which routes exist beyond the two above. The stats endpoints (roadmap row
+52) will join this list — `ALLOWLIST` in `api/auth.py` — when they ship.
+
+Set it as `AUTOPOSTER_API_KEY` in the same ExternalSecret as the other
+`AUTOPOSTER_*` secrets. It is **not** a config file setting, the same rule
+every other credential in this project follows: never read from or written
+to the YAML, never served (`GET /api/config` redacts it like every other
+secret), never logged. Generate one with:
+
+```
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+`token_urlsafe` produces plain ASCII, which matters: Starlette decodes
+headers as latin-1, so a non-ASCII key could never match.
+
+Present it as the `X-API-Key` **header**. The query string is never
+consulted: `?api_key=` is not rejected, it is simply not read, so it can
+never succeed — and therefore never lands in an ingress access log or a
+browser history the way a query-string key would.
+
+**Unset means the key path is off and closed, not open.** With no
+`AUTOPOSTER_API_KEY`, every keyed request is refused with the same `401`,
+the same posture as the admin password hash above. There is no rate limiter
+on the key check and none is needed: the login limiter exists to bound
+bcrypt CPU, and a constant-time compare of forty-odd bytes has no such
+cost.
+
+**Rotation** is a secret change and a restart: `Secrets` is read once at
+boot. Set the new value, roll the pod, update the widget's copy.
+
+#### Homepage `customapi` recipe
+
+The key goes in the widget's `headers:` block, never in the `url`. Homepage
+substitutes `{{HOMEPAGE_VAR_*}}` from its own environment, so the value
+lives in Homepage's Secret and not in `services.yaml`; and Homepage's server
+makes the request, not the browser, so in-cluster by service name works and
+the key never crosses the ingress.
+
+```yaml
+- Autoposter:
+    icon: mdi-image-multiple
+    widget:
+      type: customapi
+      url: http://autoposter.media.svc.cluster.local:8080/api/status
+      headers:
+        X-API-Key: "{{HOMEPAGE_VAR_AUTOPOSTER_API_KEY}}"
+      refreshInterval: 60000
+      mappings:
+        - field: jobs_by_state.pending
+          label: Queued
+          format: number
+        - field: jobs_by_state.running
+          label: Running
+          format: number
+        - field: jobs_by_state.failed
+          label: Failed
+          format: number
+        - field: processed_last_24h
+          label: Done (24h)
+          format: number
+```
+
+`jobs_by_state` always carries all seven states (`pending`, `running`,
+`deferred`, `done`, `failed`, `parked`, `dismissed`), so a mapping never
+points at a missing field.
 
 ## Metadata operations config
 

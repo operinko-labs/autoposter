@@ -53,7 +53,7 @@ import os
 import httpx
 from fastapi import APIRouter, Depends, Request
 
-from autoposter.api.auth import require_session
+from autoposter.api.auth import ApiKeyPrincipal, api_key_or_session
 from autoposter.db.models import Session as SessionModel
 
 logger = logging.getLogger(__name__)
@@ -220,7 +220,7 @@ def _running_version() -> str:
 
 @router.get("/version")
 async def get_version(
-    request: Request, _: SessionModel = Depends(require_session)
+    request: Request, _: SessionModel | ApiKeyPrincipal = Depends(api_key_or_session)
 ) -> dict:
     """``{version, update_available, latest}`` for the sidebar's version line.
 
