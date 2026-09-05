@@ -1529,13 +1529,22 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     # (kometa_build_filter.py:94-128, transcribing plex.py:61-95), so
     # ``show_translation`` never sees it and the two field columns are equal;
     # show-only in both kind columns: nineteen because every name is in
-    # ``show_only_searches`` (:293-351, plex.py:446-506), and
-    # ``episode_actor`` by THIS TABLE'S OWN JUDGEMENT -- a DECLARED
+    # ``show_only_searches`` (kometa_build_filter.py:302-360, plex.py:446-506),
+    # and ``episode_actor`` by THIS TABLE'S OWN JUDGEMENT -- a DECLARED
     # DIVERGENCE, argued on its row note: Kometa lists it in neither the
     # show-only nor the movie-only list and would render it on a movie
     # library too. ``search-only`` because Kometa has no FILTER of any of
     # these names -- the ``episode_*`` family is the largest block of row
     # 96's 29 search-only names.
+    #
+    # Kometa's kind gate tests the full ``name.modifier`` --
+    # ``is_movie and final_attr in show_only_searches``
+    # (kometa_build_filter.py:914) -- not the bare name, so the ``.regex``
+    # spellings of the five tag rows above are show-only here by the same
+    # judgement as ``episode_actor``: ``show_only_searches`` lists only the
+    # bare and ``.not`` forms, so Kometa would accept e.g.
+    # ``season_collection.regex`` on a movie library, while this table
+    # refuses it.
     #
     # WHAT LEVEL THEY SEARCH AT, because the roadmap cell overstated it.
     # Under a show collection Kometa's ``sort_type`` is ``builder_level``

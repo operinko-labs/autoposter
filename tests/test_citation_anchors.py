@@ -75,6 +75,7 @@ SURFACES = (
     ROOT / "src" / "autoposter" / "collections" / "builders" / "plex_search.py",
     ROOT / "tests" / "test_collection_filters.py",
     ROOT / "tests" / "test_builder_plex_search.py",
+    ROOT / "tests" / "test_collection_search_url.py",
 )
 # 21 filename-anchored + 9 bare continuations. The whole inventory is 38
 # counting the roadmap's 8, which sit outside this guard's scope (see the
@@ -93,7 +94,16 @@ SURFACES = (
 # list, the type category, the operator set), plus the ``SEARCH_OPERATORS_EXCLUDED``
 # entry for ``episode_plays`` and the three new tests appended to
 # ``test_collection_filters.py``.
-EXPECTED_REF_COUNT = 102
+#
+# The 12 added past 102 are the branch-review fix wave (I-1, F1-F3): eleven
+# previously-stale, previously-unguarded citations corrected by +9 and
+# rewritten file-anchored -- filters.py:1532; the FAMILY_E header in
+# test_collection_filters.py (nine refs across four lines); and
+# test_collection_search_url.py:400, brought under the guard by adding that
+# file to SURFACES -- plus one brand-new citation, the FAMILY_E header's
+# added M-6 clause in filters.py noting Kometa's kind gate is keyed on
+# ``name.modifier`` (kometa_build_filter.py:914).
+EXPECTED_REF_COUNT = 114
 
 _FILE_REF = re.compile(r"\b([\w./-]+\.(?:py|md|ts|tsx|yml|yaml)):(\d+)(?:-(\d+))?")
 _BARE_REF = re.compile(r"(?<![\w:]):(\d+)(?:-(\d+))?")

@@ -525,7 +525,7 @@ class LibraryTagResolver:
         # scope. A bare name has no dot, so ``rpartition`` yields an empty
         # scope and the ``or self._libtype`` below does the de-scoping --
         # the same line Kometa's ``get_tags`` uses (``_libtype or
-        # self.Plex.TYPE``, plex.py:1352).
+        # self.Plex.TYPE``, plex.py:1353).
         field = ENUMERATES_AS.get(field, field)
         scope, _, name = field.rpartition(".")
         return scope or self._libtype, name
