@@ -411,8 +411,10 @@ collections:
   #     # library refuses each name and says so. These select SHOWS -- a show
   #     # having an episode that matches -- exactly as Kometa renders them
   #     # under a show collection (`type=2&...&episode.title<=Pilot`).
-  #     # Collecting the matching episodes THEMSELVES is the `builder_level`
-  #     # selector on a smart/search definition, not shipped yet (E-2).
+  #     # Collecting the matching episodes THEMSELVES is `builder_level:`
+  #     # (`season` or `episode`) on the definition: the search becomes a
+  #     # type=3/type=4 query and the members are seasons or episodes. Show
+  #     # libraries only; pick a sort from that level, or omit `sort_by`.
   #     # The twenty: season_collection, season_label, episode_collection,
   #     # episode_label, episode_title, episode_actor, episode_added,
   #     # episode_air_date, episode_last_played, episode_plays (ranges only),
