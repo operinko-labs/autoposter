@@ -35,7 +35,9 @@ PASSWORD = "correct horse battery staple"
 FAKE_KEY = "test-api-key-0123456789abcdef"
 KEYED = {"X-API-Key": FAKE_KEY}
 REFUSED = {"detail": "not authenticated"}
-EXPECTED_ALLOWLIST = frozenset({"/api/stats/storage", "/api/status", "/api/version"})
+EXPECTED_ALLOWLIST = frozenset(
+    {"/api/stats/runs", "/api/stats/storage", "/api/status", "/api/version"}
+)
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 
