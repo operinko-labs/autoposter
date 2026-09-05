@@ -587,4 +587,14 @@ async def test_a_library_that_disables_the_gate_refuses_its_items(
         headers=auth_headers, json={"value": "A Los Angeles crime saga"},
     )
     assert refused.status_code == 409
-    assert "item_overrides_enabled" in refused.json()["detail"]
+    detail = refused.json()["detail"]
+    assert "item_overrides_enabled" in detail
+    # Task 3 review, Important 2: a library-off item gets its OWN sentence --
+    # naming no library and no value -- rather than the global gate's, which
+    # would read as false here (the global key is still `true`).
+    assert detail == (
+        "operations.item_overrides_enabled is off for this item's library; "
+        "existing overrides are left in place and ignored, and nothing can "
+        "be changed until it is on"
+    )
+    assert "is off;" not in detail

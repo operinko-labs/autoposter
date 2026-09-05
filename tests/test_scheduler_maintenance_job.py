@@ -263,3 +263,26 @@ async def test_a_library_that_wants_nothing_costs_no_section_request(session):
     assert server.library.calls == ["section:TV Shows"]
     assert server.library.sections_asked == ["TV Shows"]
     assert summary == "ran empty_trash"
+
+
+async def test_a_same_value_library_override_still_narrows_the_sweep(session):
+    """Task 3 review, Important 1: the switch is on PRESENCE, not on value
+    difference. ``Movies`` states ``empty_trash: true``, which is the SAME
+    value the global already has, and ``TV Shows`` states nothing and
+    inherits that same ``true``. The old, buggy switch (``value !=
+    config.maintenance.empty_trash``) sees no difference anywhere and falls
+    back to the ONE server-wide call -- which would also reach any Plex
+    section outside ``collections.libraries``. Because a library has an
+    opinion at all, the sweep must go section by section instead, even
+    though every resolved value here happens to agree with the global.
+    """
+    server = RecordingServer()
+    job = make_maintenance_job(
+        _holder_with_libraries(
+            {"Movies": {"maintenance": {"empty_trash": True}}}, empty_trash=True,
+        ),
+        lambda: server,
+    )
+    await job.run(session)
+    assert server.library.calls == ["section:Movies", "section:TV Shows"]
+    assert server.library.sections_asked == ["Movies", "TV Shows"]

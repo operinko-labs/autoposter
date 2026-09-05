@@ -95,14 +95,29 @@ def _enabled(request: Request, library: str | None = None) -> bool:
 
 
 def _require_enabled(request: Request, library: str | None = None) -> None:
+    """Raise the 409 for whichever gate refused: global or this library's own.
+
+    Roadmap row 213's Important 2: the two gates say different things
+    because they ARE different things. The global sentence names the one key
+    every deployment reads on the Settings page. The library-scoped sentence
+    (no library name, no value -- just the fact of a per-library override)
+    tells the operator the refusal came from their ``libraries:`` block
+    instead, so a global ``true`` next to a library ``false`` does not read
+    as a lie.
+    """
     if not _enabled(request, library):
-        raise HTTPException(
-            status_code=409,
-            detail=(
+        if library is None:
+            detail = (
                 f"{_GATE} is off; existing overrides are left in place and "
                 "ignored, and nothing can be changed until it is on"
-            ),
-        )
+            )
+        else:
+            detail = (
+                f"{_GATE} is off for this item's library; existing "
+                "overrides are left in place and ignored, and nothing can "
+                "be changed until it is on"
+            )
+        raise HTTPException(status_code=409, detail=detail)
 
 
 async def _load_item(session, item_id: int) -> MediaItem:

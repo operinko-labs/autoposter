@@ -475,9 +475,13 @@ def make_maintenance_job(holder: ConfigHolder, server_factory: Callable[[], obje
         }
         # None means "one server-wide call", which is what every deployment
         # that never opened the matrix gets -- and it still reaches sections
-        # this config does not name.
+        # this config does not name. The switch is on PRESENCE, not on value
+        # difference: a library that states the global's own value has still
+        # asked to be judged on its own, and the sweep narrows for it too.
         scoped = any(
-            value != config.maintenance.empty_trash for value in per_library.values()
+            override.maintenance is not None
+            and override.maintenance.empty_trash is not None
+            for override in config.libraries.values()
         )
         if scoped:
             trash: list[str] | None = [name for name in libraries if per_library[name]]
