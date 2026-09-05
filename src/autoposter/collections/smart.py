@@ -284,8 +284,10 @@ def _level_conflict(collection, title: str, want_level: str) -> str | None:
 
     Returns ``None`` only when the collection's own subtype agrees with what
     the definition wants now, and the fixed refusal sentence otherwise --
-    naming the collection's title and the level tokens, and nothing derived
-    from Plex.
+    naming the collection's title, the level tokens, and one token this
+    service reads off Plex: ``subtype`` itself, the same closed vocabulary
+    ``COLLECTION_TYPES`` uses, exactly as its sibling ``shape_conflict`` names
+    the collection's own ``smart`` flag.
     """
     have = getattr(collection, "subtype", None)
     if have is None:

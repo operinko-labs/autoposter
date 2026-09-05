@@ -728,7 +728,7 @@ async def _run_one(
             % (definition.title, level, ctx.library_type)
         )
         return outcome
-    # Belt-and-braces on the EFFECTIVE level, not the declared one. The three
+    # Belt-and-braces on the EFFECTIVE level, not the declared one. The two
     # schema validators above (`_arr_overrides_need_a_list_builder_at_item_level`,
     # `_builder_level_needs_a_builder_that_reads_it`) run at config load and can only
     # ever see `definition.builder_level` -- so a builder that self-declares a
@@ -738,7 +738,7 @@ async def _run_one(
     # episode's TVDB id and a series' TVDB id share one integer namespace, so a
     # numeric collision there is a live write to the wrong series. Since
     # search-tail E-2 `plex_search` sets `result.level` from the definition's
-    # own `builder_level`, so this is now a reachable refusal and not only a
+    # own `builder_level`, this is now a reachable refusal and not only a
     # standing one.
     if level != "item" and (
         definition.radarr_restrict

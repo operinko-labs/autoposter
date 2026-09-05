@@ -7,7 +7,7 @@ runs, and produces a full, plausible, wrong collection. Every other test in
 this phase asserts the transcription against itself -- against a string
 hand-derived from the same source, by the same reading, in the same sitting.
 
-This file asserts it against Kometa. Twenty-two configs, and twenty-two URI
+This file asserts it against Kometa. Twenty-four configs, and twenty-four URI
 strings produced by **Kometa's own build_filter** -- fetched, transcribed
 standalone, run, and pinned below as data. Ours must reproduce them byte for
 byte.

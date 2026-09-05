@@ -43,11 +43,13 @@ def test_every_name_but_random_is_a_directional_pair():
             # or duplicated hand-copy -- ``"year.asc": "year%3Adesc"`` -- passes
             # every other test in this file, which is precisely this table's
             # threat model. Scoped to movie/show on purpose: it does NOT hold
-            # for the deferred matrices (plex.py:668-778). Their multi-term
-            # values put ``%3Adesc`` on an INNER term and leave the rest of the
-            # tie-break chain alone -- ``episode_sorts["show.desc"]`` is
+            # for the season/episode matrices (plex.py:668-778), which have
+            # since shipped. Their multi-term values put ``%3Adesc`` on an
+            # INNER term and leave the rest of the tie-break chain alone --
+            # ``episode_sorts["show.desc"]`` is
             # ``show.titleSort%3Adesc%2Cseason.index%3AnullsLast%2C...``, six
-            # terms, one of which changed. Task 6 must not extend this line.
+            # terms, one of which changed. This assertion must not extend to
+            # those two tables.
             assert table[f"{stem}.desc"] == table[f"{stem}.asc"] + "%3Adesc", stem
 
 

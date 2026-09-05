@@ -100,7 +100,9 @@ class FakeServer:
 class FakeCollection:
     """Mirrors plexapi's lazy ``labels``/``fields``: empty until ``reload()``."""
 
-    def __init__(self, title, labels=(), rating_key="12345", smart=True, summary=None, subtype="movie"):
+    def __init__(
+        self, title, labels=(), rating_key="12345", smart=True, summary=None, subtype="movie",
+    ):
         self.title = title
         self.ratingKey = rating_key
         self.smart = smart
@@ -764,6 +766,25 @@ async def test_an_episode_level_smart_create_posts_type_four(session):
     )
     assert "type=4" in section._server.queries[0][0]
     assert section._server.queries[0][1] == "POST"
+
+
+async def test_an_agreeing_episode_level_smart_collection_proceeds_to_the_update(session):
+    """Branch review I-1: the agreeing branch of ``_level_conflict`` at a
+    non-item level, pinned through the real entry point. An existing
+    EPISODE-level smart collection under a definition that still asks for
+    episode level must not be caught by the refusal below -- ``have ==
+    want_level`` returns ``None`` and the pass proceeds to the PUT, the same
+    as the item-level case ``test_the_update_put_is_byte_identical_to_the_
+    oracles`` already pins one level over. Without this test, a mutation that
+    refuses whenever ``level != "item"`` leaves the suite green."""
+    existing = FakeCollection(TITLE, labels=[LABEL], smart=True, subtype="episode")
+    section = FakeSection(matches=7, existing=[existing])
+    actions = await reconcile_smart_collection(
+        session, section, "TV Shows", "Show", TITLE, URL, LABEL,
+        dry_run=False, level="episode",
+    )
+    assert section._server.queries[0][1] == "PUT"
+    assert any("updated" in action for action in actions)
 
 
 async def test_a_smart_collection_that_exists_at_another_level_is_refused(session):

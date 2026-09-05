@@ -1258,7 +1258,12 @@ type.
     collection is left exactly as it is, and the pass reports the refusal by
     name. If you want the new level, delete the collection in Plex yourself
     and let the next pass recreate it there — this service will not delete
-    it for you.
+    it for you. The same refusal, worded the same way, also covers a smart
+    collection that was never this service's own to begin with — one another
+    tool created at a different level, such as an episode-level collection
+    Kometa built and this service would otherwise adopt — and one whose level
+    Plex does not report at all; both are left untouched, with no adoption
+    and no write.
 
   `type:` — Kometa's own spelling of this selector — is still refused by
   name, and the refusal says why: Kometa reads `type:` for playlists only,
