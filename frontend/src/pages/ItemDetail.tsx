@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ProviderAttribution } from "../ProviderAttribution";
@@ -601,6 +601,16 @@ function CandidatePanel({
  * body can be lost to a connection reset. */
 const PICK_MAX_BYTES = 50 * 1024 * 1024;
 
+/** The note shown once a manual source lands, worded identically for every
+ * source (URL, mount path, upload) since all three run the same
+ * install-and-enqueue tail server-side -- a single function so the two
+ * outcomes cannot drift apart between the install and upload branches. */
+function installedNote(queued: boolean): string {
+  return queued
+    ? "Installed. The image was written to the mount and a re-render was queued."
+    : "Installed. The image was written to the mount; a re-render was already pending, so nothing new was added.";
+}
+
 /** Installs an operator-supplied image as this art kind's base artwork.
  *
  * The manual-mode counterpart to CandidatePanel: rather than picking one of a
@@ -627,6 +637,9 @@ function ManualSourcePanel({
    * different requests to two different endpoints, and a panel that shared
    * one control would have to guess which the operator meant. */
   const [file, setFile] = useState<File | null>(null);
+  /** Cleared alongside `file` on a successful upload, so the browser's own
+   * picker chrome does not keep showing an already-installed file name. */
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   async function install() {
     setInstalling(true);
@@ -648,11 +661,7 @@ function ManualSourcePanel({
       // and its fingerprints were nulled server-side, so the Renders table and
       // the Clear override control are stale until the item is read again.
       await onInstalled();
-      setNote(
-        response.queued
-          ? "Installed. The image was written to the mount and a re-render was queued."
-          : "Installed. The image was written to the mount; a re-render was already pending, so nothing new was added.",
-      );
+      setNote(installedNote(response.queued));
     } catch (caught) {
       // Verbatim: the guard's refusals carry a reason with no URL in them, a
       // 422 names a bad mount path, and a 502 says the URL would not serve an
@@ -680,8 +689,11 @@ function ManualSourcePanel({
       const body = new FormData();
       // `file` is the part name the endpoint reads; anything else is a 422
       // there. The browser writes the multipart header and its boundary --
-      // apiFetch deliberately sets no Content-Type for a FormData body.
-      body.append("file", file);
+      // apiFetch deliberately sets no Content-Type for a FormData body. The
+      // fixed third argument overrides the part's filename, so the browser's
+      // own file name never leaves the client -- the server never reads it,
+      // but this way it is never sent either.
+      body.append("file", file, "upload");
       const response = await apiFetch<ManualInstallResponse>(
         `/api/items/${itemId}/renders/${artKind}/manual/upload`,
         { method: "POST", body },
@@ -689,11 +701,15 @@ function ManualSourcePanel({
       // Re-read for the same reason the URL install does: the row's provider
       // has just become "manual" and its fingerprints were nulled server-side.
       await onInstalled();
-      setNote(
-        response.queued
-          ? "Installed. The image was written to the mount and a re-render was queued."
-          : "Installed. The image was written to the mount; a re-render was already pending, so nothing new was added.",
-      );
+      setNote(installedNote(response.queued));
+      // Reset so a second click cannot silently re-post the same file: both
+      // the state and the input's own DOM value, which React does not clear
+      // for us and which re-picking the identical file would not re-fire a
+      // change event to clear either.
+      setFile(null);
+      if (fileInputRef.current !== null) {
+        fileInputRef.current.value = "";
+      }
     } catch (caught) {
       // Verbatim, like the URL install's failures: every refusal this endpoint
       // serves is a fixed sentence with nothing of the request in it.
@@ -708,8 +724,14 @@ function ManualSourcePanel({
       <h3 className="candidate-heading">{artKind} — use a file or URL</h3>
       <p className="manual-help muted">
         Paste an <span className="mono">https://…</span> URL, or a path under{" "}
-        <span className="mono">/manualassets</span> — or choose a file from this
-        computer.
+        <span className="mono">/manualassets</span>
+        {
+          // Gated on the same condition as the picker below it: a logo's
+          // stored name is derived from the source's own name, which an
+          // upload does not supply, so the endpoint refuses one and this
+          // panel must not tell the operator otherwise.
+          artKind === "logo" ? "." : " — or choose a file from this computer."
+        }
       </p>
       <div className="manual-controls">
         <input
@@ -736,6 +758,7 @@ function ManualSourcePanel({
           <input
             type="file"
             className="manual-file"
+            ref={fileInputRef}
             accept="image/png,image/jpeg,image/webp"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />

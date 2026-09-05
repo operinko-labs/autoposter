@@ -1545,7 +1545,12 @@ describe("ItemDetail candidate picker", () => {
     // The row's provider flips to "manual" and its fingerprints are nulled
     // server-side, so the item is re-read before the outcome is reported.
     expect(detailCalls).toBe(2);
-    expect(manualPanel().querySelector(".candidate-note")!.textContent).toContain("queued");
+    // Pinned exactly, not just toContain("queued"): the URL and upload
+    // branches share one `installedNote` helper, and this is half of the
+    // proof that they cannot drift apart.
+    expect(manualPanel().querySelector(".candidate-note")!.textContent).toBe(
+      "Installed. The image was written to the mount and a re-render was queued.",
+    );
   });
 
   it("shows a refused manual source inline, without claiming it was installed", async () => {
@@ -1667,7 +1672,13 @@ describe("ItemDetail candidate picker", () => {
     // there and must be a red test here.
     const body = post![1]!.body as FormData;
     expect(body).toBeInstanceOf(FormData);
-    expect(body.get("file")).toBe(file);
+    // Not `toBe(file)`: the fixed third argument to `append` wraps the blob in
+    // a new File named "upload", so the browser's own file name never leaves
+    // the client. Content and type still travel unchanged.
+    const uploaded = body.get("file") as File;
+    expect(uploaded.name).toBe("upload");
+    expect(uploaded.size).toBe(file.size);
+    expect(uploaded.type).toBe(file.type);
     // No header of our own: the browser writes multipart/form-data with the
     // boundary it chose.
     expect((post![1]!.headers as Headers).has("Content-Type")).toBe(false);
@@ -1675,7 +1686,15 @@ describe("ItemDetail candidate picker", () => {
     // The row's fingerprints were nulled server-side, so the item is re-read
     // before the outcome is reported -- the same contract the URL install has.
     expect(detailCalls).toBe(2);
-    expect(manualPanel().querySelector(".candidate-note")!.textContent).toContain("queued");
+    // Pinned exactly, matching the URL install's own assertion above -- both
+    // branches share one `installedNote` helper.
+    expect(manualPanel().querySelector(".candidate-note")!.textContent).toBe(
+      "Installed. The image was written to the mount and a re-render was queued.",
+    );
+    // Reset after success: a second click cannot silently re-post the same
+    // file, and re-picking it would not even fire a change event to notice.
+    expect(filePicker().value).toBe("");
+    expect(within(manualPanel()).getByRole("button", { name: "Upload" })).toBeDisabled();
   });
 
   it("shows a refused upload inline, without claiming it was installed", async () => {
@@ -1742,5 +1761,12 @@ describe("ItemDetail candidate picker", () => {
     // would be offering a 422.
     expect(manualPanel().querySelector("input[type=file]")).toBeNull();
     expect(within(manualPanel()).getByRole("textbox")).toBeInTheDocument();
+    // The help copy must not advertise a control this panel never renders --
+    // an operator who reads "choose a file from this computer" here and
+    // finds no picker is the exact dead end the fixed 413 sentence exists to
+    // avoid on the wire.
+    expect(manualPanel().querySelector(".manual-help")!.textContent).not.toContain(
+      "choose a file from this computer",
+    );
   });
 });
