@@ -137,6 +137,25 @@ describe("apiFetch", () => {
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
     expect(headers.get("Content-Type")).toBe("application/json");
   });
+
+  it("leaves a FormData body's content type to the browser", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const body = new FormData();
+    body.append("file", new File(["png-bytes"], "art.png", { type: "image/png" }));
+
+    await apiFetch("/api/items/3/renders/poster/manual/upload", {
+      method: "POST",
+      body,
+    });
+
+    // Not merely "not application/json": ANY Content-Type set here is wrong.
+    // A multipart body is unreadable without the boundary parameter, and only
+    // the browser knows the boundary it is about to write.
+    const headers = fetchMock.mock.calls[0][1].headers as Headers;
+    expect(headers.has("Content-Type")).toBe(false);
+    expect(fetchMock.mock.calls[0][1].body).toBe(body);
+  });
 });
 
 describe("apiPostForImage", () => {

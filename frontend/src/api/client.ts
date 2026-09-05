@@ -69,7 +69,16 @@ export class ApiError extends Error {
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (token !== null) headers.set("Authorization", `Bearer ${token}`);
-  if (init.body !== undefined && !headers.has("Content-Type")) {
+  // FormData is the exception, and it has to be: a multipart body is
+  // unreadable without the `boundary` parameter, the browser writes that
+  // parameter itself when it is left to choose the header, and a
+  // `Content-Type` set here silently replaces it with one that has no
+  // boundary at all. Every other defined body on this API is JSON.
+  if (
+    init.body !== undefined &&
+    !(init.body instanceof FormData) &&
+    !headers.has("Content-Type")
+  ) {
     headers.set("Content-Type", "application/json");
   }
 
