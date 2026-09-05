@@ -979,8 +979,11 @@ class Run(Base):
     ``status`` is ``running`` until something closes the row, then ``ok`` or
     ``failed`` for a scheduled job (copied from ``_maybe_run``'s own status),
     or ``ok``/``timed_out`` for a full pass (drained, or past the 24-hour
-    ceiling). No CHECK constraint governs it, matching ``jobs.state`` and
-    ``scheduled_runs.last_status``.
+    ceiling). A scheduled job's row can also read ``interrupted``: the status
+    ``open_run`` stamps on a still-open row of the same name it finds when a
+    new pass of that name starts, meaning a pod SIGKILL or crash left the
+    prior row with nothing to close it. No CHECK constraint governs it,
+    matching ``jobs.state`` and ``scheduled_runs.last_status``.
 
     ``detail`` is row 213 territory and is a COPY, never a re-derivation: for
     a scheduled run it is the string ``scheduler/core.py`` already narrowed to
@@ -1023,7 +1026,7 @@ class Run(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # running | ok | failed | timed_out
+    # running | ok | failed | timed_out | interrupted
     status: Mapped[str] = mapped_column(
         String(16), default="running", server_default="running"
     )

@@ -62,6 +62,12 @@ async def open_run(session: AsyncSession, *, kind: str, name: str) -> int:
     that row `running` forever, since nothing else ever reconciles it. The
     next pass of the same name is the first thing to notice.
 
+    Scoped to ``kind == "scheduled"``: full passes all share the name
+    ``full_pass`` (Task 2 opens one per button press), so an unscoped WHERE
+    would orphan the previous open full pass as ``interrupted`` on a second
+    press, before its counts are ever stamped. A full pass has its own closer
+    (the drain-watcher) and must never be closed here.
+
     ``started_at`` and ``status`` come from the column defaults rather than
     from Python: the timestamp must be the database clock (every other
     timestamp in this schema is), and 'running' is the only correct status for
@@ -69,7 +75,7 @@ async def open_run(session: AsyncSession, *, kind: str, name: str) -> int:
     """
     await session.execute(
         update(Run)
-        .where(Run.name == name, Run.finished_at.is_(None))
+        .where(Run.kind == "scheduled", Run.name == name, Run.finished_at.is_(None))
         .values(finished_at=func.now(), status="interrupted")
     )
     result = await session.execute(

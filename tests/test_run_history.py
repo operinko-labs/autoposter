@@ -118,6 +118,25 @@ async def test_opening_a_run_closes_its_orphaned_predecessor_as_interrupted(sess
     assert rows[second_id].finished_at is None
 
 
+async def test_two_open_full_passes_coexist_and_a_scheduled_open_does_not_touch_them(
+    session,
+):
+    """The orphan-close in open_run is scoped to scheduled runs. Full passes
+    all share the name `full_pass` and Task 2 opens one per button press, so
+    without `Run.kind == "scheduled"` in the WHERE, a second press would
+    orphan the first as `interrupted` before its counts are ever stamped."""
+    first = await open_run(session, kind="full_pass", name="full_pass")
+    second = await open_run(session, kind="full_pass", name="full_pass")
+    await session.commit()
+
+    await open_run(session, kind="scheduled", name="plex_prune")
+    await session.commit()
+
+    rows = {row.id: row for row in await _rows(session, name="full_pass")}
+    assert rows[first].status == "running"
+    assert rows[second].status == "running"
+
+
 async def test_retention_deletes_nothing_below_the_threshold(session):
     """The pass runs weekly on a table that is usually well inside the cap;
     the statement must be a no-op then, not a rewrite of every row."""
