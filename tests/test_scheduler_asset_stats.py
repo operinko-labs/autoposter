@@ -72,14 +72,14 @@ async def test_the_sweep_stamps_every_unsized_rendered_row(session, tmp_path):
 
     session.expire_all()
     assert await _sizes(session) == {"poster": 10, "background": 5}
-    assert detail == "stamped 2 of 2 render row(s) missing a size"
+    assert detail == "stamped 2 render row(s) missing a size"
 
 
-async def test_an_asset_that_cannot_be_read_is_left_unsized(session, tmp_path):
-    """A row whose file is gone stays NULL rather than being stamped 0: the
-    endpoint reports it as ``unknown_size``, which is true, and the next pass
-    tries again -- which is what makes a temporarily unmounted NFS volume cost
-    nothing permanent."""
+async def test_an_asset_that_cannot_be_read_is_stamped_zero(session, tmp_path):
+    """A row whose file is gone is stamped 0, not left NULL: it occupies no
+    storage, which is what the aggregate should report, and the pipeline
+    restamps the real size the next time this artifact is published -- so
+    the row is never re-selected and the backfill still makes progress."""
     item = await _item(session)
     present = tmp_path / "poster.jpg"
     present.write_bytes(b"0123456789")
@@ -89,9 +89,10 @@ async def test_an_asset_that_cannot_be_read_is_left_unsized(session, tmp_path):
     detail = await make_asset_stats_job(_holder()).run(session)
 
     session.expire_all()
-    assert await _sizes(session) == {"poster": 10, "background": None}
+    assert await _sizes(session) == {"poster": 10, "background": 0}
     assert detail == (
-        "stamped 1 of 2 render row(s) missing a size; 1 asset(s) could not be read"
+        "stamped 2 render row(s) missing a size"
+        "; 1 unreadable asset(s) recorded as 0 bytes"
     )
     # Row 213: counts only. No path, no filename, no root.
     assert "poster.jpg" not in detail
@@ -115,7 +116,70 @@ async def test_the_sweep_takes_at_most_one_batch_per_run(session, tmp_path):
     session.expire_all()
     stamped = [size for size in (await _sizes(session)).values() if size is not None]
     assert len(stamped) == 2, "the batch valve did not bound the run"
-    assert detail == "stamped 2 of 2 render row(s) missing a size"
+    assert detail == "stamped 2 render row(s) missing a size"
+
+
+async def test_the_sweep_advances_past_dead_rows_across_runs(
+    session, tmp_path, monkeypatch
+):
+    """A leading block of dead rows must not stall the backfill forever
+    (Important #1): once a dead row is stamped 0 it is no longer NULL, so the
+    next run's ``ORDER BY renders.id`` selection reaches the live rows behind
+    it. Batch size 2, four rows, dead ones first -- run 1 sees only the dead
+    block, run 2 must reach the live block and must not re-stat the dead
+    rows, and run 3 is then a no-op."""
+    item = await _item(session)
+    dead = [
+        await _render(session, item, f"dead_{i}", tmp_path / f"gone_{i}.jpg")
+        for i in range(2)
+    ]
+    live_paths = []
+    for i in range(2):
+        asset = tmp_path / f"live_{i}.jpg"
+        asset.write_bytes(b"x" * (i + 1))
+        live_paths.append(asset)
+    for i, path in enumerate(live_paths):
+        await _render(session, item, f"live_{i}", path)
+
+    calls: list[set[int]] = []
+    real = jobs_module._stat_sizes
+
+    def _tracking(rows):
+        calls.append({render_id for render_id, _ in rows})
+        return real(rows)
+
+    monkeypatch.setattr(jobs_module, "_stat_sizes", _tracking)
+
+    job = make_asset_stats_job(_holder(asset_stats_batch_size=2))
+
+    detail_1 = await job.run(session)
+    session.expire_all()
+    sizes_1 = await _sizes(session)
+    measured_1 = sum(1 for size in sizes_1.values() if size is not None)
+    assert measured_1 == 2, "run 1 should stamp exactly the dead block"
+    assert sizes_1["dead_0"] == 0 and sizes_1["dead_1"] == 0
+    assert sizes_1["live_0"] is None and sizes_1["live_1"] is None
+    assert detail_1 == (
+        "stamped 2 render row(s) missing a size"
+        "; 2 unreadable asset(s) recorded as 0 bytes"
+    )
+
+    detail_2 = await job.run(session)
+    session.expire_all()
+    sizes_2 = await _sizes(session)
+    measured_2 = sum(1 for size in sizes_2.values() if size is not None)
+    assert measured_2 > measured_1, "run 2 must make progress past the dead rows"
+    assert measured_2 == 4
+    assert sizes_2["live_0"] == 1 and sizes_2["live_1"] == 2
+
+    dead_ids = {row.id for row in dead}
+    assert calls[0] == dead_ids, "run 1 should see exactly the dead block"
+    assert calls[1].isdisjoint(dead_ids), "run 2 must not re-stat the dead rows"
+    assert detail_2 == "stamped 2 render row(s) missing a size"
+
+    detail_3 = await job.run(session)
+    assert detail_3 == "no render row is missing a size", "run 3 must be a no-op"
+    assert len(calls) == 2, "a no-op run must not touch the filesystem at all"
 
 
 async def test_the_sweep_holds_no_transaction_across_the_walk(

@@ -874,14 +874,15 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
     )
 
 
-def _stat_sizes(rows: list[tuple[int, str]]) -> list[tuple[int, int]]:
-    """``(render id, size)`` for every row whose asset can be stat'ed.
+def _stat_sizes(rows: list[tuple[int, str]]) -> tuple[list[tuple[int, int]], int]:
+    """``(render id, size)`` for every row, plus how many could not be stat'ed.
 
-    A row whose file cannot be read is DROPPED rather than stamped: it stays
-    NULL, the endpoint keeps reporting it as ``unknown_size`` (which is true),
-    and the next sweep tries again -- so a temporarily unmounted volume costs
-    nothing permanent, while a zero would be a measurement that never
-    self-corrects.
+    A row whose file cannot be stat'ed (missing, or any other ``OSError``) is
+    stamped ``0`` rather than left NULL: it occupies no storage, which is
+    exactly what the aggregate should report, and the render pipeline
+    restamps the real size the next time this artifact is published -- so
+    every run makes progress and the backfill converges instead of
+    re-selecting the same dead rows forever.
 
     Synchronous and called from one ``asyncio.to_thread``: ``assets_root`` is
     typically NFS, and stat-ing up to a batch of files is exactly the kind of
@@ -889,12 +890,15 @@ def _stat_sizes(rows: list[tuple[int, str]]) -> list[tuple[int, int]]:
     liveness probe share.
     """
     sizes: list[tuple[int, int]] = []
+    unreadable = 0
     for render_id, asset_path in rows:
         try:
-            sizes.append((render_id, os.stat(asset_path).st_size))
+            size = os.stat(asset_path).st_size
         except OSError:
-            continue
-    return sizes
+            size = 0
+            unreadable += 1
+        sizes.append((render_id, size))
+    return sizes, unreadable
 
 
 def make_asset_stats_job(holder: ConfigHolder) -> Job:
@@ -930,6 +934,9 @@ def make_asset_stats_job(holder: ConfigHolder) -> Job:
                 await session.execute(
                     select(Render.id, Render.asset_path)
                     .where(
+                        # Kept in lockstep with api/stats.py's _COUNTED_STATUS:
+                        # this must measure exactly the population the
+                        # endpoint reports.
                         Render.status == "rendered",
                         Render.size_bytes.is_(None),
                         Render.asset_path != "",
@@ -944,17 +951,16 @@ def make_asset_stats_job(holder: ConfigHolder) -> Job:
 
         await session.rollback()
 
-        sizes = await asyncio.to_thread(_stat_sizes, rows)
+        sizes, unreadable = await asyncio.to_thread(_stat_sizes, rows)
         for render_id, size in sizes:
             await session.execute(
                 update(Render).where(Render.id == render_id).values(size_bytes=size)
             )
         await session.commit()
 
-        summary = f"stamped {len(sizes)} of {len(rows)} render row(s) missing a size"
-        unreadable = len(rows) - len(sizes)
+        summary = f"stamped {len(sizes)} render row(s) missing a size"
         if unreadable:
-            summary += f"; {unreadable} asset(s) could not be read"
+            summary += f"; {unreadable} unreadable asset(s) recorded as 0 bytes"
         return summary
 
     return Job(
