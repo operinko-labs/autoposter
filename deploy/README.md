@@ -636,8 +636,8 @@ table, and this endpoint serves the most recent ones, newest first:
 ```
 
 `?limit=` defaults to 50 and is clamped to 500 — a value of `0`, `-5` or
-`100000` is quietly bounded rather than refused, so a mistyped widget shows
-numbers instead of an error.
+`100000` is an out-of-range integer, clamped rather than refused; a
+non-integer (`?limit=fifty`) is refused with a 422.
 
 Four rules govern what these numbers mean:
 

@@ -261,8 +261,9 @@ async def run_stats(
     checks itself, so a ``Depends`` placed here without the allowlist entry
     fails closed rather than opening a route.
 
-    ``limit`` is clamped, never refused (see ``runs_snapshot``). Row 213: the
-    body carries counts, timestamps, job names, art-kind tokens and the
+    An out-of-range ``limit`` is clamped; a non-integer is refused with a 422
+    (see ``runs_snapshot``). Row 213: the body carries counts, timestamps,
+    job names, art-kind tokens and the
     already-narrowed ``detail`` copy -- and ``detail`` is deliberately NOT
     among the served fields, because the chart has no use for it and a served
     string is a served string.

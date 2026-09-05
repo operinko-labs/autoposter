@@ -87,6 +87,7 @@ export function RunCharts() {
       label: label(run),
       processed: run.processed as number,
       failed: run.failed as number,
+      status: run.status,
     }));
 
   return (
@@ -122,7 +123,15 @@ export function RunCharts() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="label" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
               <YAxis tick={{ fontSize: 10 }} />
-              <Tooltip />
+              {/* Status appended to the label so a timed_out (or failed,
+                  interrupted) run's bar is not read as a clean pass -- its
+                  counts can span a sibling's whole 24h window (Minor M-1). */}
+              <Tooltip
+                labelFormatter={(runLabel, payload) => {
+                  const status = payload[0]?.payload?.status as string | undefined;
+                  return status ? `${runLabel} — ${status}` : runLabel;
+                }}
+              />
               <Legend />
               <Bar
                 dataKey="processed"
