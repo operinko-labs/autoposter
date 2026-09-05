@@ -205,71 +205,85 @@ def _logo_suffix(source: str) -> str:
     return suffix if suffix in LOGO_OVERRIDE_SUFFIXES else ".png"
 
 
-@router.post("/items/{item_id}/renders/{art_kind}/manual")
-async def install_manual_source(
-    item_id: int,
-    art_kind: str,
-    body: ManualSource,
-    request: Request,
-    _: SessionModel = Depends(require_session),
-) -> dict:
-    """Make an operator-supplied image this item's base artwork.
+async def _target_item(session_factory, item_id: int, art_kind: str) -> ResolvedItem:
+    """The item this request names, resolved -- or the refusal it earns.
 
-    The pick endpoint's tail, with the pick's offered-set check replaced by
-    the SSRF guard and the mount containment: those two are what stand between
-    "the operator chose this image" and "this process fetches or reads
-    whatever it is told to".
-
-    ``art_kind`` is validated against the item's own kind before anything is
-    fetched, read or written -- the clear-override idiom -- so a request this
-    endpoint has no answer for never reaches the network or the mount.
+    Both checks happen before anything is fetched, read or written, which is
+    the clear-override idiom: a request this endpoint has no answer for never
+    reaches the network, the mount, or an upload's byte budget. ``root_folder``
+    is nullable and the whole mirror layout is rooted at it, so an item without
+    one has nowhere for an override to go.
     """
-    config = request.app.state.config
-    session_factory = request.app.state.session_factory
     async with session_factory() as session:
         item = await _item_for_kind(session, item_id, art_kind)
         if item.root_folder is None:
-            # Nullable, and the whole mirror layout is rooted at it.
             raise HTTPException(status_code=409, detail="this item has no asset folder")
-        resolved = _resolved(item)
+        return _resolved(item)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        workspace = Path(tmpdir)
-        staged = await _staged_source(config, request.app.state.http, body.source, workspace)
 
-        suffix = ""
-        try:
-            if art_kind == art.LOGO:
-                suffix = _logo_suffix(body.source)
-                await asyncio.to_thread(_verify_image, staged)
-                target = logo_override_path(config, resolved, suffix)
-            else:
-                target = manual_override_target(config, resolved, art_kind)
-                transcoded = workspace / "source.jpg"
-                await asyncio.to_thread(_prepare_jpeg, staged, transcoded)
-                staged = transcoded
-        except DownloadRefused as exc:
-            logger.warning(
-                "the manual source for %s of item %d is not usable artwork: %s",
-                art_kind, item_id, exc,
-            )
-            raise HTTPException(
-                status_code=_unusable_status(body.source), detail=str(exc)
-            ) from None
+async def _install_and_record(
+    request: Request,
+    item_id: int,
+    art_kind: str,
+    resolved: ResolvedItem,
+    staged: Path,
+    workspace: Path,
+    *,
+    logo_suffix: str,
+    unusable_status: int,
+    source_kind: str,
+) -> dict:
+    """6d's tail: verify or transcode, install atomically, null, record, enqueue.
 
-        try:
-            # Offloaded like every other touch of this mount: manual_assets_root
-            # is typically NFS and a hung mount must not stall the event loop.
-            await asyncio.to_thread(_install, staged, target)
-            if art_kind == art.LOGO:
-                await asyncio.to_thread(_clear_stale_logo_overrides, config, resolved, suffix)
-        except OSError as exc:
-            # Sanitized: os.replace's OSError carries the destination's full
-            # filesystem path, which would leak the server's directory layout.
-            logger.warning("could not write the manual source to %s: %s", target, exc)
-            raise HTTPException(
-                status_code=503, detail="could not write to the override mount"
-            ) from None
+    Lifted whole out of ``install_manual_source`` so the upload route runs the
+    SAME code rather than a second copy of it -- roadmap row 123 asks for "a
+    multipart endpoint sharing the same verify/transcode/install tail", and two
+    spellings of a tail that writes a mirror the pipeline later stats is exactly
+    the drift ``manual_override_target`` was split out to prevent.
+
+    Three parameters carry everything the two callers disagree about:
+
+    * ``logo_suffix`` -- the container a logo keeps, read from the source's own
+      name by the JSON route. The upload route never reaches it: it refuses a
+      logo outright, because there is no name it is allowed to read.
+    * ``unusable_status`` -- whose fault it is that these bytes are not an
+      image. 502 for a URL (the far end failed), 422 for a file on the mount or
+      an upload (the request was wrong).
+    * ``source_kind`` -- the FORM the source took, and the only thing about it
+      the events row is allowed to record.
+    """
+    config = request.app.state.config
+    session_factory = request.app.state.session_factory
+
+    try:
+        if art_kind == art.LOGO:
+            await asyncio.to_thread(_verify_image, staged)
+            target = logo_override_path(config, resolved, logo_suffix)
+        else:
+            target = manual_override_target(config, resolved, art_kind)
+            transcoded = workspace / "source.jpg"
+            await asyncio.to_thread(_prepare_jpeg, staged, transcoded)
+            staged = transcoded
+    except DownloadRefused as exc:
+        logger.warning(
+            "the manual source for %s of item %d is not usable artwork: %s",
+            art_kind, item_id, exc,
+        )
+        raise HTTPException(status_code=unusable_status, detail=str(exc)) from None
+
+    try:
+        # Offloaded like every other touch of this mount: manual_assets_root
+        # is typically NFS and a hung mount must not stall the event loop.
+        await asyncio.to_thread(_install, staged, target)
+        if art_kind == art.LOGO:
+            await asyncio.to_thread(_clear_stale_logo_overrides, config, resolved, logo_suffix)
+    except OSError as exc:
+        # Sanitized: os.replace's OSError carries the destination's full
+        # filesystem path, which would leak the server's directory layout.
+        logger.warning("could not write the manual source to %s: %s", target, exc)
+        raise HTTPException(
+            status_code=503, detail="could not write to the override mount"
+        ) from None
 
     # Deferred rather than imported at module scope: api/routes.py imports this
     # module's router, so the other direction is a cycle.
@@ -307,10 +321,11 @@ async def install_manual_source(
                 # provider's; this one is an operator's own string and can
                 # carry userinfo credentials or the name of an internal host,
                 # and an events row is read casually and pasted into tickets.
+                # An upload's own file name is withheld for the same reason.
                 payload={
                     "item_id": item_id,
                     "art_kind": art_kind,
-                    "source_kind": "url" if _is_url(body.source) else "file",
+                    "source_kind": source_kind,
                 },
                 outcome=f"{item.library}/{item.title} {art_kind} from a manual source",
             )
@@ -319,6 +334,41 @@ async def install_manual_source(
 
         job_id = await _enqueue_reprocess(session, item)
     return {"status": "installed", "queued": job_id is not None}
+
+
+@router.post("/items/{item_id}/renders/{art_kind}/manual")
+async def install_manual_source(
+    item_id: int,
+    art_kind: str,
+    body: ManualSource,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Make an operator-supplied image this item's base artwork.
+
+    The pick endpoint's tail, with the pick's offered-set check replaced by
+    the SSRF guard and the mount containment: those two are what stand between
+    "the operator chose this image" and "this process fetches or reads
+    whatever it is told to".
+
+    ``art_kind`` is validated against the item's own kind before anything is
+    fetched, read or written -- the clear-override idiom -- so a request this
+    endpoint has no answer for never reaches the network or the mount.
+    """
+    config = request.app.state.config
+    resolved = await _target_item(request.app.state.session_factory, item_id, art_kind)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        workspace = Path(tmpdir)
+        staged = await _staged_source(config, request.app.state.http, body.source, workspace)
+        return await _install_and_record(
+            request, item_id, art_kind, resolved, staged, workspace,
+            # A pure function on the request's own string, so hoisting it out
+            # of the logo branch costs nothing and reads nothing extra.
+            logo_suffix=_logo_suffix(body.source),
+            unusable_status=_unusable_status(body.source),
+            source_kind="url" if _is_url(body.source) else "file",
+        )
 
 
 @router.post("/collections/{collection_id}/poster")
