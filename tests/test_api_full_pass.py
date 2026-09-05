@@ -11,7 +11,7 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import Job, MediaItem
+from autoposter.db.models import Job, MediaItem, Run
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -251,3 +251,68 @@ async def test_the_response_does_not_wait_on_the_webhook(
     event, _summary, detail = notifier.calls[0]
     assert event == "full_pass_enqueued"
     assert detail == {"total": 4, "queued": 4, "skipped": 0}
+
+
+async def test_the_full_pass_opens_a_run_row(client, auth_headers, session):
+    """C1: a full pass is a run. Before this it was the one execution in the
+    tree that persisted nothing at all -- it enqueued, notified, returned three
+    numbers and left no row anywhere."""
+    session.add_all(_one_of_each_kind())
+    await session.commit()
+
+    response = await client.post("/api/full-pass", headers=auth_headers)
+    assert response.status_code == 200
+
+    row = (await session.execute(select(Run))).scalar_one()
+    assert (row.kind, row.name, row.status) == ("full_pass", "full_pass", "running")
+    assert row.finished_at is None
+    assert row.detail is None
+
+
+async def test_every_job_the_pass_enqueued_is_inside_its_own_window(client, auth_headers, session):
+    """The property the whole of window attribution rests on, and it is not an
+    accident: the run row is inserted in the SAME session and transaction as
+    enqueue_batch's inserts, so `runs.started_at` and `jobs.created_at` both
+    resolve to that transaction's timestamp. Open the row in a separate
+    transaction and every job of the pass could be created microseconds before
+    its own run began."""
+    session.add_all(_one_of_each_kind())
+    await session.commit()
+
+    await client.post("/api/full-pass", headers=auth_headers)
+
+    run = (await session.execute(select(Run))).scalar_one()
+    jobs = (await session.execute(select(Job))).scalars().all()
+    assert jobs
+    assert all(job.created_at >= run.started_at for job in jobs)
+
+
+async def test_the_response_body_is_unchanged(client, auth_headers, session):
+    """The run row is additive. The three numbers the button has always shown
+    are what the operator reads, and they still come from enqueue_batch's own
+    count rather than from anything this row knows."""
+    session.add_all(_one_of_each_kind())
+    await session.commit()
+
+    body = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert set(body) == {"total", "queued", "skipped"}
+    assert body["total"] == body["queued"] + body["skipped"]
+
+
+async def test_a_second_press_opens_a_second_run(client, auth_headers, session):
+    """Pressing twice is not idempotent -- the dashboard already says so, and
+    enqueue_batch's ON CONFLICT means the second press queues almost nothing.
+    A second row is still opened, and the two windows overlap: both count the
+    same drain. Recorded here as the decided behaviour rather than left to be
+    discovered, because the alternative (reusing an open row) leaks -- a row
+    nothing ever closes would suppress every future full pass's history."""
+    session.add_all(_one_of_each_kind())
+    await session.commit()
+
+    await client.post("/api/full-pass", headers=auth_headers)
+    await client.post("/api/full-pass", headers=auth_headers)
+
+    rows = (await session.execute(select(Run).order_by(Run.id))).scalars().all()
+    assert len(rows) == 2
+    assert all(row.status == "running" for row in rows)

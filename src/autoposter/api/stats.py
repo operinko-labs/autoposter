@@ -24,14 +24,27 @@ contributes 0 to ``bytes``, and a row zeroed this way is corrected only when
 that artifact is next re-rendered (the pipeline's own "unchanged"
 short-circuit returns before the size is ever touched, so a pass that wrote
 nothing never restamps).
+
+**``GET /api/stats/runs`` (roadmap row 53)** is served from the same module
+and by the same rules: one SELECT over ``runs`` plus a database-clock read,
+counts and timestamps only, no path and no ``str(exc)``. What it adds to the
+list of things that are *not* served is any aggregation of
+``jobs.last_error`` -- a per-run "top errors" breakdown grouped on that column
+would re-serve whatever those strings hold, and ``PlexPathMismatch``
+deliberately carries the operator's host filesystem paths.
+
+Its count fields are **window attribution**, and the response says so by
+serving ``null`` -- never zero -- for a run whose window was not attributed.
+See ``db/models.py``'s ``Run`` docstring for what a window can and cannot
+mean.
 """
 
 from sqlalchemy import case, func, select
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from autoposter.api.auth import ApiKeyPrincipal, api_key_or_session
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import MediaItem, Render, Run
 from autoposter.db.models import Session as SessionModel
 
 # The four artifact kinds, in the order the response reports them. Every
@@ -130,6 +143,84 @@ async def storage_snapshot(session) -> dict:
     }
 
 
+# The maximum a caller may ask for in one page. The retention clause holds the
+# whole table to ~500 rows per name, so this is not a memory bound so much as
+# a "one request cannot ask for everything" bound -- and a widget's typo
+# should be clamped rather than answered with a 422 an operator has to debug
+# from a tile that just says `error`.
+_MAX_RUNS = 500
+_DEFAULT_RUNS = 50
+
+
+def _rendered(row) -> dict | None:
+    """The four art-kind counts, or None when this run was not attributed.
+
+    All four keys together or none of them: a partially-filled mapping would
+    let a chart read a zero that means "not measured" as one that means
+    "nothing was composited", which are different claims about a pass.
+    """
+    if row.processed is None:
+        return None
+    return {
+        "poster": row.rendered_poster or 0,
+        "season_poster": row.rendered_season_poster or 0,
+        "background": row.rendered_background or 0,
+        "title_card": row.rendered_title_card or 0,
+    }
+
+
+async def runs_snapshot(session, limit: int = _DEFAULT_RUNS) -> dict:
+    """The most recent runs, newest first, with their durations and counts.
+
+    Two round trips: the page itself, and ``generated_at`` from the DATABASE
+    clock -- never ``datetime.now()``, the rule every timestamp this API
+    serves follows (see ``api/snapshots.py::_run_status`` for what mixing the
+    two once cost).
+
+    ``duration_seconds`` is computed here rather than stored: it is a
+    difference of two columns that are already served, and a stored copy is a
+    third thing that can disagree with them. It is ``None`` while the run is
+    still open, which is exactly what a chart should skip rather than plot as
+    zero.
+
+    The session is the caller's and nothing here writes, so nothing commits.
+    """
+    bounded = max(1, min(int(limit), _MAX_RUNS))
+    rows = (
+        await session.execute(
+            select(Run).order_by(Run.started_at.desc(), Run.id.desc()).limit(bounded)
+        )
+    ).scalars().all()
+
+    generated_at = (await session.execute(select(func.now()))).scalar_one()
+
+    runs = []
+    for row in rows:
+        duration = None
+        if row.finished_at is not None:
+            duration = round((row.finished_at - row.started_at).total_seconds(), 3)
+        runs.append(
+            {
+                "id": row.id,
+                "kind": row.kind,
+                "name": row.name,
+                "started_at": row.started_at,
+                "finished_at": row.finished_at,
+                "status": row.status,
+                "duration_seconds": duration,
+                "rendered": _rendered(row),
+                # int() rather than the raw column so a chart never receives a
+                # value it cannot plot; None stays None, which is the whole
+                # point of the column being nullable.
+                "processed": None if row.processed is None else int(row.processed),
+                "failed": None if row.failed is None else int(row.failed),
+                "deferred": None if row.deferred is None else int(row.deferred),
+            }
+        )
+
+    return {"runs": runs, "generated_at": generated_at}
+
+
 router = APIRouter()
 
 
@@ -153,3 +244,30 @@ async def storage_stats(
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         return await storage_snapshot(session)
+
+
+@router.get("/stats/runs")
+async def run_stats(
+    request: Request,
+    limit: int = Query(default=_DEFAULT_RUNS),
+    _: SessionModel | ApiKeyPrincipal = Depends(api_key_or_session),
+) -> dict:
+    """Recent run history: duration, outcome and per-window counts.
+
+    Readable with a browser session OR with the read-only ``X-API-Key``
+    (roadmap row 51), like ``/api/stats/storage`` beside it. Both halves of
+    that scope have to agree: this handler takes ``api_key_or_session`` AND
+    ``/api/stats/runs`` is in ``api.auth.ALLOWLIST``, which the dependency
+    checks itself, so a ``Depends`` placed here without the allowlist entry
+    fails closed rather than opening a route.
+
+    An out-of-range ``limit`` is clamped; a non-integer is refused with a 422
+    (see ``runs_snapshot``). Row 213: the body carries counts, timestamps,
+    job names, art-kind tokens and the
+    already-narrowed ``detail`` copy -- and ``detail`` is deliberately NOT
+    among the served fields, because the chart has no use for it and a served
+    string is a served string.
+    """
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        return await runs_snapshot(session, limit)

@@ -25,6 +25,7 @@ from autoposter.providers.fanart import FanartClient
 from autoposter.providers.tmdb import TMDBClient
 from autoposter.queue.jobs import MAX_ATTEMPTS
 from autoposter.render.pipeline import SourceRefused
+from autoposter.scheduler.run_history import UNRECORDED
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -772,6 +773,11 @@ async def test_stale_job_reclaim_is_registered_even_with_the_scheduler_disabled(
         # be exercising the branch it claims to.
         assert "plex_prune" not in app.state.scheduler_intervals
         assert "plex_merge" not in app.state.scheduler_intervals
+        # Every job registered ahead of the scheduler.enabled gate must be
+        # one run_history knows to never record -- otherwise a future job
+        # added above the gate grows `runs` forever with no trimmer, which is
+        # exactly the incident this branch fixed for stale_job_reclaim.
+        assert {job.name for job in app.state.scheduler_jobs} <= UNRECORDED
 
 
 async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_processes(

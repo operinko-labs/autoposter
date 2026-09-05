@@ -67,6 +67,17 @@
   align-items: start;
 }
 
+/* The two run charts sit side by side where there is room and stack when
+   there is not, matching .dashboard-columns above. Each chart is a fixed
+   pixel canvas inside .table-scroll (see RunCharts.tsx), so the panel scrolls
+   horizontally on a narrow screen rather than clipping the axis. */
+.run-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
 .dashboard-columns .panel {
   padding: 16px 0 0;
 }

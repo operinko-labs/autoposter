@@ -42,6 +42,7 @@ from autoposter.db.models import FactsBackfillState, ItemFacts, MediaItem, Rende
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue, reclaim_stale
 from autoposter.scheduler.core import Job
+from autoposter.scheduler.run_history import RUN_HISTORY_KEEP, trim_run_history
 
 logger = logging.getLogger(__name__)
 
@@ -888,15 +889,40 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
     holder per run, so switching the dry run off takes effect on the next
     pass -- as does an edit to ``assets_root``, the safety caps or the
     cadence.
+
+    It also trims the `runs` history table (roadmap row 53) to the newest
+    RUN_HISTORY_KEEP rows per job name. That rides here rather than on a
+    scheduled job of its own because a fifth job would need a name, a cadence
+    setting, an allowlist entry and a dashboard row to do one DELETE a week --
+    and because this pass is already the tree's housekeeping pass. The trim
+    runs FIRST, ahead of every refusal below, and commits in its OWN
+    transaction (fix round 1, Important 1) rather than riding the rest of the
+    pass's session: the orphan walk below is documented as "minutes of wall
+    time" against an NFS mount, and a DELETE left uncommitted across it would
+    hold a write XID (pinning autovacuum's cleanup horizon and `runs` row
+    locks) for that whole span, and would be rolled back with everything else
+    if the walk or the move ever raises. Those refusals are about the
+    operator's files and can legitimately hold for weeks; retention is what
+    keeps an unbounded table bounded and must not be hostage to an NFS mount
+    OR to a later raise in this same pass.
     """
 
     async def run(session: AsyncSession) -> str:
+        # Row 53's retention clause. First, ahead of every refusal below, and
+        # committed IMMEDIATELY in its own transaction -- see the docstring.
+        # RUN_HISTORY_KEEP is read as a module-level name in THIS module (the
+        # `from ... import` above), which is what the test's monkeypatch of
+        # `autoposter.scheduler.jobs.RUN_HISTORY_KEEP` reaches.
+        trimmed = await trim_run_history(session, RUN_HISTORY_KEEP)
+        await session.commit()
+        trim_note = f"; trimmed {trimmed} run history row(s)" if trimmed else ""
+
         config = holder.current
         any_render = (await session.execute(select(Render.id).limit(1))).first()
         if any_render is None:
             return (
                 "refused: the renders table is empty, so every asset would "
-                "look orphaned; change nothing"
+                "look orphaned; change nothing" + trim_note
             )
 
         assets_root = Path(config.assets_root)
@@ -905,12 +931,12 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
 
         refusal = _implausible_orphan_count(len(orphaned), scanned, config.cleanup)
         if refusal is not None:
-            return refusal
+            return refusal + trim_note
 
         if not config.cleanup.apply:
             return (
                 f"dry run: {len(orphaned)} of {scanned} asset directory(ies) "
-                "would move to backup"
+                "would move to backup" + trim_note
             )
 
         backup_root = Path(config.backup_root)
@@ -918,7 +944,7 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
         summary = f"moved {outcome.moved} of {len(orphaned)} orphaned directory(ies) to backup"
         if outcome.failed:
             summary += f"; {outcome.failed} could not be moved (see the log)"
-        return summary
+        return summary + trim_note
 
     return Job(
         name="asset_cleanup",
