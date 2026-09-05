@@ -126,7 +126,7 @@ The two must not be reported as one number, which is what row 96's original
 """
 import datetime as dt
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
@@ -138,6 +138,7 @@ __all__ = [
     "FILTERABLE_ATTRIBUTES",
     "FILTER_ATTRIBUTES",
     "ITEM_KINDS",
+    "MATCHES_NOTHING",
     "OPERATORS_BY_TYPE",
     "PLEXAPI_EQUIVALENT",
     "RELATIVE_UNITS",
@@ -159,6 +160,8 @@ __all__ = [
     "parse_filters",
     "predicates",
     "resolve_search_values",
+    "tag_predicates",
+    "without_values",
 ]
 
 # The four categorical columns, as closed sets. A row outside them would parse,
@@ -2281,6 +2284,87 @@ def batched_attributes(group: FilterGroup) -> tuple[str, ...]:
         if predicate.attribute.source == "tier2-batched":
             seen.setdefault(predicate.attribute.name, None)
     return tuple(seen)
+
+
+# The predicate a value-pruning caller is left with when NOTHING survived. An
+# ``any`` group with no children, because ``evaluate`` answers ``any(())`` --
+# False, for every item, using machinery that already exists rather than a
+# fourth node type the evaluator would have to learn.
+#
+# Fail CLOSED, and the reason is ``.not``. An emptied ``genre: [Horrror]``
+# matching nothing is obviously right; an emptied ``genre.not: [Horrror]``
+# reads just as naturally as "nothing left to exclude, so keep everything" --
+# and that would silently WIDEN a collection the operator wrote to narrow, on
+# the strength of a typo. One rule for both, and it is the one that cannot
+# invent members.
+#
+# A module-level singleton is safe: ``FilterGroup`` is frozen and this one has
+# no children to share.
+MATCHES_NOTHING: "FilterGroup" = FilterGroup(
+    op="any", children=(), field="<every value dropped>"
+)
+
+
+def tag_predicates(group: FilterGroup) -> tuple[FilterPredicate, ...]:
+    """Every predicate in a parsed tree whose values are written TAG VALUES.
+
+    Roadmap row 158's selector, beside ``predicates`` and ``batched_attributes``
+    for the reason those are here: the tree's shape stays this module's
+    business, and the caller gets a question answered rather than a walk to
+    re-implement.
+
+    Two exclusions, both from the operator table above rather than from a list
+    kept here:
+
+    - a non-``tag`` row, because only a tag has a vocabulary. A ``str`` row
+      like ``studio`` is a SUBSTRING match client-side, so "is this in the
+      library's list" is not the question its values answer;
+    - ``.regex`` and the four ``.count_*`` modifiers, whose values are a
+      compiled pattern and an integer -- neither is a word anybody could look
+      up. Kometa splits the same way: its tag-value validation
+      (builder.py:4400-4440) is a different branch from its regex one
+      (:4301-4310) and from its count-modifier handling (:4350).
+    """
+    return tuple(
+        predicate for predicate in predicates(group)
+        if predicate.attribute.type == "tag" and predicate.operator in ("eq", "not")
+    )
+
+
+def without_values(
+    node: "FilterGroup | FilterPredicate",
+    drop: "Callable[[FilterPredicate, object], bool]",
+) -> "FilterGroup | FilterPredicate":
+    """``node`` with every value ``drop`` selects removed, structure preserved.
+
+    Row 158's warn-and-DROP half. A predicate that loses some of its values
+    keeps the rest; one that loses all of them becomes ``MATCHES_NOTHING``
+    above. Groups are rebuilt around their pruned children, so the base
+    conjunction still means what the operator wrote: under ``all:`` one emptied
+    predicate takes the whole definition to nothing, under ``any:`` its
+    siblings still answer.
+
+    ``drop`` is a callback rather than a set of values because the caller's
+    question is per ``(attribute, value)`` and ``FilterPredicate`` carries a
+    compiled ``re.Pattern`` on some rows -- keying a set on the predicate
+    itself would make this depend on hashability the model never promised.
+
+    An unchanged subtree is returned BY IDENTITY, so a caller can tell "nothing
+    dropped" from "something did" with an ``is`` check and skip the extra work.
+    ``drop`` is only ever consulted for the predicates ``tag_predicates`` would
+    have returned, so a regex or a count modifier cannot lose a value here.
+    """
+    if isinstance(node, FilterPredicate):
+        if node.attribute.type != "tag" or node.operator not in ("eq", "not"):
+            return node
+        kept = tuple(value for value in node.values if not drop(node, value))
+        if len(kept) == len(node.values):
+            return node
+        return MATCHES_NOTHING if not kept else replace(node, values=kept)
+    children = tuple(without_values(child, drop) for child in node.children)
+    if children == node.children:
+        return node
+    return replace(node, children=children)
 
 
 # --- evaluation --------------------------------------------------------------

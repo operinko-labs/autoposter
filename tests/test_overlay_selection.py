@@ -638,3 +638,38 @@ def test_a_definition_carrying_a_date_condition_still_fingerprints():
         "base", "poster", {}, "manifest", [definition], [("text(RECENT)", True)],
     )
     assert len(digest) == 64 and int(digest, 16) >= 0
+
+
+def test_an_overlay_condition_never_reaches_a_library_vocabulary():
+    """Roadmap row 158's single design constraint, pinned from the other side.
+
+    `OverlayDefinition.condition` uses `collections/filters.py`'s parser
+    (`overlays/schema.py:76-83`, "imported rather than re-implemented") and has
+    no library, no section and no `listFilterChoices` behind it -- the badge
+    pass holds one item, not a library. So the vocabulary check row 158 adds
+    lives at the collections ENGINE's filter stage and must never move into
+    `parse_filters`.
+
+    Two assertions, and the second is the one that survives a refactor: a
+    condition naming a rating this deployment's library does not use still
+    parses and still evaluates (to False, on its merits), and `parse_filters`
+    still takes no resolver, no section and no library. A future edit that
+    added one would fail here rather than at render time.
+    """
+    import inspect
+
+    from autoposter.collections.filters import parse_filters
+
+    assert set(inspect.signature(parse_filters).parameters) == {
+        "raw", "field", "searching", "base",
+    }
+
+    definition = OverlayDefinition(
+        name="au-only", condition={"content_rating": "AU MA15+"}
+    )
+    item = _Item(content_rating="PG-13")
+
+    matched, outcomes = select([definition], _view(item))
+
+    assert matched == []
+    assert outcomes == [("au-only", False)]
