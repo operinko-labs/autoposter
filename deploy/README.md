@@ -191,12 +191,27 @@ refused at load with the reason rather than being quietly ignored:
 | `badges.definition_image_max_bytes` | a download safety bound, not a preference |
 | `maintenance.clean_bundles`, `maintenance.optimize` | Plex offers these on the server only; there is no per-library form to call |
 
-Artwork settings cannot be overridden per library either. That one is not a
-refusal you will meet — there is no `artwork` key under a library block at
-all — and the reason is worth knowing: the render version every stored
-fingerprint is compared against is a hash of the whole `artwork` section, so
-a per-library artwork setting would either re-render every library or never
-invalidate anything. It is filed as its own roadmap row.
+Artwork settings cannot be overridden per library either, and that refusal
+is one you WILL meet if you try it: `libraries.X.artwork` is rejected both
+when the config loads and when the Settings editor saves it, with a stated
+reason rather than being silently dropped. The reason is worth knowing: the
+render version every stored fingerprint is compared against is a hash of the
+whole `artwork` section, so a per-library artwork setting would either
+re-render every library or never invalidate anything. It is filed as its own
+roadmap row.
+
+A whole section under a library block — not just a leaf inside one of the
+three overridable sections — is refused the same way if it names something
+this service does not let vary per library:
+
+| Section | Why it is refused |
+|---|---|
+| `artwork` | the render version every fingerprint is compared against hashes the whole `artwork` section, so a per-library value would strand fingerprints across libraries it never named |
+| `collections` | a collection definition already targets its own libraries; a second per-library dimension over the same thing would be two ways to say one sentence |
+| `playlists` | a playlist definition already targets its own libraries; a second per-library dimension over the same thing would be two ways to say one sentence |
+| `plex` | one Plex server and one section list serve every library; there is no per-library Plex connection to have an opinion about |
+| `scheduler` | the scheduler's job set and cadences are registered once, process-wide, at startup; there is no per-library schedule |
+| anything else (a typo, a name this config has never had) | refused as not one of this library's overridable sections — only `operations`, `badges` and `maintenance` can be set per library |
 
 **How values combine.** Setting by setting, not section by section. A library
 that names `operations.write_to_plex` changes that one setting and inherits
@@ -226,10 +241,18 @@ as ANY library overrides it, the sweep goes library by library over
 longer swept. If you have a library Plex knows about and this config does
 not, add it to `collections.libraries` before you override this setting.
 
-**Nothing here re-renders artwork.** A per-library override changes how items
-in that library are written to Plex, badged and swept; it does not change what
-a poster, background or title card looks like, and the Settings page's impact
-preview correctly reports no re-renders for one.
+**Nothing here re-renders the base artwork — but a `badges` override does
+re-badge and re-upload it.** The base image itself is untouched: `operations`
+and `maintenance` overrides only change how items in that library are written
+to Plex and swept, and even a `badges` override never touches the poster,
+background or title card render underneath. But a per-library `badges`
+override (`families`, for instance) moves that library's badge fingerprints,
+and a moved badge fingerprint means every badged poster in that library gets
+recomposited and re-uploaded to Plex on the next pass — only that library's,
+not the whole server's. The Settings page's impact preview does not report
+this: it counts only `version` and `skip_tba` changes today, so a
+library-only edit — including a `badges` one — always shows no re-renders,
+whether or not one is coming.
 
 ## Secrets
 

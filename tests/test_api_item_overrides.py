@@ -598,3 +598,43 @@ async def test_a_library_that_disables_the_gate_refuses_its_items(
         "be changed until it is on"
     )
     assert "is off;" not in detail
+
+
+async def test_a_library_that_enables_the_gate_while_the_global_disables_it_is_allowed(
+    app, client, auth_headers, session_factory,
+):
+    """Branch review Important 1, the mirror direction. The global gate had
+    tightened only: a library that turned the setting OFF was refused even
+    with the global ON, but a library that turned it ON while the global was
+    OFF was refused too, by a bare pre-gate that ran before the item -- and
+    so before the library -- was even known. The pipeline honours the
+    library's own ``True`` here (``render/pipeline.py``'s rebound config
+    reads), so the API must accept the write it would otherwise never write.
+    """
+    from autoposter.config.loader import build_config, read_config_document
+
+    document = read_config_document(EXAMPLE)
+    document.setdefault("operations", {})["item_overrides_enabled"] = False
+    document["libraries"] = {
+        "Movies": {"operations": {"item_overrides_enabled": True}},
+    }
+    swapped = build_config(document)
+    app.state.config_holder.swap(swapped)
+    app.state.config = swapped
+
+    async with session_factory() as session:
+        item_id = await _item(session)
+
+    listed = await client.get(
+        f"/api/items/{item_id}/metadata-overrides", headers=auth_headers,
+    )
+    assert listed.status_code == 200
+    assert listed.json()["enabled"] is True, (
+        "the library's item_overrides_enabled: true was ignored"
+    )
+
+    allowed = await client.put(
+        f"/api/items/{item_id}/metadata-overrides/tagline",
+        headers=auth_headers, json={"value": "A Los Angeles crime saga"},
+    )
+    assert allowed.status_code == 200
