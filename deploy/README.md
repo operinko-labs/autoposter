@@ -319,8 +319,9 @@ variables:
   the admin hash's for refusing: unset, every request that presents an
   `X-API-Key` is refused (`401`) and nothing is opened. The read-only key a
   Homepage widget or a script presents on `GET /api/status`,
-  `GET /api/version`, `GET /api/stats/storage`, and nowhere else; see "Read-only
-  authentication" below for the header rule, the recipe and rotation.
+  `GET /api/version`, `GET /api/stats/storage`, `GET /api/stats/runs`, and
+  nowhere else; see "Read-only authentication" below for the header rule, the
+  recipe and rotation.
 
 ### The sidebar's update check
 
@@ -657,19 +658,21 @@ Four rules govern what these numbers mean:
   before the stamp. So a settled library's full pass reports tens of thousands
   `processed` and near-zero `rendered`, correctly — nothing needed
   re-compositing. Both numbers are served because either alone is misleading.
-- **`status` is `running`, `ok`, `failed` or `timed_out`.** A full pass has no
-  end of its own — the button returns as soon as the work is queued and the
-  queue drains for hours afterwards — so the scheduler closes the row when no
-  `process_item` job created at or after the run's start is still pending or
-  running. Deferred jobs are counted and do **not** hold the run open (a
-  deferred job waits six hours by design), and a pass still holding a job after
-  **24 hours** is closed as `timed_out`.
+- **`status` is `running`, `ok`, `failed`, `timed_out` or `interrupted`.** A
+  full pass has no end of its own — the button returns as soon as the work is
+  queued and the queue drains for hours afterwards — so the scheduler closes
+  the row when no `process_item` job created at or after the run's start is
+  still pending or running. Deferred jobs are counted and do **not** hold the
+  run open (a deferred job waits six hours by design), and a pass still
+  holding a job after **24 hours** is closed as `timed_out`. `interrupted` is
+  a scheduled run whose successor found it still open after a restart.
 
 **Retention.** The orphaned-asset cleanup pass (`cleanup_days`, default 7)
-trims this table to the newest **500 rows per** job name on every run. That is
-about five years of a weekly job and a day and a half of the five-minutely
-`stale_job_reclaim` — the cheapest job being the one that rolls. Nothing else
-prunes it and no separate scheduled job exists for it.
+trims this table to the newest **500 rows per** job name on every run, while
+the scheduler is enabled; the drain-watcher also trims full-pass rows to the
+same bound on every close, regardless of that switch. That is about five
+years of a weekly job and a day and a half of the five-minutely
+`stale_job_reclaim` — the cheapest job being the one that rolls.
 
 #### Homepage `customapi` recipe: runs
 
