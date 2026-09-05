@@ -104,10 +104,13 @@ services:
       postgres:
         condition: service_healthy
     # Mirrors the image's CMD, plus --reload against the bind-mounted source.
+    # `autoposter.boot` runs the migration itself once it has decided this
+    # deployment is configured, and then execs whatever argv names -- which is
+    # how the two entrypoints stay one contract while only this one hot-reloads.
     # `--factory` because main.py builds the app through build() rather than
     # exposing a module-level `app`, and --reload needs an import string.
     command: >
-      sh -c "alembic upgrade head &&
+      sh -c "exec python -m autoposter.boot
       uvicorn autoposter.main:build --factory --reload --host 0.0.0.0 --port 8080"
 
 volumes:

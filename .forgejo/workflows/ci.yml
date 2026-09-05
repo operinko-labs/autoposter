@@ -546,7 +546,7 @@ jobs:
       - name: Verify the application imports inside the image
         run: |
           docker run --rm ${{ env.CI_IMAGE }} \
-            python -c "import autoposter.main; import autoposter.app; print('entrypoint imports OK')"
+            python -c "import autoposter.boot; import autoposter.main; import autoposter.app; print('entrypoint imports OK')"
 
       - name: Verify ImageMagick is a Q16-HDRI build
         # Poster output is byte-identical to the tool being replaced only on a

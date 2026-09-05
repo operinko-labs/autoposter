@@ -190,10 +190,14 @@ ARG GIT_SHA=""
 ENV AUTOPOSTER_VERSION=sha-${GIT_SHA}
 EXPOSE 8080
 # `exec` so python replaces sh as PID 1, rather than relying on ash's
-# tail-call optimisation (which already replaces sh here in practice, verified
-# by `docker top` showing the same PID move from the `sh -c` line to
-# `python -m autoposter.main` the moment alembic exits) to make python the
-# process that receives the kubelet's SIGTERM. Defensive, not a fix: without
-# it, whether SIGTERM reaches python at all depends on shell-implementation
-# behaviour this Dockerfile does not otherwise depend on.
-CMD ["sh", "-c", "alembic upgrade head && exec python -m autoposter.main"]
+# tail-call optimisation to make python the process that receives the
+# kubelet's SIGTERM. Defensive, not a fix: without it, whether SIGTERM reaches
+# python at all depends on shell-implementation behaviour this Dockerfile does
+# not otherwise depend on.
+#
+# The migration is no longer chained here with `&&`. `autoposter.boot` runs it
+# itself, after deciding that this deployment has credentials and a database
+# that answers -- because `alembic upgrade head` raises outright without
+# AUTOPOSTER_DATABASE_URL, and a container that dies in the shell can never
+# serve the first-start wizard that would supply one (roadmap row 121).
+CMD ["sh", "-c", "exec python -m autoposter.boot"]

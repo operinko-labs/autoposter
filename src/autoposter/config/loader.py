@@ -6,13 +6,42 @@ from pathlib import Path
 import yaml
 
 from autoposter.config.schema import Config, _merged_sections
+from autoposter.config.state import state_config_path
+
+
+def _default_config_path() -> Path:
+    """Where the config document is, absent an explicit ``AUTOPOSTER_CONFIG``.
+
+    ``AUTOPOSTER_CONFIG`` still wins outright, which is what keeps every
+    existing deployment on exactly today's path: the Kubernetes one sets it
+    (helmrelease.yaml's env block) and so does docker-compose.yml's ``api``
+    service, so neither ever reaches the lookup below. That is roadmap row
+    121's C5 -- the new lookup fires only when the variable is unset.
+
+    The fallback exists for a deployment the first-start wizard configured. The
+    wizard writes ``$AUTOPOSTER_STATE_DIR/autoposter.yaml`` and cannot set the
+    process's own environment, so the document has to be FOUND rather than
+    pointed at. ``/config/autoposter.yaml`` remains the last word, unchanged.
+    """
+    configured = os.environ.get("AUTOPOSTER_CONFIG")
+    if configured:
+        return Path(configured)
+    from_state = state_config_path()
+    if from_state.is_file():
+        return from_state
+    return Path("/config/autoposter.yaml")
+
 
 # Where the YAML lives, for the code that needs the *file* rather than the
 # loaded object: the config editor merges its overrides onto that document, so
 # it has to know which document. Defined here, next to the reader, because
 # three entry points (`main`, and both CLIs) already spell this out
 # individually and a fourth copy in the API layer would be one too many.
-DEFAULT_CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
+#
+# Evaluated at import, as it always has been. A wizard that writes the document
+# and then execs a fresh boot is re-importing this module, so the new file is
+# picked up by the process that will actually use it.
+DEFAULT_CONFIG_PATH = _default_config_path()
 
 
 def render_version(config: Config) -> str:

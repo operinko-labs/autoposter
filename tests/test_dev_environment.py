@@ -228,14 +228,18 @@ def test_the_api_service_fails_closed_without_credentials():
     )
 
 
-def test_the_api_service_applies_migrations_like_production_does():
-    """The production CMD is ``alembic upgrade head && python -m autoposter.main``.
+def test_the_api_service_boots_the_same_way_production_does():
+    """The production CMD is ``exec python -m autoposter.boot``, and that module
+    is what runs ``alembic upgrade head``.
 
     A development stack that skips the migration step is one where "works on
-    my machine" can mean "against a schema main does not have".
+    my machine" can mean "against a schema main does not have" -- and now that
+    the migration lives behind a decision, a development stack that skips the
+    DECISION is one where setup mode is never exercised at all.
     """
     command = _service("api").get("command") or ""
-    assert "alembic upgrade head" in command, (
-        "the api service does not run migrations on start, while the image's "
-        "CMD does; the two would drift on any branch that adds a revision"
+    assert "python -m autoposter.boot" in command, (
+        "the api service does not boot through autoposter.boot, while the "
+        "image's CMD does; the two would drift on the one line that decides "
+        "whether migrations run at all"
     )
