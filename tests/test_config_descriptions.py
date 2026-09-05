@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from autoposter.config.descriptions import (
     FIELD_DESCRIPTIONS,
     _item_model_of,
+    _mapping_model_of,
     _model_of,
     build_field_descriptions,
 )
@@ -58,13 +59,23 @@ def _described_models() -> list[tuple[str, type[BaseModel], str]]:
 
 def _nested_models(annotation):
     """The models an annotation reaches, each with its path segment."""
-    from autoposter.config.descriptions import _item_model_of, _model_of
+    from autoposter.config.descriptions import (
+        _item_model_of,
+        _mapping_model_of,
+        _model_of,
+    )
 
     direct = _model_of(annotation)
     if direct is not None:
         return [(direct, "")]
     item = _item_model_of(annotation)
-    return [] if item is None else [(item, "[]")]
+    if item is not None:
+        return [(item, "[]")]
+    # Roadmap row 92: a mapping of models is reached under a `{}` wildcard,
+    # a whole segment of its own because what it stands in for -- a Plex
+    # library name -- is a whole segment, unlike `[]`'s list index.
+    mapping = _mapping_model_of(annotation)
+    return [] if mapping is None else [(mapping, ".{}")]
 
 
 def test_every_path_in_the_map_addresses_a_real_schema_field():
@@ -73,6 +84,12 @@ def test_every_path_in_the_map_addresses_a_real_schema_field():
     for path in FIELD_DESCRIPTIONS:
         model: type[BaseModel] | None = Config
         for segment in path.split("."):
+            if segment == "{}":
+                # The mapping wildcard. `_nested_models` already advanced the
+                # model to the mapping's VALUE type when it produced this
+                # segment, so there is no field here to resolve -- exactly as
+                # `[]` carries no field of its own.
+                continue
             name = segment[:-2] if segment.endswith("[]") else segment
             if path.startswith("secrets.") and model is Config:
                 model = Secrets
@@ -115,10 +132,14 @@ def test_a_description_never_says_when_a_setting_takes_effect():
 
 
 def _model_types_reachable(annotation) -> bool:
-    """True if this annotation is a shape ``_model_of``/``_item_model_of``
-    cover: a model, ``Model | None``, or ``list[Model]`` (each optionally
-    wrapped in the other)."""
-    return _model_of(annotation) is not None or _item_model_of(annotation) is not None
+    """True if this annotation is a shape ``_model_of``/``_item_model_of``/
+    ``_mapping_model_of`` cover: a model, ``Model | None``, ``list[Model]``
+    or ``dict[str, Model]`` (each optionally wrapped in the other)."""
+    return (
+        _model_of(annotation) is not None
+        or _item_model_of(annotation) is not None
+        or _mapping_model_of(annotation) is not None
+    )
 
 
 def _model_types_present(annotation) -> set[type]:
@@ -159,14 +180,24 @@ def _unsupported_container_fields() -> list[str]:
 
 def test_unsupported_container_shape_is_detected():
     """The detector's own correctness, pinned against a throwaway model rather
-    than the real schema: a ``dict[str, Model]`` field is a shape neither
-    ``_model_of`` nor ``_item_model_of`` covers, so it must be reported."""
+    than the real schema.
+
+    Repointed by roadmap row 92, not relaxed: ``dict[str, Model]`` USED to be
+    the offender here and is now a shape the walk covers (a ``{}`` wildcard
+    segment, so ``libraries.{}.operations.enabled`` gets a description like
+    any other leaf). The guard still has to be able to see a shape the walk's
+    vocabulary misses, so it is pinned against one that is genuinely still
+    unreachable -- a ``tuple[Model, ...]``. Deleting this test along with the
+    shape it named would have left the completeness guard with nothing
+    proving it can fail at all.
+    """
 
     class _Nested(BaseModel):
         name: str = ""
 
     class _Holder(BaseModel):
         by_key: dict[str, _Nested] = {}
+        pairs: tuple[_Nested, ...] = ()
         plain: str = ""
         wrapped: _Nested | None = None
         many: list[_Nested] = []
@@ -177,7 +208,7 @@ def test_unsupported_container_shape_is_detected():
             continue
         if _model_types_present(field.annotation):
             offenders.append(name)
-    assert offenders == ["by_key"]
+    assert offenders == ["pairs"]
 
 
 def test_every_model_holding_field_uses_a_shape_the_walk_covers():

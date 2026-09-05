@@ -7,7 +7,7 @@ operator-facing half of each comment moves onto the field itself, as
 ``Field(description=...)``, and this module is the single walk that turns those
 into the dotted-path map ``GET /config`` serves beside ``frozen_paths``.
 
-Three rules the walk encodes:
+Four rules the walk encodes:
 
 * A description says WHAT a setting does, never WHEN it takes effect. The
   restart requirement is ``config/live.FROZEN_SECTIONS``' job, is already
@@ -26,6 +26,15 @@ Three rules the walk encodes:
   it edits -- which is what those entries were served for before there was a
   row to hang them on. ``[]`` is a marker in this map, never a path the API
   accepts.
+* A field whose annotation is a ``dict`` of models gets an entry plus a
+  recursion under a ``{}`` segment -- ``libraries.{}.operations.enabled``
+  (roadmap row 92). The wildcard stands in for a key that is DATA rather than
+  schema: a Plex library name, which this map cannot enumerate and must not
+  try to. It is a whole segment rather than a suffix because what it replaces
+  is a whole segment, unlike ``[]``'s list index. The per-library matrix panel
+  substitutes the library name into it, the way the Custom collections panel
+  reads the ``[]`` paths. ``{}``, like ``[]``, is a marker in this map and
+  never a path the API accepts.
 """
 from types import UnionType
 from typing import Union, get_args, get_origin
@@ -65,6 +74,32 @@ def _item_model_of(annotation) -> type[BaseModel] | None:
     return None
 
 
+def _mapping_model_of(annotation) -> type[BaseModel] | None:
+    """The model a ``dict[str, Model]`` annotation holds, unwrapping ``X | None``.
+
+    The third container this walk knows. It exists for ``Config.libraries``
+    (roadmap row 92), whose keys are Plex library NAMES rather than field
+    names -- so the shape is described ONCE, under a ``{}`` segment, and the
+    page substitutes the name in. Without it a model buried in a mapping is
+    served as nothing at all, which is precisely what
+    ``tests/test_config_descriptions.py``'s completeness guard exists to make
+    loud rather than let ship.
+
+    Only the VALUE type is inspected. The key type is always ``str`` here and
+    could not carry a description anyway: there is no field to hang one on.
+    """
+    origin = get_origin(annotation)
+    if origin is dict:
+        args = get_args(annotation)
+        return _model_of(args[1]) if len(args) == 2 else None
+    if origin in (Union, UnionType):
+        for arg in get_args(annotation):
+            found = _mapping_model_of(arg)
+            if found is not None:
+                return found
+    return None
+
+
 def _walk(model: type[BaseModel], prefix: str = "") -> dict[str, str]:
     described: dict[str, str] = {}
     for name, field in model.model_fields.items():
@@ -77,6 +112,10 @@ def _walk(model: type[BaseModel], prefix: str = "") -> dict[str, str]:
         item = _item_model_of(field.annotation)
         if item is not None:
             described.update(_walk(item, f"{path}[]."))
+            continue
+        mapping = _mapping_model_of(field.annotation)
+        if mapping is not None:
+            described.update(_walk(mapping, f"{path}.{{}}."))
     return described
 
 
