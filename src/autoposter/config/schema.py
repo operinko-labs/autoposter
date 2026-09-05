@@ -3912,10 +3912,14 @@ class Config(BaseModel):
         failure ``tests/test_example_config_matches_schema.py`` exists for,
         arriving through a different door.
 
-        The message names the path INSIDE a library block and the reason,
-        both constants of this codebase, and never the library name the
-        operator typed. The document that failed is in the pod log, which is
-        where a config-load refusal is read.
+        The message names the path INSIDE a library block and the reason for
+        a real ``Config`` section (both constants of this codebase), and
+        never the library name the operator typed. For a section that is
+        not a real ``Config`` field either -- a typo, or a name this config
+        has never had -- naming it would be echoing arbitrary operator text
+        rather than a constant of this codebase, so only the fixed reason is
+        served, with no name at all (row 213). The document that failed is
+        in the pod log, which is where a config-load refusal is read.
         """
         if not isinstance(data, dict):
             return data
@@ -3923,11 +3927,19 @@ class Config(BaseModel):
         if not refusals:
             return data
         inside = sorted({
-            (path.split(".", 2)[2], reason) for path, reason in refusals
+            (
+                "" if reason == _UNKNOWN_LIBRARY_SECTION_REASON
+                else path.split(".", 2)[2],
+                reason,
+            )
+            for path, reason in refusals
         })
         raise ValueError(
             "libraries: %d setting(s) cannot be overridden per library -- %s"
-            % (len(refusals), "; ".join(f"{path} ({why})" for path, why in inside))
+            % (
+                len(refusals),
+                "; ".join(why if not name else f"{name} ({why})" for name, why in inside),
+            )
         )
 
     @model_validator(mode="after")

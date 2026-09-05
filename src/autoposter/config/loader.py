@@ -260,10 +260,12 @@ def config_for_library(config: Config, library: str) -> Config:
 
     **Only the whitelisted sections are rebuilt**, through
     ``model_copy(update=...)``, so ``artwork``, ``version`` and every other
-    section are carried through BY IDENTITY. That is the storm proof restated
-    at runtime: an effective config cannot carry a different ``artwork``, so
-    it cannot carry a different version, so no per-library setting can
-    invalidate a stored fingerprint however a caller uses the result.
+    section are carried through BY IDENTITY -- except ``libraries`` itself,
+    which the result CLEARS to ``{}`` rather than carrying through or
+    rebuilding (see below). That is the storm proof restated at runtime: an
+    effective config cannot carry a different ``artwork``, so it cannot
+    carry a different version, so no per-library setting can invalidate a
+    stored fingerprint however a caller uses the result.
 
     **The merge is ``config/overrides.py``'s own**, reached by a local import
     because that module imports this one. Nested mappings merge key by key;

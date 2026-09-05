@@ -37,6 +37,7 @@ from autoposter.config.loader import (
 )
 from autoposter.config.schema import (
     LIBRARY_OVERRIDE_EXCLUSIONS,
+    LIBRARY_OVERRIDE_SECTION_EXCLUSIONS,
     BadgesConfig,
     BadgesOverride,
     LibraryOverride,
@@ -271,13 +272,21 @@ def test_a_non_whitelisted_section_is_refused_at_load(section):
     ``render``/``made_up_section`` are not real fields at all, but all four
     used to be dropped in silence by pydantic's default ``extra="ignore"``.
     Refused now, and never naming the library the operator typed (Global
-    Constraint 13).
+    Constraint 13) -- and, for a section that names nothing real either
+    (row 213), never naming the section the operator typed: the served
+    reason is one fixed sentence with no name in it at all, unlike a real
+    ``Config`` section's, which is a constant of this codebase and still
+    named.
     """
     with pytest.raises(ValidationError) as caught:
         _with_libraries({"Movies": {section: {"anything": True}}})
     message = str(caught.value)
-    assert section in message
     assert "Movies" not in message
+    if section in LIBRARY_OVERRIDE_SECTION_EXCLUSIONS:
+        assert section in message
+    else:
+        assert section not in message
+        assert "only operations, badges and maintenance" in message
 
 
 def test_a_library_block_validates_and_the_rest_of_the_config_is_untouched():
