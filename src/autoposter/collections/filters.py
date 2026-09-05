@@ -1538,9 +1538,10 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     # 96's 29 search-only names.
     #
     # WHAT LEVEL THEY SEARCH AT, because the roadmap cell overstated it.
-    # Under a show collection Kometa's ``sort_type`` is ``builder_level``,
-    # which is ``show`` (builder.py:4118-4119), so ``episode_title.begins:
-    # Pilot`` renders ``type=2&...&episode.title%3C=Pilot``: SHOWS having
+    # Under a show collection Kometa's ``sort_type`` is ``builder_level``
+    # (builder.py:4122-4123), which is ``show`` (builder.py:994-995), so
+    # ``episode_title.begins: Pilot`` renders
+    # ``type=2&...&episode.title%3C=Pilot``: SHOWS having
     # such an episode. That is what these rows do here, without any
     # selector. Searching for the episodes THEMSELVES (``type=4``, the
     # season/episode sort matrices, ``BuilderResult.level``) is E-2 -- the

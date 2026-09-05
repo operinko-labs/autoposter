@@ -389,8 +389,8 @@ def test_a_family_e_row_renders_at_the_show_level_as_kometa_renders_it(raw, term
     """``type=2`` and the show default sort, then the term: a show library
     searched for shows HAVING a matching episode or season, which is what
     Kometa's ``build_filter`` emits for these keys under a show collection
-    (``sort_type = builder_level = "show"``, builder.py:4118-4119). Collecting
-    the episodes themselves is E-2's selector."""
+    (``sort_type = builder_level = "show"``, builder.py:994-995, :4122-4123).
+    Collecting the episodes themselves is E-2's selector."""
     assert url(raw, libtype="show") == f"?type=2&sort=titleSort&{term}"
 
 
