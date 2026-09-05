@@ -143,3 +143,36 @@ async def test_the_endpoint_never_touches_the_filesystem(
 
     assert response.status_code == 200
     assert response.json()["totals"]["assets"] == 2
+
+
+def test_the_readme_documents_the_widget_with_a_header_and_never_a_query_string():
+    """Row 52's operator-facing half, checked rather than assumed.
+
+    The query-string form is the ONE thing not copied from Posterizarr, whose
+    docs put ``?api_key=`` in every example -- a key there lands in an ingress
+    access log and a browser history. This asserts the README's storage-stats
+    recipe carries the key in a ``headers:`` block and uses Homepage's
+    ``bytes`` format on the byte fields, and that no recipe in the file puts a
+    credential in a URL.
+    """
+    readme = (Path(__file__).parent.parent / "deploy" / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "#### Homepage `customapi` recipe: storage" in readme
+    assert "/api/stats/storage" in readme
+    assert 'X-API-Key: "{{HOMEPAGE_VAR_AUTOPOSTER_API_KEY}}"' in readme
+    assert "format: bytes" in readme
+    # Scoped to the recipes' `url:` lines, not the whole file: row 51's own
+    # prose explains WHY the query string is never read and QUOTES
+    # ``?api_key=`` to do it, so a whole-file ban would fail on this project's
+    # own documentation of the rule. What must never appear is a credential in
+    # a widget's URL -- every customapi url here is bare.
+    for line in readme.splitlines():
+        if line.strip().startswith("url:"):
+            assert "?" not in line, f"a customapi recipe put a credential in the URL: {line}"
+    assert "?secret=" not in readme
+    # The backfill has to be documented as a scheduled pass, or an operator
+    # reading zero bytes on a fresh deployment has no way to know why.
+    assert "`asset_stats_days` (default `7`)" in readme
+    assert "`asset_stats_batch_size` (default `500`)" in readme

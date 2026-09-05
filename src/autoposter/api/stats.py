@@ -14,6 +14,14 @@ What is served: counts, byte totals, a timestamp, library names and art-kind
 tokens. **No path** -- not ``asset_path``, not ``assets_root``, not any root
 (roadmap row 213; an operator's filesystem layout is a disclosure). The
 library names are already served by ``GET /api/items/filters``.
+
+**The contract on the numbers themselves:** ``totals.bytes`` is a floor, not
+a measurement, while any ``unknown_size`` remains -- an artifact whose file
+could not be read still counts in ``assets`` (it was rendered) but
+contributes 0 to ``bytes``, and a row zeroed this way is corrected only when
+that artifact is next re-rendered (the pipeline's own "unchanged"
+short-circuit returns before the size is ever touched, so a pass that wrote
+nothing never restamps).
 """
 
 from sqlalchemy import case, func, select
