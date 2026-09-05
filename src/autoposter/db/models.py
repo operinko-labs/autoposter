@@ -949,3 +949,89 @@ class ActionDismissal(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class Run(Base):
+    """One execution, with a start, an end and an outcome (roadmap row 53).
+
+    Beside ``ScheduledRun``, never instead of it. ``scheduled_runs.name`` is
+    UNIQUE and that uniqueness is a scheduler-correctness invariant --
+    ``claim_due``'s ``INSERT ... ON CONFLICT DO NOTHING`` and the "at most one
+    replica claims" guarantee both rest on it (``scheduler/core.py``) -- so
+    that table holds the LAST run of each job and this one holds the history.
+    Converting the former into the latter would be a scheduler change wearing
+    a stats feature's clothes.
+
+    ``kind`` is ``scheduled`` (one row per ``_maybe_run`` pass) or
+    ``full_pass`` (one row per ``POST /api/full-pass``). ``name`` is the
+    scheduled job's name, or the literal ``full_pass``; it is not unique and
+    is not indexed -- the retention clause in ``scheduler/jobs.py``'s cleanup
+    pass keeps the newest ``RUN_HISTORY_KEEP`` rows per name, so this table is
+    bounded at roughly 5,500 rows and the only query worth an index is the
+    endpoint's ``ORDER BY started_at DESC``.
+
+    ``status`` is ``running`` until something closes the row, then ``ok`` or
+    ``failed`` for a scheduled job (copied from ``_maybe_run``'s own status),
+    or ``ok``/``timed_out`` for a full pass (drained, or past the 24-hour
+    ceiling). No CHECK constraint governs it, matching ``jobs.state`` and
+    ``scheduled_runs.last_status``.
+
+    ``detail`` is row 213 territory and is a COPY, never a re-derivation: for
+    a scheduled run it is the string ``scheduler/core.py`` already narrowed to
+    a class name (or a ``served_detail`` exception's own reviewed message);
+    for a full pass it is a sentence made of counts. Never ``jobs.last_error``,
+    never ``str(exc)``, never a path.
+
+    The seven count columns are **window attribution and say so**. No run id
+    threads through a ``process_item`` job -- ``app.py``'s handler decodes
+    ``RenderIntent(**job.payload)`` and an extra key raises, and
+    ``RenderIntent.dedupe_key`` cannot carry one without destroying the
+    coalescing the full pass depends on -- so what these columns count is
+    everything the worker pool FINISHED between ``started_at`` and
+    ``finished_at``, and nothing else. They are stamped only when the run is a
+    full pass, which is the only run whose window is its own work; a scheduled
+    job's window overlaps whatever the pool happened to be doing, so its
+    counts stay NULL. NULL means "not attributed", the ``renders.size_bytes``
+    rule -- visible, rather than a zero that lies.
+
+    ``rendered_*`` counts ``renders`` rows whose ``rendered_at`` fell in the
+    window, per art kind. That is artifacts RE-COMPOSITED, which is not the
+    same number as items visited: the pipeline's fingerprint short-circuit
+    returns before the ``rendered_at`` write-back, so a settled library's full
+    pass legitimately reports zero composites and tens of thousands
+    ``processed``. Both numbers are kept, named apart, for exactly that
+    reason.
+    """
+
+    __tablename__ = "runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # scheduled | full_pass
+    kind: Mapped[str] = mapped_column(String(16))
+    name: Mapped[str] = mapped_column(String(64))
+    # server_default, not just default: the row is inserted with the database
+    # clock in the same transaction as the work it describes, which is what
+    # makes `jobs.created_at >= runs.started_at` true by construction for a
+    # full pass (both resolve to the same transaction_timestamp()).
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # running | ok | failed | timed_out
+    status: Mapped[str] = mapped_column(
+        String(16), default="running", server_default="running"
+    )
+    detail: Mapped[str | None] = mapped_column(Text)
+
+    # --- window attribution (see the class docstring) -----------------------
+    rendered_poster: Mapped[int | None] = mapped_column(Integer)
+    rendered_season_poster: Mapped[int | None] = mapped_column(Integer)
+    rendered_background: Mapped[int | None] = mapped_column(Integer)
+    rendered_title_card: Mapped[int | None] = mapped_column(Integer)
+    processed: Mapped[int | None] = mapped_column(Integer)
+    failed: Mapped[int | None] = mapped_column(Integer)
+    # A wait, not a failure (jobs.state's own comment). Counted because C3
+    # names it; `parked` deliberately is not -- a parked job is an operator
+    # matter the Action Center owns, and a run's rollup is not where it
+    # belongs.
+    deferred: Mapped[int | None] = mapped_column(Integer)
