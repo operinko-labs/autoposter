@@ -28,6 +28,15 @@ CHOICES = {
     ("collection", "Marvel"): ("77",),
     ("audio_language", "en"): ("en",),
     ("audio_language", "es"): ("es-419", "es-MX", "spa"),
+    # Search-tail E-1's five tag rows. Keyed by the ROW NAME, which is what
+    # ``_arguments`` hands the resolver (``resolve_tag(row.name, value)``),
+    # so ``episode_actor`` and ``actor`` are separate entries here even
+    # though the real resolver answers both from one ``actor`` listing (T2).
+    ("season_collection", "Specials"): ("301",),
+    ("season_label", "Overlay"): ("3",),
+    ("episode_collection", "Pilots"): ("302",),
+    ("episode_label", "Overlay"): ("3",),
+    ("episode_actor", "Uma Thurman"): ("6",),
 }
 
 
@@ -335,3 +344,71 @@ def test_a_filters_parsed_tree_refuses_at_the_relative_window_rather_than_crashi
     message = str(error.value)
     assert "searching=True" in message
     assert "filters.added" in message
+
+
+# --- search tail E-1: the twenty show-only rows (roadmap row 173) -------------
+#
+# One render per row, on a SHOW library, against the string Kometa's
+# ``build_filter`` produces for the same key -- derived from the vendored
+# driver's branches and pinned all-at-once by oracle config 22. Each case
+# exercises the row's most distinctive operator: the tag rows through
+# resolution (``.not`` on one of them, ``!`` against the resolved key), the
+# string row through ``.begins`` (``%3C``), the three dates through the bare
+# window, ``.after`` and ``.not``, ``episode_plays`` through the plain-int
+# range, the three floats through ``.gte``/``.lt``/``.rated``,
+# ``episode_year`` through ``.gte``, and every boolean both ways.
+FAMILY_E_RENDERS = [
+    ({"season_collection": "Specials"}, "season.collection=301"),
+    ({"season_label": "Overlay"}, "season.label=3"),
+    ({"episode_collection": "Pilots"}, "episode.collection=302"),
+    ({"episode_label.not": "Overlay"}, "episode.label!=3"),
+    ({"episode_title.begins": "Pilot"}, "episode.title%3C=Pilot"),
+    ({"episode_actor": "Uma Thurman"}, "episode.actor=6"),
+    ({"episode_added": 30}, "episode.addedAt%3E%3E=-30d"),
+    ({"episode_air_date.after": "2024-01-01"}, "episode.originallyAvailableAt%3E%3E=2024-01-01"),
+    ({"episode_last_played.not": "2y"}, "episode.lastViewedAt%3C%3C=-2y"),
+    ({"episode_plays.gt": 3}, "episode.viewCount%3E%3E=3"),
+    ({"episode_user_rating.gte": 7}, "episode.userRating%3E=7.0"),
+    ({"episode_critic_rating.lt": 5}, "episode.rating%3C%3C=5.0"),
+    ({"episode_audience_rating.rated": True}, "episode.audienceRating!=-1"),
+    ({"episode_year.gte": 2010}, "episode.year%3E=2010"),
+    ({"episode_unplayed": True}, "episode.unwatched=1"),
+    ({"episode_duplicate": False}, "episode.duplicate!=1"),
+    ({"episode_progress": True}, "episode.inProgress=1"),
+    ({"episode_unmatched": False}, "episode.unmatched!=1"),
+    ({"show_unmatched": False}, "show.unmatched!=1"),
+    ({"unplayed_episodes": True}, "show.unwatchedLeaves=1"),
+]
+
+
+@pytest.mark.parametrize(
+    ("raw", "term"), FAMILY_E_RENDERS,
+    ids=[next(iter(raw)) for raw, _ in FAMILY_E_RENDERS],
+)
+def test_a_family_e_row_renders_at_the_show_level_as_kometa_renders_it(raw, term):
+    """``type=2`` and the show default sort, then the term: a show library
+    searched for shows HAVING a matching episode or season, which is what
+    Kometa's ``build_filter`` emits for these keys under a show collection
+    (``sort_type = builder_level = "show"``, builder.py:994-995, :4122-4123).
+    Collecting the episodes themselves is E-2's selector."""
+    assert url(raw, libtype="show") == f"?type=2&sort=titleSort&{term}"
+
+
+def test_every_family_e_row_refuses_on_a_movie_library_naming_the_kind():
+    """Kometa refuses nineteen of the twenty by name on a movie library
+    (``is_movie and final_attr in show_only_searches``,
+    kometa_build_filter.py:914) rather than sending a query a library with no
+    episodes answers with nothing; ``episode_actor`` it would send, and this
+    table refuses it too -- a DECLARED DIVERGENCE, argued on its row note and
+    pinned here so it stays deliberate. All twenty refuse before any tag
+    lookup: the kind gate in ``_render_predicate`` runs ahead of
+    ``resolve_tag``."""
+    from autoposter.collections.search_url import SearchAttributeNotAvailable
+
+    for raw, _ in FAMILY_E_RENDERS:
+        with pytest.raises(SearchAttributeNotAvailable) as error:
+            url(raw, libtype="movie")
+        message = str(error.value)
+        assert next(iter(raw)).split(".")[0] in message
+        assert "show" in message
+        assert "libraries:" in message

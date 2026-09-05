@@ -96,6 +96,13 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     ``last_episode_aired``, the first rows on the ``facts`` source tier --
     values this service holds in its own ``item_facts`` row rather than
     reading from Plex.
+
+    Search-tail E-1 appended TWENTY the same way, in the order roadmap row
+    173 names them: family E, the show-library searches whose PREDICATE reads
+    episode or season data (``episode_title``, ``unplayed_episodes``, ...).
+    All twenty are search-only and show-only, and all twenty render at the
+    SHOW search level (``type=2``) exactly as Kometa renders them; the
+    season/episode SEARCH level is E-2's (the ``builder_level`` selector).
     """
     assert [row.name for row in FILTER_ATTRIBUTES] == [
         "genre",
@@ -135,6 +142,26 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "aspect",
         "tmdb_status",
         "last_episode_aired",
+        "season_collection",
+        "season_label",
+        "episode_collection",
+        "episode_label",
+        "episode_title",
+        "episode_actor",
+        "episode_added",
+        "episode_air_date",
+        "episode_last_played",
+        "episode_plays",
+        "episode_user_rating",
+        "episode_critic_rating",
+        "episode_audience_rating",
+        "episode_year",
+        "episode_unplayed",
+        "episode_duplicate",
+        "episode_progress",
+        "episode_unmatched",
+        "show_unmatched",
+        "unplayed_episodes",
     ]
 
 
@@ -178,14 +205,18 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     by_type = {kind: [r.name for r in FILTER_ATTRIBUTES if r.type == kind] for kind in VALUE_TYPES}
     by_source = {t: [r.name for r in FILTER_ATTRIBUTES if r.source == t] for t in SOURCE_TIERS}
 
+    # Search-tail E-1 moved every column but ``duration`` at once: +5 tag,
+    # +1 str, +2 int, +3 float, +3 date, +6 bool -- twenty rows, all of them
+    # ``search-only`` and none of them a filter, so no SOURCE tier below other
+    # than ``search-only`` moved with them.
     assert {k: len(v) for k, v in by_type.items()} == {
-        "tag": 14,
-        "str": 3,
-        "int": 4,
-        "float": 4,
-        "date": 4,
+        "tag": 19,
+        "str": 4,
+        "int": 6,
+        "float": 7,
+        "date": 7,
         "duration": 1,
-        "bool": 7,
+        "bool": 13,
     }
     assert by_source["listing"] == [
         "year",
@@ -238,9 +269,20 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     ]
     # ``decade`` joins the search-only tier: row 96's own 29-name list names it
     # first, and Kometa has no ``decade`` FILTER at all.
+    # Search-tail E-1's twenty join here, in table order: Kometa has no FILTER
+    # of any of these names (the ``episode_*`` family is the largest block of
+    # row 96's 29 search-only names), so a ``filters:`` block refuses each by
+    # pointing at the plex_search block it belongs to.
     assert by_source["search-only"] == [
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
+        "season_collection", "season_label", "episode_collection",
+        "episode_label", "episode_title", "episode_actor", "episode_added",
+        "episode_air_date", "episode_last_played", "episode_plays",
+        "episode_user_rating", "episode_critic_rating",
+        "episode_audience_rating", "episode_year", "episode_unplayed",
+        "episode_duplicate", "episode_progress", "episode_unmatched",
+        "show_unmatched", "unplayed_episodes",
     ]
     # C2c's new tier, and the first that describes no Plex read at all: the
     # value is in this service's own `item_facts` row. REFUSAL-ONLY on the
@@ -297,7 +339,20 @@ def test_item_kinds_are_movie_show_or_both():
         "edition", "producer", "progress", "resolution", "subtitle_language",
         "unplayed", "writer",
     ]
-    assert show_only == ["last_episode_aired", "network", "tmdb_status"]
+    # Twenty of the twenty-three are search-tail E-1's: a search-only row's
+    # ``kinds`` follows its ``search_kinds`` (the ``unplayed``/``duplicate``
+    # convention); nineteen of the twenty are in Kometa's show_only_searches,
+    # and ``episode_actor`` is show-only by this table's own judgement -- a
+    # DECLARED DIVERGENCE, see its row note.
+    assert show_only == [
+        "episode_actor", "episode_added", "episode_air_date",
+        "episode_audience_rating", "episode_collection", "episode_critic_rating",
+        "episode_duplicate", "episode_label", "episode_last_played",
+        "episode_plays", "episode_progress", "episode_title",
+        "episode_unmatched", "episode_unplayed", "episode_user_rating",
+        "episode_year", "last_episode_aired", "network", "season_collection",
+        "season_label", "show_unmatched", "tmdb_status", "unplayed_episodes",
+    ]
     assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 22
 
 
@@ -445,8 +500,9 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
 
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
+    # ``("show",)`` was ``network`` alone until search-tail E-1's twenty.
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 24, ("movie",): 8, ("show",): 1, (): 4,
+        ("movie", "show"): 24, ("movie",): 8, ("show",): 21, (): 4,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -474,11 +530,21 @@ def test_four_rows_are_unsearchable_and_twentynine_are_filterable():
     assert BY_NAME["aspect"].searchable is False
     assert BY_NAME["tmdb_status"].searchable is False
     assert BY_NAME["last_episode_aired"].searchable is False
-    assert len(SEARCHABLE_ATTRIBUTES) == 33
+    # 33 -> 53 with search-tail E-1: Kometa's 55 non-music search names minus
+    # ``folder_location`` (row 176) and ``audio_codec`` (row 177). The
+    # filterable count does not move -- no family-E name is a Kometa filter.
+    assert len(SEARCHABLE_ATTRIBUTES) == 53
     assert len(FILTERABLE_ATTRIBUTES) == 29
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
+        "season_collection", "season_label", "episode_collection",
+        "episode_label", "episode_title", "episode_actor", "episode_added",
+        "episode_air_date", "episode_last_played", "episode_plays",
+        "episode_user_rating", "episode_critic_rating",
+        "episode_audience_rating", "episode_year", "episode_unplayed",
+        "episode_duplicate", "episode_progress", "episode_unmatched",
+        "show_unmatched", "unplayed_episodes",
     }
     assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {
         "versions", "aspect", "tmdb_status", "last_episode_aired"
@@ -628,10 +694,10 @@ def test_country_is_rescoped_for_a_show_library_and_decade_refuses_one():
 
 def test_the_text_rows_take_the_string_operators_and_rescope():
     """Row 170's two rows. ``title`` is the bare field re-scoped to
-    ``show.title`` (kometa_build_filter.py:166); ``edition`` is the one row in
+    ``show.title`` (kometa_build_filter.py:175); ``edition`` is the one row in
     the table that composes BOTH translation tables -- search_translation's
-    ``editionTitle`` (:88), then show_translation's entry for the TRANSLATED
-    name (:182). Both are dual-vocabulary on ``unprobed`` (the ``country``
+    ``editionTitle`` (:97), then show_translation's entry for the TRANSLATED
+    name (:191). Both are dual-vocabulary on ``unprobed`` (the ``country``
     pattern): a ``filters:`` block parses the key and refuses at the accessor
     by naming the tier."""
     from autoposter.collections.filter_values import (
@@ -663,10 +729,10 @@ def test_the_text_rows_take_the_string_operators_and_rescope():
 
 def test_the_media_booleans_are_search_only_and_libtype_gated():
     """Row 172's five rows. ``duplicate`` is movie-only (movie_only_searches,
-    kometa_build_filter.py:282), so a show library refuses it BY NAME;
+    kometa_build_filter.py:291), so a show library refuses it BY NAME;
     ``hdr``/``dovi``/``trash`` re-scope to the EPISODE libtype on a show
-    library (:184-188) exactly as ``resolution`` does, and ``unmatched`` to
-    ``show.unmatched`` (:175) -- the SHOW level, because a match belongs to
+    library (:193-197) exactly as ``resolution`` does, and ``unmatched`` to
+    ``show.unmatched`` (:184) -- the SHOW level, because a match belongs to
     the item and not the file. All five are ``search-only``: Kometa has no
     filter of any of these names (row 96's 29-name search-only list), so a
     ``filters:`` block refuses by pointing at the search block."""
@@ -1645,7 +1711,7 @@ def test_resolve_search_values_replaces_today_with_the_moments_date():
     (``_as_date`` returns one), so a resolved ``_Today`` has to match --
     Kometa's own driver truncates to the day too, its ``.before``/``.after``
     branch being ``return_as="%Y-%m-%d"``
-    (``tests/oracle/9b/kometa_build_filter.py:800``). A full ``datetime``
+    (``tests/oracle/9b/kometa_build_filter.py:809``). A full ``datetime``
     here would render ``YYYY-MM-DDTHH:MM:SS.ffffff``, which is a query
     string Plex does not parse as a date."""
     group = parse_filters({"release.after": "today"}, searching=True)
@@ -2356,3 +2422,101 @@ def test_a_collection_filtering_on_a_facts_row_is_refused_naming_row_156():
         assert "'facts'" in message, name
         assert "row 156" in message, name
         assert "condition:" in message, name
+
+
+# --- search tail E-1: the twenty show-only rows (roadmap row 173) -------------
+#
+# Every cell is Kometa's, cited to the vendored driver
+# tests/oracle/9b/kometa_build_filter.py.
+# FIELD: ``episode_actor`` is dotted already (kometa_build_filter.py:94-128, plex.py:61-95).
+# KIND: ``season_collection`` is show-only (kometa_build_filter.py:302-360, plex.py:446-506).
+# TYPE, from the category lists: ``episode_title`` is string (kometa_build_filter.py:364).
+# ``episode_unmatched`` is boolean (kometa_build_filter.py:366-382).
+# ``episode_last_played`` is date (kometa_build_filter.py:385-401).
+# ``episode_year`` is year (kometa_build_filter.py:403).
+# ``episode_plays`` is number (kometa_build_filter.py:404).
+# ``episode_critic_rating`` is float (kometa_build_filter.py:406).
+# ``episode_label`` is tag (kometa_build_filter.py:409-430).
+# One tuple per row so a reviewer checks the TABLE against the TRANSCRIPTION
+# rather than against this file's prose. The order is roadmap row 173's,
+# which is also the table's.
+FAMILY_E = [
+    ("season_collection", "tag", "season.collection"),
+    ("season_label", "tag", "season.label"),
+    ("episode_collection", "tag", "episode.collection"),
+    ("episode_label", "tag", "episode.label"),
+    ("episode_title", "str", "episode.title"),
+    ("episode_actor", "tag", "episode.actor"),
+    ("episode_added", "date", "episode.addedAt"),
+    ("episode_air_date", "date", "episode.originallyAvailableAt"),
+    ("episode_last_played", "date", "episode.lastViewedAt"),
+    ("episode_plays", "int", "episode.viewCount"),
+    ("episode_user_rating", "float", "episode.userRating"),
+    ("episode_critic_rating", "float", "episode.rating"),
+    ("episode_audience_rating", "float", "episode.audienceRating"),
+    ("episode_year", "int", "episode.year"),
+    ("episode_unplayed", "bool", "episode.unwatched"),
+    ("episode_duplicate", "bool", "episode.duplicate"),
+    ("episode_progress", "bool", "episode.inProgress"),
+    ("episode_unmatched", "bool", "episode.unmatched"),
+    ("show_unmatched", "bool", "show.unmatched"),
+    ("unplayed_episodes", "bool", "show.unwatchedLeaves"),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "value_type", "field"), FAMILY_E, ids=[row[0] for row in FAMILY_E]
+)
+def test_a_family_e_row_is_typed_and_routed_as_kometa_routes_it(name, value_type, field):
+    """The ``network`` shape, twenty times: a dotted field that
+    ``search_translation`` already scopes, so ``show_translation`` never sees
+    it and the two field columns are EQUAL rather than the second being None;
+    show-only in both kind columns; unfilterable; search-only. ``field_for``
+    refuses a movie library rather than falling back, because a movie library
+    has no episodes. For nineteen of the twenty that is Kometa's own refusal
+    (kometa_build_filter.py:914,
+    ``is_movie and final_attr in show_only_searches``); ``episode_actor`` is
+    in neither of Kometa's kind lists and is show-only here by this table's
+    own judgement -- a DECLARED DIVERGENCE, argued on its row note."""
+    row = BY_NAME[name]
+    assert row.type == value_type
+    assert row.search_field == field
+    assert row.show_search_field == field
+    assert row.field_for("show") == field
+    assert row.search_kinds == ("show",)
+    assert row.kinds == ("show",)
+    assert row.filterable is False
+    assert row.source == "search-only"
+    with pytest.raises(ValueError):
+        row.field_for("movie")
+
+
+def test_episode_plays_takes_the_ranges_only_and_episode_year_the_full_int_set():
+    """The ``plays``/``year`` split, repeated one level down. ``episode_plays``
+    is a ``number_attribute`` only (kometa_build_filter.py:404) and so takes
+    ``number_modifiers`` alone -- no bare form, no ``.not``
+    (show_only_searches lists exactly ``.gt``/``.gte``/``.lt``/``.lte``,
+    :330-333); ``episode_year`` is a ``year_attribute`` (:403) and reaches
+    ``tag_modifiers`` as well, so its bare form and ``.not`` survive
+    (:349-354). Same two rows as ``plays``/``year``, same
+    ``SEARCH_OPERATORS_EXCLUDED`` mechanism."""
+    assert BY_NAME["episode_plays"].search_operators == ("gt", "gte", "lt", "lte")
+    assert BY_NAME["episode_year"].search_operators == (
+        "eq", "not", "gt", "gte", "lt", "lte",
+    )
+    with pytest.raises(ValueError) as error:
+        parse_filters({"episode_plays": 3}, field="params", searching=True)
+    assert "episode_plays" in str(error.value)
+    parse_filters({"episode_year": 2010}, field="params", searching=True)
+
+
+def test_a_family_e_name_in_a_filters_block_is_pointed_at_plex_search():
+    """The D2c cross-reference, for the family that makes it matter most:
+    an operator who writes ``episode_title`` in a ``filters:`` block is told
+    it is a plex_search attribute and where to move it, rather than being
+    told the name is unknown."""
+    with pytest.raises(ValueError) as error:
+        parse_filters({"episode_title": "Pilot"}, field="filters")
+    message = str(error.value)
+    assert "episode_title" in message
+    assert "plex_search" in message

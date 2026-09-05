@@ -406,6 +406,30 @@ collections:
   #       builder: smart_url
   #       params:
   #         url: "https://app.plex.tv/desktop/#!/server/abc123/com.plexapp.plugins.library?key=%2Flibrary%2Fsections%2F1%2Fall%3Ftype%3D1%26sort%3Drandom%26genre%3D1138"
+  #     # A show-library search whose predicates read EPISODE or SEASON data
+  #     # (roadmap row 173, search tail E-1). Show libraries only; a movie
+  #     # library refuses each name and says so. These select SHOWS -- a show
+  #     # having an episode that matches -- exactly as Kometa renders them
+  #     # under a show collection (`type=2&...&episode.title<=Pilot`).
+  #     # Collecting the matching episodes THEMSELVES is the `builder_level`
+  #     # selector on a smart/search definition, not shipped yet (E-2).
+  #     # The twenty: season_collection, season_label, episode_collection,
+  #     # episode_label, episode_title, episode_actor, episode_added,
+  #     # episode_air_date, episode_last_played, episode_plays (ranges only),
+  #     # episode_user_rating, episode_critic_rating, episode_audience_rating,
+  #     # episode_year, episode_unplayed, episode_duplicate, episode_progress,
+  #     # episode_unmatched, show_unmatched, unplayed_episodes. Each takes the
+  #     # modifiers of its type (tag/str/int/float/date/bool), as documented on
+  #     # the item-level row of the same shape.
+  #     - title: Recently Aired
+  #       builder: plex_search
+  #       params:
+  #         all:
+  #           episode_air_date: 14 # an episode aired in the last 14 days
+  #           unplayed_episodes: true # ...and the show has episodes left to play
+  #         sort_by: episode_added.desc
+  #         limit: 25
+  #       libraries: [TV Shows]
   definitions: []
 
 playlists:

@@ -75,6 +75,7 @@ SURFACES = (
     ROOT / "src" / "autoposter" / "collections" / "builders" / "plex_search.py",
     ROOT / "tests" / "test_collection_filters.py",
     ROOT / "tests" / "test_builder_plex_search.py",
+    ROOT / "tests" / "test_collection_search_url.py",
 )
 # 21 filename-anchored + 9 bare continuations. The whole inventory is 38
 # counting the roadmap's 8, which sit outside this guard's scope (see the
@@ -86,7 +87,23 @@ SURFACES = (
 # ``test_builder_plex_search.py`` each cite
 # ``tests/oracle/9b/kometa_build_filter.py:800`` (the driver's own
 # ``return_as="%Y-%m-%d"`` truncation) by name.
-EXPECTED_REF_COUNT = 30
+#
+# The 72 added past 30 are search-tail E-1's (roadmap row 173, family E):
+# twenty new ``FILTER_ATTRIBUTES`` rows in ``filters.py``, each citing several
+# ``kometa_build_filter.py`` lines by name in its note (the field, the kind
+# list, the type category, the operator set), plus the ``SEARCH_OPERATORS_EXCLUDED``
+# entry for ``episode_plays`` and the three new tests appended to
+# ``test_collection_filters.py``.
+#
+# The 12 added past 102 are the branch-review fix wave (I-1, F1-F3): eleven
+# previously-stale, previously-unguarded citations corrected by +9 and
+# rewritten file-anchored -- filters.py:1532; the FAMILY_E header in
+# test_collection_filters.py (nine refs across four lines); and
+# test_collection_search_url.py:400, brought under the guard by adding that
+# file to SURFACES -- plus one brand-new citation, the FAMILY_E header's
+# added M-6 clause in filters.py noting Kometa's kind gate is keyed on
+# ``name.modifier`` (kometa_build_filter.py:914).
+EXPECTED_REF_COUNT = 114
 
 _FILE_REF = re.compile(r"\b([\w./-]+\.(?:py|md|ts|tsx|yml|yaml)):(\d+)(?:-(\d+))?")
 _BARE_REF = re.compile(r"(?<![\w:]):(\d+)(?:-(\d+))?")

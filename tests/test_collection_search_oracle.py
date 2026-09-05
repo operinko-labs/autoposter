@@ -7,7 +7,7 @@ runs, and produces a full, plausible, wrong collection. Every other test in
 this phase asserts the transcription against itself -- against a string
 hand-derived from the same source, by the same reading, in the same sitting.
 
-This file asserts it against Kometa. Twenty-one configs, and twenty-one URI
+This file asserts it against Kometa. Twenty-two configs, and twenty-two URI
 strings produced by **Kometa's own build_filter** -- fetched, transcribed
 standalone, run, and pinned below as data. Ours must reproduce them byte for
 byte.
@@ -126,6 +126,25 @@ manufactured: ``show_search_field=None`` on the ``actor`` row turns config 20
 red (``actor=6`` where Kometa says ``show.actor=6``), which is exactly the
 silent-wrong-set failure the config exists to catch.
 
+## The twenty-second config
+
+Search-tail E-1 (roadmap row 173, family E) added twenty rows, and as with
+every batch since 16/17 no existing golden would have reached any of them:
+``test_the_configs_cover_every_shipped_value_type`` covers TYPES, and every
+type the twenty use was already exercised. All twenty are show-only, so ONE
+show config holds them all -- there is no movie column to pin, and the movie
+refusal is a unit test in ``tests/test_collection_search_url.py``. Config 22
+pins every field-by-libtype cell of the family at the SHOW search level
+(``type=2``): the five tag rows resolved to keys (one ``.not``), the string
+row through ``.begins``, the three dates through the window / ``.after`` /
+``.not`` forms, ``episode_plays`` as a plain-int range, the three floats
+through ``.gte`` / ``.lt`` / ``.rated``, ``episode_year.gte``, and all six
+booleans -- plus a limit and a show sort so the head is pinned with the body.
+The golden came from the same driver in the same way -- predicted from the
+transcription first, then confirmed by running it. The season/episode SEARCH
+level (``type=3``/``4``) is E-2's, and its configs 23/24 will follow the same
+recipe.
+
 ## `current_year`, row 171's other half
 
 Row 171 had two halves: the ``decade`` table row (configs 16/17, above) and
@@ -188,6 +207,11 @@ CHOICES = {
     ("country", "France"): ("36",),
     ("actor", "Uma Thurman"): ("6",),
     ("director", "Sofia Coppola"): ("58",),
+    ("season_collection", "Specials"): ("301",),
+    ("season_label", "Overlay"): ("3",),
+    ("episode_collection", "Pilots"): ("302",),
+    ("episode_label", "Overlay"): ("3",),
+    ("episode_actor", "Uma Thurman"): ("6",),
 }
 
 
@@ -272,6 +296,31 @@ CONFIGS = [
     ("21-people-on-a-movie", "movie", {"all": {
         "actor": "Uma Thurman", "director": "Sofia Coppola",
     }}),
+    ("22-family-e-on-a-show", "show", {
+        "all": {
+            "season_collection": "Specials",
+            "season_label": "Overlay",
+            "episode_collection": "Pilots",
+            "episode_label.not": "Overlay",
+            "episode_title.begins": "Pilot",
+            "episode_actor": "Uma Thurman",
+            "episode_added": 30,
+            "episode_air_date.after": "2024-01-01",
+            "episode_last_played.not": "2y",
+            "episode_plays.gt": 3,
+            "episode_user_rating.gte": 7,
+            "episode_critic_rating.lt": 5,
+            "episode_audience_rating.rated": True,
+            "episode_year.gte": 2010,
+            "episode_unplayed": True,
+            "episode_duplicate": False,
+            "episode_progress": True,
+            "episode_unmatched": False,
+            "show_unmatched": False,
+            "unplayed_episodes": True,
+        },
+        "sort_by": "episode_added.desc", "limit": 5,
+    }),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
@@ -283,8 +332,10 @@ CONFIGS = [
 # predicted at Step 6 before the driver ran, then confirmed by it, same as the
 # fifteen before them), search-tails-1's plan (eighteen and nineteen,
 # predicted from the transcription, then confirmed by the driver) and
-# search-tails-1's Task 2 report (twenty and twenty-one, the same way). Do not
-# edit a string here to make a test pass: if ours differs, ours is wrong.
+# search-tails-1's Task 2 report (twenty and twenty-one, the same way), and
+# search-tail E-1's plan (twenty-two, predicted from the transcription, then
+# confirmed by the driver). Do not edit a string here to make a test pass: if
+# ours differs, ours is wrong.
 KOMETA = {
     "1-multi-value-tag": "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7",
     "2-any-base": "?type=1&limit=25&sort=rating%3Adesc&push=1&studio=A24&or=1&year%3E=2020&pop=1",
@@ -307,6 +358,7 @@ KOMETA = {
     "19-the-tails-on-a-show": "?type=2&sort=titleSort&show.title!%3D=Dune&and=1&show.editionTitle%3E=Cut&and=1&episode.hdr=1&and=1&episode.dovi!=1&and=1&episode.trash=1&and=1&show.unmatched!=1",
     "20-actor-on-a-show": "?type=2&sort=titleSort&show.actor=6",
     "21-people-on-a-movie": "?type=1&sort=titleSort&actor=6&and=1&director=58",
+    "22-family-e-on-a-show": "?type=2&limit=5&sort=episode.addedAt%3Adesc&season.collection=301&and=1&season.label=3&and=1&episode.collection=302&and=1&episode.label!=3&and=1&episode.title%3C=Pilot&and=1&episode.actor=6&and=1&episode.addedAt%3E%3E=-30d&and=1&episode.originallyAvailableAt%3E%3E=2024-01-01&and=1&episode.lastViewedAt%3C%3C=-2y&and=1&episode.viewCount%3E%3E=3&and=1&episode.userRating%3E=7.0&and=1&episode.rating%3C%3C=5.0&and=1&episode.audienceRating!=-1&and=1&episode.year%3E=2010&and=1&episode.unwatched=1&and=1&episode.duplicate!=1&and=1&episode.inProgress=1&and=1&episode.unmatched!=1&and=1&show.unmatched!=1&and=1&show.unwatchedLeaves=1",
 }
 
 

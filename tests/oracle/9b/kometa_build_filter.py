@@ -56,6 +56,15 @@ CHOICES = {
     ("country", "France"): ("36",),
     ("actor", "Uma Thurman"): ("6",),
     ("director", "Sofia Coppola"): ("58",),
+    # Search-tail E-1's five tag rows, keyed by ATTRIBUTE NAME the way
+    # ``_choices`` looks them up. ``episode_actor`` and ``actor`` share a key
+    # on purpose: the live resolver answers both from one show-level ``actor``
+    # listing, and the oracle's job is the URL, not the enumeration scope.
+    ("season_collection", "Specials"): ("301",),
+    ("season_label", "Overlay"): ("3",),
+    ("episode_collection", "Pilots"): ("302",),
+    ("episode_label", "Overlay"): ("3",),
+    ("episode_actor", "Uma Thurman"): ("6",),
 }
 
 
@@ -1093,6 +1102,42 @@ CONFIGS = [
     # resolved to keys through CHOICES like every tag. One config cannot hold
     # both halves: ``director`` on a show library is refused upstream.
     ("movie", {"all": {"actor": "Uma Thurman", "director": "Sofia Coppola"}}),
+    # 22: search-tail E-1 -- all twenty family-E rows on a SHOW library at the
+    # show search level (``sort_type = "show"``, type 2), one config because
+    # every one of them is legal there and none is legal anywhere else. Each
+    # row's most distinctive modifier: the five tags resolved to keys with
+    # one ``.not`` (``!`` against the resolved key), ``episode_title.begins``
+    # through the STRING branch (``%3C``, quoted), the three dates through the
+    # bare window / ``.after`` / ``.not`` (:4222-4233), ``episode_plays.gt``
+    # as a plain int, the three floats through ``.gte``/``.lt``/``.rated``
+    # (``8.0``-style floats, ``!=-1`` for rated), ``episode_year.gte`` through
+    # the year branch, and the six booleans both ways (``=1`` / ``!=1``). A
+    # limit and a show sort so the head is pinned too.
+    ("show", {
+        "all": {
+            "season_collection": "Specials",
+            "season_label": "Overlay",
+            "episode_collection": "Pilots",
+            "episode_label.not": "Overlay",
+            "episode_title.begins": "Pilot",
+            "episode_actor": "Uma Thurman",
+            "episode_added": 30,
+            "episode_air_date.after": "2024-01-01",
+            "episode_last_played.not": "2y",
+            "episode_plays.gt": 3,
+            "episode_user_rating.gte": 7,
+            "episode_critic_rating.lt": 5,
+            "episode_audience_rating.rated": True,
+            "episode_year.gte": 2010,
+            "episode_unplayed": True,
+            "episode_duplicate": False,
+            "episode_progress": True,
+            "episode_unmatched": False,
+            "show_unmatched": False,
+            "unplayed_episodes": True,
+        },
+        "sort_by": "episode_added.desc", "limit": 5,
+    }),
 ]
 
 

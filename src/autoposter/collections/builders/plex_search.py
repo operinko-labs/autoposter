@@ -75,11 +75,46 @@ from autoposter.collections.search_url import build_search_url
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ENUMERATES_AS",
     "LibraryTagResolver",
     "PlexSearchBuilder",
     "PlexSearchParams",
     "PlexSearchUnavailable",
 ]
+
+# Search-tail E-1 (roadmap row 173): the two search FIELDS whose tag vocabulary
+# is NOT enumerated at the scope the field names. Keyed by the rendered field
+# (what ``FilterAttribute.field_for`` returns), valued by the bare Plex filter
+# name to enumerate at the LIBRARY'S OWN libtype instead. The URL term is
+# untouched -- this is enumeration scope only.
+#
+# Both entries are transcribed from a live probe (2026-09-04, the operator's
+# 'TV Shows' section, plexapi ``listFilterChoices``), not guessed:
+#
+# - ``episode.actor`` -> ``actor``. ``actor`` answers 787 choices at the show
+#   libtype and ``NotFound`` at the episode libtype: Plex has no episode-level
+#   actor filter. This entry IS Kometa's ``get_tags_translation``
+#   (modules/plex.py:194, applied in ``get_search_choices`` at :1304), the one
+#   dict line upstream keeps for exactly this field. Enumerate at the show
+#   level, apply at the episode search level (``episode.actor=<key>``).
+# - ``episode.collection`` -> ``collection``. ``collection`` answers 11 choices
+#   at show, ``NotFound`` at season, ZERO choices at episode. Kometa's
+#   ``get_tags`` carries its one special case for this (:1360-1363): a key
+#   ending ``/collection?type=4`` is answered as the un-typed ``/collection``
+#   listing minus the type-4 and type-3 keys -- three requests whose result,
+#   on a show library, is the type-2 listing. Transcribed as that RESULT
+#   rather than re-performed: one memoised call at the library's libtype,
+#   shared with the ``collection`` row's own lookup.
+#
+# ``season.collection`` is deliberately absent. Kometa asks the season scope
+# and this server refuses it; so does this service, class-name-only through
+# ``LibraryTagResolver._raw_choices``. Pinned by name in
+# tests/test_builder_plex_search.py so this table cannot grow an entry the
+# probe did not justify.
+ENUMERATES_AS: dict[str, str] = {
+    "episode.actor": "actor",
+    "episode.collection": "collection",
+}
 
 # The keys Kometa accepts and this builder refuses, each with the reason. Held
 # as data so the refusals cannot drift apart in wording, and so adding one is
@@ -227,7 +262,7 @@ class PlexSearchParams(BaseModel):
             )
         # The two empty-base messages Kometa's own ``build_filter`` raises
         # (``{base} attribute is blank`` / ``{base} must be a dictionary``,
-        # kometa_build_filter.py:962/:964) -- reproduced here because a bare
+        # kometa_build_filter.py:971/:973) -- reproduced here because a bare
         # `all:` with nothing under it (YAML's ``{"all": None}``) is the most
         # common way to hit this, and naming ``any`` -- the base the operator
         # never wrote -- sends them looking for a block that does not exist.
@@ -485,6 +520,13 @@ class LibraryTagResolver:
     def _field_and_scope(self, attribute: str) -> tuple[str, str]:
         row = BY_NAME[attribute]
         field = row.field_for(self._libtype)
+        # ``ENUMERATES_AS`` (module top): the two fields whose vocabulary
+        # lives at the library's own libtype rather than at the dotted
+        # scope. A bare name has no dot, so ``rpartition`` yields an empty
+        # scope and the ``or self._libtype`` below does the de-scoping --
+        # the same line Kometa's ``get_tags`` uses (``_libtype or
+        # self.Plex.TYPE``, plex.py:1353).
+        field = ENUMERATES_AS.get(field, field)
         scope, _, name = field.rpartition(".")
         return scope or self._libtype, name
 

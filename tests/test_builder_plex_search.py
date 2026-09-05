@@ -62,7 +62,7 @@ def test_an_empty_any_base_names_any_not_all():
 
 def test_a_non_mapping_base_is_refused_naming_its_own_key():
     """Kometa's other empty-base message (``{base} must be a dictionary``,
-    kometa_build_filter.py:964), reproduced alongside the blank one."""
+    kometa_build_filter.py:973), reproduced alongside the blank one."""
     with pytest.raises(ValidationError) as error:
         PlexSearchParams.model_validate({"all": ["genre: Horror"]})
     assert "`all:` must be a mapping" in str(error.value)
@@ -214,11 +214,14 @@ class FakeItem:
 class FakeSection:
     """Counts what it was asked, so 'one lookup per pass' is a measurement.
 
-    ``raise_on`` maps a field name to the exception INSTANCE
+    ``raise_on`` maps a field name -- or, since search-tail E-1, a
+    ``(field, libtype)`` pair -- to the exception INSTANCE
     ``listFilterChoices`` should raise for it -- an instance, not a class,
     because Minor 3's narrowing test needs to raise something that is not a
     plexapi error at all (a plain ``TypeError``, standing in for a bug in our
-    own code) alongside cases that are.
+    own code) alongside cases that are. The pair form exists because the live
+    server answers ``actor`` at one libtype and refuses it at another, and a
+    fake that cannot say so cannot pin which scope the resolver asked.
     """
 
     key = 1
@@ -232,6 +235,8 @@ class FakeSection:
 
     def listFilterChoices(self, field, libtype=None):
         self.filter_calls.append((field, libtype))
+        if (field, libtype) in self._raise_on:
+            raise self._raise_on[(field, libtype)]
         if field in self._raise_on:
             raise self._raise_on[field]
         return self._choices.get((field, libtype), [])
@@ -300,7 +305,7 @@ async def test_today_in_a_plex_search_date_predicate_resolves_to_the_real_moment
     a bare ``YYYY-MM-DD`` -- the same shape every other date on this path
     renders (``_as_date`` returns a ``dt.date``), and the shape Kometa's own
     driver renders too -- its ``.before``/``.after`` branch is
-    ``return_as="%Y-%m-%d"`` (``tests/oracle/9b/kometa_build_filter.py:800``)
+    ``return_as="%Y-%m-%d"`` (``tests/oracle/9b/kometa_build_filter.py:809``)
     -- not a full ISO timestamp. Tolerant of ``today``/``yesterday`` rather
     than a frozen clock, to survive a midnight boundary during the run."""
     today = dt.date.today()
@@ -681,3 +686,126 @@ def test_choices_answers_both_members_as_str():
     resolver = LibraryTagResolver(context(section), section, "movie")
 
     assert resolver.choices("decade") == (("1980", "1980s"),)
+
+
+# --- search tail E-1: the two enumeration special cases (roadmap row 173) -----
+#
+# Transcribed from a LIVE probe, not guessed: 2026-09-04, the operator's
+# 'TV Shows' section, plexapi ``listFilterChoices``, read-only. ``actor``
+# answers 787 choices at the show libtype and NotFound at the episode
+# libtype; ``collection`` answers 11 at show, NotFound at season, and ZERO
+# choices at episode. ``live_show_section`` reproduces exactly those five
+# answers, so every test below runs against what the server actually does --
+# and a resolver that regressed into asking Plex for a filter it lacks fails
+# here with the NotFound the server would have raised.
+
+
+def live_show_section():
+    return FakeSection(
+        choices={
+            ("actor", "show"): [FakeChoice("Uma Thurman", "6")],
+            ("collection", "show"): [FakeChoice("Pilots", "302")],
+            ("collection", "episode"): [],
+        },
+        raise_on={
+            ("actor", "episode"): NotFound("no such filter field"),
+            ("collection", "season"): NotFound("no such filter field"),
+        },
+    )
+
+
+async def test_episode_actor_is_enumerated_as_the_bare_actor_field_at_the_librarys_own_libtype():
+    """Kometa's ``get_tags_translation = {"episode.actor": "actor"}``
+    (plex.py:194, applied in ``get_search_choices`` at :1304): the ONE field
+    whose enumeration is de-scoped to the library's own type, because Plex
+    has no episode-level actor filter. Enumerate at ``show``, apply at the
+    episode search level -- the URL term is still ``episode.actor=``."""
+    section = live_show_section()
+    ctx = context(section, library_type="Show", config={"all": {"episode_actor": "Uma Thurman"}})
+    await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=2&sort=titleSort&episode.actor=6"
+    ]
+    assert section.filter_calls == [("actor", "show")]
+
+
+async def test_episode_actor_and_actor_share_one_round_trip_per_pass():
+    """Both rows enumerate the same ``(show, actor)`` listing, so the memo
+    key is the same and a definition naming both pays for one call -- which
+    is also Kometa's arithmetic, since both go through ``get_tags("actor")``."""
+    section = live_show_section()
+    ctx = context(
+        section, library_type="Show",
+        config={"all": {"actor": "Uma Thurman", "episode_actor": "Uma Thurman"}},
+    )
+    await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=2&sort=titleSort&show.actor=6&and=1&episode.actor=6"
+    ]
+    assert section.filter_calls == [("actor", "show")]
+
+
+async def test_episode_collection_is_enumerated_at_the_show_level_only():
+    """Kometa's ``get_tags`` special case (plex.py:1360-1363): a key ending
+    ``/collection?type=4`` is answered as the un-typed listing minus the
+    type-4 and type-3 keys. On a show library that subtraction leaves the
+    type-2 listing -- which is why the live probe found the episode listing
+    EMPTY and the season one absent. Transcribed as its result: one call, at
+    ``show``, and never the empty ``episode`` listing that would refuse
+    every written value as unknown."""
+    section = live_show_section()
+    ctx = context(section, library_type="Show", config={"all": {"episode_collection": "Pilots"}})
+    await PlexSearchBuilder().build(ctx)
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=2&sort=titleSort&episode.collection=302"
+    ]
+    assert section.filter_calls == [("collection", "show")]
+
+
+async def test_season_collection_is_asked_at_the_season_scope_which_the_live_server_refuses():
+    """The NON-override, pinned so the table above cannot quietly grow a third
+    entry. Kometa splits ``season.collection`` and asks ``listFilters("season")``
+    (plex.py:1347-1355); this server has no such filter, and Kometa answers
+    ``plex_search attribute: season_collection not supported``. So does this
+    service -- as the resolver's class-name-only wrap, memoised for the pass,
+    with the server's own message kept out of it."""
+    section = live_show_section()
+    ctx = context(section, library_type="Show", config={"all": {"season_collection": "Pilots"}})
+    with pytest.raises(PlexSearchUnavailable) as error:
+        await PlexSearchBuilder().build(ctx)
+    message = str(error.value)
+    assert "season_collection" in message
+    assert "NotFound" in message
+    assert "no such filter field" not in message
+    assert section.filter_calls == [("collection", "season")]
+    assert section.fetch_calls == []
+
+
+def test_the_enumeration_table_is_get_tags_translation_plus_the_documented_merge():
+    """Exactly two entries: Kometa's one dict line (plex.py:194) and the
+    result of its one ``get_tags`` special case (:1360-1363). Every key is a
+    field some table row actually renders, so the table cannot name a scope
+    nothing asks for."""
+    from autoposter.collections.builders.plex_search import ENUMERATES_AS
+    from autoposter.collections.filters import FILTER_ATTRIBUTES
+
+    assert ENUMERATES_AS == {
+        "episode.actor": "actor",
+        "episode.collection": "collection",
+    }
+    rendered = {row.search_field for row in FILTER_ATTRIBUTES}
+    for field, bare in ENUMERATES_AS.items():
+        assert field in rendered, field
+        assert "." not in bare, bare
+
+
+def test_choices_for_episode_actor_is_the_show_level_actor_list():
+    """The enumeration seam (10a's ``choices``) goes through the same
+    ``_field_and_scope``, so a dynamic family over ``episode_actor`` would
+    enumerate the show-level actors too, rather than asking a scope Plex
+    refuses."""
+    section = live_show_section()
+    resolver = LibraryTagResolver(context(section, library_type="Show"), section, "show")
+
+    assert resolver.choices("episode_actor") == (("6", "Uma Thurman"),)
+    assert section.filter_calls == [("actor", "show")]
