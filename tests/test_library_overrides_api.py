@@ -14,6 +14,9 @@ requires a CI lane assignment for each one, and this suite is the config
 editor's suite wearing a different hat rather than a twenty-third API suite.
 """
 import pytest
+from sqlalchemy import select
+
+from autoposter.db.models import ConfigOverride
 
 # Fixtures, re-exported. pytest's default import mode puts `tests/` on
 # sys.path, so this is a plain module import.
@@ -119,6 +122,27 @@ async def test_a_server_wide_maintenance_key_is_refused_with_its_reason(
     detail = response.json()["detail"]
     assert detail[0]["path"] == "libraries.Movies.maintenance.optimize"
     assert "server-wide" in detail[0]["message"]
+
+
+@pytest.mark.parametrize("section", ["artwork", "render", "scheduler", "made_up_section"])
+async def test_a_non_whitelisted_section_under_a_library_is_refused(
+    client, auth_headers, session, section,
+):
+    """Roadmap row 92 review, Important 1.
+
+    A SECTION under a library block that is not one of the three
+    whitelisted ones is refused, whether it names a real config field this
+    service does not let vary per library (``artwork``, ``scheduler``) or
+    nothing at all (``render``, the made-up placeholder) -- and nothing is
+    stored either way, matching every other refusal in this file.
+    """
+    response = await _put(client, auth_headers, {
+        "libraries": {"Movies": {section: {"anything": True}}},
+    })
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["path"] == f"libraries.Movies.{section}"
+    assert (await session.execute(select(ConfigOverride))).scalars().all() == []
 
 
 async def test_an_unknown_library_name_is_refused(client, auth_headers):

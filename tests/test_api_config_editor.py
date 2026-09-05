@@ -458,21 +458,32 @@ def test_render_affecting_matches_render_versions_own_input_set():
     config's 29 top-level sections before this test existed: this is a
     regression guard, not a bug fix.
 
-    ``libraries`` (roadmap row 92) is exempt from the walk: the shipped
-    default is `{}`, so unlike every other section it has no leaf at all for
-    this generic mechanism to toggle. Its render-non-effect is proven
-    exhaustively instead, by
+    A section whose example value is an empty mapping is skipped by
+    CONDITION rather than by name (roadmap row 92 review, Important 3): an
+    empty mapping has no leaf at all for this generic mechanism to toggle,
+    whatever the section happens to be called. Today that is only
+    ``libraries`` (roadmap row 92; the shipped default is `{}`), so this
+    self-repairs if that ever changes -- a `libraries:` example gaining real
+    content would be walked like any other section instead of staying
+    silently exempted forever. ``section == {}`` rather than ``not
+    section``: ``skip_tba`` is a top-level scalar whose example value is
+    ``False``, which ``not section`` would wrongly skip too.
+
+    ``libraries``' own render-non-effect is proven directly instead, by
     ``test_library_overrides.py::test_the_libraries_section_moves_no_render_version``,
-    which sets every whitelisted leaf of every configured library and checks
-    all five versions directly.
+    which sets a representative leaf of each of the three whitelisted
+    sections -- 9 of the 27 available leaves -- across the 2 configured
+    libraries and checks all five versions directly. Not exhaustive over
+    every leaf; the wholesale-hash argument
+    (``test_library_overrides.py::test_render_version_hashes_exactly_six_named_inputs``)
+    is what makes a representative leaf enough.
     """
     base = read_config_document(EXAMPLE)
     before = build_config(base)
-    EXEMPT_EMPTY_SECTIONS = {"libraries"}
 
     checked = 0
     for key, section in base.items():
-        if key in EXEMPT_EMPTY_SECTIONS:
+        if section == {}:
             continue
         for dotted, leaf in _document_leaves(section, key):
             candidate = _toggled_leaf(leaf)
@@ -493,10 +504,10 @@ def test_render_affecting_matches_render_versions_own_input_set():
         else:
             continue
 
-    expected_checked = len(base) - len(EXEMPT_EMPTY_SECTIONS)
+    expected_checked = sum(1 for section in base.values() if section != {})
     assert checked == expected_checked, (
         f"only {checked} of {expected_checked} top-level sections had a leaf "
-        "this walk could safely mutate -- every non-exempt section in the "
+        "this walk could safely mutate -- every non-empty section in the "
         "example config was expected to have one"
     )
 

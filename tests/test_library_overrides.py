@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from autoposter.config.live import FROZEN_SECTIONS
 from autoposter.config.loader import (
     RENDER_ART_KINDS,
     _shared_render_inputs,
@@ -238,6 +239,47 @@ def test_no_exclusion_names_a_section_outside_the_whitelist():
         assert name, path
 
 
+def test_the_frozen_operations_paths_are_all_excluded_per_library():
+    """Roadmap row 92 review, Important 2.
+
+    ``LIBRARY_OVERRIDE_EXCLUSIONS``' four ``operations.*`` entries are
+    derived from ``config/live.py``'s ``FROZEN_SECTIONS`` rather than a
+    second hand-copied literal, so this is a characterization pin rather
+    than a live check: it protects the derivation itself, in case a future
+    edit reverts ``LIBRARY_OVERRIDE_EXCLUSIONS`` back to a literal that
+    quietly stops matching a FIFTH ``operations.*`` entry added to
+    ``FROZEN_SECTIONS`` (a new startup-captured cadence, a new process-wide
+    client) -- which would otherwise validate clean per library, merge
+    clean, and then be ignored at runtime by the object built once at
+    startup.
+    """
+    frozen_operations = {p for p in FROZEN_SECTIONS if p.startswith("operations.")}
+    assert frozen_operations, "FROZEN_SECTIONS carries no operations.* path to check"
+    assert frozen_operations <= set(LIBRARY_OVERRIDE_EXCLUSIONS), (
+        frozen_operations - set(LIBRARY_OVERRIDE_EXCLUSIONS)
+    )
+
+
+@pytest.mark.parametrize("section", ["artwork", "render", "scheduler", "made_up_section"])
+def test_a_non_whitelisted_section_is_refused_at_load(section):
+    """Roadmap row 92 review, Important 1.
+
+    ``LIBRARY_OVERRIDE_EXCLUSIONS`` is keyed ``section.name`` and only ever
+    matches a LEAF of an already-whitelisted section, so it could never
+    refuse a whole SECTION -- ``artwork`` and ``scheduler`` are real
+    ``Config`` fields this service does not let vary per library, and
+    ``render``/``made_up_section`` are not real fields at all, but all four
+    used to be dropped in silence by pydantic's default ``extra="ignore"``.
+    Refused now, and never naming the library the operator typed (Global
+    Constraint 13).
+    """
+    with pytest.raises(ValidationError) as caught:
+        _with_libraries({"Movies": {section: {"anything": True}}})
+    message = str(caught.value)
+    assert section in message
+    assert "Movies" not in message
+
+
 def test_a_library_block_validates_and_the_rest_of_the_config_is_untouched():
     config = _with_libraries({
         "Movies": {"operations": {"write_to_plex": False}},
@@ -358,9 +400,11 @@ def test_the_libraries_section_moves_no_render_version(config_factory):
 
     ``render_version``'s payload is a six-key literal naming ``artwork`` and
     five path/flag scalars (pinned above), so a ``libraries:`` block is
-    outside it BY CONSTRUCTION. Setting every leaf of every whitelisted
-    section for every configured library must leave the wholesale value and
-    all four per-kind values digit-for-digit identical.
+    outside it BY CONSTRUCTION. Setting a representative leaf of each
+    whitelisted section (9 of the 27 available leaves) across the 2
+    configured libraries must leave the wholesale value and all four
+    per-kind values digit-for-digit identical -- not exhaustive over every
+    leaf; the six-key literal above is what makes that enough.
     """
     before = config_factory()
     before_versions = {
@@ -517,6 +561,28 @@ def test_the_seam_is_idempotent():
     assert twice.operations.write_to_plex is False
     assert twice.badges.enabled is False
     assert twice.artwork is config.artwork
+
+
+def test_a_second_resolve_for_a_different_library_does_not_compose():
+    """Roadmap row 92 review, Minor 1.
+
+    ``test_the_seam_is_idempotent`` covers same-library re-entry only; this
+    covers the composition that must NOT happen -- resolving a second,
+    DIFFERENT library's overrides on top of an already-resolved config.
+    Without ``config_for_library`` clearing ``libraries`` on its result,
+    this would merge TV Shows' stated leaf over Movies' merged
+    ``operations`` instead of the plain global one.
+    """
+    config = _with_libraries({
+        "Movies": {"operations": {"write_to_plex": False}},
+        "TV Shows": {"operations": {"enabled": False}},
+    })
+    movies = config_for_library(config, "Movies")
+    composed = config_for_library(movies, "TV Shows")
+
+    assert composed is movies
+    assert composed.operations.write_to_plex is False
+    assert composed.operations.enabled is True
 
 
 def test_the_seam_does_no_io_and_takes_no_session():

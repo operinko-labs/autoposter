@@ -289,6 +289,16 @@ def config_for_library(config: Config, library: str) -> Config:
     sections = _merged_sections(config, override, _merge)
     if not sections:
         return config
+    # Roadmap row 92 review, Minor 1. The result is now THIS library's own
+    # effective config, so its `libraries` mapping is cleared rather than
+    # carried through: without this, a caller resolving twice for two
+    # DIFFERENT libraries -- `config_for_library(config_for_library(c,
+    # "Movies"), "TV Shows")` -- would merge TV Shows' stated leaves over a
+    # Movies-merged `operations`, a composition nobody asked for. Clearing it
+    # makes a second resolve for any other library find no override and
+    # return the result unchanged, the same identity path a config with no
+    # override at all already takes.
+    sections["libraries"] = {}
     # `model_copy`, not a re-validation: each section above was rebuilt
     # through its own model and so ran its own rules, and re-running
     # `Config`'s cross-section validators once per item would be work with

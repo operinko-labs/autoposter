@@ -7,6 +7,7 @@ from typing import Literal
 from PIL import ImageColor
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from autoposter.config.live import FROZEN_SECTIONS
 from autoposter.overlays.schema import OverlayDefinition
 
 _LANG_RE = re.compile(r"^[a-z]{2}$")
@@ -1323,24 +1324,25 @@ class MaintenanceConfig(BaseModel):
 #:
 #: Keyed on the path INSIDE a library block, so one map serves the file loader
 #: and the config editor and neither one holds a library name.
+#:
+#: The ``operations.*`` entries below are DERIVED from ``config/live.py``'s
+#: ``FROZEN_SECTIONS`` rather than copied by hand (roadmap row 92 review,
+#: Important 2): those four settings are frozen because a process-wide
+#: object reads them once at startup and never again, which is exactly why a
+#: per-library value could not be honoured either -- the object that would
+#: have to vary per library does not exist. Deriving means a FIFTH
+#: ``operations.*`` entry added to ``FROZEN_SECTIONS`` later (a new
+#: startup-captured cadence, a new process-wide client) is excluded here
+#: automatically, instead of staying overridable per library while the
+#: object that reads it was built once and never rereads it -- the exact gap
+#: a hand-copied literal would reopen silently.
+_FROZEN_OPERATIONS_EXCLUSIONS: dict[str, str] = {
+    path: reason for path, reason in FROZEN_SECTIONS.items()
+    if path.startswith("operations.")
+}
+
 LIBRARY_OVERRIDE_EXCLUSIONS: dict[str, str] = {
-    "operations.imdb_refresh_enabled": (
-        "the IMDb auto-refresh loop is one process-wide loop, started once at "
-        "startup; it cannot be switched on or off underneath itself, per "
-        "library or at all"
-    ),
-    "operations.imdb_refresh_hours": (
-        "the IMDb auto-refresh loop captures one cadence when it starts, for "
-        "the whole process"
-    ),
-    "operations.imdb_miss_refresh_minutes": (
-        "the miss-triggered IMDb refresh is installed process-wide at startup; "
-        "gather_facts carries no client of its own to vary per library"
-    ),
-    "operations.tmdb_backoff_seconds": (
-        "one TMDb rate budget serves every library, and it captures its window "
-        "when the facts client is built"
-    ),
+    **_FROZEN_OPERATIONS_EXCLUSIONS,
     "operations.metadata_backup_enabled": (
         "the metadata backup writes one file tree for the whole server"
     ),
@@ -1365,6 +1367,56 @@ LIBRARY_OVERRIDE_EXCLUSIONS: dict[str, str] = {
     ),
 }
 
+#: Roadmap row 92 review, Important 1. ``LIBRARY_OVERRIDE_EXCLUSIONS`` above
+#: is keyed ``section.name`` and only ever matches a LEAF of one of the three
+#: whitelisted sections (``operations``, ``badges``, ``maintenance``) -- so a
+#: whole SECTION under a library block, such as ``artwork`` or
+#: ``scheduler``, could never be looked up in it and pydantic's default
+#: ``extra="ignore"`` dropped it in silence. This map is keyed on the
+#: section NAME alone, for a section that is a real ``Config`` field this
+#: service deliberately does not let vary per library.
+LIBRARY_OVERRIDE_SECTION_EXCLUSIONS: dict[str, str] = {
+    "artwork": (
+        "render_version hashes config.artwork wholesale into the one "
+        "config.version every stored fingerprint carries, so a per-library "
+        "artwork setting would strand fingerprints across libraries it "
+        "never named; the correct shape is roadmap row 111's "
+        "render_version_for(art_kind, config) taking a library argument, "
+        "filed but not built"
+    ),
+    "collections": (
+        "a collection definition already targets its own libraries "
+        "(CollectionDefinition.libraries); a second per-library dimension "
+        "over the same thing would be two ways to say one sentence"
+    ),
+    "playlists": (
+        "a playlist definition already targets its own libraries "
+        "(PlaylistDefinition.libraries); a second per-library dimension "
+        "over the same thing would be two ways to say one sentence"
+    ),
+    "plex": (
+        "one Plex server and one section list serve every library; there "
+        "is no per-library Plex connection to have an opinion about"
+    ),
+    "scheduler": (
+        "the scheduler's job set and cadences are registered once, "
+        "process-wide, at startup; there is no per-library schedule"
+    ),
+}
+
+#: A section under a library block that is neither one of the three
+#: whitelisted sections nor one of the excluded ones above -- a typo, or a
+#: name this config has never had. Refused with one fixed sentence rather
+#: than a per-section reason, because there is no real setting to explain;
+#: ``config/overrides.py``'s ``unknown_key_paths`` makes the same call for a
+#: typo'd LEAF.
+_UNKNOWN_LIBRARY_SECTION_REASON = (
+    "not one of this library's overridable sections -- only operations, "
+    "badges and maintenance can be set per library"
+)
+
+_LIBRARY_OVERRIDE_SECTIONS = frozenset({"operations", "badges", "maintenance"})
+
 
 def library_override_refusals(document: dict) -> list[tuple[str, str]]:
     """Every ``libraries:`` path in ``document`` that is structurally global.
@@ -1380,6 +1432,12 @@ def library_override_refusals(document: dict) -> list[tuple[str, str]]:
     rather than the true-but-useless "unknown setting". One walk, one
     vocabulary, two entry points.
 
+    A whole SECTION that is not one of the three whitelisted ones is refused
+    here too (roadmap row 92 review, Important 1) -- whether it names a real
+    ``Config`` field (``LIBRARY_OVERRIDE_SECTION_EXCLUSIONS``) or nothing at
+    all (``_UNKNOWN_LIBRARY_SECTION_REASON``) -- so a section never reaches
+    pydantic's default ``extra="ignore"`` and gets dropped without a trace.
+
     Sorted, so a document with several offenders reports them in a stable
     order rather than a dict's.
     """
@@ -1391,6 +1449,12 @@ def library_override_refusals(document: dict) -> list[tuple[str, str]]:
         if not isinstance(block, dict):
             continue
         for section, settings in block.items():
+            if section not in _LIBRARY_OVERRIDE_SECTIONS:
+                reason = LIBRARY_OVERRIDE_SECTION_EXCLUSIONS.get(
+                    section, _UNKNOWN_LIBRARY_SECTION_REASON
+                )
+                refusals.append((f"libraries.{library}.{section}", reason))
+                continue
             if not isinstance(settings, dict):
                 continue
             for name in settings:
