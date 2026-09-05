@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.models import ScheduledRun
 from autoposter.notify.dispatch import NullNotifier
+from autoposter.scheduler.run_history import close_run, open_run
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,21 @@ class Scheduler:
         # whole run, indistinguishable from a scheduler that never woke up.
         logger.info("scheduler: %s started", job.name)
 
+        # Roadmap row 53's history row, opened at the boundary that already
+        # exists rather than at a new one: the claim above is committed, so
+        # this row describes a run the database already shows in flight. Its
+        # own transaction, and contained the same way the claim is -- run
+        # history is bookkeeping, and failing to record it must never stop the
+        # pass it would have recorded. `run_id` stays None in that case and
+        # the completion write below simply has nothing to close.
+        run_id: int | None = None
+        try:
+            async with self._session_factory() as session:
+                run_id = await open_run(session, kind="scheduled", name=job.name)
+                await session.commit()
+        except Exception:
+            logger.warning("scheduler: could not open a run row for %s", job.name, exc_info=True)
+
         # Roadmap row 19's run_start, from the same after-the-commit position
         # the completion send uses: the claim above is committed, so the
         # scheduled_runs row already shows this run in flight and the payload
@@ -218,6 +234,12 @@ class Scheduler:
                 row.last_finished_at = func.now()
                 row.last_status = status
                 row.last_detail = detail[:2000]
+                if run_id is not None:
+                    # The same status and the same already-narrowed detail the
+                    # row above records (row 213): copied, never re-derived.
+                    # In the same transaction, so the two tables can never
+                    # disagree about how this run ended.
+                    await close_run(session, run_id, status=status, detail=detail)
                 await session.commit()
         except Exception:
             logger.warning("scheduler: could not record %s result", job.name, exc_info=True)
