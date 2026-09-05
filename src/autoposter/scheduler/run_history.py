@@ -19,10 +19,10 @@ caller that has already narrowed it. Nothing here reads ``jobs.last_error``,
 formats an exception, or touches a path.
 """
 
-from sqlalchemy import func, insert, text, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import Run
+from autoposter.db.models import Job, Render, Run
 
 # How many rows per job name the cleanup pass keeps (facts C6). Chosen as a
 # history depth rather than a byte budget: 500 passes is about five years of a
@@ -137,3 +137,168 @@ async def trim_run_history(
         {"keep": keep},
     )
     return result.rowcount
+
+
+# The name every full-pass row carries. A literal rather than a job name,
+# because a full pass is not a scheduled job and deliberately is not in
+# api/routes.py's SCHEDULED_JOB_NAMES -- the dashboard's Run-now button must
+# not offer it.
+FULL_PASS_NAME = "full_pass"
+
+# How long an open full pass may stay open before the watcher gives up on it.
+# 24 hours because the operator's own measured pass is ~3.5 h for 16k items at
+# zero composites, and a library four times that size on a bad day should not
+# be declared timed out while it is genuinely working. What this bounds is the
+# other case: one pending job that nothing will ever claim -- a worker killed
+# outside the reclaim window, a payload no handler decodes -- which would
+# otherwise leave the row `running` forever and put a bar of unbounded height
+# on the duration chart.
+FULL_PASS_CEILING_SECONDS = 24 * 60 * 60
+
+# The four artifact kinds, in the order the counts report them. Kept in
+# lockstep with api/stats.py's ART_KINDS: these two tuples must describe the
+# same four columns or a chart legend and a storage widget disagree about what
+# an art kind is.
+_ART_KINDS = ("poster", "season_poster", "background", "title_card")
+
+# The job states each count column reads. `parked` is deliberately absent
+# (facts C3): a parked job is an operator matter the Action Center owns, and a
+# run rollup is not a surface anyone can act on it from.
+_JOB_STATE_COLUMNS = {"processed": "done", "failed": "failed", "deferred": "deferred"}
+
+
+async def window_counts(session: AsyncSession, started_at, finished_at) -> dict:
+    """What the worker pool finished between two instants.
+
+    **This is window attribution, not causation.** No run id threads through a
+    ``process_item`` job (see this module's docstring and the recon), so what
+    these numbers describe is a half-open interval ``[started_at,
+    finished_at)`` and nothing more. For a full pass the interval IS the
+    pass's drain, which is what makes it worth serving; for anything else it
+    is whatever happened to be running, which is why nothing else stamps it.
+
+    Two grouped round trips, the ``storage_snapshot`` shape: one scan of
+    ``renders`` grouped by ``art_kind``, one of ``jobs`` grouped by ``state``,
+    each with the window as its predicate. Every value is passed through
+    ``int()`` -- a PostgreSQL aggregate can come back from asyncpg as a
+    ``Decimal``, which serialises as a *string* and is not a number a chart
+    can plot.
+
+    All seven keys are always present and zero-filled (``jobs_by_state``'s
+    rule): a mapping must never point at a field that vanished because this
+    pass composited no title cards.
+    """
+    rendered = (
+        await session.execute(
+            select(Render.art_kind, func.count())
+            .where(
+                Render.rendered_at >= started_at,
+                Render.rendered_at < finished_at,
+            )
+            .group_by(Render.art_kind)
+        )
+    ).all()
+
+    by_state = (
+        await session.execute(
+            select(Job.state, func.count())
+            .where(
+                # Only the kind the worker pool actually dispatches today
+                # (app.py's `handlers`). Naming it keeps the count meaning the
+                # same thing on the day a second kind lands.
+                Job.kind == "process_item",
+                Job.updated_at >= started_at,
+                Job.updated_at < finished_at,
+            )
+            .group_by(Job.state)
+        )
+    ).all()
+
+    counts = {f"rendered_{kind}": 0 for kind in _ART_KINDS}
+    counts.update({column: 0 for column in _JOB_STATE_COLUMNS})
+
+    for art_kind, total in rendered:
+        # An art_kind outside the four (nothing writes one) is simply not
+        # counted rather than inventing a key from stored data -- api/stats.py
+        # takes the same position, for the same reason.
+        key = f"rendered_{art_kind}"
+        if key in counts:
+            counts[key] = int(total)
+
+    seen = {state: int(total) for state, total in by_state}
+    for column, state in _JOB_STATE_COLUMNS.items():
+        counts[column] = seen.get(state, 0)
+
+    return counts
+
+
+async def close_drained_full_passes(session: AsyncSession) -> int:
+    """Close every open full pass that has drained, or run out of time.
+
+    C2's drain-watcher. "Drained" is: no ``process_item`` job created at or
+    after the run's ``started_at`` is still ``pending`` or ``running``.
+    ``deferred`` is excluded on purpose -- it is a wait, not work in flight
+    (``queue/jobs.py``'s ``DEFER_INTERVAL_SECONDS`` is six hours with no
+    attempt cap), so a deferred row is COUNTED as deferred and does not hold
+    the run open.
+
+    Two known and accepted imprecisions, stated rather than hidden:
+
+    * a webhook arriving mid-drain creates a ``process_item`` job inside the
+      window, so it extends the run and lands in its counts;
+    * an item whose job was already pending when the pass began is skipped by
+      ``enqueue_batch``'s ``ON CONFLICT DO NOTHING``, so the pass neither waits
+      for it nor counts it as its own.
+
+    Both follow from window attribution, which is the honest mechanism
+    available; an id on the job is not, at any price this row can pay.
+
+    Returns how many rows it closed. Does not commit.
+    """
+    open_runs = (
+        await session.execute(
+            select(Run.id, Run.started_at)
+            .where(Run.kind == "full_pass", Run.finished_at.is_(None))
+            .order_by(Run.id)
+        )
+    ).all()
+    if not open_runs:
+        return 0
+
+    now = (await session.execute(select(func.now()))).scalar_one()
+    closed = 0
+    for run_id, started_at in open_runs:
+        outstanding = (
+            await session.execute(
+                select(func.count())
+                .select_from(Job)
+                .where(
+                    Job.kind == "process_item",
+                    Job.state.in_(("pending", "running")),
+                    Job.created_at >= started_at,
+                )
+            )
+        ).scalar_one()
+        expired = (now - started_at).total_seconds() >= FULL_PASS_CEILING_SECONDS
+        if outstanding and not expired:
+            continue
+
+        counts = await window_counts(session, started_at, now)
+        await session.execute(
+            update(Run)
+            .where(Run.id == run_id)
+            .values(
+                finished_at=now,
+                status="timed_out" if outstanding else "ok",
+                # Counts only, never a job's last_error (row 213). The same
+                # three numbers the columns hold, so the served sentence and
+                # the served fields can never disagree.
+                detail=(
+                    "drained: {processed} processed, {failed} failed, "
+                    "{deferred} deferred"
+                ).format(**counts)[:_DETAIL_WIDTH],
+                **counts,
+            )
+        )
+        closed += 1
+    return closed

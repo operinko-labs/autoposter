@@ -6,14 +6,20 @@ timestamps -- and a mocked session would verify the Python around SQL that was
 never executed.
 """
 
-from sqlalchemy import select, text
+from datetime import timedelta
 
-from autoposter.db.models import Run
+from sqlalchemy import func, select, text
+
+from autoposter.db.models import Job, MediaItem, Render, Run
 from autoposter.scheduler.run_history import (
+    FULL_PASS_CEILING_SECONDS,
+    FULL_PASS_NAME,
     RUN_HISTORY_KEEP,
+    close_drained_full_passes,
     close_run,
     open_run,
     trim_run_history,
+    window_counts,
 )
 
 
@@ -149,3 +155,183 @@ async def test_retention_deletes_nothing_below_the_threshold(session):
     # And the guard on the guard: the fixture's table really is empty of
     # anything else, so the assertion above is about the clause, not luck.
     assert (await session.execute(text("SELECT count(*) FROM runs"))).scalar_one() == 1
+
+
+async def _item(session, rating_key="1"):
+    item = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="Dune")
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def _now(session):
+    return (await session.execute(select(func.now()))).scalar_one()
+
+
+async def test_window_counts_group_renders_by_art_kind_over_rendered_at(session):
+    """C3's first number: artifacts RE-COMPOSITED, from renders.rendered_at,
+    which render/pipeline.py stamps only at the write-back -- the fingerprint
+    short-circuit returns before it, so this is composites and not visits.
+    That is exactly why `processed` is a separate column."""
+    # renders.uq_render_item_kind is one row per (item_id, art_kind), so two
+    # "rendered_poster" hits in the same window come from two different
+    # items, not one item rendered twice.
+    items = [await _item(session, rating_key=str(n)) for n in range(1, 4)]
+    start = await _now(session)
+    for item, kind in zip(items, ("poster", "poster", "background")):
+        session.add(
+            Render(item_id=item.id, art_kind=kind, asset_path="/x.jpg",
+                   status="rendered", rendered_at=func.now())
+        )
+    await session.commit()
+    end = await _now(session)
+
+    counts = await window_counts(session, start, end)
+
+    assert counts["rendered_poster"] == 2
+    assert counts["rendered_background"] == 1
+    # Always all four keys, zero-filled -- api/stats.py's rule, so a chart
+    # never points at a field that vanished because nothing of that kind was
+    # composited.
+    assert counts["rendered_season_poster"] == 0
+    assert counts["rendered_title_card"] == 0
+    assert all(isinstance(value, int) for value in counts.values())
+
+
+async def test_a_render_outside_the_window_is_not_counted(session):
+    item = await _item(session)
+    session.add(
+        Render(item_id=item.id, art_kind="poster", asset_path="/x.jpg",
+               status="rendered", rendered_at=func.now())
+    )
+    await session.commit()
+    start = await _now(session)
+    end = start + timedelta(hours=1)
+
+    assert (await window_counts(session, start, end))["rendered_poster"] == 0
+
+
+async def test_window_counts_take_jobs_by_state_and_never_parked(session):
+    """C3's second number, and its deliberate omission: `parked` is not a
+    served count. A parked job is an operator matter the Action Center owns,
+    and folding it into a run's rollup would put it on a surface with no way
+    to act on it."""
+    start = await _now(session)
+    for state in ("done", "done", "failed", "deferred", "parked", "pending"):
+        session.add(Job(kind="process_item", payload={}, state=state))
+    await session.commit()
+    end = await _now(session)
+
+    counts = await window_counts(session, start, end)
+
+    assert counts["processed"] == 2
+    assert counts["failed"] == 1
+    assert counts["deferred"] == 1
+    assert "parked" not in counts
+
+
+async def test_only_process_item_jobs_are_counted(session):
+    """`process_item` is the only kind the worker pool dispatches today
+    (app.py's `handlers` map), so this changes no number now -- and it is what
+    keeps the count meaning the same thing on the day a second kind lands,
+    rather than silently absorbing it."""
+    start = await _now(session)
+    session.add(Job(kind="process_item", payload={}, state="done"))
+    session.add(Job(kind="something_else", payload={}, state="done"))
+    await session.commit()
+    end = await _now(session)
+
+    assert (await window_counts(session, start, end))["processed"] == 1
+
+
+async def test_a_drained_full_pass_is_closed_with_its_counts(session):
+    run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    session.add(Job(kind="process_item", payload={}, state="done"))
+    session.add(Job(kind="process_item", payload={}, state="failed"))
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 1
+    await session.commit()
+
+    row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.status == "ok"
+    assert row.finished_at is not None
+    assert (row.processed, row.failed, row.deferred) == (1, 1, 0)
+    assert row.rendered_poster == 0
+    # Row 213: counts only. Never a job's last_error on this surface.
+    assert row.detail == "drained: 1 processed, 1 failed, 0 deferred"
+
+
+async def test_a_pending_job_holds_the_run_open_and_a_deferred_one_does_not(session):
+    """C2, both halves. A pending or running job created inside the window is
+    the pass still draining. A DEFERRED one is a wait, not work in flight --
+    queue/jobs.py's DEFER_INTERVAL_SECONDS is six hours with no attempt cap,
+    so letting one hold the row open would mean a run that never closes."""
+    run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    pending = Job(kind="process_item", payload={}, state="pending")
+    session.add(pending)
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 0
+    await session.commit()
+    row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.status == "running"
+
+    pending.state = "deferred"
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 1
+    await session.commit()
+    await session.refresh(row)
+    assert row.status == "ok"
+    assert row.deferred == 1
+
+
+async def test_a_job_created_before_the_run_started_does_not_hold_it_open(session):
+    """Window attribution's stated edge, pinned rather than left implicit: a
+    job already pending when the pass began belongs to whatever created it.
+    enqueue_batch's ON CONFLICT DO NOTHING skips such an item entirely, so
+    waiting on it would be waiting on work this run never queued."""
+    session.add(Job(kind="process_item", payload={}, state="pending"))
+    await session.commit()
+    # The run opens AFTER that job exists.
+    await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 1
+
+
+async def test_a_pass_past_the_ceiling_is_closed_as_timed_out(session):
+    """C2's hard ceiling. Without it a single stuck pending job -- a worker
+    killed mid-claim past the reclaim window, a kind nothing handles -- leaves
+    a row `running` forever and the chart shows a pass that never ends."""
+    run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    session.add(Job(kind="process_item", payload={}, state="pending"))
+    await session.commit()
+    await session.execute(
+        text(
+            "UPDATE runs SET started_at = now() - make_interval(secs => :secs)"
+        ),
+        {"secs": FULL_PASS_CEILING_SECONDS + 60},
+    )
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 1
+    await session.commit()
+
+    row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.status == "timed_out"
+    assert row.processed is not None
+
+
+async def test_a_scheduled_run_is_never_closed_by_the_drain_watcher(session):
+    """The watcher's WHERE clause is `kind = 'full_pass'`. A scheduled run has
+    its own close at its own boundary, and a second closer would race it."""
+    run_id = await open_run(session, kind="scheduled", name="demo")
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 0
+    await session.commit()
+
+    row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.status == "running"

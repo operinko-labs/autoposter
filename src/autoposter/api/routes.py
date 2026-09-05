@@ -86,6 +86,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue, enqueue_batch
 from autoposter.render.pipeline import ART_KINDS_FOR, _identity_clauses, manual_override_path
+from autoposter.scheduler.run_history import FULL_PASS_NAME, open_run
 
 logger = logging.getLogger(__name__)
 
@@ -1064,6 +1065,20 @@ async def run_full_pass(
     adopted seasons and episodes, whose stored ids are their own rather than
     the series' -- see ``PlexClient._fetch_by_rating_key_sync``. The key is not
     part of the dedupe key, so this changes nothing about what deduplicates.
+
+    Recorded as a run (roadmap row 53): a `runs` row of kind `full_pass` is
+    opened here, in this same session and therefore this same transaction, so
+    that its `started_at` and every enqueued job's `created_at` resolve to one
+    `transaction_timestamp()` and every job this pass creates is inside its own
+    run's window by construction. Nothing here closes the row -- the pass has
+    no end at this point, it has only just queued the work. The scheduler's
+    poll loop closes it when the drain finishes (scheduler/core.py's
+    `_close_drained_runs`).
+
+    Pressing twice opens two rows whose windows overlap, and both will count
+    the same drain. That is the honest consequence of a button that is not
+    idempotent (see above); reusing an already-open row instead would mean a
+    single row nothing ever closed could suppress every future pass's history.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -1096,6 +1111,9 @@ async def run_full_pass(
                 rating_key=row.rating_key,
             )
             entries.append((asdict(intent), intent.dedupe_key))
+        # Before enqueue_batch, which is what commits this transaction: the
+        # row and the jobs then share one transaction timestamp.
+        await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
         queued = await enqueue_batch(session, "process_item", entries)
     total = len(entries)
     skipped = total - queued
