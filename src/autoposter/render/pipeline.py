@@ -24,7 +24,7 @@ from autoposter.badges.values import (
     plex_native_ratings,
     video_format_text,
 )
-from autoposter.config.loader import render_version_for
+from autoposter.config.loader import config_for_library, render_version_for
 from autoposter.config.schema import Config, TextStyle
 from autoposter.db.models import EventLog, ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
@@ -1602,7 +1602,24 @@ async def apply_metadata(
 
     Runs before any badge rendering, because badges read the values from Plex
     rather than from the providers.
+
+    Every ``operations`` setting read here is this item's LIBRARY's
+    (roadmap row 92): a library that states one uses it, and one that states
+    nothing uses the global.
     """
+    # Roadmap row 92. The whole function's `config.operations` reads become
+    # this library's, in one statement, at the reads rather than at the
+    # caller: a direct caller (a test, a future entry point) then gets the
+    # same answer `process_item` does instead of the global one.
+    #
+    # Identity-returning when this library names no override, so a
+    # deployment that never opened the matrix pays one dict lookup per item
+    # and allocates nothing. Idempotent, so `process_item` resolving again
+    # for its own gate costs the same nothing.
+    #
+    # `artwork` is carried through by identity by `config_for_library`, so
+    # nothing below this line can move a render fingerprint.
+    config = config_for_library(config, item.library)
     if not config.operations.enabled:
         return GatheredFacts()
 
@@ -1731,6 +1748,16 @@ async def apply_badges(
     tokens simply do not resolve -- ``UnresolvedVariable`` is caught per
     definition, same as any other unresolved token.
     """
+    # Roadmap row 92, and it must be ABOVE the `badges.enabled` gate: that
+    # gate is itself a per-library setting, so resolving after it would make
+    # a library able to override everything except whether badges happen at
+    # all. `_already_in_plex` below reads `config.badges` too and is called
+    # with this rebound object, so the whole stage is one library's.
+    #
+    # `item` here is the `media_items` ROW, not the resolved item -- the
+    # badge block re-reads the row before calling this -- and it carries
+    # `.library` for the same reason every other consumer does.
+    config = config_for_library(config, item.library)
     if not config.badges.enabled:
         return
     # Backgrounds are never badged. The tool being replaced overlays posters,
@@ -2069,7 +2096,16 @@ async def process_item(
 
     media_item = None
     plex_item = None
-    if config.operations.enabled and tmdb_facts is not None:
+    # Roadmap row 92. A separately-named object, and NOT a rebinding of
+    # `config`: `render_artifact` below must keep the global one. Today that
+    # is a distinction without a difference -- `config_for_library` carries
+    # `artwork` through by identity -- but the day the artwork half lands
+    # behind row 111 a rebinding here would quietly become a whole-library
+    # re-render. The seam is idempotent, so `apply_metadata` and
+    # `apply_badges` resolving again at their own reads costs nothing.
+    library_config = config_for_library(config, item.library)
+
+    if library_config.operations.enabled and tmdb_facts is not None:
         # Bound outside the try on purpose: a `plex` that has no fetch_item at
         # all is a wiring bug, not the runtime failure this block contains, and
         # the except below would demote it to a WARNING and carry on. That is
@@ -2158,7 +2194,7 @@ async def process_item(
             + "; ".join(f"{kind}: {detail}" for kind, detail in refused)
         )
 
-    if config.badges.enabled:
+    if library_config.badges.enabled:
         fetch_item = plex.fetch_item  # outside the try; see the block above
         try:
             if refused:

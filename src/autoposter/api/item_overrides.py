@@ -58,6 +58,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy import select
 
 from autoposter.api.auth import require_session
+from autoposter.config.loader import config_for_library
 from autoposter.db.models import ItemMetadataOverride, MediaItem
 from autoposter.db.models import Session as SessionModel
 from autoposter.plex.item_overrides import (
@@ -75,17 +76,26 @@ router = APIRouter()
 _GATE = "operations.item_overrides_enabled"
 
 
-def _enabled(request: Request) -> bool:
+def _enabled(request: Request, library: str | None = None) -> bool:
     """The LIVE gate. ``config_holder.current`` rather than ``state.config``
     because ``operations`` is not frozen -- a saved override reaches this
-    reader immediately, and the panel says "live" for that reason."""
-    return bool(
-        request.app.state.config_holder.current.operations.item_overrides_enabled
-    )
+    reader immediately, and the panel says "live" for that reason.
+
+    ``library`` resolves the per-library effective config (roadmap row 92)
+    and is passed by every caller that has the item in hand. Without it this
+    answers the GLOBAL gate, which is the right answer to "is this feature on
+    at all" and the wrong one to "may this item have an override": the
+    pipeline honours a library's own value, so an endpoint that did not would
+    accept a row it then never writes.
+    """
+    config = request.app.state.config_holder.current
+    if library is not None:
+        config = config_for_library(config, library)
+    return bool(config.operations.item_overrides_enabled)
 
 
-def _require_enabled(request: Request) -> None:
-    if not _enabled(request):
+def _require_enabled(request: Request, library: str | None = None) -> None:
+    if not _enabled(request, library):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -134,8 +144,9 @@ async def list_metadata_overrides(
             for row in rows
         ]
         kind = item.kind
+        library = item.library
     return {
-        "enabled": _enabled(request),
+        "enabled": _enabled(request, library),
         "kind": kind,
         "writable": writable_fields(kind),
         "overrides": overrides,
@@ -178,6 +189,9 @@ async def put_metadata_override(
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         item = await _load_item(session, item_id)
+        # Roadmap row 92: the library's own answer, now that the item is
+        # loaded. The global gate above already refused the feature-off case.
+        _require_enabled(request, item.library)
         # ONE exit for every refusal about the field or the value, so all of
         # them serve the same class-name-only detail (C3/C10). The unwritable
         # case raises rather than returning its own HTTPException precisely so
@@ -277,6 +291,9 @@ async def delete_metadata_override(
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         item = await _load_item(session, item_id)
+        # Roadmap row 92: the library's own answer, now that the item is
+        # loaded. The global gate above already refused the feature-off case.
+        _require_enabled(request, item.library)
         row = (
             await session.execute(
                 select(ItemMetadataOverride)
@@ -308,7 +325,9 @@ async def delete_metadata_override(
         try:
             plex_item = await plex.fetch_item(item.rating_key)
             exempt = exemption_reason(
-                request.app.state.config_holder.current.operations,
+                config_for_library(
+                    request.app.state.config_holder.current, item.library,
+                ).operations,
                 item.rating_key, item.imdb_id,
                 getattr(plex_item, "labels", None),
             )

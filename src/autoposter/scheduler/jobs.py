@@ -36,6 +36,7 @@ from autoposter.collections.service import (
     reconcile_libraries,
 )
 from autoposter.config.holder import ConfigHolder
+from autoposter.config.loader import config_for_library
 from autoposter.config.schema import RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import FactsBackfillState, ItemFacts, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
@@ -445,18 +446,53 @@ def make_maintenance_job(holder: ConfigHolder, server_factory: Callable[[], obje
     rather than raised, and the remaining operations still run: these three
     are independent, and losing ``optimize`` because ``emptyTrash`` timed out
     would be a worse outcome than either.
+
+    ``empty_trash`` is the ONE of the three a library can override (roadmap
+    row 92), and that is a fact about plexapi rather than a choice: it exists
+    on ``LibrarySection`` as well as on ``Library``, while ``cleanBundles``
+    and ``optimize`` exist only on ``Library`` -- server-wide, with no
+    per-section form -- so a per-library value for either could only be
+    ignored or applied to everybody, and both are refused at config load
+    instead.
+
+    With NO library overriding it the one server-wide call is made, exactly
+    as before, and it still reaches Plex sections this config does not name.
+    With any library overriding it the sweep goes section by section over
+    ``collections.libraries``, and a section outside that list is therefore
+    NOT swept -- disclosed here and in ``deploy/README.md`` rather than left
+    for an operator to discover as a library whose trash silently stopped
+    emptying.
     """
 
     async def run(session: AsyncSession) -> str:
         config = holder.current
+        # `empty_trash` is the one of the three a library can scope (see the
+        # docstring); the other two have no per-section form in plexapi.
+        libraries = list(config.collections.libraries)
+        per_library = {
+            name: config_for_library(config, name).maintenance.empty_trash
+            for name in libraries
+        }
+        # None means "one server-wide call", which is what every deployment
+        # that never opened the matrix gets -- and it still reaches sections
+        # this config does not name.
+        scoped = any(
+            value != config.maintenance.empty_trash for value in per_library.values()
+        )
+        if scoped:
+            trash: list[str] | None = [name for name in libraries if per_library[name]]
+        else:
+            trash = None if config.maintenance.empty_trash else []
+
         wanted = [
             ("clean_bundles", "cleanBundles"),
-            ("empty_trash", "emptyTrash"),
+            ("empty_trash", None),
             ("optimize", "optimize"),
         ]
         enabled = [
             (setting, method) for setting, method in wanted
-            if getattr(config.maintenance, setting)
+            if (setting == "empty_trash" and trash != [])
+            or (setting != "empty_trash" and getattr(config.maintenance, setting))
         ]
         if not enabled:
             return "skipped: no maintenance operation is enabled"
@@ -465,19 +501,32 @@ def make_maintenance_job(holder: ConfigHolder, server_factory: Callable[[], obje
         ran: list[str] = []
         failed: list[str] = []
         for setting, method in enabled:
-            try:
-                await asyncio.to_thread(getattr(server.library, method))
-            except Exception as error:
-                # The full message and traceback go to the pod log -- the
-                # trusted sink (roadmap row 207). The summary below is
-                # scheduled_runs.last_detail: served by /api/snapshots and the
-                # dashboard stream, carried in the notification payload -- and
-                # a plexapi/requests failure's str() embeds the host, port and
-                # URL it failed on. Class name only there (row 213's rule).
-                logger.warning("maintenance: %s failed", setting, exc_info=True)
-                failed.append(f"{setting} failed ({type(error).__name__})")
+            if setting == "empty_trash":
+                calls = (
+                    [server.library.emptyTrash] if trash is None
+                    else [
+                        (lambda n=name: server.library.section(n).emptyTrash())
+                        for name in trash
+                    ]
+                )
             else:
-                ran.append(setting)
+                calls = [getattr(server.library, method)]
+            for call in calls:
+                try:
+                    await asyncio.to_thread(call)
+                except Exception as error:
+                    # The full message and traceback go to the pod log -- the
+                    # trusted sink (roadmap row 207). The summary below is
+                    # scheduled_runs.last_detail: served by /api/snapshots and
+                    # the dashboard stream, carried in the notification
+                    # payload -- and a plexapi/requests failure's str() embeds
+                    # the host, port and URL it failed on. Class name only
+                    # there (row 213's rule).
+                    logger.warning("maintenance: %s failed", setting, exc_info=True)
+                    failed.append(f"{setting} failed ({type(error).__name__})")
+                else:
+                    if setting not in ran:
+                        ran.append(setting)
 
         summary = f"ran {', '.join(ran)}" if ran else "ran nothing"
         return f"{summary}; {'; '.join(failed)}" if failed else summary

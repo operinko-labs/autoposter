@@ -543,3 +543,48 @@ async def test_a_delete_requires_a_session(client, session):
     assert (
         await client.delete(f"/api/items/{item_id}/metadata-overrides/studio")
     ).status_code == 401
+
+
+async def test_a_library_that_disables_the_gate_refuses_its_items(
+    app, client, auth_headers, session_factory,
+):
+    """Roadmap row 92. The pipeline honours a library's own
+    ``operations.item_overrides_enabled``; an endpoint that did not would let
+    an operator store a row for an item in that library and then never write
+    it -- an override that looks saved and does nothing, which is the exact
+    silence this row exists to end.
+
+    The global gate stays ON here, so this is about the library's value and
+    nothing else.
+    """
+    from autoposter.config.loader import build_config, read_config_document
+
+    document = read_config_document(EXAMPLE)
+    document.setdefault("operations", {})["item_overrides_enabled"] = True
+    document["libraries"] = {
+        "Movies": {"operations": {"item_overrides_enabled": False}},
+    }
+    swapped = build_config(document)
+    # The two attributes `create_app` sets to the same object, rebound the way
+    # `config/live.py`'s `swap_config` rebinds them -- without its scheduler
+    # interval refresh, which this app has no jobs for.
+    app.state.config_holder.swap(swapped)
+    app.state.config = swapped
+
+    async with session_factory() as session:
+        item_id = await _item(session)
+
+    listed = await client.get(
+        f"/api/items/{item_id}/metadata-overrides", headers=auth_headers,
+    )
+    assert listed.status_code == 200
+    assert listed.json()["enabled"] is False, (
+        "the library's item_overrides_enabled: false was ignored"
+    )
+
+    refused = await client.put(
+        f"/api/items/{item_id}/metadata-overrides/tagline",
+        headers=auth_headers, json={"value": "A Los Angeles crime saga"},
+    )
+    assert refused.status_code == 409
+    assert "item_overrides_enabled" in refused.json()["detail"]
