@@ -771,7 +771,10 @@ async def test_a_smart_collection_that_exists_at_another_level_is_refused(sessio
     definition now asks for episode level. There is no PUT that re-levels a
     smart collection, so this refuses -- the same call ``shape_conflict``
     makes for a smart/list conversion, one axis over -- rather than PUTting
-    the episode-level filter onto the collection Plex created at show level."""
+    the episode-level filter onto the collection Plex created at show level.
+
+    Task 4 review I-3: the message names the collection and offers the delete
+    conditionally, mirroring ``shape_conflict``'s own wording exactly."""
     existing = FakeCollection(TITLE, labels=[LABEL], smart=True, subtype="show")
     section = FakeSection(matches=7, existing=[existing])
     actions = await reconcile_smart_collection(
@@ -780,8 +783,34 @@ async def test_a_smart_collection_that_exists_at_another_level_is_refused(sessio
     )
     assert section._server.queries == []
     assert actions == [
-        "smart collection exists at show level; the definition asks for "
-        "episode level -- delete it and let the next pass recreate it"
+        "level conflict: %r already exists in Plex at show level and this "
+        "definition asks for episode level. Plex has no PUT that re-levels "
+        "a smart collection, and this service will not delete and recreate "
+        "it. Either rename the definition so it builds a new collection, "
+        "or -- if %r is yours to delete -- delete it in Plex and let the "
+        "next pass create it." % (TITLE, TITLE)
+    ]
+    assert await _row(session, "TV Shows", TITLE) is None
+
+
+async def test_a_smart_collection_whose_level_cannot_be_read_is_refused(session):
+    """Task 4 review I-1: plexapi's ``Collection.subtype`` has no default, so
+    ``None`` means the running plexapi no longer carries it -- not "no level
+    recorded". The update must fail CLOSED: refuse rather than guess and PUT
+    the new level's filter onto a collection whose own level is unknown."""
+    existing = FakeCollection(TITLE, labels=[LABEL], smart=True, subtype=None)
+    section = FakeSection(matches=7, existing=[existing])
+    actions = await reconcile_smart_collection(
+        session, section, "TV Shows", "Show", TITLE, URL, LABEL,
+        dry_run=False, level="episode",
+    )
+    assert section._server.queries == []
+    assert actions == [
+        "%r already exists in Plex and this service cannot read its level, "
+        "so it will not update it -- this definition asks for episode "
+        "level. Either confirm the collection's level in Plex, or -- if %r "
+        "is yours to delete -- delete it and let the next pass create it."
+        % (TITLE, TITLE)
     ]
     assert await _row(session, "TV Shows", TITLE) is None
 

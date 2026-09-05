@@ -498,6 +498,18 @@ def test_collection_exposes_the_smart_flag_the_shape_check_reads():
     assert "self.smart = utils.cast(bool, data.attrib.get('smart', '0'))" in source
 
 
+def test_collection_exposes_the_subtype_the_level_check_reads():
+    """Task 4 review I-1: ``smart._level_conflict`` branches on
+    ``Collection.subtype``. Unlike ``smart`` above, plexapi reads it with NO
+    default -- ``data.attrib.get('subtype')`` alone -- so absence means the
+    running plexapi's XML no longer carries the attribute, not "no level
+    recorded". That is what makes "absent means refuse" the correct reading
+    for that check, and a plexapi change that drops the attribute is exactly
+    what this pin exists to catch."""
+    source = inspect.getsource(Collection._loadData)
+    assert "self.subtype = data.attrib.get('subtype')" in source
+
+
 def test_no_reconciler_reads_a_collections_content_echo():
     r"""9c decision C10, asserted rather than promised.
 

@@ -255,32 +255,56 @@ def smart_definition_hash(url: str, summary: str | None, settings=None, config=N
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _level_conflict(collection, want_level: str) -> str | None:
+def _level_conflict(collection, title: str, want_level: str) -> str | None:
     """Task 3 review I-1: an existing smart collection whose Plex-side LEVEL
     the definition's ``builder_level`` changed.
 
     Mirrors ``reconcile.shape_conflict`` for the level axis, one door down in
-    this same file: ``Collection.subtype`` is Plex's record of the level the
-    collection was CREATED at (movie/show/season/episode -- the same
-    vocabulary ``COLLECTION_TYPES`` uses), and there is no PUT that re-levels a
-    smart collection -- ``update_smart_collection`` sends only the uri, onto a
+    this same file, in both what it checks and how it is worded:
+    ``Collection.subtype`` is Plex's record of the level the collection was
+    CREATED at (movie/show/season/episode -- the same vocabulary
+    ``COLLECTION_TYPES`` uses), and there is no PUT that re-levels a smart
+    collection -- ``update_smart_collection`` sends only the uri, onto a
     collection Plex already created at the OLD type. Applying it anyway would
     write the new level's filter onto the old level's collection and report it
     as an update, which is exactly what this closes. So this refuses instead,
     the same call ``shape_conflict`` makes for a smart/list conversion: no
-    delete, no PUT, name the two manual paths by naming the two levels.
+    delete, no PUT, and -- since this runs BEFORE ownership is resolved, same
+    as its sibling -- no unconditional delete advice either, because the
+    collection under this title may belong to another tool entirely.
 
-    Returns ``None`` when the collection's own subtype agrees with what the
-    definition wants now (including when Plex reports no subtype at all -- a
-    library this old code path never created one for), and the fixed refusal
-    sentence otherwise, naming the two level tokens and nothing else.
+    Task 4 review I-1: a plexapi change that drops ``subtype`` must not read
+    as agreement. ``Collection._loadData`` sets it with no default (pinned in
+    ``tests/test_plexapi_collection_contract.py``), so it is ``None`` only
+    when the running plexapi no longer has it -- not a "no level recorded"
+    case this code path could ever create. Fail closed: refuse rather than
+    guess, the same choice ``shape_conflict`` documents for its own missing
+    attribute in the other direction (there, absence has a defined meaning and
+    is read as one; here, absence has none, so it is refused instead).
+
+    Returns ``None`` only when the collection's own subtype agrees with what
+    the definition wants now, and the fixed refusal sentence otherwise --
+    naming the collection's title and the level tokens, and nothing derived
+    from Plex.
     """
     have = getattr(collection, "subtype", None)
-    if have is None or have == want_level:
+    if have is None:
+        return (
+            "%r already exists in Plex and this service cannot read its "
+            "level, so it will not update it -- this definition asks for %s "
+            "level. Either confirm the collection's level in Plex, or -- if "
+            "%r is yours to delete -- delete it and let the next pass "
+            "create it." % (title, want_level, title)
+        )
+    if have == want_level:
         return None
     return (
-        "smart collection exists at %s level; the definition asks for %s "
-        "level -- delete it and let the next pass recreate it" % (have, want_level)
+        "level conflict: %r already exists in Plex at %s level and this "
+        "definition asks for %s level. Plex has no PUT that re-levels a "
+        "smart collection, and this service will not delete and recreate "
+        "it. Either rename the definition so it builds a new collection, "
+        "or -- if %r is yours to delete -- delete it in Plex and let the "
+        "next pass create it." % (title, have, want_level, title)
     )
 
 
@@ -407,7 +431,7 @@ async def reconcile_smart_collection(
             logger.warning("%s: %s", library, conflict)
             return [conflict]
 
-        level_mismatch = _level_conflict(collection, collection_type)
+        level_mismatch = _level_conflict(collection, title, collection_type)
         if level_mismatch is not None:
             logger.warning("%s: %s", library, level_mismatch)
             return [level_mismatch]
