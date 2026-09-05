@@ -241,3 +241,21 @@ async def test_parse_source_refuses_an_unknown_host_without_echoing_it(
     assert "that host is not a supported source" in detail
     assert "plex.internal" not in detail
     assert "32400" not in detail
+
+
+async def test_parse_source_refuses_a_query_string_without_echoing_it(
+    client, auth_headers
+):
+    """The bare-paste query guard, through the real endpoint. The route serves
+    `str(error)` as the 422 detail, so the parser's refusal sentence IS the
+    served string -- a guard proven only against the pure parser would not
+    prove this one."""
+    refused = await client.post(
+        "/api/collections/parse-source",
+        json={"url": "abc/def?apikey=SECRET"},
+        headers=auth_headers,
+    )
+
+    assert refused.status_code == 422
+    assert "SECRET" not in refused.text
+    assert "query string or a fragment" in refused.json()["detail"]

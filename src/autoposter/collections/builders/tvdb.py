@@ -93,7 +93,7 @@ class TvdbListParams(BaseModel):
     def _must_be_a_bare_slug(cls, value: str | None) -> str | None:
         if value is not None and not _SLUG.match(value):
             raise ValueError(
-                f"{value!r} is not a TVDb list slug: write the name from the "
+                "that is not a TVDb list slug: write the name from the "
                 "list's URL (slug: a-mixed-tvdb-list), not a full URL or a "
                 "value containing '/'"
             )
@@ -128,12 +128,12 @@ class TvdbIdParams(BaseModel):
     @field_validator("ids")
     @classmethod
     def _must_look_like_tvdb_ids(cls, values: list[str]) -> list[str]:
-        for value in values:
+        for index, value in enumerate(values, start=1):
             if not value.isdigit():
                 raise ValueError(
-                    f"{value!r} is not a TVDb id: TVDb ids are numbers, like "
-                    "'81189'. An id starting 'tt' is an IMDb id -- use the imdb_id "
-                    "builder for those."
+                    f"entry {index} is not a TVDb id: TVDb ids are numbers, "
+                    "like '81189'. An id starting 'tt' is an IMDb id -- use "
+                    "the imdb_id builder for those."
                 )
         return values
 

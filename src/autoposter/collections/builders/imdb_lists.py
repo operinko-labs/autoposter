@@ -122,7 +122,7 @@ class ImdbListParams(BaseModel):
     def _must_be_a_list_id(cls, value: str) -> str:
         if not _LIST_ID.match(value):
             raise ValueError(
-                f"{value!r} is not an IMDb list id: they look like 'ls055350410' "
+                "that is not an IMDb list id: they look like 'ls055350410' "
                 "and are the 'ls…' part of an imdb.com/list/ URL. A 'ur…' value "
                 "is a user id -- use the `imdb_watchlist` builder for that."
             )
@@ -141,7 +141,7 @@ class ImdbWatchlistParams(BaseModel):
     def _must_be_a_user_id(cls, value: str) -> str:
         if not _USER_ID.match(value):
             raise ValueError(
-                f"{value!r} is not an IMDb user id: they look like 'ur000000001' "
+                "that is not an IMDb user id: they look like 'ur000000001' "
                 "and are the 'ur…' part of an imdb.com/user/ URL. An 'ls…' value "
                 "is a list id -- use the `imdb_list` builder for that."
             )

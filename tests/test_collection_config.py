@@ -204,6 +204,91 @@ def test_the_params_error_names_the_offending_field():
         build_config(document)
 
 
+@pytest.mark.parametrize(
+    ("builder", "params", "expected_fragment"),
+    [
+        pytest.param(
+            "mdblist_list",
+            {"list": "https://mdblist.com/lists/a/b?apikey=SECRET"},
+            "not an MDBList list",
+            id="mdblist_list",
+        ),
+        pytest.param(
+            "imdb_list",
+            {"list": "ls123?token=SECRET"},
+            "not an IMDb list id",
+            id="imdb_list",
+        ),
+        pytest.param(
+            "imdb_watchlist",
+            {"user": "ur99?token=SECRET"},
+            "not an IMDb user id",
+            id="imdb_watchlist",
+        ),
+        pytest.param(
+            "tvdb_list",
+            {"slug": "https://thetvdb.com/lists/x?apikey=SECRET"},
+            "not a TVDb list slug",
+            id="tvdb_list",
+        ),
+        pytest.param(
+            "text_file",
+            {"path": "/abs/SECRET.txt"},
+            "is an absolute path",
+            id="text_file",
+        ),
+        pytest.param(
+            "imdb_id",
+            {"ids": ["https://example.com/x?apikey=SECRET"]},
+            "not an IMDb id",
+            id="imdb_id",
+        ),
+        pytest.param(
+            "tmdb_movie",
+            {"ids": ["https://example.com/x?apikey=SECRET"]},
+            "not a TMDb id",
+            id="tmdb_id",
+        ),
+        pytest.param(
+            "tvdb_movie",
+            {"ids": ["https://example.com/x?apikey=SECRET"]},
+            "not a TVDb id",
+            id="tvdb_id",
+        ),
+    ],
+)
+def test_a_credential_bearing_param_is_refused_without_echoing_it(
+    builder, params, expected_fragment
+):
+    """`CollectionDefinition`'s params check composes each inner error's `msg`
+    verbatim, and `api/routes.py`'s ValidationError seam serves exactly those
+    `msg` values on five config endpoints -- so a validator that interpolated
+    `{value!r}` handed an operator's pasted API key back on all five. Pinned
+    against all eight of the changed validators (`mdblist_list`, `imdb_list`,
+    `imdb_watchlist`, `tvdb_list`, `text_file`, `imdb_id`, `tmdb_movie`,
+    `tvdb_movie`): each case's pasted value carries `SECRET`, so if that
+    validator's `f"{value!r} "` head were restored, `SECRET` would reappear in
+    `served` and the assertion below would fail.
+
+    Asserted against `errors()[…]["msg"]`, which is what is served, rather than
+    `str(exc)`: pydantic appends its own `input_value=` tail to that string and
+    no message change can remove it. Nothing serves that tail -- the config
+    seam serves `msg`, and `queue/worker.py` stores the class name.
+    """
+    with pytest.raises(ValidationError) as error:
+        CollectionDefinition.model_validate({
+            "title": "Leaky",
+            "builder": builder,
+            "params": params,
+        })
+
+    served = "; ".join(item["msg"] for item in error.value.errors())
+    assert "SECRET" not in served, served
+    assert expected_fragment in served
+    if builder == "mdblist_list":
+        assert "list: 14" in served, "the guidance tail is what tells the operator what to write"
+
+
 def test_a_param_of_the_wrong_type_fails_at_config_load():
     document = _document_with_definitions(
         [{"title": "Hand Picked", "builder": "plex_id", "params": {"ids": "tt0000001"}}]

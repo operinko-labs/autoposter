@@ -79,7 +79,7 @@ class TextFileParams(BaseModel):
         # name and would resolve it to a nonsense path inside the mount.
         if PurePosixPath(cleaned).is_absolute() or PureWindowsPath(cleaned).is_absolute():
             raise ValueError(
-                f"{value!r} is an absolute path; path is relative to the manual "
+                "that is an absolute path; path is relative to the manual "
                 "assets mount"
             )
         return cleaned

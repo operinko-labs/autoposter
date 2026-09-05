@@ -44,6 +44,22 @@ describe("fieldErrors", () => {
 
     expect(fieldErrors(detail)).toEqual({ constructor: "not a config section" });
   });
+
+  it("maps a handler-shaped entry with no input key to a field error", () => {
+    // The app's own RequestValidationError handler serves {type, loc, msg} and
+    // drops `input` (the operator's paste). `fieldErrors` never read `input`,
+    // and this is what keeps it that way: the entry it gets is now strictly
+    // smaller than FastAPI's default one.
+    const detail = [
+      {
+        type: "missing",
+        loc: ["body", "document", "plex", "url"],
+        msg: "Field required",
+      },
+    ];
+
+    expect(fieldErrors(detail)).toEqual({ "plex.url": "Field required" });
+  });
 });
 
 describe("the revision a page carries with its seed", () => {
