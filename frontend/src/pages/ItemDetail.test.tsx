@@ -1604,4 +1604,143 @@ describe("ItemDetail candidate picker", () => {
     expect(post).toBeDefined();
     expect(JSON.parse(post![1]!.body as string)).toEqual({ source: "/manualassets/logo.png" });
   });
+
+  // --- manual source: a file picked from this machine ------------------------
+
+  /** The picker inside whichever manual panel is open. */
+  function filePicker(): HTMLInputElement {
+    const input = manualPanel().querySelector<HTMLInputElement>("input[type=file]");
+    if (input === null) throw new Error("the manual panel has no file picker");
+    return input;
+  }
+
+  function chooseFile(name = "chosen.png") {
+    const file = new File(["png-bytes"], name, { type: "image/png" });
+    fireEvent.change(filePicker(), { target: { files: [file] } });
+    return file;
+  }
+
+  it("offers a file picker beside the URL input", async () => {
+    stubFetch(movieRoutes());
+
+    await renderItem();
+    fireEvent.click(screen.getByRole("button", { name: "Use file or URL" }));
+
+    // Both sources in one panel: the text input the endpoint's URL and mount
+    // paths go into, and the picker for a file on this machine.
+    expect(within(manualPanel()).getByRole("textbox")).toBeInTheDocument();
+    expect(filePicker().accept).toBe("image/png,image/jpeg,image/webp");
+    // Nothing to send yet, so nothing to click.
+    expect(within(manualPanel()).getByRole("button", { name: "Upload" })).toBeDisabled();
+  });
+
+  it("uploads the chosen file as multipart, then re-reads the item", async () => {
+    let detailCalls = 0;
+    const fetchMock = stubFetch(
+      movieRoutes({
+        "/api/items/3": () => {
+          detailCalls += 1;
+          return json(MOVIE);
+        },
+        "/api/items/3/renders/poster/manual/upload": () =>
+          json({ status: "installed", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    expect(detailCalls).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Use file or URL" }));
+    const file = chooseFile();
+
+    fireEvent.click(within(manualPanel()).getByRole("button", { name: "Upload" }));
+
+    await waitFor(() =>
+      expect(manualPanel().querySelector(".candidate-note")).not.toBeNull(),
+    );
+
+    const post = fetchMock.mock.calls.find(
+      (call) => call[0] === "/api/items/3/renders/poster/manual/upload",
+    );
+    expect(post).toBeDefined();
+    expect(post![1]?.method).toBe("POST");
+    // The part name the endpoint reads is `file`; any other name is a 422
+    // there and must be a red test here.
+    const body = post![1]!.body as FormData;
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get("file")).toBe(file);
+    // No header of our own: the browser writes multipart/form-data with the
+    // boundary it chose.
+    expect((post![1]!.headers as Headers).has("Content-Type")).toBe(false);
+
+    // The row's fingerprints were nulled server-side, so the item is re-read
+    // before the outcome is reported -- the same contract the URL install has.
+    expect(detailCalls).toBe(2);
+    expect(manualPanel().querySelector(".candidate-note")!.textContent).toContain("queued");
+  });
+
+  it("shows a refused upload inline, without claiming it was installed", async () => {
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/renders/poster/manual/upload": () =>
+          json({ detail: "the upload exceeds the size cap" }, 413),
+      }),
+    );
+
+    await renderItem();
+    fireEvent.click(screen.getByRole("button", { name: "Use file or URL" }));
+    chooseFile();
+
+    fireEvent.click(within(manualPanel()).getByRole("button", { name: "Upload" }));
+
+    await waitFor(() =>
+      expect(manualPanel().querySelector(".candidate-error")?.textContent).toBe(
+        "the upload exceeds the size cap",
+      ),
+    );
+    // An error, not a note: showing both would say the upload was refused and
+    // taken at once.
+    expect(manualPanel().querySelector(".candidate-note")).toBeNull();
+  });
+
+  it("refuses an oversized file before sending it, with the server's own sentence", async () => {
+    // The upload endpoint is deliberately left unregistered: if the picker
+    // ever fell through to fetch for an oversized file, stubFetch's own
+    // "unexpected path" throw would fail this test loudly rather than the
+    // check silently passing because the network happened to be stubbed.
+    const fetchMock = stubFetch(movieRoutes());
+
+    await renderItem();
+    fireEvent.click(screen.getByRole("button", { name: "Use file or URL" }));
+    const big = new File(["png-bytes"], "big.png", { type: "image/png" });
+    Object.defineProperty(big, "size", { value: 50 * 1024 * 1024 + 1 });
+    fireEvent.change(filePicker(), { target: { files: [big] } });
+
+    fireEvent.click(within(manualPanel()).getByRole("button", { name: "Upload" }));
+
+    await waitFor(() =>
+      expect(manualPanel().querySelector(".candidate-error")?.textContent).toBe(
+        "the upload exceeds the size cap",
+      ),
+    );
+    expect(manualPanel().querySelector(".candidate-note")).toBeNull();
+    // Never sent: a 413 with an undrained body can be lost to a connection
+    // reset, so the cap is enforced here before anything leaves the browser.
+    const post = fetchMock.mock.calls.find(
+      (call) => call[0] === "/api/items/3/renders/poster/manual/upload",
+    );
+    expect(post).toBeUndefined();
+  });
+
+  it("offers no picker for a logo, which the upload endpoint refuses", async () => {
+    stubFetch(movieRoutes());
+
+    await renderItem();
+    fireEvent.click(screen.getByRole("button", { name: "Use logo file or URL" }));
+
+    // A logo's stored name is derived from the source's own name, which an
+    // upload has none of, so the endpoint refuses it -- offering the control
+    // would be offering a 422.
+    expect(manualPanel().querySelector("input[type=file]")).toBeNull();
+    expect(within(manualPanel()).getByRole("textbox")).toBeInTheDocument();
+  });
 });

@@ -594,6 +594,13 @@ function CandidatePanel({
   );
 }
 
+/** The upload route's byte cap -- kept equal to `PICK_MAX_BYTES` in
+ * src/autoposter/api/candidates.py (no constant is exported to the frontend
+ * to import). A file over this is refused here, before it is sent: the
+ * server enforces the same cap on the wire, but a 413 with an undrained
+ * body can be lost to a connection reset. */
+const PICK_MAX_BYTES = 50 * 1024 * 1024;
+
 /** Installs an operator-supplied image as this art kind's base artwork.
  *
  * The manual-mode counterpart to CandidatePanel: rather than picking one of a
@@ -616,6 +623,10 @@ function ManualSourcePanel({
   const [installing, setInstalling] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  /** The chosen local file, or null. Separate from `source`: they are two
+   * different requests to two different endpoints, and a panel that shared
+   * one control would have to guess which the operator meant. */
+  const [file, setFile] = useState<File | null>(null);
 
   async function install() {
     setInstalling(true);
@@ -652,12 +663,53 @@ function ManualSourcePanel({
     }
   }
 
+  async function upload() {
+    if (file === null) return;
+    if (file.size > PICK_MAX_BYTES) {
+      // Same fixed sentence the server would refuse with, checked here
+      // before anything is sent: a 413 with an undrained body can be lost to
+      // a connection reset, so the cap is enforced client-side first.
+      setNote(null);
+      setFailure("the upload exceeds the size cap");
+      return;
+    }
+    setInstalling(true);
+    setNote(null);
+    setFailure(null);
+    try {
+      const body = new FormData();
+      // `file` is the part name the endpoint reads; anything else is a 422
+      // there. The browser writes the multipart header and its boundary --
+      // apiFetch deliberately sets no Content-Type for a FormData body.
+      body.append("file", file);
+      const response = await apiFetch<ManualInstallResponse>(
+        `/api/items/${itemId}/renders/${artKind}/manual/upload`,
+        { method: "POST", body },
+      );
+      // Re-read for the same reason the URL install does: the row's provider
+      // has just become "manual" and its fingerprints were nulled server-side.
+      await onInstalled();
+      setNote(
+        response.queued
+          ? "Installed. The image was written to the mount and a re-render was queued."
+          : "Installed. The image was written to the mount; a re-render was already pending, so nothing new was added.",
+      );
+    } catch (caught) {
+      // Verbatim, like the URL install's failures: every refusal this endpoint
+      // serves is a fixed sentence with nothing of the request in it.
+      setFailure((caught as Error).message);
+    } finally {
+      setInstalling(false);
+    }
+  }
+
   return (
     <div className="panel manual-panel">
       <h3 className="candidate-heading">{artKind} — use a file or URL</h3>
       <p className="manual-help muted">
         Paste an <span className="mono">https://…</span> URL, or a path under{" "}
-        <span className="mono">/manualassets</span>.
+        <span className="mono">/manualassets</span> — or choose a file from this
+        computer.
       </p>
       <div className="manual-controls">
         <input
@@ -675,6 +727,27 @@ function ManualSourcePanel({
           Install
         </button>
       </div>
+      {artKind !== "logo" && (
+        // No logo: the upload endpoint refuses one, because a logo keeps its
+        // container and the stored name is taken from the SOURCE's name --
+        // which an uploaded file is not allowed to supply. A logo still
+        // installs from a URL or a mount path through the control above.
+        <div className="manual-controls manual-upload">
+          <input
+            type="file"
+            className="manual-file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+          />
+          <button
+            type="button"
+            disabled={installing || file === null}
+            onClick={() => void upload()}
+          >
+            Upload
+          </button>
+        </div>
+      )}
       {note !== null && <p className="candidate-note">{note}</p>}
       {failure !== null && <p className="candidate-error">{failure}</p>}
     </div>
