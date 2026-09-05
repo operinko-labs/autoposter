@@ -19,6 +19,8 @@ caller that has already narrowed it. Nothing here reads ``jobs.last_error``,
 formats an exception, or touches a path.
 """
 
+from datetime import datetime
+
 from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,7 +104,11 @@ async def close_run(
 
 
 async def trim_run_history(
-    session: AsyncSession, keep: int = RUN_HISTORY_KEEP
+    session: AsyncSession,
+    keep: int = RUN_HISTORY_KEEP,
+    *,
+    kind: str | None = None,
+    name: str | None = None,
 ) -> int:
     """Delete all but the newest ``keep`` rows per ``name``; return the count.
 
@@ -115,10 +121,25 @@ async def trim_run_history(
     two runs of the same job can share a timestamp to the microsecond on a
     fast pass, and a tie the ranking breaks arbitrarily makes this delete a
     different row on every call.
+
+    ``kind``/``name`` scope the delete to one recorded name -- the
+    drain-watcher's own call (fix round 1, I-2) passes both so that trimming
+    what it just closed never re-ranks every scheduled job's rows too.
+    Omitted, as the cleanup pass omits them, the delete covers the whole
+    table.
     """
+    where_sql = ""
+    params: dict = {"keep": keep}
+    if kind is not None:
+        where_sql += " WHERE kind = :kind"
+        params["kind"] = kind
+    if name is not None:
+        where_sql += (" AND" if where_sql else " WHERE") + " name = :name"
+        params["name"] = name
+
     result = await session.execute(
         text(
-            """
+            f"""
             DELETE FROM runs
              WHERE id IN (
                    SELECT id
@@ -129,12 +150,13 @@ async def trim_run_history(
                                      ORDER BY started_at DESC, id DESC
                                  ) AS rank
                             FROM runs
+                            {where_sql}
                           ) ranked
                     WHERE rank > :keep
                    )
             """
         ),
-        {"keep": keep},
+        params,
     )
     return result.rowcount
 
@@ -167,7 +189,9 @@ _ART_KINDS = ("poster", "season_poster", "background", "title_card")
 _JOB_STATE_COLUMNS = {"processed": "done", "failed": "failed", "deferred": "deferred"}
 
 
-async def window_counts(session: AsyncSession, started_at, finished_at) -> dict:
+async def window_counts(
+    session: AsyncSession, started_at: datetime, finished_at: datetime
+) -> dict:
     """What the worker pool finished between two instants.
 
     **This is window attribution, not causation.** No run id threads through a
@@ -180,9 +204,10 @@ async def window_counts(session: AsyncSession, started_at, finished_at) -> dict:
     Two grouped round trips, the ``storage_snapshot`` shape: one scan of
     ``renders`` grouped by ``art_kind``, one of ``jobs`` grouped by ``state``,
     each with the window as its predicate. Every value is passed through
-    ``int()`` -- a PostgreSQL aggregate can come back from asyncpg as a
-    ``Decimal``, which serialises as a *string* and is not a number a chart
-    can plot.
+    ``int()`` as a defensive zero-fill guard for asyncpg's ``count()`` ->
+    Python ``int`` mapping, and to keep the pattern consistent should a
+    ``sum``/``avg`` column -- which asyncpg CAN decode as a ``Decimal`` -- ever
+    join these two.
 
     All seven keys are always present and zero-filled (``jobs_by_state``'s
     rule): a mapping must never point at a field that vanished because this
@@ -253,6 +278,18 @@ async def close_drained_full_passes(session: AsyncSession) -> int:
     Both follow from window attribution, which is the honest mechanism
     available; an id on the job is not, at any price this row can pay.
 
+    ``open_runs`` is walked oldest-first (fix round 1, I-1) and stops at the
+    first row still draining: a second press while the first pass's jobs are
+    still in flight can enqueue nothing at all (``enqueue_batch``'s ``ON
+    CONFLICT DO NOTHING``), and without this ordering that jobless younger row
+    would close on the very next tick as a one-minute "pass", stealing a slice
+    of the older pass's still-in-progress counts. Stopping rather than
+    skipping means every row younger than an open one waits for it, and they
+    all close together on the same drain -- which is what
+    ``api/routes.py``'s docstring promises a second press does. A row past
+    its own ceiling still closes as ``timed_out`` even while older siblings
+    are draining, since it is not waiting on anything at that point.
+
     Returns how many rows it closed. Does not commit.
     """
     open_runs = (
@@ -281,24 +318,42 @@ async def close_drained_full_passes(session: AsyncSession) -> int:
         ).scalar_one()
         expired = (now - started_at).total_seconds() >= FULL_PASS_CEILING_SECONDS
         if outstanding and not expired:
-            continue
+            # Still draining, and not yet timed out: stop here rather than
+            # continue, so no younger row closes ahead of this one.
+            break
 
+        status = "timed_out" if outstanding else "ok"
         counts = await window_counts(session, started_at, now)
         await session.execute(
             update(Run)
-            .where(Run.id == run_id)
+            # `finished_at IS NULL` (M-3): a second replica's tick that raced
+            # this one to the same row must not overwrite the first writer's
+            # numbers with its own, later window's.
+            .where(Run.id == run_id, Run.finished_at.is_(None))
             .values(
                 finished_at=now,
-                status="timed_out" if outstanding else "ok",
+                status=status,
                 # Counts only, never a job's last_error (row 213). The same
                 # three numbers the columns hold, so the served sentence and
-                # the served fields can never disagree.
+                # the served fields can never disagree. "timed out" rather
+                # than "drained" on that path (M-1): the ceiling fired
+                # precisely because the pass had NOT drained.
                 detail=(
-                    "drained: {processed} processed, {failed} failed, "
-                    "{deferred} deferred"
+                    ("timed out: " if status == "timed_out" else "drained: ")
+                    + "{processed} processed, {failed} failed, {deferred} deferred"
                 ).format(**counts)[:_DETAIL_WIDTH],
                 **counts,
             )
         )
         closed += 1
+
+    if closed:
+        # The bound holds for full-pass rows here rather than through the
+        # (conditionally-registered) cleanup job (fix round 1, I-2): the
+        # watcher runs regardless of `scheduler.enabled`, and so does the
+        # writer it is bounding (`POST /api/full-pass`). Scoped to this
+        # kind/name so trimming what was just closed never re-ranks every
+        # scheduled job's rows too, and in this same transaction so the
+        # bound is never left to a separate, possibly-skipped commit.
+        await trim_run_history(session, kind="full_pass", name=FULL_PASS_NAME)
     return closed

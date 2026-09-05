@@ -39,15 +39,18 @@ def upgrade() -> None:
     # must stay visible rather than be reported as a zero.
     #
     # One index, on `started_at`, for the endpoint's ORDER BY ... DESC LIMIT.
-    # `name` and `kind` are deliberately unindexed: the cleanup pass's
-    # retention clause holds each recorded name to 500 rows, which is not a
-    # size that pays for two more indexes to maintain. That bound is NOT
-    # unconditional (fix round 1, Critical): it holds while
-    # `scheduler.enabled`, because every recording job is registered behind
-    # that switch alongside the trim, except `stale_job_reclaim` -- the one
-    # job registered unconditionally -- which records no history row at all
-    # (see `scheduler/run_history.py`'s `UNRECORDED`), so the switch being
-    # off never leaves this table growing untrimmed.
+    # `name` and `kind` are deliberately unindexed: the retention clause holds
+    # each recorded name to 500 rows, which is not a size that pays for two
+    # more indexes to maintain. That bound is trimmed by two different
+    # callers for the table's two kinds of row (fix round 1, I-2). A
+    # scheduled row's bound holds while `scheduler.enabled`, because every
+    # such recording job is registered behind that switch alongside the
+    # cleanup pass's trim, except `stale_job_reclaim` -- the one job
+    # registered unconditionally -- which records no history row at all (see
+    # `scheduler/run_history.py`'s `UNRECORDED`). A full-pass row's bound
+    # holds regardless of that switch: `POST /api/full-pass` is gated only by
+    # `require_session` and writes a row either way, so it is the
+    # drain-watcher's own close, scoped to `kind='full_pass'`, that trims it.
     op.create_table(
         'runs',
         sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),

@@ -965,16 +965,21 @@ class Run(Base):
     ``kind`` is ``scheduled`` (one row per ``_maybe_run`` pass) or
     ``full_pass`` (one row per ``POST /api/full-pass``). ``name`` is the
     scheduled job's name, or the literal ``full_pass``; it is not unique and
-    is not indexed -- the retention clause in ``scheduler/jobs.py``'s cleanup
-    pass keeps the newest ``RUN_HISTORY_KEEP`` rows per recorded name. That
-    bound does NOT hold unconditionally (fix round 1, Critical): it holds
-    while ``scheduler.enabled``, because every job that records a row here
-    other than ``stale_job_reclaim`` is registered behind that same switch
-    alongside the trim. ``stale_job_reclaim`` -- the one job registered
-    unconditionally, five-minutely -- records no row at all
-    (``scheduler/run_history.py``'s ``UNRECORDED``), so a disabled scheduler
-    never leaves this table growing untrimmed. The only query worth an index
-    is the endpoint's ``ORDER BY started_at DESC``.
+    is not indexed -- the retention clause keeps the newest
+    ``RUN_HISTORY_KEEP`` rows per recorded name, trimmed by two different
+    callers for its two kinds of row (fix round 1, I-2). A scheduled row is
+    bounded by ``scheduler/jobs.py``'s cleanup pass, which holds while
+    ``scheduler.enabled``, because every job that records a row here other
+    than ``stale_job_reclaim`` is registered behind that same switch
+    alongside the trim -- ``stale_job_reclaim`` itself, registered
+    unconditionally and five-minutely, records no row at all
+    (``scheduler/run_history.py``'s ``UNRECORDED``). A full-pass row is
+    bounded instead by the drain-watcher's own close
+    (``close_drained_full_passes``), which runs regardless of that switch,
+    scoped to ``kind='full_pass'``/``name='full_pass'`` -- because
+    ``POST /api/full-pass`` is gated only by ``require_session`` and writes a
+    row whether or not the scheduler is enabled. The only query worth an
+    index is the endpoint's ``ORDER BY started_at DESC``.
 
     ``status`` is ``running`` until something closes the row, then ``ok`` or
     ``failed`` for a scheduled job (copied from ``_maybe_run``'s own status),

@@ -322,6 +322,10 @@ async def test_a_pass_past_the_ceiling_is_closed_as_timed_out(session):
     row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
     assert row.status == "timed_out"
     assert row.processed is not None
+    # M-1: a timed-out row's served sentence must not say it drained -- that
+    # is the one case the word is false.
+    assert row.detail.startswith("timed out: ")
+    assert not row.detail.startswith("drained:")
 
 
 async def test_a_scheduled_run_is_never_closed_by_the_drain_watcher(session):
@@ -335,3 +339,96 @@ async def test_a_scheduled_run_is_never_closed_by_the_drain_watcher(session):
 
     row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
     assert row.status == "running"
+
+
+async def test_an_older_still_draining_full_pass_blocks_a_younger_one_from_closing(
+    session,
+):
+    """I-1: `open_runs` is oldest-first and stops at the first row still
+    draining, so a younger row never closes ahead of an older one that is
+    still in flight -- they close together, on the same drain, which is what
+    `api/routes.py`'s docstring promises a second press does."""
+    older_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    older_job = Job(kind="process_item", payload={}, state="pending")
+    session.add(older_job)
+    await session.commit()
+
+    younger_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    # The younger pass has its own job in flight too -- it is not, by itself,
+    # the zero-queue case covered below.
+    younger_job = Job(kind="process_item", payload={}, state="pending")
+    session.add(younger_job)
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 0
+    await session.commit()
+
+    rows = {row.id: row for row in await _rows(session, name=FULL_PASS_NAME)}
+    assert rows[older_id].status == "running"
+    assert rows[younger_id].status == "running"
+
+    older_job.state = "done"
+    younger_job.state = "done"
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 2
+    await session.commit()
+
+    rows = {row.id: row for row in await _rows(session, name=FULL_PASS_NAME)}
+    assert rows[older_id].status == "ok"
+    assert rows[younger_id].status == "ok"
+    # Same tick, same window semantics: both closed against the same `now`.
+    assert rows[older_id].finished_at == rows[younger_id].finished_at
+
+
+async def test_a_zero_queue_second_press_does_not_close_before_the_first(session):
+    """I-1's concrete failure mode: a second press while the first pass is
+    still draining can enqueue NOTHING at all (`enqueue_batch`'s ON CONFLICT
+    DO NOTHING against every item the first pass already claimed). Evaluated
+    alone that younger row looks drained on its first tick -- no
+    `process_item` job was created at or after ITS `started_at` -- and must
+    not close while the real, older pass is still open beside it."""
+    older_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    older_job = Job(kind="process_item", payload={}, state="pending")
+    session.add(older_job)
+    await session.commit()
+
+    younger_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    await session.commit()
+    # No job created after younger's started_at -- the zero-queue press.
+
+    assert await close_drained_full_passes(session) == 0
+    await session.commit()
+
+    rows = {row.id: row for row in await _rows(session, name=FULL_PASS_NAME)}
+    assert rows[older_id].status == "running"
+    assert rows[younger_id].status == "running"
+
+    older_job.state = "done"
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 2
+    await session.commit()
+
+    rows = {row.id: row for row in await _rows(session, name=FULL_PASS_NAME)}
+    assert rows[older_id].status == "ok"
+    assert rows[younger_id].status == "ok"
+
+
+async def test_closing_full_passes_trims_full_pass_history_to_the_keep_bound(session):
+    """I-2: the watcher's poll loop runs regardless of `scheduler.enabled`,
+    and so does the writer it must bound (`POST /api/full-pass`), so the
+    close itself -- not the gated cleanup pass -- is what keeps this bound."""
+    for _ in range(RUN_HISTORY_KEEP + 1):
+        run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+        await close_run(session, run_id, status="ok", detail="x")
+    await session.commit()
+    assert len(await _rows(session, name=FULL_PASS_NAME)) == RUN_HISTORY_KEEP + 1
+
+    await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    await session.commit()
+
+    assert await close_drained_full_passes(session) == 1
+    await session.commit()
+
+    assert len(await _rows(session, name=FULL_PASS_NAME)) == RUN_HISTORY_KEEP
