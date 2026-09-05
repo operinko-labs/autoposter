@@ -423,7 +423,7 @@ in again. Sessions are rows in the `sessions` table, not signed cookies, so
 expire.
 
 Everything under `/api` except `/api/login` requires a valid session — or,
-on exactly the three GET routes "Read-only API key" below names, the
+on exactly the four GET routes "Read-only API key" below names, the
 `X-API-Key` header instead. The routes outside `/api` are authenticated
 differently or deliberately open:
 `/healthz` and `/metrics` stay open so Kubernetes probes and Prometheus
@@ -440,7 +440,7 @@ A second credential, for callers that have no browser session: a
 [gethomepage](https://gethomepage.dev) `customapi` widget, a script. It is
 **additive** — every `/api` route except `/api/login` has required a
 session since the Web UI shipped, and the key loosens none of that. What it
-adds is a way to read exactly two routes without logging in:
+adds is a way to read exactly four routes without logging in:
 
 - `GET /api/status` — queue counts by state, worker count, the scheduled-job
   table
@@ -448,11 +448,14 @@ adds is a way to read exactly two routes without logging in:
   one
 - `GET /api/stats/storage` — how many artifacts this service has rendered per
   library and art kind, and how many bytes they occupy
+- `GET /api/stats/runs` — the recent run history: when each scheduled pass and
+  each full pass started and finished, how long it took, and what the worker
+  pool finished inside a full pass's window
 
 Everything else — the config, the logs, items, artwork, every write — still
 answers a key with `401`, the same `401` it gives a request with no
 credential at all. There is no `403`: a key-holder learns nothing about
-which routes exist beyond the three above.
+which routes exist beyond the four above.
 
 Set it as `AUTOPOSTER_API_KEY` in the same ExternalSecret as the other
 `AUTOPOSTER_*` secrets. It is **not** a config file setting, the same rule
@@ -604,6 +607,98 @@ library instead of guessing an array index — and a library renamed in Plex
 changes the key, which is the one thing to re-check after a rename. A five
 minute `refreshInterval` rather than the ten-second default: the numbers move
 when a render pass runs, not between polls.
+
+### Run history (`GET /api/stats/runs`)
+
+Every scheduled pass and every full pass now leaves a row in a `runs` history
+table, and this endpoint serves the most recent ones, newest first:
+
+```json
+{
+  "runs": [
+    {
+      "id": 41,
+      "kind": "full_pass",
+      "name": "full_pass",
+      "started_at": "2026-09-05T09:00:00Z",
+      "finished_at": "2026-09-05T12:31:04Z",
+      "status": "ok",
+      "duration_seconds": 12664.0,
+      "rendered": {"poster": 12, "season_poster": 0, "background": 3, "title_card": 0},
+      "processed": 15940,
+      "failed": 12,
+      "deferred": 8
+    }
+  ],
+  "generated_at": "2026-09-05T12:40:00Z"
+}
+```
+
+`?limit=` defaults to 50 and is clamped to 500 — a value of `0`, `-5` or
+`100000` is quietly bounded rather than refused, so a mistyped widget shows
+numbers instead of an error.
+
+Four rules govern what these numbers mean:
+
+- **The counts are window attribution, not causation.** No run identifier is
+  stamped on a job, by design — a `process_item` job's dedupe key is what makes
+  the full pass cheap, and putting a run id in it would turn a second pass into
+  16,000 duplicate rows. So `processed`, `failed`, `deferred` and `rendered`
+  report what the worker pool *finished between the run's start and its end*.
+  A webhook that arrives mid-drain lands in the count; an item that was already
+  queued when the pass began does not.
+- **They are stamped for full passes only.** A scheduled job's window overlaps
+  whatever the pool happened to be doing, so attributing that work to it would
+  be a number served under a label it does not mean. Every count field on a
+  scheduled run is `null` — "not attributed", never `0`, which would read as
+  "this pass did nothing".
+- **`rendered` is composites, `processed` is items.** A render is stamped only
+  when one actually happens; the pipeline's fingerprint short-circuit returns
+  before the stamp. So a settled library's full pass reports tens of thousands
+  `processed` and near-zero `rendered`, correctly — nothing needed
+  re-compositing. Both numbers are served because either alone is misleading.
+- **`status` is `running`, `ok`, `failed` or `timed_out`.** A full pass has no
+  end of its own — the button returns as soon as the work is queued and the
+  queue drains for hours afterwards — so the scheduler closes the row when no
+  `process_item` job created at or after the run's start is still pending or
+  running. Deferred jobs are counted and do **not** hold the run open (a
+  deferred job waits six hours by design), and a pass still holding a job after
+  **24 hours** is closed as `timed_out`.
+
+**Retention.** The orphaned-asset cleanup pass (`cleanup_days`, default 7)
+trims this table to the newest **500 rows per** job name on every run. That is
+about five years of a weekly job and a day and a half of the five-minutely
+`stale_job_reclaim` — the cheapest job being the one that rolls. Nothing else
+prunes it and no separate scheduled job exists for it.
+
+#### Homepage `customapi` recipe: runs
+
+The same rules as the recipes above — the key rides the `headers:` block,
+never the URL. `runs.0` is the most recent run of any kind:
+
+```yaml
+- Autoposter runs:
+    icon: mdi-history
+    widget:
+      type: customapi
+      url: http://autoposter.media.svc.cluster.local:8080/api/stats/runs
+      headers:
+        X-API-Key: "{{HOMEPAGE_VAR_AUTOPOSTER_API_KEY}}"
+      refreshInterval: 300000
+      mappings:
+        - field: runs.0.name
+          label: Last run
+        - field: runs.0.status
+          label: Outcome
+        - field: runs.0.duration_seconds
+          label: Seconds
+          format: number
+```
+
+A widget that wants the last *full pass* specifically cannot express that with
+a `customapi` field path — the array is mixed. Point it at `runs.0.*` for "the
+last thing that ran", and read the Dashboard's charts for the full-pass
+history.
 
 ## Metadata operations config
 
