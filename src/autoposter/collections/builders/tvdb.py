@@ -93,7 +93,7 @@ class TvdbListParams(BaseModel):
     def _must_be_a_bare_slug(cls, value: str | None) -> str | None:
         if value is not None and not _SLUG.match(value):
             raise ValueError(
-                f"{value!r} is not a TVDb list slug: write the name from the "
+                "that is not a TVDb list slug: write the name from the "
                 "list's URL (slug: a-mixed-tvdb-list), not a full URL or a "
                 "value containing '/'"
             )

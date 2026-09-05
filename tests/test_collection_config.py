@@ -204,6 +204,30 @@ def test_the_params_error_names_the_offending_field():
         build_config(document)
 
 
+def test_a_credential_bearing_param_is_refused_without_echoing_it():
+    """`CollectionDefinition`'s params check composes each inner error's `msg`
+    verbatim, and `api/routes.py`'s ValidationError seam serves exactly those
+    `msg` values on five config endpoints -- so a validator that interpolated
+    `{value!r}` handed an operator's pasted API key back on all five.
+
+    Asserted against `errors()[…]["msg"]`, which is what is served, rather than
+    `str(exc)`: pydantic appends its own `input_value=` tail to that string and
+    no message change can remove it. Nothing serves that tail -- the config
+    seam serves `msg`, and `queue/worker.py` stores the class name.
+    """
+    with pytest.raises(ValidationError) as error:
+        CollectionDefinition.model_validate({
+            "title": "Leaky",
+            "builder": "mdblist_list",
+            "params": {"list": "https://mdblist.com/lists/a/b?apikey=SECRET"},
+        })
+
+    served = "; ".join(item["msg"] for item in error.value.errors())
+    assert "SECRET" not in served, served
+    assert "not an MDBList list" in served
+    assert "list: 14" in served, "the guidance tail is what tells the operator what to write"
+
+
 def test_a_param_of_the_wrong_type_fails_at_config_load():
     document = _document_with_definitions(
         [{"title": "Hand Picked", "builder": "plex_id", "params": {"ids": "tt0000001"}}]

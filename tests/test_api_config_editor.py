@@ -699,6 +699,35 @@ async def test_a_preview_rejects_an_invalid_document_the_same_way(client, auth_h
     assert [e["path"] for e in response.json()["detail"]] == ["wrokers"]
 
 
+async def test_a_preview_refuses_a_credential_bearing_param_without_echoing_it(
+    client, auth_headers
+):
+    """The builder-params refusal through a real served surface. `_validated_generation`
+    is shared by save, preview and apply, so pinning it here pins all three --
+    and the served `detail[…]["message"]` is the composed `msg`, which is the
+    string the validator's own sentence lands in."""
+    response = await client.post(
+        "/api/config/preview", headers=auth_headers,
+        json={"document": {"collections": {"definitions": [
+            {
+                "title": "Leaky",
+                "builder": "mdblist_list",
+                "params": {"list": "https://mdblist.com/lists/a/b?apikey=SECRET"},
+            },
+        ]}}},
+    )
+
+    assert response.status_code == 422
+    assert "SECRET" not in response.text, "the preview handed the pasted key back"
+    detail = response.json()["detail"]
+    # The definition's own `model_validator` raises at the model's location, one
+    # level below the freezing guard's hardcoded "collections.definitions" (see
+    # `test_the_preview_refuses_the_same_document_the_save_does`) -- this error
+    # comes from the list item itself, so its `loc` carries the index.
+    assert detail[0]["path"] == "collections.definitions.0"
+    assert "not an MDBList list" in detail[0]["message"]
+
+
 async def test_a_preview_of_api_docs_enabled_reports_it_as_inert_not_restart_required(
     client, auth_headers
 ):
