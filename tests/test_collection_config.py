@@ -204,11 +204,53 @@ def test_the_params_error_names_the_offending_field():
         build_config(document)
 
 
-def test_a_credential_bearing_param_is_refused_without_echoing_it():
+@pytest.mark.parametrize(
+    ("builder", "params", "expected_fragment"),
+    [
+        pytest.param(
+            "mdblist_list",
+            {"list": "https://mdblist.com/lists/a/b?apikey=SECRET"},
+            "not an MDBList list",
+            id="mdblist_list",
+        ),
+        pytest.param(
+            "imdb_list",
+            {"list": "ls123?token=SECRET"},
+            "not an IMDb list id",
+            id="imdb_list",
+        ),
+        pytest.param(
+            "imdb_watchlist",
+            {"user": "ur99?token=SECRET"},
+            "not an IMDb user id",
+            id="imdb_watchlist",
+        ),
+        pytest.param(
+            "tvdb_list",
+            {"slug": "https://thetvdb.com/lists/x?apikey=SECRET"},
+            "not a TVDb list slug",
+            id="tvdb_list",
+        ),
+        pytest.param(
+            "text_file",
+            {"path": "/abs/SECRET.txt"},
+            "is an absolute path",
+            id="text_file",
+        ),
+    ],
+)
+def test_a_credential_bearing_param_is_refused_without_echoing_it(
+    builder, params, expected_fragment
+):
     """`CollectionDefinition`'s params check composes each inner error's `msg`
     verbatim, and `api/routes.py`'s ValidationError seam serves exactly those
     `msg` values on five config endpoints -- so a validator that interpolated
-    `{value!r}` handed an operator's pasted API key back on all five.
+    `{value!r}` handed an operator's pasted API key back on all five. Pinned
+    against all five of the changed validators (`mdblist_list`, `imdb_list`,
+    `imdb_watchlist`, `tvdb_list`, `text_file`): each case's pasted value
+    carries `SECRET`, so if that validator's `f"{value!r} "` head were
+    restored, `SECRET` would reappear in `served` and the assertion below
+    would fail.
 
     Asserted against `errors()[…]["msg"]`, which is what is served, rather than
     `str(exc)`: pydantic appends its own `input_value=` tail to that string and
@@ -218,14 +260,15 @@ def test_a_credential_bearing_param_is_refused_without_echoing_it():
     with pytest.raises(ValidationError) as error:
         CollectionDefinition.model_validate({
             "title": "Leaky",
-            "builder": "mdblist_list",
-            "params": {"list": "https://mdblist.com/lists/a/b?apikey=SECRET"},
+            "builder": builder,
+            "params": params,
         })
 
     served = "; ".join(item["msg"] for item in error.value.errors())
     assert "SECRET" not in served, served
-    assert "not an MDBList list" in served
-    assert "list: 14" in served, "the guidance tail is what tells the operator what to write"
+    assert expected_fragment in served
+    if builder == "mdblist_list":
+        assert "list: 14" in served, "the guidance tail is what tells the operator what to write"
 
 
 def test_a_param_of_the_wrong_type_fails_at_config_load():
