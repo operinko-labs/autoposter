@@ -727,6 +727,79 @@ Remove button: an overrides list replaces the file's wholesale, so the first
 one stored would stop every file-defined definition being built. The API
 refuses that write too, not only the page.
 
+## Filter values and pasted smart-filter URLs
+
+**A `filters:` tag value is now checked against the library's own list.** The
+tag attributes are `genre`, `label`, `collection`, `content_rating`,
+`resolution`, `audio_language` and `subtitle_language`. When a pass runs, each
+written value is looked up in the library's own vocabulary for that tag — one
+lookup per library per attribute per pass, shared across every definition in
+that pass, so a config with forty definitions naming `genre` pays for it once.
+
+What happens to a value the library does not use:
+
+- **it is reported and dropped**, and the rest of the filter still applies. So
+  `content_rating: [R, PG-133]` builds the R collection and tells you `PG-133`
+  is not a rating this library uses. Before this, it built an empty collection
+  and said nothing — indistinguishable from a correct filter that happens to
+  match nothing.
+- **a filter whose values all drop matches nothing**, and says so as its own
+  line. This is the normal case for the regional content-rating presets: a
+  library that carries only BBFC certificates will report every Australian
+  bucket as unmatched, and none of those collections is created. That is not an
+  error and nothing is marked failed — it is what switching on a region you do
+  not use looks like.
+- **if the library's list cannot be read at all** — Plex did not answer, or has
+  no such filter for that library — nothing is dropped and nothing is refused.
+  The pass filters on exactly the values you wrote, which is the behaviour that
+  shipped before this check existed, and says once per attribute that it could
+  not check them. A Plex hiccup does not take your collections down over an
+  advisory check.
+
+Kometa refuses outright here and this service deliberately does not: Kometa's
+own regional packs enumerate the library's vocabulary rather than naming
+values, so it never meets the case where a correct config names a value one
+library lacks. There is no switch for this — an error-downgrade switch is a
+class of setting this project does not ship.
+
+### Smart collections from a pasted Plex URL
+
+`builder: smart_url` takes a Plex Web address and turns the search in it into a
+Plex-native smart collection. Build the filter in Plex Web, copy the whole
+address bar, and paste it as `params.url`. From then on Plex evaluates the
+membership live and this service never touches it — the same arrangement
+`smart_filter` gives, without writing the query out by hand.
+
+- **Copy the `https://app.plex.tv/desktop/#!/server/...` form.** A
+  `http://<server>:32400/web/index.html#!/...` address keeps its whole query in
+  the URL *fragment*, where nothing downstream can read it, and is refused with
+  that explanation. Kometa cannot read that form either.
+- **It is a spelling of `smart_filter`, not a second engine.** The pasted query
+  and the equivalent hand-written `smart_filter` definition store a
+  byte-identical filter. Which one you use is a matter of where you would
+  rather edit it.
+- **A URL carrying an `X-Plex-Token` (or a bare `token=`) is refused, not
+  stripped.** A Plex Web address you copied while signed in may carry one —
+  raw, or percent-encoded inside the `key` parameter. The definition fails
+  config load with one fixed message naming `params.url` and nothing else:
+  remove the `X-Plex-Token` query parameter; the server's own token is used.
+  A token-bearing URL in the mounted config fails at boot like any other
+  invalid definition, the same as a malformed one — it is never silently
+  cleaned up and stored on your behalf.
+- **A URL for the wrong kind of library is refused by name.** A movie search on
+  a Show library would store a filter Plex cannot evaluate, so the definition
+  is refused for that library and says which kind it asked for. Narrow it with
+  `libraries:`, or paste the URL from the library you meant.
+- **`sort`, `limit`, `sync_mode`, `item_label` and `filters` are refused on the
+  definition**, when the config loads, by name and with the reason — the same
+  five `smart_filter` refuses, for the same reason: Plex owns this membership,
+  so there is nothing here to cap, sync, label or narrow. Put the ordering and
+  the cap in the search itself; Plex Web writes both into the URL.
+- **Everything else behaves like any other smart collection**: the summary,
+  labels, sort title, display mode and hub visibility are applied by this
+  service, and the sync-semantics and summary-clearing rules described above
+  apply unchanged.
+
 ## Collection posters
 
 The same `collections:` block also controls whether the collections this
