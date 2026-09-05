@@ -446,7 +446,7 @@ has rendered:
 
 Three rules worth knowing before you wire a dashboard to it:
 
-- **It is SQL, not a scan.** Every number comes from two grouped queries over
+- **It is SQL, not a scan.** Every number comes from three queries over
   `renders` joined to `media_items`. The endpoint never opens a directory and
   never stats a file — `assets_root` is an NFS mount, and a widget polling
   every sixty seconds must not be able to make a request wait on it.
@@ -456,8 +456,10 @@ Three rules worth knowing before you wire a dashboard to it:
   everything the adoption run created — have no size yet, are counted in
   `assets`, contribute nothing to `bytes`, and are counted in `unknown_size`.
   They are filled in by the `asset_stats` scheduled pass (see "Periodic
-  scheduler"), 500 rows a week by default, so `unknown_size` falls to zero
-  over the first few passes and `bytes` climbs to the truth. **A `bytes` total
+  scheduler"), `asset_stats_batch_size` rows a week by default, so
+  `unknown_size` reaches zero after about `ceil(assets / asset_stats_batch_size)`
+  weekly passes — around 7 passes for a 30k-asset library at the default of
+  5000. Raise `asset_stats_batch_size` to finish sooner. **A `bytes` total
   read while `unknown_size` is non-zero is a floor, not a measurement.** A row
   zeroed by a transient read error is corrected only when that artifact is
   next re-rendered — a real write, not the pipeline's own "unchanged"
@@ -1102,13 +1104,15 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   time. Once the library is measured it finds nothing and costs one indexed
   query a week. It only reads: it stats the paths `renders` rows already name,
   writes nothing to disk and moves nothing.
-- `asset_stats_batch_size` (default `500`) — the safety valve on that pass.
-  Stat-ing ~16,000 artifacts on an NFS mount in one run would hold a
-  connection for minutes, so each run measures at most this many rows and
-  leaves the rest for the next one. A file that cannot be read is stamped `0`
-  bytes rather than left unmeasured, so the batch does not re-select the same
-  dead row on every future run — the pass converges instead of stalling on
-  the first artifact it cannot reach.
+- `asset_stats_batch_size` (default `5000`) — the safety valve on that pass. A
+  batch here is `os.stat` calls, not renders, so it costs seconds on an NFS
+  mount rather than the minutes a batch of full renders would — each run
+  measures at most this many rows and leaves the rest for the next one, so
+  `unknown_size` reaches zero after about `ceil(assets / asset_stats_batch_size)`
+  weekly passes rather than in one run. Raise it to finish sooner. A file that
+  cannot be read is stamped `0` bytes rather than left unmeasured, so the
+  batch does not re-select the same dead row on every future run — the pass
+  converges instead of stalling on the first artifact it cannot reach.
 - `merge_days` (default `7`) — cadence for the `media_items` twin merge: a
   pure-SQL scan for pairs of rows carrying one identity under two rating keys,
   reconciling each pair onto the surviving row. **Whether it merges is not a

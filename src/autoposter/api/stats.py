@@ -1,7 +1,9 @@
 """The storage numbers behind ``GET /api/stats/storage`` (roadmap row 52).
 
 **This module never touches the filesystem.** Every number here comes out of
-two SELECTs over ``renders`` joined to ``media_items``; the bytes come from
+three round trips: two SELECTs over ``renders`` joined to ``media_items`` (a
+grouped count/sum and a distinct-item count) plus a database-clock read for
+``generated_at``; the bytes come from
 ``renders.size_bytes``, stamped by ``render/pipeline.py`` when each artifact
 is published and back-filled for older rows by the scheduled ``asset_stats``
 pass (``scheduler/jobs.py``). ``assets_root`` is an NFS PV, and a widget
@@ -51,19 +53,20 @@ def _zero() -> dict:
 async def storage_snapshot(session) -> dict:
     """Counts and bytes for every rendered artifact, by library and art kind.
 
-    Two statements, not one. The grouped pass below is the ``/actions/summary``
-    pattern (one grouped scan with a conditional sum rather than a query per
-    cell). ``totals.items`` cannot come out of it: a distinct-item count is not
-    summable across groups -- four artifacts for one show are one item -- so it
-    is its own ``COUNT(DISTINCT)`` over the same join.
+    Three round trips, not one. The grouped pass below is the
+    ``/actions/summary`` pattern (one grouped scan with a conditional sum
+    rather than a query per cell). ``totals.items`` cannot come out of it: a
+    distinct-item count is not summable across groups -- four artifacts for
+    one show are one item -- so it is its own ``COUNT(DISTINCT)`` over the
+    same join. The third is ``generated_at``.
 
     ``generated_at`` is read from the DATABASE clock, never ``datetime.now()``:
     every other timestamp this API serves is Postgres's, and mixing the two is
     how the dashboard once mislabelled a healthy run (see
     ``api/snapshots.py::_run_status``).
 
-    The session is the caller's and neither statement writes, so nothing here
-    commits.
+    The session is the caller's and none of the three statements writes, so
+    nothing here commits.
     """
     grouped = (
         await session.execute(
@@ -145,7 +148,7 @@ async def storage_stats(
     ``Depends`` placed here without the allowlist entry fails closed rather
     than opening a route.
 
-    One session, two SELECTs, no filesystem (see this module's docstring).
+    One session, three round trips, no filesystem (see this module's docstring).
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:

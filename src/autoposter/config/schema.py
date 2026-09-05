@@ -3153,14 +3153,17 @@ class SchedulerConfig(BaseModel):
         default=7,
         description="How often the asset-size backfill sweep runs.",
     )
-    # The safety valve, drift_batch_size's rule: a ~16,000-artifact library on
-    # an NFS mount is measured over successive runs rather than in one
-    # multi-minute stat storm.
+    # The safety valve -- but unlike drift_batch_size, a batch here is
+    # os.stat calls, not renders: a few thousand cost seconds on an NFS
+    # mount, not the multi-minute storm a batch of full renders would be.
+    # Sized so a ~16,000-artifact library finishes in a handful of weekly
+    # passes rather than over a year.
     asset_stats_batch_size: int = Field(
-        default=500,
+        default=5000,
         description=(
-            "The most render rows one asset-size sweep stats, so a large "
-            "library is measured gradually rather than all at once."
+            "The most render rows one asset-size sweep stats (an os.stat "
+            "call apiece, not a render), so a large library is measured "
+            "gradually rather than all at once."
         ),
     )
     cleanup_days: int = Field(

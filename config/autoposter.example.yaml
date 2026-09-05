@@ -494,7 +494,7 @@ scheduler:
   credits_scan_days: 7 # library credits scan cadence; whole-library per run, no batch valve
   maintenance_days: 7 # Plex maintenance pass cadence
   asset_stats_days: 7 # asset-size backfill cadence; stats render rows with no recorded size
-  asset_stats_batch_size: 500 # render rows stat'ed per sweep; the valve against one long walk
+  asset_stats_batch_size: 5000 # render rows stat'ed per sweep (os.stat calls, not renders); the valve against one long walk
   cleanup_days: 7 # orphaned asset cleanup cadence
   prune_days: 7 # media_items prune cadence
   merge_days: 7 # media_items twin merge cadence

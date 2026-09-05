@@ -175,4 +175,4 @@ def test_the_readme_documents_the_widget_with_a_header_and_never_a_query_string(
     # The backfill has to be documented as a scheduled pass, or an operator
     # reading zero bytes on a fresh deployment has no way to know why.
     assert "`asset_stats_days` (default `7`)" in readme
-    assert "`asset_stats_batch_size` (default `500`)" in readme
+    assert "`asset_stats_batch_size` (default `5000`)" in readme
