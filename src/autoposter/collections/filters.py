@@ -126,7 +126,7 @@ The two must not be reported as one number, which is what row 96's original
 """
 import datetime as dt
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
@@ -138,6 +138,8 @@ __all__ = [
     "FILTERABLE_ATTRIBUTES",
     "FILTER_ATTRIBUTES",
     "ITEM_KINDS",
+    "LANGUAGE_FOLD_ATTRIBUTES",
+    "MATCHES_NOTHING",
     "OPERATORS_BY_TYPE",
     "PLEXAPI_EQUIVALENT",
     "RELATIVE_UNITS",
@@ -156,9 +158,12 @@ __all__ = [
     "base_language_code",
     "batched_attributes",
     "evaluate",
+    "language_fold_key",
     "parse_filters",
     "predicates",
     "resolve_search_values",
+    "tag_predicates",
+    "without_values",
 ]
 
 # The four categorical columns, as closed sets. A row outside them would parse,
@@ -2283,6 +2288,94 @@ def batched_attributes(group: FilterGroup) -> tuple[str, ...]:
     return tuple(seen)
 
 
+# The predicate a value-pruning caller is left with when NOTHING survived. An
+# ``any`` group with no children, because ``evaluate`` answers ``any(())`` --
+# False, for every item, using machinery that already exists rather than a
+# fourth node type the evaluator would have to learn.
+#
+# Fail CLOSED, and the reason is ``.not``. An emptied ``genre: [Horrror]``
+# matching nothing is obviously right; an emptied ``genre.not: [Horrror]``
+# reads just as naturally as "nothing left to exclude, so keep everything" --
+# and that would silently WIDEN a collection the operator wrote to narrow, on
+# the strength of a typo. One rule for both, and it is the one that cannot
+# invent members.
+#
+# A module-level singleton is safe: ``FilterGroup`` is frozen and this one has
+# no children to share.
+MATCHES_NOTHING: "FilterGroup" = FilterGroup(
+    op="any", children=(), field="<every value dropped>"
+)
+
+
+def _vocabulary_checked(predicate: "FilterPredicate") -> bool:
+    """Row 158's rule -- a written TAG value, under ``eq``/``not`` -- spelled
+    ONCE and consulted by both ``tag_predicates`` and ``without_values`` below,
+    so which predicates get READ and which predicates may get PRUNED cannot
+    drift apart (Task 2 review, Important 2). See ``tag_predicates`` for why
+    exactly these two exclusions.
+    """
+    return predicate.attribute.type == "tag" and predicate.operator in ("eq", "not")
+
+
+def tag_predicates(group: FilterGroup) -> tuple[FilterPredicate, ...]:
+    """Every predicate in a parsed tree whose values are written TAG VALUES.
+
+    Roadmap row 158's selector, beside ``predicates`` and ``batched_attributes``
+    for the reason those are here: the tree's shape stays this module's
+    business, and the caller gets a question answered rather than a walk to
+    re-implement.
+
+    Two exclusions, both from the operator table above rather than from a list
+    kept here:
+
+    - a non-``tag`` row, because only a tag has a vocabulary. A ``str`` row
+      like ``studio`` is a SUBSTRING match client-side, so "is this in the
+      library's list" is not the question its values answer;
+    - ``.regex`` and the four ``.count_*`` modifiers, whose values are a
+      compiled pattern and an integer -- neither is a word anybody could look
+      up. Kometa splits the same way: its tag-value validation
+      (builder.py:4400-4440) is a different branch from its regex one
+      (:4301-4310) and from its count-modifier handling (:4350).
+    """
+    return tuple(predicate for predicate in predicates(group) if _vocabulary_checked(predicate))
+
+
+def without_values(
+    node: "FilterGroup | FilterPredicate",
+    drop: "Callable[[FilterPredicate, object], bool]",
+) -> "FilterGroup | FilterPredicate":
+    """``node`` with every value ``drop`` selects removed, structure preserved.
+
+    Row 158's warn-and-DROP half. A predicate that loses some of its values
+    keeps the rest; one that loses all of them becomes ``MATCHES_NOTHING``
+    above. Groups are rebuilt around their pruned children, so the base
+    conjunction still means what the operator wrote: under ``all:`` one emptied
+    predicate takes the whole definition to nothing, under ``any:`` its
+    siblings still answer.
+
+    ``drop`` is a callback rather than a set of values because the caller's
+    question is per ``(attribute, value)`` and ``FilterPredicate`` carries a
+    compiled ``re.Pattern`` on some rows -- keying a set on the predicate
+    itself would make this depend on hashability the model never promised.
+
+    An unchanged subtree is returned BY IDENTITY, so a caller can tell "nothing
+    dropped" from "something did" with an ``is`` check and skip the extra work.
+    ``drop`` is only ever consulted for the predicates ``tag_predicates`` would
+    have returned, so a regex or a count modifier cannot lose a value here.
+    """
+    if isinstance(node, FilterPredicate):
+        if not _vocabulary_checked(node):
+            return node
+        kept = tuple(value for value in node.values if not drop(node, value))
+        if len(kept) == len(node.values):
+            return node
+        return MATCHES_NOTHING if not kept else replace(node, values=kept)
+    children = tuple(without_values(child, drop) for child in node.children)
+    if children == node.children:
+        return node
+    return replace(node, children=children)
+
+
 # --- evaluation --------------------------------------------------------------
 
 
@@ -2372,13 +2465,25 @@ def _is_missing(value: object, value_type: str) -> bool:
 # (`English`) still matches nothing: langcodes cannot reduce it, the
 # fallback returns it unchanged, and the name->code seam is row 204's
 # still-open half (`iso_names.LANGUAGE_NAMES` is the table it awaits).
-_LANGUAGE_FOLD_ATTRIBUTES = frozenset({"audio_language", "subtitle_language"})
+LANGUAGE_FOLD_ATTRIBUTES = frozenset({"audio_language", "subtitle_language"})
 
 
 # ``base_language_code`` moved to ``autoposter/lang.py`` and is imported at the
 # top of this module. It is re-exported here (it is in ``__all__``) so every
 # existing importer is unchanged; it moved because ``badges/values.py``'s flag
 # badge needs the same reduction and ``badges/`` must not import this module.
+
+
+def language_fold_key(value: str) -> str:
+    """The base ISO 639-1 code ``_matches_one``'s language fold compares at.
+
+    Extracted so a caller outside this module -- roadmap row 158's vocabulary
+    check, ``LibraryTagResolver.known`` -- folds a written value and a
+    library's own vocabulary through exactly the reduction the evaluator uses
+    below, by calling this rather than re-spelling ``casefold`` then
+    ``base_language_code`` a second time (Task 2 review, Important 1).
+    """
+    return base_language_code(str(value).casefold())
 
 
 def _matches_one(
@@ -2396,11 +2501,9 @@ def _matches_one(
         tags = _as_tags(have, attribute.name)
         if operator == "regex":
             return any(want.search(tag) for tag in tags)
-        if attribute.name in _LANGUAGE_FOLD_ATTRIBUTES:
-            wanted = base_language_code(want.casefold())
-            return any(
-                base_language_code(tag.casefold()) == wanted for tag in tags
-            )
+        if attribute.name in LANGUAGE_FOLD_ATTRIBUTES:
+            wanted = language_fold_key(want)
+            return any(language_fold_key(tag) == wanted for tag in tags)
         return any(tag.casefold() == want.casefold() for tag in tags)
 
     if kind == "str":

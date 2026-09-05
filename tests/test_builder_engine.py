@@ -195,6 +195,18 @@ class FakeSection:
         self._existing[title] = collection
         return collection
 
+    def listFilterChoices(self, field, libtype=None):
+        """Roadmap row 158's vocabulary read. Every tier-2 test in this file
+        filters on ``genre: Horror``, so the fake has to be a library that USES
+        that word -- otherwise the engine drops the value and the memberships
+        below become assertions about the drop rather than about the
+        enrichment. What row 158 itself does with an unknown value is
+        ``tests/test_collection_filter_vocabulary.py``'s subject."""
+        return [
+            type("Choice", (), {"title": t, "key": t})()
+            for t in ("Horror", "Thriller", "Comedy")
+        ]
+
 
 def _config(**overrides):
     options = {
