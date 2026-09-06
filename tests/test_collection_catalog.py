@@ -1677,6 +1677,49 @@ def test_a_row_citing_a_defaults_file_nobody_pinned_raises(monkeypatch):
         catalog._check_kometa_sources()
 
 
+def test_the_upstream_chart_titles_come_from_the_builders_transcription():
+    """Row 146: the five TMDb charts Kometa publishes take their title from
+    ``builders/tmdb.CHART_TITLES``, which is where the same defaults file's
+    summary is transcribed. Two tables would let a title and the summary that
+    must agree with it drift apart; the import direction that would be needed
+    to close that gap the other way (``builders`` importing ``catalog``) is a
+    cycle, so the single table lives on the builder side."""
+    from autoposter.collections.builders.tmdb import CHART_TITLES
+
+    titled = {chart: title for chart, title, _, _ in catalog._TMDB_CHARTS}
+    for chart, (title, _summary) in CHART_TITLES.items():
+        assert titled[chart] == title, chart
+
+    cited = {
+        chart
+        for chart, _title, source, _note in catalog._TMDB_CHARTS
+        if source == "defaults/chart/tmdb.yml"
+    }
+    assert cited == set(CHART_TITLES)
+
+
+def test_the_charts_kometa_does_not_publish_have_nothing_transcribed():
+    """The other three are charts this service's builder has and Kometa's
+    chart defaults do not, so there is no upstream string to transcribe and
+    the table must not carry an invented one. The endpoint-table check is what
+    refuses a typo'd key: a row here for a chart no endpoint serves would ship
+    a summary nothing can ever build."""
+    from autoposter.collections.builders.tmdb import CHART_TITLES
+    from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
+
+    assert set(CHART_TITLES) == {
+        "popular",
+        "top_rated",
+        "trending_week",
+        "airing_today",
+        "on_the_air",
+    }
+    for chart in ("now_playing", "upcoming", "trending_day"):
+        assert chart not in CHART_TITLES, chart
+    for chart in CHART_TITLES:
+        assert chart in CHART_ENDPOINTS, chart
+
+
 def test_the_pinned_set_holds_no_path_nothing_cites():
     """The check reads only one way on its own -- it refuses a row citing an
     unpinned path, and says nothing about a pinned path no row cites. A leftover

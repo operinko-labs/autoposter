@@ -59,6 +59,53 @@ __all__ = [
     "TmdbRegionUnsupported",
 ]
 
+# Kometa's marker for the library type, stored in the summaries below exactly
+# as upstream writes it. Substituted with ``str.replace`` rather than
+# ``%``-formatting because two of the five strings carry no marker at all --
+# ``allowed_libraries: show`` makes the type a constant on the two airing
+# charts, so ``"...airing today." % "show"`` would raise. ``.replace`` is also
+# what Kometa itself does (``modules/builder.py``'s ``apply_vars``).
+LIBRARY_TRANSLATION = "<<library_translation>>"
+
+# chart key -> (Kometa's collection title, Kometa's summary template).
+#
+# Transcribed verbatim from ``Kometa-Team/Translations/master/defaults/en.yml``
+# (``collections.tmdb_popular`` / ``tmdb_top`` / ``tmdb_trending`` /
+# ``tmdb_airing`` / ``tmdb_air``), the same file and the same rule
+# ``imdb_chart.CHART_TITLES`` already ships from; the rows are also recorded in
+# ``docs/research/kometa-collections.md`` §5. The title is BOTH the collection
+# name upstream gives the chart and the poster key
+# ``posters.hosted_poster_url("chart", ...)`` resolves, because
+# ``defaults/chart/tmdb.yml``'s ``image: chart/<<style>>/<<mapping_name_encoded>>``
+# is keyed by the mapping name.
+#
+# Only the five charts Kometa's chart defaults publish are here. ``now_playing``,
+# ``upcoming`` and ``trending_day`` are this service's own and are deliberately
+# absent: there is no upstream string for them, and writing one would be copy
+# rather than parity.
+CHART_TITLES: dict[str, tuple[str, str]] = {
+    "popular": (
+        "TMDb Popular",
+        "A collection of the most watched <<library_translation>>s according to TMDb.",
+    ),
+    "top_rated": (
+        "TMDb Top Rated",
+        "A collection of the top rated <<library_translation>>s according to TMDb.",
+    ),
+    "trending_week": (
+        "TMDb Trending",
+        "A collection of <<library_translation>>s trending on TMDb.",
+    ),
+    "airing_today": (
+        "TMDb Airing Today",
+        "A collection of shows with episodes airing today.",
+    ),
+    "on_the_air": (
+        "TMDb On The Air",
+        "A collection of shows that are still actively airing episodes.",
+    ),
+}
+
 # ISO-3166-1 alpha-2, and ISO-639-1 optionally qualified by one ("fi", "fi-FI").
 _REGION = re.compile(r"^[A-Za-z]{2}$")
 _LANGUAGE = re.compile(r"^[A-Za-z]{2}(-[A-Za-z]{2})?$")

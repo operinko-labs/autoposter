@@ -61,6 +61,7 @@ from autoposter.collections.builders.credits_family import (
     TITLE_FORMATS as CREDIT_TITLE_FORMATS,
 )
 from autoposter.collections.builders.imdb_award import EVENTS
+from autoposter.collections.builders.tmdb import CHART_TITLES as TMDB_CHART_TITLES
 from autoposter.collections.dynamic_titles import render_title
 from autoposter.collections.dynamic_types import DYNAMIC_TYPES
 from autoposter.collections.facts_family import FACTS_FAMILY_TYPES
@@ -825,11 +826,15 @@ _SHOW = ("Show",)
 # library type has no endpoint entry for it either, so the two say the same
 # thing and only one of them can go stale.
 #
-# Five of the eight are ``defaults/chart/tmdb.yml``, titles verbatim. The other
-# three are charts this service's builder has and that file does not
-# (``/movie/now_playing``, ``/movie/upcoming``, ``/trending/*/day``); their
-# titles are ours and they say so, because inventing a Kometa attribution is
-# worse than admitting there is none.
+# Five of the eight are ``defaults/chart/tmdb.yml``, and their titles are not
+# repeated here: the column reads them from ``builders/tmdb.CHART_TITLES``,
+# which is where the same file's summaries are transcribed, so a title and the
+# summary that has to agree with it cannot drift apart. The import direction is
+# the one that already exists -- ``catalog`` imports builders, never the
+# reverse. The other three are charts this service's builder has and that file
+# does not (``/movie/now_playing``, ``/movie/upcoming``, ``/trending/*/day``);
+# their titles are ours and they say so, because inventing a Kometa attribution
+# is worse than admitting there is none.
 #
 # The IMDb charts are deliberately NOT presets here. They ship behind
 # ``collections.charts`` and have a setting-backed row above; a preset key next
@@ -839,15 +844,15 @@ _SHOW = ("Show",)
 
 # chart key -> (title, kometa_source, what the chart is)
 _TMDB_CHARTS: tuple[tuple[str, str, str, str], ...] = (
-    ("popular", "TMDb Popular", "defaults/chart/tmdb.yml",
+    ("popular", TMDB_CHART_TITLES["popular"][0], "defaults/chart/tmdb.yml",
      "what TMDb's audience is looking at right now"),
-    ("top_rated", "TMDb Top Rated", "defaults/chart/tmdb.yml",
+    ("top_rated", TMDB_CHART_TITLES["top_rated"][0], "defaults/chart/tmdb.yml",
      "TMDb's highest-scored titles, by its own weighted rating"),
-    ("trending_week", "TMDb Trending", "defaults/chart/tmdb.yml",
+    ("trending_week", TMDB_CHART_TITLES["trending_week"][0], "defaults/chart/tmdb.yml",
      "TMDb's trending list over the past week"),
-    ("airing_today", "TMDb Airing Today", "defaults/chart/tmdb.yml",
+    ("airing_today", TMDB_CHART_TITLES["airing_today"][0], "defaults/chart/tmdb.yml",
      "series with an episode airing today"),
-    ("on_the_air", "TMDb On The Air", "defaults/chart/tmdb.yml",
+    ("on_the_air", TMDB_CHART_TITLES["on_the_air"][0], "defaults/chart/tmdb.yml",
      "series airing an episode in the next week"),
     ("now_playing", "TMDb Now Playing", NOT_KOMETA + "the title is ours",
      "films in cinemas now. TMDb publishes this chart and this service's "
