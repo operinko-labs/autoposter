@@ -12,6 +12,7 @@ adds:
   probe -- checked against that application's own route table.
 """
 import logging
+import os
 import stat
 from pathlib import Path
 
@@ -46,6 +47,14 @@ PLEX_URL = "http://plex.example.test:32400"
 # with -- and to nothing an eye would notice. The tail is a second NAME=value
 # entry, which is the whole of the injection.
 SPLIT_VALUE = "row-121-tmdb\x85AUTOPOSTER_PLEX_TOKEN=row-121-injected"
+# A NUL survives the state file's round trip untouched and then makes
+# `os.environ[name] = value` raise in boot._export -- at a boot where every
+# hard secret resolves, so no wizard is served and the pod exits non-zero
+# forever. The state directory would need shell access to repair.
+NUL_VALUE = "row-121-nul\x00tail"
+# The same unrecoverable place by the other door: past MAXIMUM_SECRET_LENGTH
+# the exec that hands the deployment to the application is E2BIG.
+OVERSIZED_VALUE = "row-121-long" + "x" * state_module.MAXIMUM_SECRET_LENGTH
 
 HARD = (
     "AUTOPOSTER_DATABASE_URL",
@@ -358,6 +367,29 @@ async def test_a_password_of_exactly_72_bytes_is_accepted(setup_client):
     assert response.status_code == 200, response.text
     held = state_module.read_secrets_file(state_module.secrets_file_path())
     assert held["AUTOPOSTER_ADMIN_PASSWORD_HASH"].startswith("$2b$")
+
+
+async def test_a_password_carrying_a_nul_byte_cannot_poison_the_state_file(
+    setup_client,
+):
+    """Step 1 is the third place a value arrives, and the one that needs no
+    check: what it persists is bcrypt's OUTPUT, not the operator's paste.
+    bcrypt >= 4.2 hashes a NUL-bearing password rather than raising -- measured,
+    not assumed -- and the hash is ASCII, so the state file cannot be given a
+    value the environment could not carry by this route. Pinned here so a later
+    change that persists anything derived from the raw password has to argue
+    with a test rather than with a comment.
+    """
+    response = await setup_client.post(
+        "/api/setup/password", json={"password": MASTER_PASSWORD + "\x00tail"}
+    )
+
+    assert response.status_code == 200, response.text
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    stored = held["AUTOPOSTER_ADMIN_PASSWORD_HASH"]
+    assert stored.startswith("$2b$")
+    assert state_module.is_storable(stored)
+    assert MASTER_PASSWORD not in response.text
 
 
 async def test_a_multibyte_password_is_measured_in_bytes_not_characters(setup_client):
@@ -673,7 +705,7 @@ async def test_a_provider_value_the_reader_would_split_is_refused_at_the_step(
 
     assert response.status_code == 400
     assert response.json()["detail"] == (
-        f"{setup_api.VALUE_IS_NOT_ONE_LINE} AUTOPOSTER_TMDB_TOKEN"
+        f"{setup_api.VALUE_IS_NOT_STORABLE} AUTOPOSTER_TMDB_TOKEN"
     )
     assert "row-121-injected" not in response.text
     progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
@@ -699,7 +731,7 @@ async def test_a_split_value_never_reaches_the_finish_step(
 
     assert response.status_code == 200, response.text
     assert all(
-        state_module.is_one_line(value)
+        state_module.is_storable(value)
         for value in setup_app.state.setup.staged.values()
     )
     held = state_module.read_secrets_file(state_module.secrets_file_path())
@@ -711,13 +743,92 @@ def test_the_wizard_refuses_exactly_what_the_writer_refuses():
     """One rule, one function. A value the step accepts and the renderer
     refuses is a 500 at the last step of a wizard that is gone afterwards, so
     the two checks cannot be two expressions that happen to agree today."""
-    for value in ("", "plain", "two\nlines", "u\x85nicode", "\u2028", "trailing\r"):
+    for value in ("", "plain", "two\nlines", "u\x85nicode", "\u2028", "trailing\r",
+                  NUL_VALUE, OVERSIZED_VALUE,
+                  "x" * state_module.MAXIMUM_SECRET_LENGTH):
         try:
             state_module.render_secrets_file({"AUTOPOSTER_TMDB_TOKEN": value})
         except ValueError:
-            assert not state_module.is_one_line(value), value
+            assert not state_module.is_storable(value), value
         else:
-            assert state_module.is_one_line(value), value
+            assert state_module.is_storable(value), value
+
+
+def test_a_value_the_environment_cannot_carry_is_not_storable():
+    """The rule is the environment's and not this module's taste, so it is
+    proved against the environment: a value `os.environ` refuses is a value
+    that reaches `boot._export` at a boot where every hard secret resolves --
+    no wizard is served for that shape, and the pod exits non-zero until
+    somebody edits the state volume from a shell. Length is the same failure
+    one step later at `os.execv` (E2BIG), bounded rather than probed because
+    probing it would depend on the runner's RLIMIT_STACK."""
+    with pytest.raises(ValueError):
+        os.environ["ROW_121_PROBE"] = NUL_VALUE
+
+    assert not state_module.is_storable(NUL_VALUE)
+    assert not state_module.is_storable(OVERSIZED_VALUE)
+    assert not state_module.is_storable(SPLIT_VALUE)
+    # The bound from both sides, and the empty string, which is the one value
+    # that is not a line at all.
+    assert state_module.is_storable("x" * state_module.MAXIMUM_SECRET_LENGTH)
+    assert not state_module.is_storable("x" * (state_module.MAXIMUM_SECRET_LENGTH + 1))
+    assert state_module.is_storable("")
+    assert state_module.is_storable(FAKE_DB_URL)
+
+
+async def test_a_provider_value_the_environment_cannot_carry_is_refused_at_the_step(
+    setup_client,
+):
+    """The NUL byte and the oversized value take the split value's path, at
+    the same step and for the same reason: the finish step is too late, and
+    the boot that follows it has no wizard to fall back to."""
+    token = await _authenticate(setup_client)
+
+    for value in (NUL_VALUE, OVERSIZED_VALUE):
+        response = await setup_client.post(
+            "/api/setup/providers",
+            json={"values": {"AUTOPOSTER_TMDB_TOKEN": value}},
+            headers=_headers(token),
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == (
+            f"{setup_api.VALUE_IS_NOT_STORABLE} AUTOPOSTER_TMDB_TOKEN"
+        )
+        assert "row-121-nul" not in response.text
+        assert "row-121-long" not in response.text
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["providers"]["AUTOPOSTER_TMDB_TOKEN"] is None
+
+
+async def test_a_database_url_the_environment_cannot_carry_is_refused_before_the_probe(
+    setup_client, monkeypatch
+):
+    """Step 2's half of the same rule, and the probe must not run for it: the
+    value can never be stored, so an outbound connection made on its behalf is
+    one the deployment gains nothing from."""
+    probed: list[str] = []
+
+    async def answers(url: str) -> tuple[bool, str]:
+        probed.append(url)
+        return True, ""
+
+    monkeypatch.setattr(setup_api, "database_answers", answers)
+    token = await _authenticate(setup_client)
+
+    for value in (FAKE_DB_URL + "\x00", FAKE_DB_URL + "x" * 4096):
+        response = await setup_client.post(
+            "/api/setup/database", json={"url": value}, headers=_headers(token)
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["detail"] == (
+            f"{setup_api.VALUE_IS_NOT_STORABLE} AUTOPOSTER_DATABASE_URL"
+        )
+        assert "row-121-db-secret" not in response.text
+    assert probed == []
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["database"] is False
 
 
 async def test_the_presence_map_is_readable_on_its_own(setup_client):
@@ -806,7 +917,7 @@ async def test_a_database_url_the_reader_would_split_is_refused_before_the_probe
 
     assert response.status_code == 400
     assert response.json()["detail"] == (
-        f"{setup_api.VALUE_IS_NOT_ONE_LINE} AUTOPOSTER_DATABASE_URL"
+        f"{setup_api.VALUE_IS_NOT_STORABLE} AUTOPOSTER_DATABASE_URL"
     )
     assert probed == []
     assert "row-121-db-secret" not in response.text

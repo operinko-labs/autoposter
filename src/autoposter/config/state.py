@@ -101,14 +101,37 @@ def read_secrets_file(path: Path) -> dict[str, str]:
     return values
 
 
-def is_one_line(value: str) -> bool:
-    """Whether ``value`` survives this file's round trip.
+# A credential this service reads is a token, a URL or a bcrypt hash; the
+# longest real one is a couple of hundred characters. The bound exists because
+# the values in this file are published into the process environment and then
+# carried across ``os.execv``: Linux caps a single argv/env entry at
+# MAX_ARG_STRLEN (32 pages = 128 KiB) and the whole block at a fraction of
+# RLIMIT_STACK, and a value past either turns the exec into E2BIG in a process
+# that is already committed to it. 4096 characters is at most 16 KiB as UTF-8,
+# which leaves every shipped shape orders of magnitude clear of both limits
+# while being far more than any credential needs.
+MAXIMUM_SECRET_LENGTH = 4096
 
-    ``read_secrets_file`` parses with ``str.splitlines``, which splits on far
-    more than a newline -- ``render_secrets_file`` below names the whole set --
-    so a value the writer accepted whole and the reader splits becomes a
-    second ``NAME=value`` entry when its tail contains an ``=``. The empty
-    string is the one value that is not a line at all and passes.
+
+def is_storable(value: str) -> bool:
+    """Whether ``value`` survives this file's round trip *and* the environment.
+
+    Three refusals, one rule, because all three end at the same place -- a
+    value that was accepted by the wizard and cannot be given back to the
+    deployment that asked for it:
+
+    * ``read_secrets_file`` parses with ``str.splitlines``, which splits on far
+      more than a newline -- ``render_secrets_file`` below names the whole set
+      -- so a value the writer accepted whole and the reader splits becomes a
+      second ``NAME=value`` entry when its tail contains an ``=``;
+    * a NUL byte round-trips through this file intact and then makes
+      ``os.environ[name] = value`` raise ``ValueError: embedded null
+      character`` in ``boot._export`` -- at a boot where every hard secret
+      resolves, so no wizard is served and the pod exits non-zero forever;
+    * an oversized value reaches ``os.execv`` and fails E2BIG in the same
+      unrecoverable place (``MAXIMUM_SECRET_LENGTH`` above).
+
+    The empty string is the one value that is not a line at all and passes.
 
     A function rather than the same expression at two sites: the setup wizard
     refuses such a value at the step that ACCEPTS it, because this module
@@ -116,7 +139,11 @@ def is_one_line(value: str) -> bool:
     been written, with the wizard about to disappear. Two checks that must be
     one rule.
     """
-    return not value or value.splitlines() == [value]
+    if not value:
+        return True
+    if "\x00" in value or len(value) > MAXIMUM_SECRET_LENGTH:
+        return False
+    return value.splitlines() == [value]
 
 
 def render_secrets_file(values: Mapping[str, str]) -> str:
@@ -125,14 +152,16 @@ def render_secrets_file(values: Mapping[str, str]) -> str:
     The refusal names the VARIABLE and never the value: this module's whole
     subject is credentials, and an exception message reaches the log.
 
-    What is refused is any value the READER would see as more than one line.
-    ``str.splitlines`` -- which ``read_secrets_file`` parses with -- also
-    splits on ``\\v``, ``\\f``, ``\\x1c``-``\\x1e``, ``\\x85`` and
-    U+2028/U+2029, so refusing only ``\\n`` and ``\\r`` would let such a value
-    be written whole and read back as two, with a tail containing ``=``
-    becoming a second ``NAME=value`` entry. One definition for both halves,
-    expressed as the round trip itself. The empty string is the one value that
-    is not a line at all (``"".splitlines() == []``) and passes.
+    What is refused is anything ``is_storable`` refuses: a value the READER
+    would see as more than one line, a value carrying a NUL byte, and a value
+    past ``MAXIMUM_SECRET_LENGTH``. ``str.splitlines`` -- which
+    ``read_secrets_file`` parses with -- also splits on ``\\v``, ``\\f``,
+    ``\\x1c``-``\\x1e``, ``\\x85`` and U+2028/U+2029, so refusing only ``\\n``
+    and ``\\r`` would let such a value be written whole and read back as two,
+    with a tail containing ``=`` becoming a second ``NAME=value`` entry. One
+    definition for both halves, expressed as the round trip itself. The empty
+    string is the one value that is not a line at all
+    (``"".splitlines() == []``) and passes.
     """
     lines = [
         "# Written by autoposter's first-start setup wizard.",
@@ -141,8 +170,8 @@ def render_secrets_file(values: Mapping[str, str]) -> str:
     ]
     for name in sorted(values):
         value = values[name]
-        if not is_one_line(value):
-            raise ValueError(f"{name} contains a line break and cannot be stored")
+        if not is_storable(value):
+            raise ValueError(f"{name} cannot be stored as it stands")
         lines.append(f"{name}={value}")
     return "\n".join(lines) + "\n"
 

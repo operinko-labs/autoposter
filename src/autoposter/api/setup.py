@@ -57,8 +57,9 @@ from autoposter.config.schema import (
     resolve_secret_values,
 )
 from autoposter.config.state import (
+    MAXIMUM_SECRET_LENGTH,
     example_config_path,
-    is_one_line,
+    is_storable,
     merge_secrets_file,
     state_config_path,
     state_dir,
@@ -134,13 +135,21 @@ NOT_A_CREDENTIAL_THIS_SERVICE_READS = (
     "one of the submitted names is not a credential this service reads; the "
     "provider list this step answers with is the whole of what it accepts"
 )
-# A credential the state file's reader would split into two entries, refused at
-# the step that ACCEPTS it. render_secrets_file refuses the same value, but
+# A credential this deployment could never be given back: one the state file's
+# reader would split into two entries, one carrying a NUL byte -- which makes
+# boot's `os.environ[name] = value` raise at a boot where every hard secret
+# resolves, so no wizard is served for that shape and the pod exits non-zero
+# forever -- or one too long for the exec that follows. Refused at the step
+# that ACCEPTS it. render_secrets_file refuses exactly the same values, but
 # that raise lands inside the finish step -- after the config document has been
 # written, as a 500 that names no field, with the wizard about to be gone. The
 # NAME is safe to serve here and only here: it has already passed the
-# _PROVIDER_ENV allowlist, so it is one of this module's own strings.
-VALUE_IS_NOT_ONE_LINE = "this credential must be a single line, and this one is not:"
+# _PROVIDER_ENV allowlist, so it is one of this module's own strings. The
+# sentence names the RULES and never the value that broke one.
+VALUE_IS_NOT_STORABLE = (
+    "this credential must be a single line of at most "
+    f"{MAXIMUM_SECRET_LENGTH} characters with no NUL byte, and this one is not:"
+)
 # What a write into the state directory answers when the directory will not
 # take it: a missing PVC, a mount owned by another uid, a full volume. 503
 # rather than 500 -- the deployment is not broken, its volume is -- and rather
@@ -503,13 +512,14 @@ async def set_database_url(body: DatabaseRequest, request: Request) -> dict:
     Staged rather than written (facts Amendment 3): the database URL is a hard
     secret, and no hard secret reaches the state file before the finish step.
     """
-    if not is_one_line(body.url):
+    if not is_storable(body.url):
         # Before the probe, for the reason step 3 gives at the same check: a
-        # URL the state file's reader would split into two entries is refused
-        # by render_secrets_file at the finish step, which is too late.
+        # URL the state file's reader would split into two entries -- or one
+        # the process environment could not carry -- is refused by
+        # render_secrets_file at the finish step, which is too late.
         raise HTTPException(
             status_code=400,
-            detail=f"{VALUE_IS_NOT_ONE_LINE} AUTOPOSTER_DATABASE_URL",
+            detail=f"{VALUE_IS_NOT_STORABLE} AUTOPOSTER_DATABASE_URL",
         )
     answered, failure = await database_answers(body.url)
     if not answered:
@@ -558,11 +568,11 @@ async def set_provider_keys(body: ProvidersRequest, request: Request) -> dict:
     if _GENERATED_SECRET in body.values:
         raise HTTPException(status_code=400, detail=WEBHOOK_SECRET_IS_GENERATED)
     for name in sorted(body.values):
-        if not is_one_line(body.values[name]):
+        if not is_storable(body.values[name]):
             # The name has passed the allowlist above, so it is one of this
             # module's own strings; the value is never served.
             raise HTTPException(
-                status_code=400, detail=f"{VALUE_IS_NOT_ONE_LINE} {name}"
+                status_code=400, detail=f"{VALUE_IS_NOT_STORABLE} {name}"
             )
     supplied = {name: value for name, value in body.values.items() if value}
     state = request.app.state.setup
