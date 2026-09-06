@@ -109,9 +109,15 @@ class TagValueNotFound(Exception):
 
 
 class SearchAttributeNotAvailable(Exception):
-    """This attribute is real, but Plex will not answer it for this library
-    type. Its own class so the engine's class-name-only log line says so; the
-    same shape as ``LibraryTypeMismatch`` (builders/base.py:237-243)."""
+    """This attribute is real, but it will not be answered here.
+
+    Two cases, both refusals of a real name rather than of a typo: Plex will not
+    answer it for this LIBRARY TYPE (the original case, and the same shape as
+    ``LibraryTypeMismatch``, builders/base.py:237-243); or this service will not
+    answer it on this BUILDER -- ``folder_location`` under ``smart_filter``,
+    whose stored query would otherwise carry a run-time-discovered field into a
+    definition hash (roadmap row 176, ruling C5). Its own class so the engine's
+    class-name-only log line says so."""
 
 
 class SearchProducedNothing(Exception):

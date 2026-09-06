@@ -2549,7 +2549,7 @@ def test_folder_location_is_the_one_row_whose_field_is_discovered_at_run_time():
     neither, and the row is searchable while ``field_for`` refuses it by name.
 
     Columns otherwise a ``country`` clone, read from Kometa and not guessed: a
-    ``tag`` (kometa_build_filter.py:417), ``eq``/``not``/``regex`` with no
+    ``tag`` (kometa_build_filter.py:422), ``eq``/``not``/``regex`` with no
     ``SEARCH_OPERATORS_EXCLUDED`` subtraction (it is outside ``no_not_mods``),
     neither movie-only nor show-only so both kinds, and ``search-only`` because
     Kometa has no filter of the name.

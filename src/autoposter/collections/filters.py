@@ -1909,7 +1909,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "would not give -- so ``ENUMERATES_AS`` gains no entry and the "
         "existing ``rpartition`` in ``_field_and_scope`` enumerates the values "
         "at the right scope with no new code. A ``tag`` "
-        "(kometa_build_filter.py:417) taking ``eq``/``not``/``regex`` with no "
+        "(kometa_build_filter.py:422) taking ``eq``/``not``/``regex`` with no "
         "``SEARCH_OPERATORS_EXCLUDED`` subtraction: it is outside "
         "``no_not_mods``. Neither movie-only nor show-only in Kometa's kind "
         "lists, so both kinds; ``track_only_searches`` names it, but that list "

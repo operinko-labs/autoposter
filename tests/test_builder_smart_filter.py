@@ -566,3 +566,32 @@ async def test_the_level_reaches_the_reconciler(session, monkeypatch):
         _ctx(session, FakeSection(), definition, library_type="Show")
     )
     assert seen["level"] == "episode"
+
+
+def test_smart_filter_refuses_folder_location_by_name(session):
+    """Roadmap row 176, ruling C5. ``smart_definition_hash``
+    (collections/smart.py:225) hashes the BUILT URL, and for every other
+    attribute that URL is a pure function of the config. ``folder_location``'s
+    field is discovered from the server, so a smart collection naming it would
+    have a stored hash that is a function of the SERVER too -- and a Plex-side
+    rename of the filter would silently re-PUT every definition naming it
+    (``update_smart_collection``: replacing the stored filter is the only edit a
+    smart collection has, there is no partial one).
+
+    Refused rather than shipped-and-disclosed, so no definition hash in this
+    service is ever a function of anything but the config. The refusal is
+    contained to this definition like every other ``REFUSALS`` member, and it
+    names the builder that CAN answer the question."""
+    from autoposter.collections.search_url import SearchAttributeNotAvailable
+
+    ctx = _ctx(session, FakeSection(), _definition(
+        params={"all": {"folder_location": "/mnt/media/Movies"}}
+    ))
+
+    with pytest.raises(SearchAttributeNotAvailable) as error:
+        SmartFilterBuilder().search_url(ctx)
+
+    message = str(error.value)
+    assert "folder_location" in message
+    assert "plex_search" in message
+    assert "discovered" in message

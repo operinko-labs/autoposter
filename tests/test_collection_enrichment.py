@@ -99,7 +99,15 @@ def test_the_two_stream_read_catch_tuples_cannot_drift_apart():
     classes identically (bare ``PlexApiException``, ``requests.``- and
     ``ElementTree.``-qualified), which is what makes the unparsed names
     directly comparable; a future module that imports one of them under
-    another name would fail here and should be spelled to match."""
+    another name would fail here and should be spelled to match.
+
+    A module may now hold MORE than one such handler -- search tail H (roadmap
+    row 176) gave ``plex_search.py`` a second stream read, ``listFilters`` for
+    the discovered ``folder_location`` field, beside ``listFilterChoices``'s --
+    so the helper below asserts every stream-read catch in a module names the
+    SAME set and returns that one set. That is strictly stronger than the
+    one-per-module rule it replaces: it now catches intra-module drift as well
+    as the cross-module drift row 205 filed."""
     root = Path(__file__).parent.parent / "src" / "autoposter" / "collections"
 
     def stream_read_catch(path):
@@ -110,7 +118,10 @@ def test_the_two_stream_read_catch_tuples_cannot_drift_apart():
             if isinstance(node, ast.ExceptHandler) and isinstance(node.type, ast.Tuple)
             and "PlexApiException" in {ast.unparse(e) for e in node.type.elts}
         ]
-        assert len(handlers) == 1, f"{path.name}: expected one stream-read catch, saw {handlers}"
+        assert handlers, f"{path.name}: expected a stream-read catch, saw none"
+        assert all(one == handlers[0] for one in handlers), (
+            f"{path.name}: its stream-read catches have drifted apart: {handlers}"
+        )
         return handlers[0]
 
     assert stream_read_catch(root / "enrichment.py") == stream_read_catch(
