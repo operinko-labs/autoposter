@@ -731,7 +731,7 @@ def test_the_media_booleans_are_search_only_and_libtype_gated():
     """Row 172's five rows. ``duplicate`` is movie-only (movie_only_searches,
     kometa_build_filter.py:296), so a show library refuses it BY NAME;
     ``hdr``/``dovi``/``trash`` re-scope to the EPISODE libtype on a show
-    library (:193-197) exactly as ``resolution`` does, and ``unmatched`` to
+    library (:198-202) exactly as ``resolution`` does, and ``unmatched`` to
     ``show.unmatched`` (:189) -- the SHOW level, because a match belongs to
     the item and not the file. All five are ``search-only``: Kometa has no
     filter of any of these names (row 96's 29-name search-only list), so a
@@ -2428,15 +2428,15 @@ def test_a_collection_filtering_on_a_facts_row_is_refused_naming_row_156():
 #
 # Every cell is Kometa's, cited to the vendored driver
 # tests/oracle/9b/kometa_build_filter.py.
-# FIELD: ``episode_actor`` is dotted already (kometa_build_filter.py:94-128, plex.py:61-95).
-# KIND: ``season_collection`` is show-only (kometa_build_filter.py:302-360, plex.py:446-506).
+# FIELD: ``episode_actor`` is dotted already (kometa_build_filter.py:99-133, plex.py:61-95).
+# KIND: ``season_collection`` is show-only (kometa_build_filter.py:307-365, plex.py:446-506).
 # TYPE, from the category lists: ``episode_title`` is string (kometa_build_filter.py:369).
 # ``episode_unmatched`` is boolean (kometa_build_filter.py:371-387).
-# ``episode_last_played`` is date (kometa_build_filter.py:385-401).
+# ``episode_last_played`` is date (kometa_build_filter.py:390-406).
 # ``episode_year`` is year (kometa_build_filter.py:408).
 # ``episode_plays`` is number (kometa_build_filter.py:409).
 # ``episode_critic_rating`` is float (kometa_build_filter.py:411).
-# ``episode_label`` is tag (kometa_build_filter.py:409-430).
+# ``episode_label`` is tag (kometa_build_filter.py:414-435).
 # One tuple per row so a reviewer checks the TABLE against the TRANSCRIPTION
 # rather than against this file's prose. The order is roadmap row 173's,
 # which is also the table's.
@@ -2498,7 +2498,7 @@ def test_episode_plays_takes_the_ranges_only_and_episode_year_the_full_int_set()
     (show_only_searches lists exactly ``.gt``/``.gte``/``.lt``/``.lte``,
     :335-338); ``episode_year`` is a ``year_attribute`` (:408) and reaches
     ``tag_modifiers`` as well, so its bare form and ``.not`` survive
-    (:349-354). Same two rows as ``plays``/``year``, same
+    (:354-359). Same two rows as ``plays``/``year``, same
     ``SEARCH_OPERATORS_EXCLUDED`` mechanism."""
     assert BY_NAME["episode_plays"].search_operators == ("gt", "gte", "lt", "lte")
     assert BY_NAME["episode_year"].search_operators == (

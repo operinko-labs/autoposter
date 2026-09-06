@@ -1097,8 +1097,11 @@ FILTERS = {
 #
 # REMOVED: the two ``final_search`` lines (:1284-1285) and the
 # ``return final_search`` tail (:1298). They serve every OTHER attribute, and
-# ``build_url_arg`` calls this function for ``folder_location`` alone -- the
-# translation tables it would apply are already applied inline at :903-904.
+# ``build_url_arg`` calls this function for ``folder_location`` alone -- it
+# returns (:907) before the translation tables are applied (:908-909), unlike
+# upstream's ``arg_key``, which still falls through ``show_translation``
+# (modules/builder.py:4180). Harmless here because ``show_translation``
+# (modules/plex.py:168-193) holds neither ``location`` nor ``episode.location``.
 #
 # The signature differs from upstream's ``(self, search_name, libtype=None)``
 # for the reason the whole file's signatures differ: with no Builder and no
@@ -1106,7 +1109,7 @@ FILTERS = {
 # ``sort_type`` is upstream's ``libtype`` argument, which ``build_url_arg``
 # passes as the SEARCH type (modules/builder.py:4179); ``is_show`` is
 # ``self.is_show``, the LIBRARY kind. They are two different questions, which
-# is exactly what E-2 un-conflated at :852-853.
+# is exactly what E-2 un-conflated at :857-858.
 def get_search_key(search_name, sort_type, is_show):
     filter_type = sort_type
     if is_show and filter_type == "show":

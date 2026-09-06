@@ -156,7 +156,7 @@ rather than a golden.
 Roadmap row 176 -- `folder_location`, the one attribute in Kometa's search
 grammar whose Plex FIELD is a run-time answer rather than a table entry
 (`get_search_key`, `modules/plex.py:1286-1297`), restored in the driver's
-`get_search_key` at `kometa_build_filter.py:904-907` after being removed by name in 9b's D3. The
+call site for `get_search_key` at `kometa_build_filter.py:904-907` after being removed by name in 9b's D3. The
 driver therefore grows a SECOND shared-by-value fixture, `FILTERS`, standing in
 for `LibrarySection.listFilters` the way `CHOICES` stands in for
 `get_search_choices`: `CHOICES` says what a filter's values are, `FILTERS` says

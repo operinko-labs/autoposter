@@ -387,7 +387,7 @@ SEARCH_OPERATORS_EXCLUDED: dict[str, tuple[str, ...]] = {
     # it takes ``number_modifiers`` alone -- show_only_searches lists exactly
     # ``.gt``/``.gte``/``.lt``/``.lte`` for it (:335-338) and no bare form.
     # ``episode_year`` needs no entry: it IS a year_attribute (:408) and keeps
-    # the full ``int`` set the way ``year`` does (:349-354).
+    # the full ``int`` set the way ``year`` does (:354-359).
     "episode_plays": ("eq", "not"),
 }
 
@@ -759,7 +759,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "`_CurrentYear` sentinel, parsed at load and resolved against the "
         "run's own moment at match time -- the same deferred-resolution "
         "pattern `_Today` already has for dates. Subtraction, per Kometa's own "
-        "transcription (tests/oracle/9b/kometa_build_filter.py:777-797): "
+        "transcription (tests/oracle/9b/kometa_build_filter.py:782-802): "
         "`current_year-5` means five years ago. "
         "Bare/`.not` missing-value routing follows Kometa's tag branch -- see "
         "_matches and roadmap row 159.",
@@ -1294,7 +1294,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "for the TRANSLATED name (kometa_build_filter.py:196) -- the one row "
         "in the table that composes both tables, which is why oracle config "
         "19 pins the show render. Dual-LISTED in `searches` exactly like "
-        "`studio` -- a string_attribute (:369) AND a tag_attribute (:430) -- "
+        "`studio` -- a string_attribute (:369) AND a tag_attribute (:435) -- "
         "and for `studio`'s own reason every non-regex operator this table "
         "ships takes the STRING branch: the value goes to Plex quoted and "
         "unresolved. `.regex` (roadmap row 178) takes neither branch, but "
@@ -1346,7 +1346,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "trash", "bool", _BOTH, "search-only",
         "Plex's trash flag: an item whose file has gone missing but has not "
         "yet been emptied from the library. In boolean_attributes "
-        "(kometa_build_filter.py:373); no search_translation entry, so the "
+        "(kometa_build_filter.py:378); no search_translation entry, so the "
         "movie field is the bare `trash`; re-scoped to `episode.trash` on a "
         "show library (kometa_build_filter.py:202) -- file-level, like "
         "`hdr`/`dovi`. `search-only`: Kometa has no filter of this name.",
@@ -1526,10 +1526,10 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     # Twenty rows, appended rather than interleaved like every batch before
     # them, in the order row 173 names them. Every one is the ``network``
     # row's shape: a field ``search_translation`` ALREADY scopes with a dot
-    # (kometa_build_filter.py:94-128, transcribing plex.py:61-95), so
+    # (kometa_build_filter.py:99-133, transcribing plex.py:61-95), so
     # ``show_translation`` never sees it and the two field columns are equal;
     # show-only in both kind columns: nineteen because every name is in
-    # ``show_only_searches`` (kometa_build_filter.py:302-360, plex.py:446-506),
+    # ``show_only_searches`` (kometa_build_filter.py:307-365, plex.py:446-506),
     # and ``episode_actor`` by THIS TABLE'S OWN JUDGEMENT -- a DECLARED
     # DIVERGENCE, argued on its row note: Kometa lists it in neither the
     # show-only nor the movie-only list and would render it on a movie
@@ -1589,7 +1589,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "season_label", "tag", ("show",), "search-only",
         "Labels carried by a SEASON: `season.label` via search_translation "
-        "(kometa_build_filter.py:132), show_only_searches (:308-309), "
+        "(kometa_build_filter.py:132), show_only_searches (:313-314), "
         "tag_attributes (:425). Enumerated at the season scope by the dotted "
         "field, which `LibraryTagResolver._field_and_scope` already does for "
         "`episode.resolution` and which Kometa's `get_tags` does the same way. "
@@ -1640,7 +1640,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "(kometa_build_filter.py:100), a string_attribute (:369), so the six "
         "string modifiers exactly as `title` and `studio` take them -- a bare "
         "`episode_title: Pilot` is a case-insensitive SUBSTRING match, quoted "
-        "on the wire; show_only_searches lists all six (:312-317). Under a "
+        "on the wire; show_only_searches lists all six (:317-322). Under a "
         "show collection this selects SHOWS having such an episode "
         "(`type=2&...&episode.title=...`), which is Kometa's own render for "
         "the key. `.regex` (row 178) is the client-side vocabulary expansion, "
@@ -1769,7 +1769,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "An EPISODE's year: `episode.year` via search_translation "
         "(kometa_build_filter.py:110), a year_attribute (:408) and therefore a "
         "number_attribute too (:409), so the bare form, `.not` AND the four "
-        "ranges (show_only_searches :349-354) -- `year`'s full set, needing "
+        "ranges (show_only_searches :354-359) -- `year`'s full set, needing "
         "no `SEARCH_OPERATORS_EXCLUDED` entry. `current_year` and its offsets "
         "resolve here exactly as on `year` (row 171's grammar is keyed on the "
         "value, not the row). `search-only`: Kometa has no filter of this "
@@ -1804,7 +1804,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "episode_progress", "bool", ("show",), "search-only",
         "Plex's `inProgress` at the episode libtype: `episode.inProgress` via "
         "search_translation (kometa_build_filter.py:128), a boolean_attribute "
-        "(:377), bare only (show_only_searches :363). Per-account, like "
+        "(:382), bare only (show_only_searches :363). Per-account, like "
         "`progress`. `search-only`: Kometa has no filter of this name.",
         search_field="episode.inProgress", show_search_field="episode.inProgress",
         search_kinds=("show",), filterable=False,
@@ -2061,7 +2061,7 @@ class _CurrentYear:
     """Kometa's ``current_year``/``current_year-N``, resolved against the
     run's MOMENT rather than the parse's -- the same deferred-resolution
     shape ``_Today`` already has for dates. Kometa's own transcription
-    (``tests/oracle/9b/kometa_build_filter.py:777-797``, vendored for the 9b
+    (``tests/oracle/9b/kometa_build_filter.py:782-802``, vendored for the 9b
     oracle rather than cited from Kometa's source tree, which is not in this
     repo) computes ``datetime.now().year - int(offset)`` -- subtraction, so
     ``current_year-5`` means five years ago, never five years from now.
