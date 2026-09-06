@@ -9,6 +9,11 @@ offer to be fixed.
 CONFIGURED is credentials plus a config document. The database is not part of
 it -- the last section here pins the probe that used to be, which is now the
 setup wizard's step-2 validation and nothing else.
+
+There are three outcomes and only one of them is the wizard: a missing hard
+secret is setup mode, a missing config document with the credentials all
+present is a configuration error that exits non-zero, and both halves is the
+boot every deployment does today.
 """
 import os
 import socket
@@ -180,6 +185,25 @@ def test_the_written_file_is_0600_inside_a_0700_directory():
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
 
 
+def test_a_private_setgid_directory_keeps_its_setgid_bit():
+    """0o2700 is the fsGroup volume root's mode, and it is already private.
+
+    "Wider than 0700" has to mean "group or other can see it" (``& 0o077``);
+    ``& ~0o700`` counts setgid as excess permission and chmods it away -- on
+    the PVC the call is denied and nothing happens, but on any deployment
+    where this process owns the directory it strips the bit the group
+    inheritance depends on.
+    """
+    path = state_module.secrets_file_path()
+    path.parent.mkdir(parents=True)
+    os.chmod(path.parent, 0o2700)
+
+    _write_state_secrets({"AUTOPOSTER_API_KEY": "value"})
+
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o2700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
 def test_a_directory_this_process_may_not_chmod_is_still_written_to(monkeypatch, caplog):
     """The production shape is a PVC whose mount root is owned by uid 0 while
     the process runs as 568: fsGroup fixes group ownership, not the owner, and
@@ -228,6 +252,21 @@ def test_a_value_with_a_line_break_is_refused_without_echoing_it():
 
     assert "AUTOPOSTER_PLEX_TOKEN" in str(caught.value)
     assert "one" not in str(caught.value)
+
+
+def test_a_value_with_an_exotic_line_separator_is_refused_too():
+    """`read_secrets_file` parses with `str.splitlines`, which splits on more
+    than `\\n` and `\\r`. A value carrying one of those was written whole and
+    read back as two lines, and a tail containing `=` became a second entry --
+    so the writer's refusal uses the reader's own definition of a line."""
+    for separator in ("\x85", "\u2028"):
+        with pytest.raises(ValueError) as caught:
+            state_module.render_secrets_file(
+                {"AUTOPOSTER_PLEX_TOKEN": f"one{separator}AUTOPOSTER_API_KEY=two"}
+            )
+
+        assert "AUTOPOSTER_PLEX_TOKEN" in str(caught.value)
+        assert "two" not in str(caught.value)
 
 
 def test_a_value_that_ends_in_a_space_round_trips_intact():
@@ -328,15 +367,59 @@ def test_a_missing_hard_name_means_setup_mode(monkeypatch):
     assert boot.is_configured(resolve_secret_values()) is False
 
 
-def test_credentials_without_a_config_document_mean_setup_mode(monkeypatch, tmp_path):
-    """The wizard's last step writes the document. Until it has, the
-    deployment has been told its secrets and nothing about what to do with
-    them, and finishing setup is the only thing it can usefully offer."""
+def test_credentials_without_a_config_document_exit_instead_of_serving_the_wizard(
+    monkeypatch, tmp_path
+):
+    """Setup mode has exactly one door: a hard secret that does not resolve.
+
+    A deployment holding every credential was configured by somebody, so a
+    config document that is not there is that somebody's mistake -- and the
+    answer to a mistake is the restart loop it caused before this module
+    existed, plus a line naming the two paths. Serving the wizard instead
+    would put an unauthenticated credential-collecting form on the port the
+    Service and Ingress already point at.
+    """
     for name in HARD:
         monkeypatch.setenv(name, "x")
     monkeypatch.setenv("AUTOPOSTER_CONFIG", str(tmp_path / "absent.yaml"))
+    monkeypatch.setattr(boot, "_migrate", _must_not_run)
+    monkeypatch.setattr(boot.uvicorn, "run", _must_not_run)
+    monkeypatch.setattr(boot.os, "execv", _must_not_run)
 
     assert boot.is_configured(resolve_secret_values()) is False
+    with pytest.raises(SystemExit) as caught:
+        boot.main([])
+
+    assert caught.value.code == 1
+
+
+def test_a_config_map_that_lost_its_key_never_becomes_a_wizard(monkeypatch, tmp_path):
+    """The reachable production shape, and the reason the rule above exists.
+
+    A ConfigMap whose key is renamed still mounts, so the pod starts and
+    `/config/autoposter.yaml` is simply absent (a DELETED ConfigMap is safe --
+    the pod never leaves ContainerCreating). Every hard name is in the
+    environment, so this is a fully configured deployment with one typo, and
+    the setup application must not even be constructed.
+    """
+    mount = tmp_path / "config"
+    mount.mkdir()
+    for name in HARD:
+        monkeypatch.setenv(name, "x")
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(mount / "autoposter.yaml"))
+    monkeypatch.setitem(
+        sys.modules,
+        "autoposter.api.setup",
+        SimpleNamespace(build_setup_app=_must_not_run),
+    )
+    monkeypatch.setattr(boot, "_migrate", _must_not_run)
+    monkeypatch.setattr(boot.uvicorn, "run", _must_not_run)
+    monkeypatch.setattr(boot.os, "execv", _must_not_run)
+
+    with pytest.raises(SystemExit) as caught:
+        boot.main([])
+
+    assert caught.value.code == 1
 
 
 def test_the_decision_never_opens_a_database(monkeypatch):

@@ -86,6 +86,15 @@ def render_secrets_file(values: Mapping[str, str]) -> str:
 
     The refusal names the VARIABLE and never the value: this module's whole
     subject is credentials, and an exception message reaches the log.
+
+    What is refused is any value the READER would see as more than one line.
+    ``str.splitlines`` -- which ``read_secrets_file`` parses with -- also
+    splits on ``\\v``, ``\\f``, ``\\x1c``-``\\x1e``, ``\\x85`` and
+    U+2028/U+2029, so refusing only ``\\n`` and ``\\r`` would let such a value
+    be written whole and read back as two, with a tail containing ``=``
+    becoming a second ``NAME=value`` entry. One definition for both halves,
+    expressed as the round trip itself. The empty string is the one value that
+    is not a line at all (``"".splitlines() == []``) and passes.
     """
     lines = [
         "# Written by autoposter's first-start setup wizard.",
@@ -94,7 +103,7 @@ def render_secrets_file(values: Mapping[str, str]) -> str:
     ]
     for name in sorted(values):
         value = values[name]
-        if "\n" in value or "\r" in value:
+        if value and value.splitlines() != [value]:
             raise ValueError(f"{name} contains a line break and cannot be stored")
         lines.append(f"{name}={value}")
     return "\n".join(lines) + "\n"
@@ -114,9 +123,17 @@ def _tighten_directory(directory: Path) -> None:
     Losing this is survivable; the file's own 0600 is what actually protects
     the credentials, and ``tempfile.mkstemp`` gives it that from creation
     rather than after a window.
+
+    "Wider than 0700" is ``& 0o077`` -- group or other can see it -- and not
+    ``& ~_DIR_MODE``, which counts the SETGID bit as excess permission. An
+    fsGroup volume root is 0o2700: already private, and its setgid bit is what
+    gives the group inheritance fsGroup exists to provide. Under the old test
+    that directory was chmod'ed anyway -- harmlessly on the PVC, where the
+    call is denied, but on any deployment where this process does own the
+    directory the setgid bit was stripped for no gain.
     """
     try:
-        if stat.S_IMODE(directory.stat().st_mode) & ~_DIR_MODE:
+        if stat.S_IMODE(directory.stat().st_mode) & 0o077:
             os.chmod(directory, _DIR_MODE)
     except PermissionError:
         # The PATH, never a value: everything this module writes is a secret.

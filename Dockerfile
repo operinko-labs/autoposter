@@ -197,8 +197,10 @@ EXPOSE 8080
 # not otherwise depend on.
 #
 # The migration is no longer chained here with `&&`. `autoposter.boot` runs it
-# itself, after deciding that this deployment has credentials and a database
-# that answers -- because `alembic upgrade head` raises outright without
+# itself, after deciding that this deployment has credentials and a config
+# document -- because `alembic upgrade head` raises outright without
 # AUTOPOSTER_DATABASE_URL, and a container that dies in the shell can never
-# serve the first-start wizard that would supply one (roadmap row 121).
+# serve the first-start wizard that would supply one (roadmap row 121). The
+# database is not part of that decision: a configured deployment whose
+# postgres is down still migrates, still fails, and still restarts.
 CMD ["sh", "-c", "exec python -m autoposter.boot"]
