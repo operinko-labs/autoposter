@@ -87,11 +87,15 @@ What the wizard collects goes to `$AUTOPOSTER_STATE_DIR` (default `/state`) —
 never into the config document, and never into the database — and **the
 process environment always wins over that file**. Adding an ExternalSecret
 later takes effect at the next restart, but once ALL six hard names resolve
-from the environment the state file stops being read at all — at that point
-also carry `AUTOPOSTER_ADMIN_PASSWORD_HASH` and `AUTOPOSTER_API_KEY` into the
-environment (or the Secret) in the same change, or the wizard-written admin
-password hash and API key are silently dropped and every Web UI login 401s.
-See "First-start setup" in `deploy/README.md` for the
+from the environment the state file stops being read at all, for any name —
+at that point also carry every soft name the wizard wrote into the
+environment (or the Secret) in the same change: `AUTOPOSTER_ADMIN_PASSWORD_HASH`
+and every provider key step 3 collected (`AUTOPOSTER_MDBLIST_APIKEY`,
+`AUTOPOSTER_RADARR_APIKEY`, `AUTOPOSTER_SONARR_APIKEY`,
+`AUTOPOSTER_HARBOR_TOKEN`, `AUTOPOSTER_PLEX_ACCOUNT_TOKEN`,
+`AUTOPOSTER_TRACEARR_APIKEY`), or they are silently dropped. A hand-added
+`AUTOPOSTER_API_KEY` is subject to the same rule, though the wizard never
+writes it. See "First-start setup" in `deploy/README.md` for the
 five steps, the file modes and the rotation story, and for the one bound this
 project's own deployment relies on: the wizard, unauthenticated until a
 master password exists, is reachable only over an internal gateway route,

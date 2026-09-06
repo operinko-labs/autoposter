@@ -164,15 +164,20 @@ one. Writes are atomic (temp file in the same directory, `fsync`,
 environment is used even when the file also carries it, so adding an
 ExternalSecret later takes effect at the next restart with no need to edit or
 delete anything under `/state` for the six hard names themselves. It is not
-free for the two SOFT names the wizard writes, though: once all six hard
-names resolve from the environment, `resolve_secret_values` never opens
-`secrets.env` again — for the soft names either. A deployment the wizard
-configured, whose hard names are later handed to an ExternalSecret, must
-carry `AUTOPOSTER_ADMIN_PASSWORD_HASH` and `AUTOPOSTER_API_KEY` into the
-environment (or the Secret) in that same change, or the wizard-written admin
-password hash and API key are silently dropped and every Web UI login 401s.
-To rotate a credential the wizard wrote, set it in the environment
-(preferred) or edit `secrets.env` and restart.
+free for the SOFT names the wizard writes, though: once all six hard names
+resolve from the environment, `resolve_secret_values` never opens
+`secrets.env` again, for any name. A deployment the wizard configured, whose
+hard names are later handed to an ExternalSecret, must carry every soft name
+the wizard wrote into the environment (or the Secret) in that same change:
+`AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, and every provider key step 3
+collected — `AUTOPOSTER_MDBLIST_APIKEY`, `AUTOPOSTER_RADARR_APIKEY`,
+`AUTOPOSTER_SONARR_APIKEY`, `AUTOPOSTER_HARBOR_TOKEN`,
+`AUTOPOSTER_PLEX_ACCOUNT_TOKEN` and `AUTOPOSTER_TRACEARR_APIKEY` — or they are
+silently dropped. A hand-added `AUTOPOSTER_API_KEY` in `secrets.env` is
+subject to the same rule, though the wizard never writes it: that key is
+minted after setup, not collected during it. To rotate a credential the
+wizard wrote, set it in the environment (preferred) or edit `secrets.env` and
+restart.
 
 ### Kubernetes
 
