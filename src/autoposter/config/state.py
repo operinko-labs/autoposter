@@ -101,6 +101,24 @@ def read_secrets_file(path: Path) -> dict[str, str]:
     return values
 
 
+def is_one_line(value: str) -> bool:
+    """Whether ``value`` survives this file's round trip.
+
+    ``read_secrets_file`` parses with ``str.splitlines``, which splits on far
+    more than a newline -- ``render_secrets_file`` below names the whole set --
+    so a value the writer accepted whole and the reader splits becomes a
+    second ``NAME=value`` entry when its tail contains an ``=``. The empty
+    string is the one value that is not a line at all and passes.
+
+    A function rather than the same expression at two sites: the setup wizard
+    refuses such a value at the step that ACCEPTS it, because this module
+    raising instead lands at the finish step, after the config document has
+    been written, with the wizard about to disappear. Two checks that must be
+    one rule.
+    """
+    return not value or value.splitlines() == [value]
+
+
 def render_secrets_file(values: Mapping[str, str]) -> str:
     """The file's text, sorted so a rewrite produces a stable document.
 
@@ -123,7 +141,7 @@ def render_secrets_file(values: Mapping[str, str]) -> str:
     ]
     for name in sorted(values):
         value = values[name]
-        if value and value.splitlines() != [value]:
+        if not is_one_line(value):
             raise ValueError(f"{name} contains a line break and cannot be stored")
         lines.append(f"{name}={value}")
     return "\n".join(lines) + "\n"
