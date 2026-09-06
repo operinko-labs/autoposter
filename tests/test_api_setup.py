@@ -831,6 +831,29 @@ async def test_the_config_step_stages_the_document_and_writes_nothing_yet(setup_
     assert progress.json()["config"] is True
 
 
+async def test_the_config_step_is_refused_while_a_document_already_resolves(
+    setup_client, monkeypatch, tmp_path
+):
+    """Amendment 6: offering step 4 only when config_source is null is a
+    server rule, not a client courtesy the SPA happens to observe -- a direct
+    POST past it must be refused too, and must stage nothing."""
+    mounted = tmp_path / "config" / "autoposter.yaml"
+    mounted.parent.mkdir(parents=True, exist_ok=True)
+    mounted.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(mounted))
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.CONFIG_ALREADY_PROVIDED
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["config_source"] == "configured"
+    assert not state_module.state_config_path().exists()
+
+
 async def test_a_document_that_does_not_validate_is_refused_by_class_name_only(
     setup_client, monkeypatch, tmp_path
 ):
