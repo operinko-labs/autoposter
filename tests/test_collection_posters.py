@@ -75,6 +75,15 @@ BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
         ("chart", "IMDb Popular", f"{BASE}/chart/color/IMDb%20Popular.jpg"),
         ("chart", "IMDb Top 250", f"{BASE}/chart/color/IMDb%20Top%20250.jpg"),
         ("chart", "IMDb Lowest Rated", f"{BASE}/chart/color/IMDb%20Lowest%20Rated.jpg"),
+        # Row 146. The five TMDb chart keys Kometa's ``defaults/chart/tmdb.yml``
+        # publishes; each was fetched live (200) before the key was chosen, and
+        # the three charts that are ours are deliberately absent -- a key
+        # nobody upstream maps is a guess whether or not it resolves.
+        ("chart", "TMDb Popular", f"{BASE}/chart/color/TMDb%20Popular.jpg"),
+        ("chart", "TMDb Top Rated", f"{BASE}/chart/color/TMDb%20Top%20Rated.jpg"),
+        ("chart", "TMDb Trending", f"{BASE}/chart/color/TMDb%20Trending.jpg"),
+        ("chart", "TMDb Airing Today", f"{BASE}/chart/color/TMDb%20Airing%20Today.jpg"),
+        ("chart", "TMDb On The Air", f"{BASE}/chart/color/TMDb%20On%20The%20Air.jpg"),
         ("content_rating", "17", f"{BASE}/content_rating/cs/17.jpg"),
         ("content_rating", "1", f"{BASE}/content_rating/cs/1.jpg"),
         ("content_rating_other", "", f"{BASE}/content_rating/cs/NR.jpg"),

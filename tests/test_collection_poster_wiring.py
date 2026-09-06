@@ -490,6 +490,7 @@ class ListCollection:
         self._cache = list(items)
         self._labels = [type("L", (), {"tag": t})() for t in labels]
         self.summary = summary
+        self.summary_set = None
         self.uploaded_bytes = []
         self.locks = 0
         # Stands in for ``collection._server``: the summary is written with a
@@ -528,7 +529,8 @@ class ListCollection:
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
         """Stands in for ``server.query`` -- the item-level summary PUT."""
-        self.summary = parse_qs(urlsplit(key).query)["summary.value"][0]
+        self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
+        self.summary = self.summary_set
 
     def addLabel(self, labels, locked=True):
         self._labels.append(type("L", (), {"tag": labels})())
@@ -691,6 +693,75 @@ async def test_a_kind_without_a_key_makes_no_request(session, config_factory, tm
     assert collection.uploaded_bytes == []
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 is None
+
+
+async def test_a_tmdb_chart_writes_its_summary_and_fetches_its_poster_once(
+    session, config_factory, tmp_path
+):
+    """Row 146's wiring, at the level ``reconcile_list_collection`` actually
+    runs: the builder's transcribed summary reaches Plex through the item-level
+    PUT, and the hosted chart poster is fetched and uploaded exactly once.
+
+    The second pass is the half that matters. A chart's membership moves every
+    pass by construction, but with the SAME members and the SAME summary the
+    members hash is unchanged and ``poster_sha256`` is no longer NULL, so the
+    reconciler returns before the poster block -- one permanent ``upload://``
+    entry per collection, ever, which is precisely what ``imdb_chart`` has paid
+    since it shipped (rows 241/242: a single ``upload://`` entry cannot be
+    deleted through the HTTP API)."""
+    section = ListSection()
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    summary = "A collection of the most watched movies according to TMDb."
+    items = [FakeItem("a")]
+    data = _jpeg_bytes()
+    seen = []
+
+    async with _client(_serving_handler(data, seen)) as http:
+        await reconcile_list_collection(
+            session,
+            section,
+            "Movies",
+            "TMDb Popular",
+            items,
+            LABEL,
+            summary=summary,
+            summary_asserted=True,
+            dry_run=False,
+            kind="chart",
+            key="TMDb Popular",
+            http=http,
+            config=config,
+        )
+
+    collection = section._existing["TMDb Popular"]
+    assert collection.summary_set == summary
+    assert collection.uploaded_bytes == [data]
+    assert collection.locks == 1
+    assert seen == [hosted_poster_url("chart", "TMDb Popular")]
+
+    async with _client(_serving_handler(data, seen)) as http:
+        await reconcile_list_collection(
+            session,
+            section,
+            "Movies",
+            "TMDb Popular",
+            items,
+            LABEL,
+            summary=summary,
+            summary_asserted=True,
+            dry_run=False,
+            kind="chart",
+            key="TMDb Popular",
+            http=http,
+            config=config,
+        )
+
+    assert collection.uploaded_bytes == [data]
+    assert collection.locks == 1
+    assert len(seen) == 1
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is not None
 
 
 async def test_the_franchise_builder_names_its_own_collection_as_the_poster_key():

@@ -265,7 +265,22 @@ class TmdbChartBuilder(_TmdbBuilder):
         _require_region_supported(params.chart, path, params.region)
         client = self._client(ctx)
         ids = await client.chart(path, region=params.region, language=params.language)
-        return BuilderResult(ids=[("tmdb", value) for value in ids])
+        # The five charts Kometa's own defaults publish carry its title, its
+        # summary and, because upstream keys chart art by the mapping name, the
+        # same title as the poster key. The three that are ours carry none of
+        # the three; ``CHART_TITLES`` has no row for them and this resolves to
+        # the same ``BuilderResult`` it always returned.
+        title, template = CHART_TITLES.get(params.chart, (None, None))
+        return BuilderResult(
+            ids=[("tmdb", value) for value in ids],
+            summary=(
+                None
+                if template is None
+                else template.replace(LIBRARY_TRANSLATION, ctx.library_type.lower())
+            ),
+            poster_kind=None if title is None else "chart",
+            poster_key=title,
+        )
 
 
 class TmdbListBuilder(_TmdbBuilder):
