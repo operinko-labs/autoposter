@@ -78,15 +78,20 @@ never sees any of this.** In this project's own Kubernetes deployment that
 means a PersistentVolumeClaim (`autoposter-state`, 1Gi, `ReadWriteOnce`)
 mounted at `/state` — the pod's existing `fsGroup: 568` already owns it — and
 one `AUTOPOSTER_STATE_DIR=/state` environment entry; nothing else changes.
-Docker Compose gets the same private volume by default, so `docker compose up
-api` on a fresh checkout with no `.env` boots into the wizard rather than
-refusing to start.
+Docker Compose gets the same private volume by default: with no `.env` at
+all, `docker compose up web api` boots into the wizard, served at
+`http://localhost:5173`. `api` alone also enters setup mode, but serves no
+page on a fresh checkout — see "Docker Compose" in `deploy/README.md`.
 
 What the wizard collects goes to `$AUTOPOSTER_STATE_DIR` (default `/state`) —
 never into the config document, and never into the database — and **the
-process environment always wins over that file**, so adding an
-ExternalSecret later takes effect at the next restart with nothing to edit or
-delete under `/state`. See "First-start setup" in `deploy/README.md` for the
+process environment always wins over that file**. Adding an ExternalSecret
+later takes effect at the next restart, but once ALL six hard names resolve
+from the environment the state file stops being read at all — at that point
+also carry `AUTOPOSTER_ADMIN_PASSWORD_HASH` and `AUTOPOSTER_API_KEY` into the
+environment (or the Secret) in the same change, or the wizard-written admin
+password hash and API key are silently dropped and every Web UI login 401s.
+See "First-start setup" in `deploy/README.md` for the
 five steps, the file modes and the rotation story, and for the one bound this
 project's own deployment relies on: the wizard, unauthenticated until a
 master password exists, is reachable only over an internal gateway route,
@@ -123,10 +128,12 @@ to the API container. The API is published on 8081 rather than 8080 for the
 same reason PostgreSQL is published on 5433 — a port already spoken for on the
 development machine — and binds 8080 inside the network regardless.
 
-Running the app needs credentials, as production does: copy `.env.example` to
-`.env` and fill it in, or compose refuses to start it. `docker compose up api`
-then applies migrations first, exactly as the image's `CMD` does. The suite and
-the frontend need no credentials at all.
+Running the app needs credentials, as production does — but with none supplied
+(no `.env` at all), `docker compose up api` boots into the first-start wizard
+instead of refusing to start; see "First start" above. Copy `.env.example` to
+`.env` and fill it in for the fully-configured behaviour: migrations, then the
+application, exactly as the image's `CMD` does. The suite and the frontend
+need no credentials at all.
 
 The image-parity tests require a **Q16-HDRI** ImageMagick build and carry
 `@pytest.mark.imagemagick`. The `test` service derives from the same base as

@@ -75,9 +75,11 @@ services:
     command: npm run dev -- --host 0.0.0.0
 
   # The application, with hot reload. Unlike `test` and `web`, this one needs
-  # credentials -- exactly as production does. Copy .env.example to .env and
-  # fill it in; compose refuses to start without the file, and
-  # Secrets.from_env() would refuse anyway.
+  # credentials, as production does -- but with none of them supplied (no
+  # .env at all) it boots into the first-start wizard instead of refusing to
+  # start. Copy .env.example to .env and fill it in for the fully-configured
+  # behaviour instead: migrations, then the application, exactly as the
+  # image's CMD does.
   api:
     build:
       context: .

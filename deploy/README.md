@@ -60,12 +60,15 @@ manifests rather than assumed:
 - The pod is reached through the internal gateway (`route.scope: internal`),
   never one facing the internet.
 - The admin password hash is supplied by the SOPS-held Secret, not the
-  ExternalSecret that can render empty. The only reachable way into setup
-  mode here is that ExternalSecret blanking the database URL or a provider
-  key — the admin hash still resolves regardless. So step 1 on this
-  deployment is **verify-only**: an unauthenticated caller on the internal
-  gateway meets a bcrypt-backed password prompt, rate-limited, with no token
-  issued and nothing written until it succeeds — the same bound
+  ExternalSecret that can render empty — and so is the database URL
+  (`secret.sops.yaml`). The ExternalSecret supplies four of the six hard
+  names instead: `AUTOPOSTER_PLEX_TOKEN`, `AUTOPOSTER_TMDB_TOKEN`,
+  `AUTOPOSTER_TVDB_APIKEY` and `AUTOPOSTER_FANART_APIKEY`. The only reachable
+  way into setup mode here is that ExternalSecret blanking one of those four
+  — the admin hash and the database URL still resolve regardless. So step 1
+  on this deployment is **verify-only**: an unauthenticated caller on the
+  internal gateway meets a bcrypt-backed password prompt, rate-limited, with
+  no token issued and nothing written until it succeeds — the same bound
   `POST /api/login` already has, not an open form.
 
 The genuinely unbounded case is a true first start, where nobody has ever set
@@ -100,7 +103,10 @@ any first-start wizard accepts.
    beside a document that already resolves would produce a file the next
    boot never reads, with the operator's Plex URL landing in it. The refusal
    is a server rule (a direct `POST` is answered a fixed 400), not merely an
-   unoffered button.
+   unoffered button. This step reads the shipped example document unguarded
+   (`read_config_document(example_config_path())`), so an image that does not
+   carry that document answers this step with a 500 rather than a wizard
+   error — the image build must always include it.
 5. **Finish.** Steps 2–4 are staged in memory rather than persisted as they
    are collected. This step writes the config document **first**, then the
    secrets file, each atomically, then re-runs the same CONFIGURED check the
@@ -123,12 +129,21 @@ any first-start wizard accepts.
    collected in the first place: a wizard abandoned mid-way, or a pod evicted
    between two writes, has to land on the recoverable side.
 
-Reloading the page mid-wizard loses everything past step 1 — the setup token
-lives only in that browser tab's memory, nowhere else, so a reload always
-returns to the password pane. Because step 1's hash is already persisted by
-then, that returning pane asks to **prove** the password rather than set it
-again, the same distinction the admin-hash-supplied-by-environment case above
-makes.
+Reloading the page loses the CLIENT's token — a module-level variable,
+deliberately never in `sessionStorage` — and whatever is on screen, including
+the once-shown webhook secret if step 3 just minted it. It does **not** lose
+anything the server already accepted: `SetupState.staged` and
+`state.config_document` live on the setup application object for as long as
+that process keeps running, and nothing clears them on a reload. A reload
+therefore always returns to the password pane — because step 1's hash is
+already persisted, that pane asks to **prove** the password rather than set
+it again, the same distinction the admin-hash-supplied-by-environment case
+above makes — and re-proving it mints a new token over the same staged
+state: `/progress` still reports the database step done and the provider
+keys stored, and the database pane stays hidden, exactly as before the
+reload. What *does* discard the staged steps is a process restart, not a
+page reload — restarting the container is the one action that would send
+the wizard back to step 1.
 
 ### Where it writes
 
@@ -148,8 +163,16 @@ one. Writes are atomic (temp file in the same directory, `fsync`,
 **Precedence, in one line: the environment wins.** A name set in the
 environment is used even when the file also carries it, so adding an
 ExternalSecret later takes effect at the next restart with no need to edit or
-delete anything under `/state`. To rotate a credential the wizard wrote, set
-it in the environment (preferred) or edit `secrets.env` and restart.
+delete anything under `/state` for the six hard names themselves. It is not
+free for the two SOFT names the wizard writes, though: once all six hard
+names resolve from the environment, `resolve_secret_values` never opens
+`secrets.env` again — for the soft names either. A deployment the wizard
+configured, whose hard names are later handed to an ExternalSecret, must
+carry `AUTOPOSTER_ADMIN_PASSWORD_HASH` and `AUTOPOSTER_API_KEY` into the
+environment (or the Secret) in that same change, or the wizard-written admin
+password hash and API key are silently dropped and every Web UI login 401s.
+To rotate a credential the wizard wrote, set it in the environment
+(preferred) or edit `secrets.env` and restart.
 
 ### Kubernetes
 
@@ -192,13 +215,21 @@ ownership the 0700 directory needs.
 ### Docker Compose
 
 `docker-compose.yml` declares a named `state` volume and
-`AUTOPOSTER_STATE_DIR=/state`, and `.env` is no longer required:
-`docker compose up api` with no `.env` boots into the wizard at
-`http://localhost:8081`. That stack's `api` service also already sets
-`AUTOPOSTER_CONFIG` to the example config bind-mounted in from the repository
-(`.:/app`), so a document always resolves there — what a compose deployment
-is actually missing, when it is missing anything, is credentials, and the
-wizard's step 4 is never offered on it.
+`AUTOPOSTER_STATE_DIR=/state`, and `.env` is no longer required: with no
+`.env` at all, `python -m autoposter.boot` inside the `api` container enters
+setup mode exactly as it would anywhere else. That is not enough to reach the
+wizard from a browser on a fresh checkout, though — the `dev` stage the `api`
+service builds from runs no frontend build, `frontend/dist` is gitignored,
+and `mount_spa` registers no catch-all without it, so `GET /` on
+`http://localhost:8081` 404s. Run `docker compose up web api` and use
+`http://localhost:5173` instead: the vite dev server proxies `/api` and
+`/healthz` to `api`, and the SPA routes to the wizard off that probe. To use
+port 8081 without the dev server, build the frontend first (`npm run build`
+in `frontend/`) so `frontend/dist` exists. That stack's `api` service also
+already sets `AUTOPOSTER_CONFIG` to the example config bind-mounted in from
+the repository (`.:/app`), so a document always resolves there — what a
+compose deployment is actually missing, when it is missing anything, is
+credentials, and the wizard's step 4 is never offered on it.
 
 ### A note on TLS
 
