@@ -76,6 +76,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # Sweep what earlier runs left behind BEFORE creating this run's
+      # resources. The `if: always()` cleanups below do not run when a job is
+      # cancelled by `concurrency`, killed by the runner, or lost to a restart,
+      # and every leaked `postgres` container also pins an anonymous data
+      # volume -- runner2 ran out of disk this way (2026-09-06). Only this
+      # workflow's own names are touched: a container is stale when it has
+      # exited, or has been running for more than three hours (no job here
+      # lives that long); a network is removed only when nothing is attached.
+      - name: Sweep leftovers from earlier runs
+        run: |
+          now=$(date +%s)
+          for cid in $(docker ps -aq --filter "name=^ci-postgres-" --filter "name=^ci-pg-" --filter "name=^ci-tests-"); do
+            name=$(docker inspect -f '{{.Name}}' "$cid" | sed 's#^/##')
+            case "$name" in *"${{ github.run_id }}"*) continue;; esac
+            state=$(docker inspect -f '{{.State.Status}}' "$cid")
+            started=$(docker inspect -f '{{.State.StartedAt}}' "$cid")
+            age=$(( now - $(date -d "$started" +%s 2>/dev/null || echo "$now") ))
+            if [ "$state" != "running" ] || [ "$age" -gt 10800 ]; then
+              docker rm -f -v "$cid" >/dev/null 2>&1 || true
+            fi
+          done
+          for net in $(docker network ls --format '{{.Name}}' | grep -E '^ci-(db|net)-' | grep -v "${{ github.run_id }}"); do
+            docker network rm "$net" >/dev/null 2>&1 || true
+          done
+          for img in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^autoposter:ci-' | grep -v "${{ github.run_id }}"); do
+            docker rmi "$img" >/dev/null 2>&1 || true
+          done
+          docker volume prune -f >/dev/null 2>&1 || true
+          df -h / | tail -1
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -206,7 +236,7 @@ jobs:
           # cancelled cleanup too, so remove it before creating, and tolerate
           # the removal failing (it may still be attached to attempt 1's
           # not-yet-reaped container).
-          docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+          docker rm -f -v "$PG_CONTAINER" >/dev/null 2>&1 || true
           docker network rm "$PG_NETWORK" >/dev/null 2>&1 || true
           docker network create "$PG_NETWORK" >/dev/null 2>&1 || true
           # Succeeds when the job is a container; harmlessly fails when it is
@@ -419,7 +449,7 @@ jobs:
           # these executed rather than inferring it from a count. A marker
           # matching nothing exits 5, which fails this step -- deleting
           # the marker cannot quietly empty this run either.
-          cid=$(docker create --network "$PG_NETWORK" -w /app \
+          cid=$(docker create --name "ci-tests-${{ github.run_id }}" --network "$PG_NETWORK" -w /app \
             -e CI=true \
             -e AUTOPOSTER_TEST_DATABASE_URL="postgresql+asyncpg://autoposter:autoposter@${PG_CONTAINER}:5432/autoposter_magick" \
             -e AUTOPOSTER_MAINTENANCE_DATABASE_URL="postgresql://autoposter:autoposter@${PG_CONTAINER}:5432/postgres" \
@@ -432,7 +462,7 @@ jobs:
           # before the container could be removed.
           status=0
           docker start -a "$cid" || status=$?
-          docker rm -f "$cid" >/dev/null
+          docker rm -f -v "$cid" >/dev/null
           exit $status
 
       # Per-run names do not clean themselves up: without this, a persistent
@@ -440,7 +470,7 @@ jobs:
       - name: Remove PostgreSQL
         if: always()
         run: |
-          docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
+          docker rm -f -v "$PG_CONTAINER" >/dev/null 2>&1 || true
           docker network disconnect "$PG_NETWORK" "$(hostname)" >/dev/null 2>&1 || true
           docker network rm "$PG_NETWORK" >/dev/null 2>&1 || true
           # Untag only: BuildKit's layer cache is what makes the next run's
@@ -507,6 +537,36 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Sweep what earlier runs left behind BEFORE creating this run's
+      # resources. The `if: always()` cleanups below do not run when a job is
+      # cancelled by `concurrency`, killed by the runner, or lost to a restart,
+      # and every leaked `postgres` container also pins an anonymous data
+      # volume -- runner2 ran out of disk this way (2026-09-06). Only this
+      # workflow's own names are touched: a container is stale when it has
+      # exited, or has been running for more than three hours (no job here
+      # lives that long); a network is removed only when nothing is attached.
+      - name: Sweep leftovers from earlier runs
+        run: |
+          now=$(date +%s)
+          for cid in $(docker ps -aq --filter "name=^ci-postgres-" --filter "name=^ci-pg-" --filter "name=^ci-tests-"); do
+            name=$(docker inspect -f '{{.Name}}' "$cid" | sed 's#^/##')
+            case "$name" in *"${{ github.run_id }}"*) continue;; esac
+            state=$(docker inspect -f '{{.State.Status}}' "$cid")
+            started=$(docker inspect -f '{{.State.StartedAt}}' "$cid")
+            age=$(( now - $(date -d "$started" +%s 2>/dev/null || echo "$now") ))
+            if [ "$state" != "running" ] || [ "$age" -gt 10800 ]; then
+              docker rm -f -v "$cid" >/dev/null 2>&1 || true
+            fi
+          done
+          for net in $(docker network ls --format '{{.Name}}' | grep -E '^ci-(db|net)-' | grep -v "${{ github.run_id }}"); do
+            docker network rm "$net" >/dev/null 2>&1 || true
+          done
+          for img in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^autoposter:ci-' | grep -v "${{ github.run_id }}"); do
+            docker rmi "$img" >/dev/null 2>&1 || true
+          done
+          docker volume prune -f >/dev/null 2>&1 || true
+          df -h / | tail -1
 
       - name: Generate image tag
         id: gen_tag
@@ -765,6 +825,6 @@ jobs:
       - name: Remove the migration database and the run's image tag
         if: always()
         run: |
-          docker rm -f "$MIG_CONTAINER" >/dev/null 2>&1 || true
+          docker rm -f -v "$MIG_CONTAINER" >/dev/null 2>&1 || true
           docker network rm "$MIG_NETWORK" >/dev/null 2>&1 || true
           docker rmi ${{ env.CI_IMAGE }} >/dev/null 2>&1 || true
