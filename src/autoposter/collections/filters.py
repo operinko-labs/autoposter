@@ -108,7 +108,7 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   search names have no filter (``unplayed``, ``progress``, ``hdr``,
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
-This table covers **53** of the 55 search names and **29** of the 70 filter
+This table covers **54** of the 55 search names and **29** of the 70 filter
 names. Both halves of the residue are real work, and they are different work:
 the 45 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
 ``plays``, ``last_played``, 10a's ``country``, phase B's four people rows and
@@ -117,14 +117,15 @@ a source tier and not an accessor, so the row-96 arithmetic has moved by nine
 in total -- and then phase B's own probe gave ``plays`` and ``last_played``
 real listing accessors and appended ``user_rating`` with one, so those three
 are the first names counted here that an operator can actually filter on
-rather than merely find in the table), while the 2 unsearched names are what
+rather than merely find in the table), while the 1 unsearched name is what
 is left of 9b's own tail, filed per family for T6 -- search-tails-1 took seven
 of the 22 (rows 170 + 172: the text pair, which also moved the filter-covered
 count by two, and the five media booleans, which are search-only and move no
-filter number), and search-tail E-1 took twenty (row 173's family E, all
-search-only and all show-only, moving no filter number either), leaving
-``folder_location`` (row 176) and ``audio_codec`` (row 177). The two must not
-be reported as one number, which is what row 96's original "~45" did.
+filter number), search-tail E-1 took twenty (row 173's family E, all
+search-only and all show-only, moving no filter number either), and search
+tail H took ``folder_location`` (row 176, likewise search-only), leaving
+``audio_codec`` (row 177) alone. The two halves must not be reported as one
+number, which is what row 96's original "~45" did.
 """
 import datetime as dt
 import re
@@ -137,6 +138,7 @@ from autoposter.lang import base_language_code
 __all__ = [
     "BY_NAME",
     "DEFAULT_OPERATOR",
+    "DISCOVERED",
     "FILTERABLE_ATTRIBUTES",
     "FILTER_ATTRIBUTES",
     "ITEM_KINDS",
@@ -567,6 +569,32 @@ _COUNT_COMPARISONS = {
 # module docstring.
 _MISSING_ALWAYS_EXCLUDES = ("int", "float", "date", "duration")
 
+# The ``search_field`` of the ONE row whose Plex field is not a constant
+# (``folder_location``, roadmap row 176).
+#
+# Kometa cannot hard-code it either. ``Library.get_search_key``
+# (modules/plex.py:1286-1297) reads ``listFilters`` at RUN time and returns the
+# first filter whose ``filter`` is ``source`` OR whose displayed title folds to
+# ``folder_location`` -- a two-clause match, not a lookup, so the field is a
+# property of the SERVER and ``source`` is only the likely answer. It is the
+# only attribute in Kometa's whole search grammar whose field is a function call
+# (modules/builder.py:4179).
+#
+# Neither of the two values this column can otherwise hold is honest here.
+# ``None`` makes the row UNSEARCHABLE -- ``searchable`` is derived from this
+# column, so the row would load and then never build a query. A literal string
+# is worse: it builds a query Plex answers with NOTHING, which is exactly the
+# silent-wrong-set failure ``field_for`` raises to prevent. So the column holds
+# a sentinel that is neither: ``searchable`` stays True, ``field_for`` refuses
+# it by name, and the field comes from the resolver instead
+# (``search_url.TagResolver.discover_field``, implemented on
+# ``builders/plex_search.LibraryTagResolver``).
+#
+# A readable string rather than an opaque ``object()`` so that a row printed in
+# a traceback or a repr says what happened rather than showing an address; the
+# comparisons against it are ``is``, against this one module-level binding.
+DISCOVERED = "<discovered at run time>"
+
 
 @dataclass(frozen=True)
 class FilterAttribute:
@@ -622,7 +650,9 @@ class FilterAttribute:
     def searchable(self) -> bool:
         """Derived from ``search_field``, not stored beside it -- a row with a
         field and ``searchable=False`` would be a contradiction the table could
-        hold."""
+        hold. ``DISCOVERED`` is not None, so a discovered-field row is
+        searchable here and refuses in ``field_for``; that split is the whole
+        point of the sentinel (roadmap row 176)."""
         return self.search_field is not None
 
     @property
@@ -640,7 +670,17 @@ class FilterAttribute:
         libtype the row does not serve has already skipped the
         ``search_kinds`` check, and answering with the movie field would build
         a query Plex silently answers with the wrong set.
+
+        A ``DISCOVERED`` row raises for the same reason one step earlier: its
+        field is not in this table at all, so any answer this method could give
+        would be a guess about the server (roadmap row 176).
         """
+        if self.search_field is DISCOVERED:
+            raise ValueError(
+                f"{self.name!r}'s Plex search field is discovered at run time "
+                "from the library's own filter list, so this table cannot "
+                "answer it -- ask the resolver (TagResolver.discover_field)"
+            )
         if self.search_field is None:
             raise ValueError(f"{self.name!r} has no Plex search field")
         if libtype not in self.search_kinds:
@@ -656,7 +696,7 @@ _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Fifty-seven rows: 9a's fifteen in the order the roadmap names them
+# Fifty-eight rows: 9a's fifteen in the order the roadmap names them
 # (roadmap.md:538-551), then 9b's four, 10a's two, phase B's five and
 # search-tails-1's seven appended rather than interleaved so the first
 # fifteen still read against the roadmap line they came from, plus C2a's
@@ -664,11 +704,11 @@ _BOTH = ("movie", "show")
 # ``last_episode_aired`` (A-1/A-2), and then search-tail E-1's twenty (roadmap
 # row 173, family E) appended last. Column totals are asserted
 # in tests/test_collection_filters.py as the transcription's checksum:
-# 19 tag / 4 str / 6 int / 7 float / 7 date / 1 duration / 13 bool;
+# 20 tag / 4 str / 6 int / 7 float / 7 date / 1 duration / 13 bool;
 # 14 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed /
-# 28 search-only / 2 facts;
-# 22 both-kinds / 12 movie-only / 23 show-only for ``kinds``, and
-# 24 / 8 / 21 / 4 for ``search_kinds`` (the fourth bucket, ``()``, is the
+# 29 search-only / 2 facts;
+# 23 both-kinds / 12 movie-only / 23 show-only for ``kinds``, and
+# 25 / 8 / 21 / 4 for ``search_kinds`` (the fourth bucket, ``()``, is the
 # filterable-but-not-searchable one: ``versions``, ``aspect``,
 # ``tmdb_status`` and ``last_episode_aired``, which land in neither kind),
 # which is a different split and that is the point of the second column.
@@ -686,6 +726,12 @@ _BOTH = ("movie", "show")
 # ``duration`` moved: 5 tag / 1 str / 2 int / 3 float / 3 date / 6 bool. The
 # filter-covered count did not move at all -- none of the twenty is a Kometa
 # filter -- and the searchable count went 33 -> 53 of 55.
+#
+# Search tail H appended ONE (roadmap row 176): ``folder_location``, both-kinds
+# in both columns, ``search-only``, and the first row whose ``search_field`` is
+# the ``DISCOVERED`` sentinel rather than a Plex field. It moves ``tag`` 19->20,
+# ``search-only`` 28->29, both-kinds 22->23 for ``kinds`` and 24->25 for
+# ``search_kinds``, and the searchable count 53 -> 54 of 55.
 #
 # Phase B appended FIVE: the four PEOPLE rows, which move the ``tag`` and
 # ``unprobed`` totals by four together -- ``actor`` on both kinds, and
@@ -1843,6 +1889,40 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "filter of this name.",
         search_field="show.unwatchedLeaves", show_search_field="show.unwatchedLeaves",
         search_kinds=("show",), filterable=False,
+    ),
+    # --- search tail H (roadmap row 176) -------------------------------------
+    FilterAttribute(
+        "folder_location", "tag", _BOTH, "search-only",
+        "The library FOLDER an item lives in -- and the one row in this table "
+        "whose Plex field is not a string. ``search_field`` is the "
+        "``DISCOVERED`` sentinel (module top) and the real field is read from "
+        "the library at run time, because Kometa cannot hard-code it either: "
+        "``Library.get_search_key`` (modules/plex.py:1286-1297) calls "
+        "``listFilters`` and takes the first filter whose ``filter`` is "
+        "``source`` OR whose displayed title folds to ``folder_location``, "
+        "which makes the field a property of the SERVER. On a SHOW library it "
+        "forces the episode libtype and returns ``episode.<field>``, because "
+        "Plex exposes no folder filter above the episode. That prefix is the "
+        "MIRROR IMAGE of ``ENUMERATES_AS`` (builders/plex_search.py): those "
+        "two entries de-scope a dotted field to the library's own libtype, and "
+        "this one exists to FORCE the episode scope the library's libtype "
+        "would not give -- so ``ENUMERATES_AS`` gains no entry and the "
+        "existing ``rpartition`` in ``_field_and_scope`` enumerates the values "
+        "at the right scope with no new code. A ``tag`` "
+        "(kometa_build_filter.py:417) taking ``eq``/``not``/``regex`` with no "
+        "``SEARCH_OPERATORS_EXCLUDED`` subtraction: it is outside "
+        "``no_not_mods``. Neither movie-only nor show-only in Kometa's kind "
+        "lists, so both kinds; ``track_only_searches`` names it, but that list "
+        "gates the music branch alone (modules/builder.py:4200-4203) and no "
+        "music libtype is reachable here. ``search-only``: Kometa has no "
+        "``folder_location`` FILTER -- row 96's own 29-name list names it. "
+        "REFUSED on the ``smart_filter`` builder (row 176 ruling C5): a smart "
+        "collection's stored URI is hashed into ``smart_definition_hash`` "
+        "(collections/smart.py:225), and a discovered field would make that "
+        "hash a function of the server as well as the config, so a Plex-side "
+        "rename of the filter would re-PUT every definition naming it.",
+        search_field=DISCOVERED, show_search_field=DISCOVERED,
+        search_kinds=_BOTH, filterable=False,
     ),
 )
 

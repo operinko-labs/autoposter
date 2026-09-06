@@ -36,6 +36,7 @@ from autoposter.collections.filters import (
     ITEM_KINDS,
     OPERATORS_BY_TYPE,
     PLEXAPI_EQUIVALENT,
+    SEARCH_OPERATORS_EXCLUDED,
     SOURCE_TIERS,
     VALUE_TYPES,
     FilterGroup,
@@ -103,6 +104,10 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     All twenty are search-only and show-only, and all twenty render at the
     SHOW search level (``type=2``) exactly as Kometa renders them; the
     season/episode SEARCH level is E-2's (the ``builder_level`` selector).
+
+    Search tail H appended ONE the same way: ``folder_location`` (roadmap row
+    176), search-only and both-kinds, and the only row in the list whose Plex
+    field is a run-time discovery rather than a string.
     """
     assert [row.name for row in FILTER_ATTRIBUTES] == [
         "genre",
@@ -162,6 +167,7 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "episode_unmatched",
         "show_unmatched",
         "unplayed_episodes",
+        "folder_location",
     ]
 
 
@@ -210,7 +216,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     # ``search-only`` and none of them a filter, so no SOURCE tier below other
     # than ``search-only`` moved with them.
     assert {k: len(v) for k, v in by_type.items()} == {
-        "tag": 19,
+        "tag": 20,
         "str": 4,
         "int": 6,
         "float": 7,
@@ -273,6 +279,8 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     # of any of these names (the ``episode_*`` family is the largest block of
     # row 96's 29 search-only names), so a ``filters:`` block refuses each by
     # pointing at the plex_search block it belongs to.
+    # Search tail H appends ``folder_location``: Kometa has no filter of that
+    # name either (row 96's 29-name list names it).
     assert by_source["search-only"] == [
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
@@ -283,6 +291,7 @@ def test_the_column_totals_are_the_transcriptions_checksum():
         "episode_audience_rating", "episode_year", "episode_unplayed",
         "episode_duplicate", "episode_progress", "episode_unmatched",
         "show_unmatched", "unplayed_episodes",
+        "folder_location",
     ]
     # C2c's new tier, and the first that describes no Plex read at all: the
     # value is in this service's own `item_facts` row. REFUSAL-ONLY on the
@@ -353,7 +362,9 @@ def test_item_kinds_are_movie_show_or_both():
         "episode_year", "last_episode_aired", "network", "season_collection",
         "season_label", "show_unmatched", "tmdb_status", "unplayed_episodes",
     ]
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 22
+    # 22 -> 23 with search tail H's ``folder_location``: neither of Kometa's
+    # kind lists names it, so it is both-kinds in this column too.
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 23
 
 
 def test_versions_is_filterable_with_the_int_operators():
@@ -502,7 +513,7 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
 
     # ``("show",)`` was ``network`` alone until search-tail E-1's twenty.
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 24, ("movie",): 8, ("show",): 21, (): 4,
+        ("movie", "show"): 25, ("movie",): 8, ("show",): 21, (): 4,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -530,10 +541,11 @@ def test_four_rows_are_unsearchable_and_twentynine_are_filterable():
     assert BY_NAME["aspect"].searchable is False
     assert BY_NAME["tmdb_status"].searchable is False
     assert BY_NAME["last_episode_aired"].searchable is False
-    # 33 -> 53 with search-tail E-1: Kometa's 55 non-music search names minus
-    # ``folder_location`` (row 176) and ``audio_codec`` (row 177). The
-    # filterable count does not move -- no family-E name is a Kometa filter.
-    assert len(SEARCHABLE_ATTRIBUTES) == 53
+    # 33 -> 53 with search-tail E-1, then 54 with search tail H: Kometa's 55
+    # non-music search names minus ``audio_codec`` (row 177) alone. The
+    # filterable count does not move -- neither family E nor ``folder_location``
+    # is a Kometa filter.
+    assert len(SEARCHABLE_ATTRIBUTES) == 54
     assert len(FILTERABLE_ATTRIBUTES) == 29
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
@@ -545,6 +557,7 @@ def test_four_rows_are_unsearchable_and_twentynine_are_filterable():
         "episode_audience_rating", "episode_year", "episode_unplayed",
         "episode_duplicate", "episode_progress", "episode_unmatched",
         "show_unmatched", "unplayed_episodes",
+        "folder_location",
     }
     assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {
         "versions", "aspect", "tmdb_status", "last_episode_aired"
@@ -2520,3 +2533,49 @@ def test_a_family_e_name_in_a_filters_block_is_pointed_at_plex_search():
     message = str(error.value)
     assert "episode_title" in message
     assert "plex_search" in message
+
+
+def test_folder_location_is_the_one_row_whose_field_is_discovered_at_run_time():
+    """Roadmap row 176. Every other row in this table spells its Plex field; this
+    one cannot, because Kometa cannot either -- ``Library.get_search_key``
+    (modules/plex.py:1286-1297) reads ``listFilters`` at RUN time and takes the
+    first filter whose ``filter`` is ``source`` OR whose displayed title folds to
+    ``folder_location``, so the field is a property of the SERVER.
+
+    ``search_field=None`` would make the row unsearchable and dead
+    (``searchable`` is derived from this column); a literal string would build a
+    query Plex answers with nothing, which is the silent-wrong-set failure
+    ``field_for`` raises to prevent. So the column holds a sentinel that is
+    neither, and the row is searchable while ``field_for`` refuses it by name.
+
+    Columns otherwise a ``country`` clone, read from Kometa and not guessed: a
+    ``tag`` (kometa_build_filter.py:417), ``eq``/``not``/``regex`` with no
+    ``SEARCH_OPERATORS_EXCLUDED`` subtraction (it is outside ``no_not_mods``),
+    neither movie-only nor show-only so both kinds, and ``search-only`` because
+    Kometa has no filter of the name.
+    """
+    from autoposter.collections.filters import DISCOVERED
+
+    row = BY_NAME["folder_location"]
+    assert row.type == "tag"
+    assert row.source == "search-only"
+    assert row.filterable is False
+    assert row.kinds == ("movie", "show")
+    assert row.search_kinds == ("movie", "show")
+    assert row.search_field is DISCOVERED
+    assert row.show_search_field is DISCOVERED
+    assert row.searchable is True
+    assert row.search_operators == ("eq", "not", "regex")
+    assert "folder_location" not in SEARCH_OPERATORS_EXCLUDED
+
+
+def test_field_for_refuses_a_discovered_row_by_naming_the_resolver():
+    """The refusal is the whole reason the sentinel is safe: a caller that
+    reaches for the table's field gets a sentence telling it where the field
+    actually lives, not the sentinel string rendered into a Plex query.
+
+    Both libtypes, because the show branch would otherwise be reached through
+    ``show_search_field`` and answer the sentinel that way instead."""
+    for libtype in ("movie", "show"):
+        with pytest.raises(ValueError, match="discovered at run time"):
+            BY_NAME["folder_location"].field_for(libtype)
