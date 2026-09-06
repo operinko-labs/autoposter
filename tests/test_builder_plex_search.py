@@ -67,7 +67,7 @@ def test_an_empty_any_base_names_any_not_all():
 
 def test_a_non_mapping_base_is_refused_naming_its_own_key():
     """Kometa's other empty-base message (``{base} must be a dictionary``,
-    kometa_build_filter.py:973), reproduced alongside the blank one."""
+    kometa_build_filter.py:978), reproduced alongside the blank one."""
     with pytest.raises(ValidationError) as error:
         PlexSearchParams.model_validate({"all": ["genre: Horror"]})
     assert "`all:` must be a mapping" in str(error.value)
@@ -212,6 +212,25 @@ class FakeChoice:
         self.key = key
 
 
+class FakeFilter:
+    """One row of ``listFilters``. plexapi's ``FilteringFilter`` carries
+    ``.filter``, ``.filterType``, ``.key``, ``.title`` and ``.type``
+    (plexapi/library.py:2878-2897); ``get_search_key`` reads two of them and so
+    does this service, so the fake carries two."""
+
+    def __init__(self, filter_name, title):
+        self.filter = filter_name
+        self.title = title
+
+
+# The 2026-09-06 probe's own answer
+# (docs/research/plex-search-probe/listfilters-folder-location.md), with a
+# leading non-folder row so a resolver taking the first filter rather than the
+# matching one fails every test below. The observed key on this server is
+# ``location``, not the plan's placeholder ``source``.
+FOLDER_FILTERS = [FakeFilter("genre", "Genre"), FakeFilter("location", "Folder Location")]
+
+
 class FakeItem:
     def __init__(self, rating_key):
         self.ratingKey = rating_key
@@ -228,16 +247,34 @@ class FakeSection:
     own code) alongside cases that are. The pair form exists because the live
     server answers ``actor`` at one libtype and refuses it at another, and a
     fake that cannot say so cannot pin which scope the resolver asked.
+
+    ``filters`` and ``raise_filters`` are search tail H's (roadmap row 176):
+    ``listFilters`` is a SECOND network read, of the library's filter SCHEMA
+    rather than one filter's values, and it has its own memo key, its own two
+    wraps and its own refusal -- so it needs its own call log
+    (``filter_type_calls``) or "one schema read per pass" is unmeasurable.
+    A libtype absent from ``filters`` answers an empty list, which is what a
+    server with no folder filter looks like.
     """
 
     key = 1
 
-    def __init__(self, choices=None, items=None, raise_on=None):
+    def __init__(self, choices=None, items=None, raise_on=None,
+                 filters=None, raise_filters=None):
         self._choices = choices or {}
         self._items = items or [FakeItem(11), FakeItem(12)]
         self._raise_on = dict(raise_on or {})
+        self._filters = dict(filters or {})
+        self._raise_filters = dict(raise_filters or {})
         self.filter_calls = []
+        self.filter_type_calls = []
         self.fetch_calls = []
+
+    def listFilters(self, libtype=None):
+        self.filter_type_calls.append(libtype)
+        if libtype in self._raise_filters:
+            raise self._raise_filters[libtype]
+        return list(self._filters.get(libtype, []))
 
     def listFilterChoices(self, field, libtype=None):
         self.filter_calls.append((field, libtype))
@@ -312,7 +349,7 @@ async def test_today_in_a_plex_search_date_predicate_resolves_to_the_real_moment
     a bare ``YYYY-MM-DD`` -- the same shape every other date on this path
     renders (``_as_date`` returns a ``dt.date``), and the shape Kometa's own
     driver renders too -- its ``.before``/``.after`` branch is
-    ``return_as="%Y-%m-%d"`` (``tests/oracle/9b/kometa_build_filter.py:809``)
+    ``return_as="%Y-%m-%d"`` (``tests/oracle/9b/kometa_build_filter.py:814``)
     -- not a full ISO timestamp. Tolerant of ``today``/``yesterday`` rather
     than a frozen clock, to survive a midnight boundary during the run."""
     today = dt.date.today()
@@ -881,3 +918,208 @@ def test_choices_for_episode_actor_is_the_show_level_actor_list():
 
     assert resolver.choices("episode_actor") == (("6", "Uma Thurman"),)
     assert section.filter_calls == [("actor", "show")]
+
+
+# --- search tail H: the FIELD discovery (roadmap row 176) ---------------------
+#
+# The repo's first ``listFilters`` call. Every other run-time Plex read in this
+# stack is ``listFilterChoices`` -- a VALUE enumeration -- and this one asks
+# which FIELDS the library has at all, for the one row whose field the table
+# cannot hold. Its memo is its own key space, its refusal its own sentence.
+
+
+def test_the_field_discovery_takes_the_filter_kometas_first_clause_matches():
+    """``f.filter == "source"`` is Kometa's FIRST clause (plex.py:1291), and it
+    fires on its own -- the title here folds to nothing like the attribute name,
+    so a transcription that kept only the title clause fails.
+
+    Not what THIS server answers: the 2026-09-06 probe found the key is
+    ``location``, matched by the second clause. Which is exactly why the field
+    is read rather than written down, and why both clauses are pinned."""
+    section = FakeSection(filters={"movie": [
+        FakeFilter("genre", "Genre"), FakeFilter("source", "Where It Came From"),
+    ]})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    assert resolver.discover_field("folder_location", "movie") == "source"
+    assert section.filter_type_calls == ["movie"]
+
+
+def test_the_field_discovery_falls_back_to_the_folded_filter_title():
+    """Kometa's SECOND clause: the displayed title lowercased with spaces turned
+    to underscores (plex.py:1291). This is THIS server's answer -- the probe
+    found ``location``/``Folder Location``, which the first clause does not
+    match at all -- so a transcription that kept only the first would refuse the
+    very library row 176 was filed for."""
+    section = FakeSection(filters={"movie": FOLDER_FILTERS})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    assert resolver.discover_field("folder_location", "movie") == "location"
+
+
+def test_the_field_discovery_forces_the_episode_scope_on_a_show_library():
+    """Kometa's re-scope (plex.py:1288-1289, :1297): Plex exposes no folder
+    filter above the episode, so a show library is asked at the EPISODE libtype
+    and the answer comes back PREFIXED. The prefix does double duty -- it is the
+    URL term and the enumeration scope -- so this one assertion is also what
+    makes ``_field_and_scope`` enumerate the values at the right level."""
+    section = FakeSection(filters={"episode": FOLDER_FILTERS})
+    resolver = LibraryTagResolver(context(section, library_type="Show"), section, "show")
+
+    assert resolver.discover_field("folder_location", "show") == "episode.location"
+    assert section.filter_type_calls == ["episode"]
+
+
+def test_the_field_discovery_forces_the_episode_scope_when_the_search_type_already_is_one():
+    """Task 2 review, Minor 3. The m-3 resolution's third row: a show library
+    whose SEARCH type is already ``episode`` (``builder_level: episode``) asks
+    ``listFilters("episode")`` and answers the SAME prefixed field as row 2's
+    item-level show search -- ``is_show and filter_type == "show"`` is false
+    here (``filter_type`` is already ``"episode"``, not re-scoped from
+    ``"show"``), so this is the one reachable case where the re-scope
+    condition being edited would silently stop prefixing rather than fail
+    loudly. Behaviour was already correct; only the assertion was missing."""
+    section = FakeSection(filters={"episode": FOLDER_FILTERS})
+    resolver = LibraryTagResolver(
+        context(section, library_type="Show"), section, "show", search_type="episode"
+    )
+
+    assert resolver.discover_field("folder_location", "show") == "episode.location"
+    assert section.filter_type_calls == ["episode"]
+
+
+def test_the_field_discovery_asks_the_season_libtype_as_it_stands():
+    """``builder_level: season`` is the ONE case where the search type and the
+    library kind give different answers: Kometa re-scopes ``show`` and asks
+    ``season`` as-is (plex.py:1287-1289), and lets Plex's silence raise. Mirrored
+    rather than refused at parse time, because whether a season libtype carries a
+    folder filter is a property of the server, not of the config."""
+    section = FakeSection(filters={"episode": FOLDER_FILTERS})
+    resolver = LibraryTagResolver(
+        context(section, library_type="Show"), section, "show", search_type="season"
+    )
+
+    with pytest.raises(PlexSearchUnavailable) as error:
+        resolver.discover_field("folder_location", "show")
+    assert section.filter_type_calls == ["season"]
+    assert "season" in str(error.value)
+
+
+def test_the_field_discovery_is_one_schema_read_for_the_whole_pass():
+    """Its own memo key (``plex_search:field:{library}:{filter_type}:
+    {attribute}``), not ``_raw_choices``'s: a different call, a different key
+    space, a different sentence. Two definitions naming the attribute pay for
+    one read."""
+    section = FakeSection(
+        filters={"movie": FOLDER_FILTERS},
+        choices={("location", "movie"): [FakeChoice("/mnt/media/Movies", "1")]},
+    )
+    ctx = context(section)
+    resolver = LibraryTagResolver(ctx, section, "movie")
+
+    assert resolver.discover_field("folder_location", "movie") == "location"
+    assert resolver.discover_field("folder_location", "movie") == "location"
+    assert resolver("folder_location", "/mnt/media/Movies") == ("1",)
+    assert section.filter_type_calls == ["movie"]
+    assert ctx.run_cache["plex_search:field:Movies:movie:folder_location"] == "location"
+
+
+def test_the_field_memo_key_is_scoped_by_attribute_not_shared_across_them():
+    """Task 2 review, Important 1. The key used to be
+    ``plex_search:field:{library}:{filter_type}`` -- naming only the library
+    and the (post-re-scope) filter type, never the attribute -- while both the
+    answer and the row-213 refusal are attribute-dependent (the match clause,
+    the ``NotFound``/``BadRequest`` wrap and the refusal sentence all read
+    ``attribute``). Two rows sharing a library and a filter type would
+    therefore share a cache entry: the second row's ``discover_field`` call
+    would be served the FIRST row's answer, or its memoised refusal naming the
+    FIRST row's attribute, without ever asking Plex about the second. Only one
+    ``DISCOVERED`` row exists in the shipped table, so this parametrises the
+    resolver directly (``discover_field`` takes ``attribute`` as an argument
+    and needs no second table row to expose the bug) rather than adding a fake
+    row to it."""
+    section = FakeSection(filters={"movie": FOLDER_FILTERS})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    assert resolver.discover_field("folder_location", "movie") == "location"
+
+    with pytest.raises(PlexSearchUnavailable) as error:
+        resolver.discover_field("some_other_attribute", "movie")
+    message = str(error.value)
+    assert "some_other_attribute" in message
+    assert "folder_location" not in message
+
+    # And the first row's own cached answer is untouched by the second's miss.
+    assert resolver.discover_field("folder_location", "movie") == "location"
+
+
+def test_a_library_with_no_folder_filter_refuses_by_name_and_memoises_the_miss():
+    """Roadmap row 213's law and ``BuilderContext.run_cache``'s own requirement
+    at once. The sentence names the attribute and a libtype token from a CLOSED
+    set and nothing else -- Kometa's own message dumps the server's whole filter
+    schema into it (``available_filters``, plex.py:1294-1295) and must not be
+    copied. The miss is memoised beside the successes, or a dead lookup is
+    re-made once per definition."""
+    section = FakeSection(filters={"movie": [FakeFilter("genre", "Genre")]})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    with pytest.raises(PlexSearchUnavailable) as first:
+        resolver.discover_field("folder_location", "movie")
+    with pytest.raises(PlexSearchUnavailable):
+        resolver.discover_field("folder_location", "movie")
+
+    assert section.filter_type_calls == ["movie"]
+    message = str(first.value)
+    assert "folder_location" in message
+    assert "movie" in message
+    assert "libraries:" in message
+    assert "genre" not in message, "the server's filter schema must not be served"
+
+
+@pytest.mark.parametrize(
+    ("error", "fragment"),
+    [
+        (NotFound("no such libtype"), "no folder filter"),
+        (requests.ConnectionError("connection reset by 10.0.0.1?X-Plex-Token=abc"),
+         "would not answer"),
+    ],
+    ids=["not-found", "unreachable"],
+)
+def test_the_field_discovery_wraps_a_plex_failure_by_class_name_only(error, fragment):
+    """The same two-clause split ``_raw_choices`` makes, for the same two
+    reasons: ``NotFound``/``BadRequest`` is "this library has no such filter
+    list" and is a fact about the LIBRARY, while a transport failure or an
+    unparseable body is "Plex did not answer" and is not. Both are wrapped
+    class-name-only, because either message can carry a tokenised URL."""
+    section = FakeSection(raise_filters={"movie": error})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    with pytest.raises(PlexSearchUnavailable) as raised:
+        resolver.discover_field("folder_location", "movie")
+    message = str(raised.value)
+    assert fragment in message
+    assert type(error).__name__ in message
+    assert "X-Plex-Token" not in message
+    assert str(error) not in message
+
+
+async def test_the_builder_sends_a_discovered_folder_field_in_its_query():
+    """The builder's own entry point, end to end: params -> discovery -> URL ->
+    ``fetchItems``. ``ENUMERATES_AS`` gains no entry for this field and must
+    not: its two rows DE-scope a dotted field, and this prefix exists to FORCE
+    a scope."""
+    from autoposter.collections.builders.plex_search import ENUMERATES_AS
+
+    section = FakeSection(
+        filters={"movie": FOLDER_FILTERS},
+        choices={("location", "movie"): [FakeChoice("/mnt/media/Movies", "1")]},
+    )
+    ctx = context(section, config={"all": {"folder_location": "/mnt/media/Movies"}})
+
+    await PlexSearchBuilder().build(ctx)
+
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=1&sort=titleSort&location=1"
+    ]
+    assert "episode.location" not in ENUMERATES_AS
+    assert section.filter_calls == [("location", "movie")]

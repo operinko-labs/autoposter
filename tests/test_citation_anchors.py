@@ -131,7 +131,29 @@ SURFACES = (
 # ``kometa_build_filter.py:63``) and ``test_collection_search_oracle.py:533``/
 # ``:568`` (``:853``/``:904``). The 3 added past 114 are those, re-derived by
 # running this guard: the census moves to 117.
-EXPECTED_REF_COUNT = 117
+#
+# Search tail H (roadmap row 176) adds the citation its own oracle-test
+# docstring makes: ``tests/test_collection_search_oracle.py``'s new
+# twenty-fifth/twenty-sixth section names ``kometa_build_filter.py:904-907``
+# (the restored branch). Growing the driver's ``CHOICES`` literal in place
+# (beside it, per C6) shifted every absolute-line citation below it by a
+# constant +5 -- the existing citations across ``filters.py``,
+# ``plex_search.py``, ``test_collection_filters.py``,
+# ``test_builder_plex_search.py``, ``test_collection_search_url.py`` and this
+# file were renumbered by that same +5 so each still resolves to the anchor
+# it always named; none of that is a NEW citation, so it does not move the
+# census. Re-derived by RUNNING this guard, never counted by hand: the
+# census moves to 118.
+#
+# Search tail H's SECOND move, at Task 2: the ``folder_location`` row's own
+# note in ``filters.py`` and the table test that reads it both cite
+# ``kometa_build_filter.py:422`` (``folder_location`` in the driver's
+# ``tag_attributes``) -- TWO new guarded references, not the one the brief
+# predicted, because the row's checksum test quotes the row's own source line.
+# ``:422`` and not ``:417``: Task 1's five-line ``CHOICES`` growth shifted the
+# driver's ``tag_attributes`` list down with everything else below it.
+# Re-derived by RUNNING this guard: 120.
+EXPECTED_REF_COUNT = 120
 
 _FILE_REF = re.compile(r"\b([\w./-]+\.(?:py|md|ts|tsx|yml|yaml)):(\d+)(?:-(\d+))?")
 _BARE_REF = re.compile(r"(?<![\w:]):(\d+)(?:-(\d+))?")

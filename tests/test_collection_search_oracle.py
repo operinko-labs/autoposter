@@ -151,6 +151,23 @@ come from the library -- and neither writes a ``sort_by``, because a show sort
 under an episode search is a refusal (``search_sorts.require_sort_for_libtype``)
 rather than a golden.
 
+## The twenty-fifth and twenty-sixth configs
+
+Roadmap row 176 -- `folder_location`, the one attribute in Kometa's search
+grammar whose Plex FIELD is a run-time answer rather than a table entry
+(`get_search_key`, `modules/plex.py:1286-1297`), restored in the driver's
+call site for `get_search_key` at `kometa_build_filter.py:904-907` after being removed by name in 9b's D3. The
+driver therefore grows a SECOND shared-by-value fixture, `FILTERS`, standing in
+for `LibrarySection.listFilters` the way `CHOICES` stands in for
+`get_search_choices`: `CHOICES` says what a filter's values are, `FILTERS` says
+which filters exist at all. Config 25 pins the movie column (`location=<key>`
+on this server -- the probe found the folder filter's key is `location`, not
+`source`); config 26 pins the show column, which is the half a movie config
+cannot reach -- Kometa forces the episode libtype on a show library and
+returns the field PREFIXED `episode.`, and a transcription that kept the show
+libtype would send a field Plex answers with nothing rather than with an
+error.
+
 ## `current_year`, row 171's other half
 
 Row 171 had two halves: the ``decade`` table row (configs 16/17, above) and
@@ -218,11 +235,51 @@ CHOICES = {
     ("episode_collection", "Pilots"): ("302",),
     ("episode_label", "Overlay"): ("3",),
     ("episode_actor", "Uma Thurman"): ("6",),
+    ("folder_location", "/mnt/media/Movies"): ("1",),
+    ("folder_location", "/mnt/media/TV"): ("2",),
+}
+
+# The library's FILTER SCHEMA. A COPY of the oracle driver's ``FILTERS``, shared
+# by value for the reason ``CHOICES`` is: the driver imports nothing from this
+# repository and must not import anything into it. The next-but-one test holds
+# the two copies equal, the same way and in the same place.
+#
+# ``CHOICES`` is what a filter's VALUES are; this is which filters EXIST. Row
+# 176 is the only row that needs the second question asked, because it is the
+# only row whose Plex field is not in ``FILTER_ATTRIBUTES``. The observed key
+# on this server is ``location``, not ``source`` -- the probe's substitution
+# rule (docs/research/plex-search-probe/listfilters-folder-location.md).
+FILTERS = {
+    "movie": (("genre", "Genre"), ("location", "Folder Location")),
+    "show": (("genre", "Genre"),),
+    "season": (),
+    "episode": (("genre", "Genre"), ("location", "Folder Location")),
 }
 
 
 def resolve(attribute, value, /):
     return CHOICES.get((attribute, value), ())
+
+
+def discover_field(attribute, libtype, /):
+    """``TagResolver``'s third member, as a fixture.
+
+    The production resolver answers this from a live ``listFilters``; here it is
+    the fixture above, read the way ``get_search_key`` reads it -- the first
+    filter matching either of Kometa's two clauses, ``episode.``-prefixed on a
+    show library. Attached to ``resolve`` below rather than written as a class,
+    because ``resolve`` is a function everywhere else in this file and a class
+    here would change what the goldens are driven with.
+    """
+    filter_type = "episode" if libtype == "show" else libtype
+    key = next(
+        f[0] for f in FILTERS[filter_type]
+        if f[0] == "source" or str(f[1]).lower().replace(" ", "_") == attribute
+    )
+    return f"episode.{key}" if libtype == "show" else key
+
+
+resolve.discover_field = discover_field
 
 
 # (id, search_type, library_kind, params) -- OUR spelling. Config 7 is the one
@@ -341,6 +398,12 @@ CONFIGS = [
         },
         "limit": 5,
     }),
+    ("25-folder-on-a-movie", "movie", "movie", {
+        "all": {"folder_location": "/mnt/media/Movies"},
+    }),
+    ("26-folder-on-a-show", "show", "show", {
+        "all": {"folder_location": "/mnt/media/TV"},
+    }),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
@@ -383,6 +446,8 @@ KOMETA = {
     "22-family-e-on-a-show": "?type=2&limit=5&sort=episode.addedAt%3Adesc&season.collection=301&and=1&season.label=3&and=1&episode.collection=302&and=1&episode.label!=3&and=1&episode.title%3C=Pilot&and=1&episode.actor=6&and=1&episode.addedAt%3E%3E=-30d&and=1&episode.originallyAvailableAt%3E%3E=2024-01-01&and=1&episode.lastViewedAt%3C%3C=-2y&and=1&episode.viewCount%3E%3E=3&and=1&episode.userRating%3E=7.0&and=1&episode.rating%3C%3C=5.0&and=1&episode.audienceRating!=-1&and=1&episode.year%3E=2010&and=1&episode.unwatched=1&and=1&episode.duplicate!=1&and=1&episode.inProgress=1&and=1&episode.unmatched!=1&and=1&show.unmatched!=1&and=1&show.unwatchedLeaves=1",
     "23-season-level-on-a-show": "?type=3&sort=season.index%2Cseason.titleSort&season.collection=301&and=1&season.label=3",
     "24-episode-level-on-a-show": "?type=4&limit=5&sort=titleSort&episode.title%3C=Pilot&and=1&episode.addedAt%3E%3E=-30d&and=1&episode.unwatched=1&and=1&show.unmatched!=1",
+    "25-folder-on-a-movie": "?type=1&sort=titleSort&location=1",
+    "26-folder-on-a-show": "?type=2&sort=titleSort&episode.location=2",
 }
 
 
@@ -406,10 +471,10 @@ def test_our_url_is_byte_identical_to_kometas(name, search_type, library_kind, p
     assert ours == KOMETA[name]
 
 
-def test_the_oracles_vocabulary_fixture_matches_this_files_copy():
+def test_the_oracles_vocabulary_fixtures_match_this_files_copies():
     """The driver imports nothing from here and this file imports nothing from
-    there, so the shared fixture is shared by VALUE. This reads the driver as
-    text and compares the literal, which is the only coupling that does not
+    there, so the shared fixtures are shared by VALUE. This reads the driver as
+    text and compares the literals, which is the only coupling that does not
     break the isolation.
 
     Anchored to ``__file__`` rather than to the working directory: what this
@@ -419,16 +484,26 @@ def test_the_oracles_vocabulary_fixture_matches_this_files_copy():
     -- ``.superpowers/`` is gitignored, so a driver there would be absent from
     a fresh clone and this test would fail (or, worse, be made to skip) for a
     reason that has nothing to do with the transcription.
+
+    TWO fixtures since roadmap row 176, checked the same way and in one pass:
+    ``CHOICES`` (what a filter's values are) and ``FILTERS`` (which filters the
+    library has at all). A row whose field is discovered at run time needs the
+    second question asked, and a second fixture drifting silently is the same
+    failure as the first one drifting.
     """
     import ast
 
-    source = ORACLE_DRIVER.read_text()
-    tree = ast.parse(source)
+    expected = {"CHOICES": CHOICES, "FILTERS": FILTERS}
+    found = {}
+    tree = ast.parse(ORACLE_DRIVER.read_text())
     for node in tree.body:
-        if isinstance(node, ast.Assign) and node.targets[0].id == "CHOICES":
-            assert ast.literal_eval(node.value) == CHOICES
-            return
-    pytest.fail("the oracle driver has no CHOICES literal")
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in expected
+        ):
+            found[node.targets[0].id] = ast.literal_eval(node.value)
+    assert found == expected, "the oracle driver's shared fixtures have drifted"
 
 
 def test_the_driver_still_produces_the_pinned_strings():
@@ -530,7 +605,7 @@ def test_current_year_matches_kometas_own_transcribed_algorithm():
 
 def test_the_driver_defaults_its_library_kind_to_its_sort_type():
     """Search-tail E-2 (facts C4). The driver conflated two things Kometa keeps
-    apart: ``is_show = sort_type == "show"`` (kometa_build_filter.py:853) drove
+    apart: ``is_show = sort_type == "show"`` (kometa_build_filter.py:858) drove
     ``show_translation`` and the kind gates, which Kometa derives from
     ``self.library.is_show`` (modules/builder.py:4176-4181) and NOT from the
     search level. Un-conflating them is a signature change to a vendored
@@ -565,7 +640,7 @@ def test_the_driver_types_by_the_sort_type_and_scopes_by_the_library_kind():
     original version of this test identically whether ``library_kind`` is
     honoured or ignored (Task 1 review, Important I-1). ``title.begins`` is
     the discriminating case: ``title`` is bare in ``search_translation`` and
-    reachable through ``show_translation`` only (kometa_build_filter.py:904),
+    reachable through ``show_translation`` only (kometa_build_filter.py:909),
     so it renders ``show.title`` under ``library_kind="show"`` and bare
     ``title`` when the kind is left to default from ``sort_type`` --
     "episode" here, neither "movie" nor "show" -- and ONLY if ``is_show`` is
