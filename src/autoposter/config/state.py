@@ -54,6 +54,26 @@ def state_config_path() -> Path:
     return state_dir() / CONFIG_FILE_NAME
 
 
+def example_config_path() -> Path:
+    """The shipped example document the setup wizard starts from.
+
+    A fresh deployment has no ``/config/autoposter.yaml`` and ``Config`` has
+    eight fields with no default, so nothing can be synthesised -- the example
+    document is the only honest starting point, and the image therefore has to
+    carry it.
+
+    ``AUTOPOSTER_EXAMPLE_CONFIG`` in the image, because the package is
+    pip-installed into site-packages there and nothing is findable relative to
+    the module; the repository copy otherwise. The same shape, and for the same
+    reason, as ``api/spa.py``'s ``spa_dist()``.
+    """
+    configured = os.environ.get("AUTOPOSTER_EXAMPLE_CONFIG")
+    if configured:
+        return Path(configured)
+    root = Path(__file__).resolve().parent.parent.parent.parent
+    return root / "config" / "autoposter.example.yaml"
+
+
 def read_secrets_file(path: Path) -> dict[str, str]:
     """``KEY=value`` lines as a dict; an absent file is an empty dict.
 

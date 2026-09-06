@@ -23,19 +23,25 @@ from httpx import ASGITransport, AsyncClient
 # in a test file is pytest's xunit-style per-module setup hook, and pytest
 # calls whatever carries that name -- a module object has no __code__, so
 # every test in the file errors before it runs.
+from autoposter import boot
 from autoposter.api import setup as setup_api
 from autoposter.api.routes import _REDACTED
 from autoposter.api.setup import build_setup_app
 from autoposter.app import create_app
 from autoposter.config import state as state_module
 from autoposter.config.loader import load_config
-from autoposter.config.schema import Secrets
+from autoposter.config.schema import Secrets, resolve_secret_values
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 # Distinctive so the T6 grep gate can prove none of them entered src/ or the
 # frontend bundle.
 MASTER_PASSWORD = "row-121-master-passphrase-e41b"
+# A DSN whose password half is a string of its own, so the no-echo tests can
+# look for the part that must never survive a refusal.
+FAKE_DB_URL = "postgresql+asyncpg://autoposter:row-121-db-secret@db.invalid:5432/autoposter"
+FAKE_PLEX_TOKEN = "row-121-plex-token-7f31"
+PLEX_URL = "http://plex.example.test:32400"
 
 HARD = (
     "AUTOPOSTER_DATABASE_URL",
@@ -488,3 +494,458 @@ def test_the_redaction_string_is_the_one_the_config_endpoint_serves():
     api/routes.py would pull the whole application router into the setup
     process. This is the pin that keeps the two equal."""
     assert setup_api.REDACTED == _REDACTED
+
+
+# --- step 2: the database URL ----------------------------------------------
+
+
+async def test_a_database_url_that_answers_is_staged_and_not_yet_persisted(
+    setup_client, monkeypatch
+):
+    """Amendment 3: the hard secrets are STAGED in the token's memory and land
+    on disk only at the finish step, so an abandoned wizard leaves a state
+    directory the next boot reads as "not configured yet" rather than as a
+    deployment whose credentials are half there."""
+    token = await _authenticate(setup_client)
+    monkeypatch.setattr(setup_api, "database_answers", _answering(True))
+
+    response = await setup_client.post(
+        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert "AUTOPOSTER_DATABASE_URL" not in held
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["database"] is True
+    assert FAKE_DB_URL not in progress.text
+
+
+async def test_a_database_that_refuses_is_reported_by_class_name_only(
+    setup_client, monkeypatch
+):
+    token = await _authenticate(setup_client)
+    monkeypatch.setattr(setup_api, "database_answers", _answering(False, "OperationalError"))
+
+    response = await setup_client.post(
+        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "the database did not answer (OperationalError)"
+
+
+async def test_a_refused_database_url_is_not_staged(setup_client, monkeypatch):
+    token = await _authenticate(setup_client)
+    monkeypatch.setattr(setup_api, "database_answers", _answering(False, "OperationalError"))
+
+    await setup_client.post(
+        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+    )
+
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["database"] is False
+
+
+async def test_the_database_url_never_reaches_a_response_or_the_log(
+    setup_client, monkeypatch, caplog
+):
+    """A connection error carries the DSN in its own text -- host, user and
+    password. This is the densest credential string this service ever holds,
+    and the wizard is the one place a human types it in."""
+    token = await _authenticate(setup_client)
+    monkeypatch.setattr(setup_api, "database_answers", _answering(False, "OperationalError"))
+
+    with caplog.at_level(logging.DEBUG):
+        response = await setup_client.post(
+            "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+        )
+
+    assert "row-121-db-secret" not in response.text
+    assert "row-121-db-secret" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+async def test_a_real_database_url_is_accepted_through_the_real_probe(setup_client):
+    """Not mocked: the step's contract is that the URL is validated by being
+    USED, and a probe that is only ever faked proves the mock."""
+    from conftest import TEST_DB_URL
+
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/database", json={"url": TEST_DB_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+
+
+# --- step 3: the provider keys ---------------------------------------------
+
+
+async def test_provider_keys_are_staged_and_served_only_as_a_presence_map(setup_client):
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN}},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["providers"]["AUTOPOSTER_PLEX_TOKEN"] == setup_api.REDACTED
+    assert body["providers"]["AUTOPOSTER_TMDB_TOKEN"] is None
+    assert FAKE_PLEX_TOKEN not in response.text
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert "AUTOPOSTER_PLEX_TOKEN" not in held
+
+
+async def test_an_omitted_provider_key_leaves_the_staged_one_alone(setup_client):
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN}},
+        headers=_headers(token),
+    )
+
+    response = await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_TMDB_TOKEN": "row-121-tmdb-token-4b7e"}},
+        headers=_headers(token),
+    )
+
+    providers = response.json()["providers"]
+    assert providers["AUTOPOSTER_PLEX_TOKEN"] == setup_api.REDACTED
+    assert providers["AUTOPOSTER_TMDB_TOKEN"] == setup_api.REDACTED
+    assert FAKE_PLEX_TOKEN not in response.text
+    assert "row-121-tmdb-token-4b7e" not in response.text
+
+
+async def test_a_name_this_service_does_not_read_is_refused_by_name(setup_client):
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_NOT_A_THING": "row-121-unknown-value"}},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert "AUTOPOSTER_NOT_A_THING" in response.json()["detail"]
+    assert "row-121-unknown-value" not in response.text
+
+
+async def test_the_presence_map_is_readable_on_its_own(setup_client):
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN}},
+        headers=_headers(token),
+    )
+
+    response = await setup_client.get("/api/setup/providers", headers=_headers(token))
+
+    assert response.json()["providers"]["AUTOPOSTER_PLEX_TOKEN"] == setup_api.REDACTED
+    # The generated value is served by the call that generated it and never
+    # again -- a GET is not that call.
+    assert response.json()["webhook_secret"] is None
+    assert FAKE_PLEX_TOKEN not in response.text
+
+
+async def test_the_webhook_secret_is_generated_and_served_exactly_once(
+    setup_client, caplog
+):
+    """The one value this application ever puts in a response body, and the
+    reason it may: it is not a credential the wizard was GIVEN. Sonarr and
+    Radarr sign their webhooks with a secret this deployment chooses, so
+    somebody has to choose it -- and an operator typing one is a weaker secret
+    plus a credential on the wire that came from a form. It is generated here,
+    shown on the response that generated it, and never served again.
+    """
+    token = await _authenticate(setup_client)
+
+    with caplog.at_level(logging.DEBUG):
+        first = await setup_client.post(
+            "/api/setup/providers", json={"values": {}}, headers=_headers(token)
+        )
+    generated = first.json()["webhook_secret"]
+    second = await setup_client.post(
+        "/api/setup/providers", json={"values": {}}, headers=_headers(token)
+    )
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+
+    assert generated and len(generated) >= 32
+    assert first.json()["providers"]["AUTOPOSTER_WEBHOOK_SECRET"] == setup_api.REDACTED
+    assert second.json()["webhook_secret"] is None
+    assert generated not in second.text
+    assert generated not in progress.text
+    assert generated not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+async def test_a_submitted_webhook_secret_is_refused_by_name(setup_client):
+    """Refused rather than accepted, so the value this application serves is
+    provably one it minted and never one a caller sent it."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_WEBHOOK_SECRET": "row-121-not-yours"}},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.WEBHOOK_SECRET_IS_GENERATED
+    assert "row-121-not-yours" not in response.text
+
+
+# --- step 4: the config document -------------------------------------------
+
+
+async def test_the_config_step_stages_the_document_and_writes_nothing_yet(setup_client):
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["path"] == str(state_module.state_config_path())
+    # Amendment 3: written at finish, in front of the secrets file.
+    assert not state_module.state_config_path().exists()
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["config"] is True
+
+
+async def test_a_document_that_does_not_validate_is_refused_by_class_name_only(
+    setup_client, monkeypatch, tmp_path
+):
+    """Validated BEFORE it is staged: a document that does not load would leave
+    the next boot crashing inside load_config with the wizard already gone."""
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("workers: 5\n", encoding="utf-8")
+    monkeypatch.setattr(setup_api, "example_config_path", lambda: broken)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "the configuration document was rejected (ValidationError)"
+    )
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["config"] is False
+
+
+async def test_a_plex_url_that_is_not_an_address_is_refused_with_a_fixed_sentence(
+    setup_client,
+):
+    """PlexConfig.url is a bare str, so an empty one VALIDATES -- and a
+    deployment whose plex.url is blank reaches every job and fails there, with
+    the wizard already gone. The one field an operator types into this step is
+    checked here instead."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": ""}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.PLEX_URL_NOT_AN_ADDRESS
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["config"] is False
+
+
+def test_the_image_ships_the_example_document_the_wizard_starts_from():
+    """The runtime image has never shipped a config, because a deployment
+    mounts one -- and the deployment this row exists for has nothing to mount.
+    Without these two lines the wizard's config step is a 500 in production
+    while every test here passes against the repository's own copy."""
+    dockerfile = (Path(__file__).parent.parent / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY config ./config" in dockerfile
+    assert "ENV AUTOPOSTER_EXAMPLE_CONFIG=/app/config/autoposter.example.yaml" in dockerfile
+
+
+def test_the_example_document_path_follows_the_environment(monkeypatch, tmp_path):
+    """The spa_dist() shape, for spa_dist()'s reason: the package is
+    pip-installed into site-packages in the image, so nothing is findable
+    relative to the module files there."""
+    monkeypatch.delenv("AUTOPOSTER_EXAMPLE_CONFIG", raising=False)
+    assert state_module.example_config_path() == EXAMPLE
+
+    monkeypatch.setenv("AUTOPOSTER_EXAMPLE_CONFIG", str(tmp_path / "elsewhere.yaml"))
+    assert state_module.example_config_path() == tmp_path / "elsewhere.yaml"
+
+
+# --- step 5: the handover ---------------------------------------------------
+
+
+# What the wizard supplies for itself: the database URL has its own step, and
+# the webhook secret is generated by the provider step.
+_NOT_PASTED = {"AUTOPOSTER_DATABASE_URL", "AUTOPOSTER_WEBHOOK_SECRET"}
+
+
+async def _complete_every_step(client, token, monkeypatch) -> None:
+    monkeypatch.setattr(setup_api, "database_answers", _answering(True))
+    await client.post(
+        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+    )
+    await client.post(
+        "/api/setup/providers",
+        json={
+            "values": {
+                name: (FAKE_PLEX_TOKEN if name == "AUTOPOSTER_PLEX_TOKEN" else "value")
+                for name in HARD
+                if name not in _NOT_PASTED
+            }
+        },
+        headers=_headers(token),
+    )
+    await client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+
+async def test_finish_writes_the_config_document_then_the_secrets_and_execs(
+    setup_client, monkeypatch
+):
+    """os.execv rather than a flag: nothing in a running setup application can
+    become the real one -- no migration has run, no engine exists, create_app
+    was never called -- and the exec is what makes the exit atomic.
+
+    The write ORDER is Amendment 3's. The other order has a window in which the
+    hard secrets resolve and no document does, which boot treats as a
+    configuration error and a non-zero exit -- a deployment that can no longer
+    be fixed by the wizard, because no wizard is served for that shape.
+    """
+    token = await _authenticate(setup_client)
+    await _complete_every_step(setup_client, token, monkeypatch)
+    document_was_on_disk: list[bool] = []
+    real_merge = setup_api.merge_secrets_file
+
+    def recording_merge(values):
+        document_was_on_disk.append(state_module.state_config_path().is_file())
+        real_merge(values)
+
+    monkeypatch.setattr(setup_api, "merge_secrets_file", recording_merge)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: calls.append(argv))
+
+    response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"restarting": True}
+    assert document_was_on_disk == [True]
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert held["AUTOPOSTER_DATABASE_URL"] == FAKE_DB_URL
+    assert held["AUTOPOSTER_PLEX_TOKEN"] == FAKE_PLEX_TOKEN
+    assert held["AUTOPOSTER_WEBHOOK_SECRET"]
+    assert load_config(state_module.state_config_path()).plex.url == PLEX_URL
+    assert calls == [[setup_api.sys.executable, "-m", "autoposter.boot"]]
+
+
+async def test_the_written_config_document_is_the_one_the_loader_would_find(
+    setup_client, monkeypatch
+):
+    from autoposter.config import loader as loader_module
+
+    token = await _authenticate(setup_client)
+    await _complete_every_step(setup_client, token, monkeypatch)
+    monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
+    await setup_client.post("/api/setup/finish", headers=_headers(token))
+    monkeypatch.delenv("AUTOPOSTER_CONFIG", raising=False)
+
+    assert loader_module._default_config_path() == state_module.state_config_path()
+
+
+async def test_nothing_hard_is_persisted_until_finish(setup_client, monkeypatch):
+    """Amendment 3's whole point, stated as the boot decision it protects: a
+    wizard abandoned after every step but the last leaves a state directory
+    that boots back into setup mode -- never into the credentials-without-a-
+    document exit, for which no wizard is served."""
+    token = await _authenticate(setup_client)
+    await _complete_every_step(setup_client, token, monkeypatch)
+
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert set(held) == {"AUTOPOSTER_ADMIN_PASSWORD_HASH"}
+    assert not state_module.state_config_path().exists()
+    assert boot.is_configured(resolve_secret_values()) is False
+
+
+async def test_finish_names_the_unmet_step_with_a_fixed_sentence(setup_client, monkeypatch):
+    token = await _authenticate(setup_client)
+    monkeypatch.setattr(setup_api.os, "execv", _never_exec)
+
+    response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.STEP_DATABASE
+
+
+async def test_finish_names_the_config_step_when_only_that_is_missing(
+    setup_client, monkeypatch
+):
+    token = await _authenticate(setup_client)
+    monkeypatch.setattr(setup_api, "database_answers", _answering(True))
+    await setup_client.post(
+        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+    )
+    await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {name: "value" for name in HARD if name not in _NOT_PASTED}},
+        headers=_headers(token),
+    )
+    monkeypatch.setattr(setup_api.os, "execv", _never_exec)
+
+    response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    assert response.json()["detail"] == setup_api.STEP_CONFIG
+
+
+async def test_finish_never_echoes_a_value_in_its_refusal(setup_client, monkeypatch):
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN}},
+        headers=_headers(token),
+    )
+    monkeypatch.setattr(setup_api.os, "execv", _never_exec)
+
+    response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    assert FAKE_PLEX_TOKEN not in response.text
+    assert FAKE_DB_URL not in response.text
+
+
+# --- progress ---------------------------------------------------------------
+
+
+async def test_the_progress_map_reports_steps_and_names_but_never_values(
+    setup_client, monkeypatch
+):
+    token = await _authenticate(setup_client)
+    await _complete_every_step(setup_client, token, monkeypatch)
+
+    response = await setup_client.get("/api/setup/progress", headers=_headers(token))
+
+    body = response.json()
+    assert body["password"] is True
+    assert body["database"] is True
+    assert body["config"] is True
+    assert body["required"] == []
+    assert set(body["providers"].values()) <= {setup_api.REDACTED, None}
+    assert FAKE_PLEX_TOKEN not in response.text
+    assert FAKE_DB_URL not in response.text
+
+
+def _never_exec(*args, **kwargs):
+    raise AssertionError("the process must not be replaced while a step is unmet")
+
+
+def _answering(ok: bool, failure: str = ""):
+    async def answers(url: str) -> tuple[bool, str]:
+        return ok, failure
+
+    return answers

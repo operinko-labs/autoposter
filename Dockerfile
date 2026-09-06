@@ -164,6 +164,13 @@ COPY assets ./assets
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY --from=frontend /frontend/dist ./frontend/dist
+# The document the first-start wizard starts from. The runtime image has never
+# shipped a config, because a deployment mounts one at /config -- but a
+# deployment that has not been configured yet has nothing to mount, and
+# `Config` has eight fields with no default so nothing can be synthesised.
+# This is the wizard's template, not the deployment's config: AUTOPOSTER_CONFIG
+# still points at the mount below.
+COPY config ./config
 
 # The package is pip-installed into site-packages while assets are copied to
 # /app/assets, so the assets cannot be found relative to the module files.
@@ -174,6 +181,11 @@ ENV AUTOPOSTER_ASSETS_ROOT=/app/assets
 # passes while `/` answers 404, so the failure looks like a healthy service.
 ENV AUTOPOSTER_SPA_DIST=/app/frontend/dist
 ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml
+# And the same again for the example the wizard's config step reads: without
+# it `example_config_path()` looks four directories above the installed module
+# -- inside site-packages -- and the config step is a 500 on the one deployment
+# shape the wizard exists for.
+ENV AUTOPOSTER_EXAMPLE_CONFIG=/app/config/autoposter.example.yaml
 
 # The image's own name in the registry. .forgejo/workflows/ci.yml passes the
 # commit's short sha here and then pushes the built image as `sha-<that>`, so
