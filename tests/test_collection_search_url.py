@@ -39,11 +39,38 @@ CHOICES = {
     ("episode_collection", "Pilots"): ("302",),
     ("episode_label", "Overlay"): ("3",),
     ("episode_actor", "Uma Thurman"): ("6",),
+    # Roadmap row 176. Keyed by the ROW name like every other entry; the
+    # discovered FIELD is a separate answer, from ``discover_field`` below.
+    ("folder_location", "/mnt/media/Movies"): ("1",),
+    ("folder_location", "/mnt/media/TV"): ("2",),
 }
 
 
 def resolve(attribute, value, /):
     return CHOICES.get((attribute, value), ())
+
+
+def discover_field(attribute, libtype, /):
+    """``TagResolver``'s third member as a fixture (roadmap row 176).
+
+    The live resolver reads this from ``listFilters``; here it is the answer the
+    2026-09-06 probe recorded (``location``, not the plan's placeholder
+    ``source``), with Kometa's own show-library re-scope applied
+    (``episode.<field>``, plex.py:1288-1297). A plain function attribute rather
+    than a class, because ``resolve`` is a function everywhere else in this file
+    and every other test would otherwise change shape for one row.
+
+    Two arguments, not three: the SEARCH type is resolver STATE in production
+    (``LibraryTagResolver(..., search_type=...)``), not a per-call argument, and
+    a bare function fixture has nowhere to hold one. Every ``url(...)`` call
+    below that names ``folder_location`` leaves ``search_type`` at its default,
+    so the search type and the library kind agree and this two-argument answer
+    is the one the live resolver gives (round-1 review m-3).
+    """
+    return "episode.location" if libtype == "show" else "location"
+
+
+resolve.discover_field = discover_field
 
 
 def url(raw, *, libtype="movie", search_type=None, base="all", **kwargs):
@@ -471,3 +498,59 @@ def test_a_search_type_never_changes_which_attributes_are_legal():
     message = str(error.value)
     assert "movie" in message
     assert "show library" in message
+
+
+def test_a_discovered_field_row_takes_its_field_from_the_resolver_not_the_table():
+    """Roadmap row 176, and the ONE line in this module that asks for a field
+    (``_render_predicate``). ``folder_location``'s table row holds the
+    ``DISCOVERED`` sentinel and ``field_for`` raises on it, so a renderer that
+    kept the old call would fail loudly rather than send the sentinel -- but the
+    thing this pins is the OTHER half: the show library's field is
+    ``episode.location``, not ``location``, and a renderer that dropped the
+    prefix would send a field Plex answers with nothing rather than with an
+    error."""
+    assert url({"folder_location": "/mnt/media/Movies"}) == (
+        "?type=1&sort=titleSort&location=1"
+    )
+    assert url({"folder_location": "/mnt/media/TV"}, libtype="show") == (
+        "?type=2&sort=titleSort&episode.location=2"
+    )
+
+
+def test_every_other_row_still_takes_its_field_from_the_table():
+    """The sentinel is a branch on one row, not a redirection of all of them: a
+    resolver with no ``discover_field`` at all still renders every shipped row,
+    which is what keeps ``TagResolver``'s new member optional in practice the
+    way ``choices`` is."""
+
+    def bare(attribute, value, /):
+        return CHOICES.get((attribute, value), ())
+
+    from autoposter.collections.filters import parse_filters
+    from autoposter.collections.search_url import build_search_url
+
+    group = parse_filters({"genre": "Horror"}, field="params", searching=True, base="all")
+    assert build_search_url(group, libtype="movie", resolve_tag=bare) == (
+        "?type=1&sort=titleSort&genre=1138"
+    )
+
+
+def test_folder_location_regex_expands_over_the_discovered_fields_vocabulary():
+    """``.regex`` rides along for free and must be proven to: the branch calls
+    ``resolve_tag.choices(row.name)``, which goes through ``_field_and_scope``
+    and therefore through the discovery, so a pattern is tested against the
+    TITLES of the discovered field's own values."""
+
+    def choices(attribute, /):
+        assert attribute == "folder_location"
+        return (("1", "/mnt/media/Movies"), ("2", "/mnt/media/TV"))
+
+    resolve.choices = choices
+    try:
+        assert url({"folder_location.regex": "^/mnt/media/M"}) == (
+            "?type=1&sort=titleSort&location=1"
+        )
+        with pytest.raises(TagValueNotFound, match="matched none of"):
+            url({"folder_location.regex": "^/nope"})
+    finally:
+        del resolve.choices

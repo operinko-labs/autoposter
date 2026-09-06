@@ -43,6 +43,7 @@ from typing import Protocol
 from urllib.parse import quote
 
 from autoposter.collections.filters import (
+    DISCOVERED,
     SEARCH_MODIFIERS,
     FilterGroup,
     FilterPredicate,
@@ -79,10 +80,20 @@ class TagResolver(Protocol):
     A ``resolve_tag`` whose config never writes ``.regex`` in a search never
     needs to implement it -- ``_arguments`` calls it only from the branch
     below.
+
+    ``discover_field`` (roadmap row 176) is the FIELD half, and it is asked for
+    exactly one row: ``folder_location``, whose ``search_field`` is the
+    ``DISCOVERED`` sentinel because Kometa cannot hard-code the field either
+    (``Library.get_search_key`` reads ``listFilters`` at run time,
+    modules/plex.py:1286-1297). It answers the query field for one attribute on
+    one library type, already re-scoped -- ``episode.<field>`` on a show library
+    -- and a ``resolve_tag`` whose config never writes ``folder_location`` never
+    needs to implement it, the same escape hatch ``choices`` has.
     """
 
     def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]: ...
     def choices(self, attribute: str, /) -> tuple[tuple[str, str], ...]: ...
+    def discover_field(self, attribute: str, libtype: str, /) -> str: ...
 
 
 class TagValueNotFound(Exception):
@@ -248,7 +259,19 @@ def _render_predicate(
             f"where the query would match nothing at all. Narrow the definition "
             f"with `libraries:` so it only targets {kinds} libraries"
         )
-    field = row.field_for(libtype)
+    # THE one line in this module that asks for a field, and the one place a
+    # run-time-discovered field can enter a URL (roadmap row 176). Every row but
+    # ``folder_location`` answers from the table; that one holds the
+    # ``DISCOVERED`` sentinel and ``field_for`` raises on it, so the branch is
+    # not an optimisation -- it is the only path that produces a field at all.
+    # Kometa's own shape, one layer up: ``arg_key = get_search_key(attr, ...) if
+    # attr == "folder_location" else <the translation tables>``
+    # (modules/builder.py:4179), the only attribute in its grammar whose field
+    # is a function call.
+    if row.search_field is DISCOVERED:
+        field = resolve_tag.discover_field(row.name, libtype)
+    else:
+        field = row.field_for(libtype)
     conjunction = "and=1&" if block_op == "all" else "or=1&"
     args = _arguments(predicate, resolve_tag=resolve_tag)
     return "".join(
