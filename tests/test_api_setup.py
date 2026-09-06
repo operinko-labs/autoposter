@@ -36,8 +36,6 @@ EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 # Distinctive so the T6 grep gate can prove none of them entered src/ or the
 # frontend bundle.
 MASTER_PASSWORD = "row-121-master-passphrase-e41b"
-FAKE_PLEX_TOKEN = "row-121-plex-token-9c2a"
-FAKE_DB_URL = "postgresql+asyncpg://row121user:row-121-db-secret-4f1a@db.invalid:5432/ap"
 
 HARD = (
     "AUTOPOSTER_DATABASE_URL",
@@ -172,8 +170,45 @@ async def test_every_other_api_path_answers_503_with_one_fixed_sentence(
             assert response.json()["detail"] == setup_api.NOT_CONFIGURED
             checked.append((method, path))
 
-    # Sanity: the loop must have found the real router, not an empty app.
-    assert len(checked) >= 16
+    # Sanity: the loop must have found the real router, not an empty app --
+    # pinned NEAR the measured surface (73 documented /api operations outside
+    # /api/setup at c1c19a9) rather than at a fifth of it, so that a change
+    # which drops most of the documented paths out of create_app().openapi()
+    # fails here instead of passing a floor it never approaches.
+    assert len(checked) >= 70
+
+
+# The one path the setup application answers outside /api/setup/* and the SPA's
+# own files. An exact set, not a containment: a second exemption has to be
+# argued for here, which is the whole value of the assertion.
+NOT_SWEPT = {"/healthz"}
+
+
+def test_the_probe_is_the_only_path_outside_the_wizard_and_the_spa(setup_app):
+    """I-4's pin, in the shape test_the_probe_is_the_only_open_api_path_on_the
+    _normal_app uses: the setup application is a credential form on an
+    unauthenticated port, so what it serves BESIDES the wizard is enumerated
+    rather than assumed. The `spa_dist` autouse stub means this app has no SPA
+    routes at all, so everything left is either /api or the exemption.
+    """
+    outside = {
+        route.path
+        for route in setup_app.routes
+        if not getattr(route, "path", "/api").startswith("/api")
+    }
+
+    assert outside == NOT_SWEPT
+
+
+async def test_the_setup_app_answers_the_kubernetes_probe(setup_client):
+    """The chart points liveness AND readiness at httpGet /healthz on 8080.
+    Without this route readiness never passes, so the Service has no endpoint
+    and the wizard is unreachable, and liveness restarts the pod at ~t+80 s
+    into the same state."""
+    response = await setup_client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "setup"}
 
 
 async def test_the_setup_routes_are_not_swallowed_by_the_503(setup_client):
@@ -284,6 +319,41 @@ async def test_a_too_short_password_is_refused_without_echoing_it(setup_client):
     assert state_module.read_secrets_file(state_module.secrets_file_path()) == {}
 
 
+async def test_a_password_over_72_bytes_is_refused_before_bcrypt_sees_it(setup_client):
+    """bcrypt >= 4.0 RAISES past 72 bytes rather than truncating, so without
+    this check a 12-word diceware passphrase in the first field of the
+    first-start wizard is a bare 500: no hash, no token, no sentence."""
+    too_long = "x" * (setup_api.MAXIMUM_PASSWORD_BYTES + 1)
+
+    response = await setup_client.post("/api/setup/password", json={"password": too_long})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.PASSWORD_TOO_LONG
+    assert too_long not in response.text
+    assert state_module.read_secrets_file(state_module.secrets_file_path()) == {}
+
+
+async def test_a_password_of_exactly_72_bytes_is_accepted(setup_client):
+    """The boundary is a library's and not this row's, so both sides are
+    pinned: one byte fewer must still reach bcrypt and persist."""
+    response = await setup_client.post(
+        "/api/setup/password", json={"password": "x" * setup_api.MAXIMUM_PASSWORD_BYTES}
+    )
+
+    assert response.status_code == 200, response.text
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert held["AUTOPOSTER_ADMIN_PASSWORD_HASH"].startswith("$2b$")
+
+
+async def test_a_multibyte_password_is_measured_in_bytes_not_characters(setup_client):
+    """40 characters passes a `len()` on the str -- and is 80 bytes encoded,
+    which is what bcrypt counts and refuses."""
+    response = await setup_client.post("/api/setup/password", json={"password": "é" * 40})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.PASSWORD_TOO_LONG
+
+
 # --- the setup token --------------------------------------------------------
 
 
@@ -306,7 +376,19 @@ async def test_every_route_past_the_password_requires_the_setup_token(setup_clie
             checked.append((method, path))
 
     assert len(checked) >= 1
-    assert token  # the token itself is exercised by the tests that use it
+    assert token
+
+
+async def test_the_minted_token_is_accepted_by_the_route_it_guards(setup_client):
+    """The positive half, without which every other token test passes against a
+    `require_setup_token` that raises 401 unconditionally -- a wrong `alias` on
+    the Header, a compare over the wrong pair, or the non-ASCII TypeError
+    below. Task 3 builds every step on this dependency."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.get("/api/setup/progress", headers=_headers(token))
+
+    assert response.status_code == 200, response.text
 
 
 async def test_a_wrong_setup_token_is_refused_with_the_same_sentence(setup_client):
@@ -316,6 +398,89 @@ async def test_a_wrong_setup_token_is_refused_with_the_same_sentence(setup_clien
 
     assert response.status_code == 401
     assert response.json()["detail"] == setup_api.NOT_AUTHENTICATED
+
+
+async def test_a_missing_setup_token_is_refused_on_the_same_route(setup_client):
+    """Absent, wrong and malformed take one path and one sentence -- all three
+    through the same route, so "indistinguishably" is measured and not
+    asserted in a docstring."""
+    await _authenticate(setup_client)
+
+    response = await setup_client.get("/api/setup/progress")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == setup_api.NOT_AUTHENTICATED
+
+
+async def test_a_non_ascii_setup_token_is_a_401_and_never_a_500(setup_client):
+    """Starlette decodes header values as latin-1, so this single byte arrives
+    as a non-ASCII str -- and `compare_digest` on str raises TypeError there,
+    which without the bytes compare is an unhandled 500 with a traceback in the
+    pod log, from an unauthenticated caller, on every route the token guards.
+    Sent as bytes because httpx will not encode a non-ASCII str header."""
+    await _authenticate(setup_client)
+
+    response = await setup_client.get(
+        "/api/setup/progress", headers={setup_api.SETUP_TOKEN_HEADER: b"\xff"}
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == setup_api.NOT_AUTHENTICATED
+
+
+# --- what /progress reports, and what it must never carry --------------------
+
+
+def test_the_admin_hash_and_the_api_key_are_not_provider_credentials():
+    """The admin hash is step 1's output and the API key is row 51's operator
+    choice; neither is a third party's credential. If either stayed in
+    _PROVIDER_ENV, Task 3's provider form -- specified to iterate this tuple --
+    would accept a caller-chosen AUTOPOSTER_ADMIN_PASSWORD_HASH and let a
+    token-holder re-key or permanently lock out the deployment's admin."""
+    assert "AUTOPOSTER_ADMIN_PASSWORD_HASH" not in setup_api._PROVIDER_ENV
+    assert "AUTOPOSTER_API_KEY" not in setup_api._PROVIDER_ENV
+    assert "AUTOPOSTER_DATABASE_URL" not in setup_api._PROVIDER_ENV
+    # ...and it is still the provider set, not an empty tuple.
+    assert "AUTOPOSTER_PLEX_TOKEN" in setup_api._PROVIDER_ENV
+    assert "AUTOPOSTER_MDBLIST_APIKEY" in setup_api._PROVIDER_ENV
+
+
+async def test_progress_reports_presence_and_never_a_value(setup_client):
+    """C8/C9 for this application's only reporting surface: booleans, NAMES,
+    and ***REDACTED***/null -- nothing else, and no value of any kind."""
+    token = await _authenticate(setup_client)
+    stored = state_module.read_secrets_file(state_module.secrets_file_path())[
+        "AUTOPOSTER_ADMIN_PASSWORD_HASH"
+    ]
+
+    response = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    body = response.json()
+
+    assert response.status_code == 200, response.text
+    assert set(body) == {"password", "database", "providers", "required", "config"}
+    assert body["password"] is True
+    assert body["database"] is False
+    assert body["config"] is False
+    # NAMES, in _SECRET_ENV order -- the database URL is what is still missing.
+    assert body["required"] == list(HARD)
+    assert set(body["providers"]) == set(setup_api._PROVIDER_ENV)
+    assert set(body["providers"].values()) == {None}
+    # The master password is reported ONCE, as the boolean above.
+    assert "AUTOPOSTER_ADMIN_PASSWORD_HASH" not in body["providers"]
+    assert stored not in response.text
+    assert MASTER_PASSWORD not in response.text
+
+
+async def test_progress_redacts_a_provider_it_holds(monkeypatch, setup_client):
+    """The other arm of the presence map: a set name is ***REDACTED***, which
+    is a presence claim and not the credential."""
+    monkeypatch.setenv("AUTOPOSTER_PLEX_TOKEN", "row-121-plex-token-9c2a")
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.get("/api/setup/progress", headers=_headers(token))
+
+    assert response.json()["providers"]["AUTOPOSTER_PLEX_TOKEN"] == setup_api.REDACTED
+    assert "row-121-plex-token-9c2a" not in response.text
 
 
 def test_the_redaction_string_is_the_one_the_config_endpoint_serves():

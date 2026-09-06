@@ -169,6 +169,12 @@ def main(argv: list[str] | None = None) -> None:
             "this deployment is not configured yet; serving the first-start "
             "setup wizard instead of the application"
         )
+        # The same reason the configured branch deletes it below, and it bites
+        # harder here: uvicorn.run is called FROM this frame and does not return
+        # for the whole life of the wizard, so a traceback renderer that prints
+        # locals would dump every partially-resolved plaintext credential this
+        # deployment does already have.
+        del resolved
         uvicorn.run(
             build_setup_app(), host="0.0.0.0", port=8080, timeout_graceful_shutdown=10
         )

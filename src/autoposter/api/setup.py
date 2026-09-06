@@ -68,18 +68,47 @@ MINIMUM_PASSWORD_LENGTH = 12
 PASSWORD_TOO_SHORT = (
     f"the master password must be at least {MINIMUM_PASSWORD_LENGTH} characters"
 )
+# bcrypt's own limit, and since bcrypt 4.0 ``hashpw`` RAISES on a longer
+# password rather than truncating it (pyproject pins bcrypt>=4.2). Refused
+# here, BEFORE the hash call, so an operator who pastes a long diceware
+# passphrase into the first field of the first-start wizard gets this sentence
+# instead of a bare 500 with no hash, no token and no explanation. A count of
+# bytes, never the value that failed it.
+MAXIMUM_PASSWORD_BYTES = 72
+PASSWORD_TOO_LONG = (
+    f"the master password must be at most {MAXIMUM_PASSWORD_BYTES} bytes as UTF-8"
+)
 
 SETUP_TOKEN_HEADER = "X-Setup-Token"
 
-# The credentials the provider step collects: every secret name except the
-# database URL, which has its own step because it is the one credential that
-# is validated by being used. Derived from _SECRET_ENV/_SOFT_SECRET_ENV rather
-# than restated, so a secret added to the model is collected here without a
-# second edit.
+# Secret names the provider step must NOT collect, and which _presence_map
+# therefore never reports:
+#
+# * AUTOPOSTER_DATABASE_URL has its own step, because it is the one credential
+#   that is validated by being used;
+# * AUTOPOSTER_ADMIN_PASSWORD_HASH is step 1's OUTPUT, not an operator's paste.
+#   Offering it as a provider field would let a token-holder replace the master
+#   password's hash with a caller-chosen string -- a malformed one locks the
+#   deployment's admin out permanently, because verify_password returns False
+#   on a malformed hash and the wizard is gone after the exec. It is already
+#   reported anyway, as /progress's `password` boolean;
+# * AUTOPOSTER_API_KEY is row 51's operator choice -- a key this service mints
+#   for its own callers, not a third party's credential -- so it is configured
+#   after setup, not during it.
+_NOT_A_PROVIDER = (
+    "AUTOPOSTER_DATABASE_URL",
+    "AUTOPOSTER_ADMIN_PASSWORD_HASH",
+    "AUTOPOSTER_API_KEY",
+)
+
+# The credentials the provider step collects: every secret name that is not on
+# the list above. Derived from _SECRET_ENV/_SOFT_SECRET_ENV rather than
+# restated, so a PROVIDER secret added to the model is collected here without a
+# second edit -- while a non-provider one has to be named above to stay out.
 _PROVIDER_ENV = tuple(
     name
     for name in (*_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
-    if name != "AUTOPOSTER_DATABASE_URL"
+    if name not in _NOT_A_PROVIDER
 )
 
 
@@ -121,7 +150,16 @@ async def require_setup_token(
     minted = request.app.state.setup.token
     if minted is None or x_setup_token is None:
         raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED)
-    if not secrets_module.compare_digest(x_setup_token, minted):
+    # Bytes, not str, and for the reason api/auth.py:_key_matches gives at the
+    # same call: Starlette decodes header values as latin-1, so one byte >= 0x80
+    # in X-Setup-Token arrives as a non-ASCII str and compare_digest raises
+    # TypeError there -- an unhandled 500 from an unauthenticated caller, on
+    # every route this dependency guards, and a malformed token distinguishable
+    # from a wrong one, which is exactly what the docstring above promises it is
+    # not.
+    if not secrets_module.compare_digest(
+        x_setup_token.encode("utf-8"), minted.encode("utf-8")
+    ):
         raise HTTPException(status_code=401, detail=NOT_AUTHENTICATED)
 
 
@@ -143,7 +181,7 @@ def _presence_map(resolved: dict[str, str]) -> dict[str, str | None]:
 
 
 @router.get("/state")
-async def setup_state(request: Request) -> dict:
+async def setup_state() -> dict:
     """The one open route, and the one the SPA probes on load.
 
     Two booleans and no enumeration of what is missing: an unauthenticated
@@ -180,8 +218,18 @@ async def set_master_password(body: PasswordRequest, request: Request) -> dict:
     Unlike the login handler there is no timing oracle to defend: on the first
     call there is nothing to compare against, and on every later one there is,
     unconditionally.
+
+    A successful call MINTS A NEW TOKEN and abandons the previous one, so a
+    second tab -- or the same operator re-proving the password after a reload --
+    401s the older tab mid-wizard with the sentence that means "wrong token".
+    Deliberate: one live token is what makes "the token dies with the process"
+    a complete account of its lifetime.
     """
     client = request.client.host if request.client else "unknown"
+    # The limiter counts SUCCESSES too (LoginRateLimiter's existing contract),
+    # so ten password posts in sixty seconds lock step 1 for the rest of the
+    # window -- which a wizard that re-proves the password on every reload can
+    # spend without an attacker.
     if not request.app.state.setup_rate_limiter.allow(client):
         raise HTTPException(status_code=429, detail=TOO_MANY_ATTEMPTS)
 
@@ -196,6 +244,9 @@ async def set_master_password(body: PasswordRequest, request: Request) -> dict:
             if len(body.password) < MINIMUM_PASSWORD_LENGTH:
                 # The requirement, never the value that failed it.
                 raise HTTPException(status_code=400, detail=PASSWORD_TOO_SHORT)
+            if len(body.password.encode("utf-8")) > MAXIMUM_PASSWORD_BYTES:
+                # Before the hash call: bcrypt raises ValueError past 72 bytes.
+                raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG)
             hashed = await asyncio.to_thread(hash_password, body.password)
             merge_secrets_file({"AUTOPOSTER_ADMIN_PASSWORD_HASH": hashed})
         state.token = secrets_module.token_urlsafe(32)
@@ -232,8 +283,11 @@ def build_setup_app() -> FastAPI:
     """The application an unconfigured deployment serves.
 
     No engine, no config, no scheduler, no worker pool, no log buffer, and no
-    lifespan -- there is nothing to start. Only the setup router, one 503 for
-    the rest of ``/api``, and the SPA.
+    lifespan -- there is nothing to start. Only the setup router, the probe,
+    one 503 for the rest of ``/api``, and the SPA. Nothing else: the probe is
+    the ONE path outside ``/api/setup/*`` and the SPA's own files, and
+    tests/test_api_setup.py pins that set exactly rather than by containment,
+    so a second route added here has to be argued for in that test.
 
     No ``openapi_url``: an unauthenticated surface does not publish an
     enumeration of itself, and the real application already makes that a
@@ -250,6 +304,29 @@ def build_setup_app() -> FastAPI:
     # pydantic's `missing` arm echoes the whole body.
     app.add_exception_handler(RequestValidationError, validation_error_without_input)
     app.include_router(router)
+
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> dict:
+        """The shape intake/routes.py serves, with this mode's own status.
+
+        Without it a deployment that reaches setup mode cannot be reached at
+        all under the chart: kubernetes/apps/media/autoposter/app/helmrelease.yaml
+        points liveness AND readiness at ``httpGet /healthz`` on 8080
+        (initialDelaySeconds 30, periodSeconds 10, failureThreshold 5), and
+        ``healthz`` is a RESERVED_PREFIXES entry, so the SPA fallback answers
+        this server's own 404 rather than the shell. Readiness would never pass
+        -- no Service endpoint, so the wizard is unreachable except by
+        port-forward -- and liveness would kill the container at roughly t+80 s
+        back into the same state, with a signal that says nothing about why.
+        The reachable shape is a hard secret that resolves EMPTY: a blanked or
+        failed ExternalSecret, which every reader in this row treats as absent.
+
+        ``"setup"`` rather than ``"ok"``: the probe passing must not read as
+        the application being up, because it is not -- this process is a
+        credential form. Whoever is looking at the response can tell the two
+        apart, and the probe cannot.
+        """
+        return {"status": "setup"}
 
     @app.api_route(
         "/api/{full_path:path}",

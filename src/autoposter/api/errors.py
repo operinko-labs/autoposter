@@ -29,6 +29,12 @@ async def validation_error_without_input(_request, exc: RequestValidationError) 
     wraps a ValueError's message), and an allow-list of three keys is a rule
     that stays true as pydantic adds error types.
 
+    ``msg`` is kept, which is safe only while it carries no input: pydantic's
+    built-in messages do not, but a custom validator's ``value_error`` renders
+    as ``"Value error, {str(exc)}"``. A validator on any model this handler
+    covers -- and the setup application's are the most credential-dense in the
+    service -- must never interpolate the rejected value into its own message.
+
     Registered once, on the application object, so it covers every endpoint --
     including ones added after this -- rather than each request model
     separately. Logs nothing: the refusal is the operator's own mistake, and
