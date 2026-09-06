@@ -152,6 +152,9 @@ class SmartFilterBuilder:
                 "names, so it cannot run without one"
             )
         params = PlexSearchParams.model_validate(ctx.definition.params)
+        require_library_type(
+            "the 'smart_filter' builder", ctx.library_type, ("Movie", "Show")
+        )
         # Roadmap row 176, ruling C5. ``smart_definition_hash``
         # (collections/smart.py:225) hashes the URL this method returns, and for
         # every other attribute that URL is a pure function of the config.
@@ -161,7 +164,10 @@ class SmartFilterBuilder:
         # would re-PUT the filter of every smart collection naming it, with
         # nothing in the config having changed. Refused rather than disclosed:
         # a definition hash that is a function of the config alone is a property
-        # worth keeping whole.
+        # worth keeping whole. AFTER ``require_library_type`` (Task 2 review,
+        # Minor 6): a Music library naming this attribute is told it needs a
+        # Movie or Show library, the more useful refusal for that operator,
+        # rather than being told about an attribute it could never reach anyway.
         if any(one.attribute.name == "folder_location" for one in predicates(params.group)):
             raise SearchAttributeNotAvailable(
                 "folder_location: this attribute's Plex field is discovered "
@@ -171,9 +177,6 @@ class SmartFilterBuilder:
                 "it. Use the `plex_search` builder, which asks the question on "
                 "every pass, or remove the clause"
             )
-        require_library_type(
-            "the 'smart_filter' builder", ctx.library_type, ("Movie", "Show")
-        )
         libtype = ctx.library_type.lower()
         # Search-tail E-2, the same read ``PlexSearchBuilder.build`` makes and
         # for the same reason: Kometa's ``sort_type`` under a collection IS
@@ -203,7 +206,10 @@ class SmartFilterBuilder:
             search_type=libtype if level == "item" else level,
             sort_by=params.sort_by or (DEFAULT_SORT,),
             limit=params.limit,
-            resolve_tag=LibraryTagResolver(ctx, ctx.section, libtype),
+            resolve_tag=LibraryTagResolver(
+                ctx, ctx.section, libtype,
+                search_type=libtype if level == "item" else level,
+            ),
         )
 
     async def apply(self, ctx: SmartContext) -> list[str]:

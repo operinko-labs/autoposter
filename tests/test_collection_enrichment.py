@@ -105,9 +105,15 @@ def test_the_two_stream_read_catch_tuples_cannot_drift_apart():
     row 176) gave ``plex_search.py`` a second stream read, ``listFilters`` for
     the discovered ``folder_location`` field, beside ``listFilterChoices``'s --
     so the helper below asserts every stream-read catch in a module names the
-    SAME set and returns that one set. That is strictly stronger than the
-    one-per-module rule it replaces: it now catches intra-module drift as well
-    as the cross-module drift row 205 filed."""
+    SAME set and returns that one set. That is a LOOSENING of the one-per-
+    module rule it replaces, not a strengthening (Task 2 review, Minor 1): the
+    old rule forbade a module having a second handler at all, and every
+    program it accepted this one accepts too (one handler is trivially "all
+    equal"), so the accepted set only grows. What is traded is a COUNT
+    constraint for an AGREEMENT constraint -- intra-module agreement, which was
+    vacuous before because the old rule forbade the only case where it could
+    bite, and is real now that this task gives a module its second handler.
+    The cross-module drift row 205 filed is still caught, unchanged."""
     root = Path(__file__).parent.parent / "src" / "autoposter" / "collections"
 
     def stream_read_catch(path):

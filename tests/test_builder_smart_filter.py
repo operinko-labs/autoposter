@@ -568,6 +568,38 @@ async def test_the_level_reaches_the_reconciler(session, monkeypatch):
     assert seen["level"] == "episode"
 
 
+def test_the_resolver_carries_the_computed_search_type(session, monkeypatch):
+    """Task 2 review, Important 2. ``search_url`` computes ``search_type``
+    (``libtype if level == "item" else level``) for ``build_search_url``
+    itself, but built its ``LibraryTagResolver`` without passing that same
+    value along -- so the resolver's own field discovery would ask
+    ``listFilters`` at the LIBRARY's kind rather than the SEARCH type the
+    moment a second ``DISCOVERED`` row exists, or C5 is ever lifted. Captured
+    at the resolver's constructor, not through ``discover_field``, because C5
+    refuses ``folder_location`` -- the one attribute that reads the search
+    type -- before this resolver is ever asked to discover anything."""
+    captured = {}
+
+    class CapturingResolver:
+        def __init__(self, ctx, section, libtype, *, search_type=None):
+            captured["search_type"] = search_type
+
+        def __call__(self, attribute, value):
+            return ("1",)
+
+    monkeypatch.setattr(
+        "autoposter.collections.builders.smart_filter.LibraryTagResolver",
+        CapturingResolver,
+    )
+    definition = _definition(
+        params={"all": {"episode_title.begins": "Pilot"}}, builder_level="episode",
+    )
+    SmartFilterBuilder().search_url(
+        _ctx(session, FakeSection(), definition, library_type="Show")
+    )
+    assert captured["search_type"] == "episode"
+
+
 def test_smart_filter_refuses_folder_location_by_name(session):
     """Roadmap row 176, ruling C5. ``smart_definition_hash``
     (collections/smart.py:225) hashes the BUILT URL, and for every other

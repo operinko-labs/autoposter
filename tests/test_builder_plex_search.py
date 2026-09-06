@@ -970,6 +970,24 @@ def test_the_field_discovery_forces_the_episode_scope_on_a_show_library():
     assert section.filter_type_calls == ["episode"]
 
 
+def test_the_field_discovery_forces_the_episode_scope_when_the_search_type_already_is_one():
+    """Task 2 review, Minor 3. The m-3 resolution's third row: a show library
+    whose SEARCH type is already ``episode`` (``builder_level: episode``) asks
+    ``listFilters("episode")`` and answers the SAME prefixed field as row 2's
+    item-level show search -- ``is_show and filter_type == "show"`` is false
+    here (``filter_type`` is already ``"episode"``, not re-scoped from
+    ``"show"``), so this is the one reachable case where the re-scope
+    condition being edited would silently stop prefixing rather than fail
+    loudly. Behaviour was already correct; only the assertion was missing."""
+    section = FakeSection(filters={"episode": FOLDER_FILTERS})
+    resolver = LibraryTagResolver(
+        context(section, library_type="Show"), section, "show", search_type="episode"
+    )
+
+    assert resolver.discover_field("folder_location", "show") == "episode.location"
+    assert section.filter_type_calls == ["episode"]
+
+
 def test_the_field_discovery_asks_the_season_libtype_as_it_stands():
     """``builder_level: season`` is the ONE case where the search type and the
     library kind give different answers: Kometa re-scopes ``show`` and asks
@@ -988,9 +1006,10 @@ def test_the_field_discovery_asks_the_season_libtype_as_it_stands():
 
 
 def test_the_field_discovery_is_one_schema_read_for_the_whole_pass():
-    """Its own memo key (``plex_search:field:{library}:{filter_type}``), not
-    ``_raw_choices``'s: a different call, a different key space, a different
-    sentence. Two definitions naming the attribute pay for one read."""
+    """Its own memo key (``plex_search:field:{library}:{filter_type}:
+    {attribute}``), not ``_raw_choices``'s: a different call, a different key
+    space, a different sentence. Two definitions naming the attribute pay for
+    one read."""
     section = FakeSection(
         filters={"movie": FOLDER_FILTERS},
         choices={("location", "movie"): [FakeChoice("/mnt/media/Movies", "1")]},
@@ -1002,7 +1021,36 @@ def test_the_field_discovery_is_one_schema_read_for_the_whole_pass():
     assert resolver.discover_field("folder_location", "movie") == "location"
     assert resolver("folder_location", "/mnt/media/Movies") == ("1",)
     assert section.filter_type_calls == ["movie"]
-    assert ctx.run_cache["plex_search:field:Movies:movie"] == "location"
+    assert ctx.run_cache["plex_search:field:Movies:movie:folder_location"] == "location"
+
+
+def test_the_field_memo_key_is_scoped_by_attribute_not_shared_across_them():
+    """Task 2 review, Important 1. The key used to be
+    ``plex_search:field:{library}:{filter_type}`` -- naming only the library
+    and the (post-re-scope) filter type, never the attribute -- while both the
+    answer and the row-213 refusal are attribute-dependent (the match clause,
+    the ``NotFound``/``BadRequest`` wrap and the refusal sentence all read
+    ``attribute``). Two rows sharing a library and a filter type would
+    therefore share a cache entry: the second row's ``discover_field`` call
+    would be served the FIRST row's answer, or its memoised refusal naming the
+    FIRST row's attribute, without ever asking Plex about the second. Only one
+    ``DISCOVERED`` row exists in the shipped table, so this parametrises the
+    resolver directly (``discover_field`` takes ``attribute`` as an argument
+    and needs no second table row to expose the bug) rather than adding a fake
+    row to it."""
+    section = FakeSection(filters={"movie": FOLDER_FILTERS})
+    resolver = LibraryTagResolver(context(section), section, "movie")
+
+    assert resolver.discover_field("folder_location", "movie") == "location"
+
+    with pytest.raises(PlexSearchUnavailable) as error:
+        resolver.discover_field("some_other_attribute", "movie")
+    message = str(error.value)
+    assert "some_other_attribute" in message
+    assert "folder_location" not in message
+
+    # And the first row's own cached answer is untouched by the second's miss.
+    assert resolver.discover_field("folder_location", "movie") == "location"
 
 
 def test_a_library_with_no_folder_filter_refuses_by_name_and_memoises_the_miss():

@@ -477,9 +477,13 @@ class LibraryTagResolver:
         # discovery below, whose ``listFilters`` argument is the search type
         # (Kometa passes ``libtype=sort_type``, modules/builder.py:4179) while
         # its re-scope tests the library kind. Keyword-only with a default so
-        # all fourteen existing construction sites stay byte-identical; only
-        # ``PlexSearchBuilder.build`` passes it, because it is the only builder
-        # that can reach a ``builder_level`` other than the library's own.
+        # a construction site that does not pass it stays byte-identical; two
+        # do -- ``PlexSearchBuilder.build`` and ``smart_filter``'s
+        # ``search_url``, because both can reach a ``builder_level`` other
+        # than the library's own (Task 2 review, Important 2). ``smart_filter``
+        # refuses the one attribute that would ever read this back (row 176
+        # ruling C5), so passing it there is defence in depth, not something
+        # read today.
         self._search_type = search_type or libtype
 
     def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]:
@@ -602,7 +606,7 @@ class LibraryTagResolver:
         if is_show and filter_type == "show":
             # Plex exposes no folder filter above the episode (plex.py:1288-1289).
             filter_type = "episode"
-        key = f"plex_search:field:{self._ctx.library}:{filter_type}"
+        key = f"plex_search:field:{self._ctx.library}:{filter_type}:{attribute}"
         cached = self._ctx.run_cache.get(key, _MISSING)
         if cached is not _MISSING:
             if isinstance(cached, Exception):
