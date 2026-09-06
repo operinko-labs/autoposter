@@ -144,20 +144,87 @@ describe("Setup", () => {
     expect(screen.getByText(/will not be shown again/i)).toBeInTheDocument();
   });
 
+  it("asks to set the master password, with length guidance, on a genuinely first visit", async () => {
+    // No hash persisted yet: /api/setup/state answers password_set: false,
+    // and there is nothing to prove -- the reload note would be meaningless
+    // here, since nothing has been set to lose.
+    const fetchMock = vi.fn(async (path: unknown) => {
+      if (path === "/api/setup/state") return respond({ setup: true, password_set: false });
+      return respond({ detail: "not authenticated" }, 401);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+
+    await waitFor(() => screen.getByLabelText("Set the master password"));
+    expect(screen.getByText(/at least 12 characters/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("password-reload-note")).toBeNull();
+  });
+
   it("tells the operator that a reload loses an unfinished wizard's progress", async () => {
-    // No token survives a reload (it lives only in memory), so a fresh mount
-    // with none held shows the password pane straight away, without even
-    // trying a progress fetch it already knows would 401 -- this pins that
-    // the page says so, rather than silently looking like the wizard
-    // restarted for no reason.
+    // A hash is already persisted (password_set: true) -- the reload path --
+    // but no token survives a reload (it lives only in memory), so the
+    // progress fetch 401s and the password pane returns, now asking to PROVE
+    // the password rather than to set one, with the reload note attached.
+    const fetchMock = vi.fn(async (path: unknown) => {
+      if (path === "/api/setup/state") return respond({ setup: true, password_set: true });
+      return respond({ detail: "not authenticated" }, 401);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+
+    await waitFor(() => screen.getByLabelText("Prove the master password"));
+    expect(screen.queryByText(/at least 12 characters/i)).toBeNull();
+    expect(screen.getByTestId("password-reload-note")).toHaveTextContent(/reload/i);
+  });
+
+  it("renders AUTOPOSTER_WEBHOOK_SECRET as a status, not a field, because the server refuses to accept one", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => respond({ detail: "not authenticated" }, 401)),
+      vi.fn(async () =>
+        respond({
+          ...PROGRESS,
+          providers: { ...PROGRESS.providers, AUTOPOSTER_WEBHOOK_SECRET: null },
+          required: [...PROGRESS.required, "AUTOPOSTER_WEBHOOK_SECRET"],
+        }),
+      ),
     );
 
     render(<Setup />);
 
-    await waitFor(() => screen.getByLabelText("Master password"));
-    expect(screen.getByTestId("password-reload-note")).toHaveTextContent(/reload/i);
+    await waitFor(() => screen.getByTestId("held-AUTOPOSTER_WEBHOOK_SECRET"));
+    expect(screen.getByTestId("held-AUTOPOSTER_WEBHOOK_SECRET")).toHaveTextContent("Not set");
+    expect(screen.queryByLabelText("AUTOPOSTER_WEBHOOK_SECRET")).toBeNull();
+    expect(screen.getByText(/generated for you when you save/i)).toBeInTheDocument();
   });
+
+  it.each([
+    [429, "too many attempts"],
+    [503, "the state directory could not be written"],
+  ] as const)(
+    "keeps pasted provider values after a %i refusal, and shows the server's sentence",
+    async (status, detail) => {
+      const fetchMock = vi.fn(async (path: unknown, init?: RequestInit) => {
+        if (path === "/api/setup/providers" && init?.method === "POST") {
+          return respond({ detail }, status);
+        }
+        return respond(PROGRESS);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<Setup />);
+      await waitFor(() => screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"));
+
+      fireEvent.change(screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"), {
+        target: { value: "pasted-value" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+
+      await waitFor(() => screen.getByText(detail));
+      expect(screen.getByLabelText<HTMLInputElement>("AUTOPOSTER_TMDB_TOKEN").value).toBe(
+        "pasted-value",
+      );
+    },
+  );
 });

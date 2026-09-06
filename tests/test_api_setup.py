@@ -832,7 +832,7 @@ async def test_the_config_step_stages_the_document_and_writes_nothing_yet(setup_
 
 
 async def test_the_config_step_is_refused_while_a_document_already_resolves(
-    setup_client, monkeypatch, tmp_path
+    setup_app, setup_client, monkeypatch, tmp_path
 ):
     """Amendment 6: offering step 4 only when config_source is null is a
     server rule, not a client courtesy the SPA happens to observe -- a direct
@@ -851,7 +851,9 @@ async def test_the_config_step_is_refused_while_a_document_already_resolves(
     assert response.json()["detail"] == setup_api.CONFIG_ALREADY_PROVIDED
     progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
     assert progress.json()["config_source"] == "configured"
-    assert not state_module.state_config_path().exists()
+    # Nothing staged, not merely nothing written: config_document_path()
+    # already resolving would make the disk assertion true either way.
+    assert setup_app.state.setup.config_document is None
 
 
 async def test_a_document_that_does_not_validate_is_refused_by_class_name_only(

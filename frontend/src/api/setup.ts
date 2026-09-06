@@ -41,7 +41,7 @@ export interface SetupProgress {
 
 let setupToken: string | null = null;
 
-export function setSetupToken(next: string | null): void {
+function setSetupToken(next: string | null): void {
   setupToken = next;
 }
 
@@ -71,8 +71,8 @@ async function setupFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function fetchSetupState(): Promise<SetupState> {
-  return setupFetch<SetupState>("/api/setup/state");
+export function fetchSetupState(init: RequestInit = {}): Promise<SetupState> {
+  return setupFetch<SetupState>("/api/setup/state", init);
 }
 
 export async function submitMasterPassword(password: string): Promise<void> {

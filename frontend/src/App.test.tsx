@@ -10,17 +10,24 @@ afterEach(() => {
 
 describe("the gate", () => {
   it("renders the wizard, not the login form, on an unconfigured deployment", async () => {
+    // Branched by path rather than answered identically to every call: the
+    // state probe and Setup's own progress fetch are two different routes,
+    // and giving both the state-shaped body would hand Setup a malformed
+    // `progress` (no `providers`) instead of the 401 an absent token really
+    // produces.
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        ({ ok: true, status: 200, json: async () => ({ setup: true, password_set: false }) }) as Response,
+      vi.fn(async (path: unknown) =>
+        path === "/api/setup/state"
+          ? ({ ok: true, status: 200, json: async () => ({ setup: true, password_set: false }) }) as Response
+          : ({ ok: false, status: 401, json: async () => ({ detail: "not authenticated" }) }) as Response,
       ),
     );
 
     render(<App />);
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Master password")).toBeInTheDocument(),
+      expect(screen.getByLabelText("Set the master password")).toBeInTheDocument(),
     );
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
   });

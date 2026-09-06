@@ -29,6 +29,11 @@ export function setupErrorMessage(caught: unknown): string {
 
 export function Setup() {
   const [progress, setProgress] = useState<SetupProgress | null>(null);
+  // `/api/setup/state` is the one open route, readable before any token
+  // exists, and its `password_set` is what tells the first pane whether there
+  // is a password to SET or one to PROVE -- the same distinction the reload
+  // path creates. Defaults to "set": the closed, first-visit answer.
+  const [passwordSet, setPasswordSet] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -43,6 +48,12 @@ export function Setup() {
   }, []);
 
   useEffect(() => {
+    fetchSetupState()
+      .then((state) => setPasswordSet(state.password_set ?? false))
+      .catch(() => setPasswordSet(false));
+  }, []);
+
+  useEffect(() => {
     // Progress is only readable with the setup token, so a page that already
     // holds one (the operator just set the password) picks up where it left
     // off, and one that does not -- including a reloaded tab, since the token
@@ -51,14 +62,16 @@ export function Setup() {
   }, [refresh]);
 
   const run = useCallback(
-    async (action: () => Promise<unknown>) => {
+    async (action: () => Promise<unknown>): Promise<boolean> => {
       setBusy(true);
       setError(null);
       try {
         await action();
         await refresh();
+        return true;
       } catch (caught) {
         setError(setupErrorMessage(caught));
+        return false;
       } finally {
         setBusy(false);
       }
@@ -70,7 +83,11 @@ export function Setup() {
   if (progress === null) {
     return (
       <Shell error={error}>
-        <PasswordPane busy={busy} onSubmit={(value) => run(() => submitMasterPassword(value))} />
+        <PasswordPane
+          busy={busy}
+          passwordSet={passwordSet}
+          onSubmit={(value) => run(() => submitMasterPassword(value))}
+        />
       </Shell>
     );
   }
@@ -173,6 +190,7 @@ function OneFieldPane({
   hint,
   action,
   busy,
+  autoComplete,
   onSubmit,
 }: {
   id: string;
@@ -181,6 +199,7 @@ function OneFieldPane({
   hint: string;
   action: string;
   busy: boolean;
+  autoComplete?: string;
   onSubmit: (value: string) => void;
 }) {
   const [value, setValue] = useState("");
@@ -202,10 +221,11 @@ function OneFieldPane({
         id={id}
         aria-label={label}
         type={type}
+        autoComplete={autoComplete}
         value={value}
         onChange={(event) => setValue(event.target.value)}
       />
-      <p>{hint}</p>
+      {hint !== "" && <p>{hint}</p>}
       <button className="primary" type="submit" disabled={busy || value === ""}>
         {action}
       </button>
@@ -213,23 +233,34 @@ function OneFieldPane({
   );
 }
 
-function PasswordPane({ busy, onSubmit }: { busy: boolean; onSubmit: (v: string) => void }) {
+function PasswordPane({
+  busy,
+  passwordSet,
+  onSubmit,
+}: {
+  busy: boolean;
+  passwordSet: boolean;
+  onSubmit: (v: string) => void;
+}) {
   return (
     <>
       <OneFieldPane
         id="setup-password"
-        label="Master password"
+        label={passwordSet ? "Prove the master password" : "Set the master password"}
         type="password"
-        hint="At least 12 characters. This becomes the Web UI's admin password."
+        hint={passwordSet ? "" : "At least 12 characters. This becomes the Web UI's admin password."}
         action="Continue"
         busy={busy}
+        autoComplete="new-password"
         onSubmit={onSubmit}
       />
-      <p data-testid="password-reload-note">
-        Reloading this page loses any progress past this step, by design: the setup token lives
-        only in this tab's memory and nowhere else. Prove the master password again to pick up a
-        fresh one.
-      </p>
+      {passwordSet && (
+        <p data-testid="password-reload-note">
+          Reloading this page loses any progress past this step, by design: the setup token lives
+          only in this tab's memory and nowhere else. Prove the master password again to pick up a
+          fresh one.
+        </p>
+      )}
     </>
   );
 }
@@ -243,6 +274,7 @@ function DatabasePane({ busy, onSubmit }: { busy: boolean; onSubmit: (v: string)
       hint="postgresql+asyncpg://user:password@host:5432/database — it is tried before it is saved."
       action="Test and continue"
       busy={busy}
+      autoComplete="off"
       onSubmit={onSubmit}
     />
   );
@@ -262,6 +294,13 @@ function ConfigPane({ busy, onSubmit }: { busy: boolean; onSubmit: (v: string) =
   );
 }
 
+// The one provider credential this deployment mints itself rather than
+// collects (backend's own name for it: setup.py's `_GENERATED_SECRET`). The
+// server refuses it outright on every submit (`WEBHOOK_SECRET_IS_GENERATED`),
+// so it is not a field here -- an input the server can never accept is not a
+// credential to paste, it is a status to read.
+const GENERATED_SECRET_NAME = "AUTOPOSTER_WEBHOOK_SECRET";
+
 function ProvidersPane({
   busy,
   progress,
@@ -269,14 +308,18 @@ function ProvidersPane({
 }: {
   busy: boolean;
   progress: SetupProgress;
-  onSubmit: (values: Record<string, string>) => void;
+  onSubmit: (values: Record<string, string>) => Promise<boolean>;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    onSubmit(values);
-    setValues({});
+    // Cleared only once the server has accepted them: a refusal -- an unknown
+    // name, a one-line-value violation, the generated secret rejected above,
+    // a 429 from the limiter, a 503 from a state directory that will not take
+    // the write -- must not force every other pasted credential in this
+    // submit to be retyped.
+    if (await onSubmit(values)) setValues({});
   }
 
   return (
@@ -285,24 +328,35 @@ function ProvidersPane({
         Required names are marked. A stored credential is shown as stored and never
         displayed; leave a field blank to keep what is already there.
       </p>
-      {Object.entries(progress.providers ?? {}).map(([name, held]) => (
-        <div key={name}>
-          <label className="login-label" htmlFor={name}>
-            {name}
-            {progress.required.includes(name) ? " (required)" : ""}
-          </label>
-          <span data-testid={`held-${name}`}>{held === null ? "Not set" : "Stored"}</span>
-          <input
-            id={name}
-            aria-label={name}
-            type="password"
-            value={values[name] ?? ""}
-            onChange={(event) =>
-              setValues((previous) => ({ ...previous, [name]: event.target.value }))
-            }
-          />
-        </div>
-      ))}
+      {Object.entries(progress.providers).map(([name, held]) =>
+        name === GENERATED_SECRET_NAME ? (
+          <div key={name}>
+            <span className="login-label">{name}</span>
+            <span data-testid={`held-${name}`}>{held === null ? "Not set" : "Stored"}</span>
+            <p>
+              Generated for you when you save this form, and shown once, immediately after.
+              There is nothing to paste here.
+            </p>
+          </div>
+        ) : (
+          <div key={name}>
+            <label className="login-label" htmlFor={name}>
+              {name}
+              {progress.required.includes(name) ? " (required)" : ""}
+            </label>
+            <span data-testid={`held-${name}`}>{held === null ? "Not set" : "Stored"}</span>
+            <input
+              id={name}
+              aria-label={name}
+              type="password"
+              value={values[name] ?? ""}
+              onChange={(event) =>
+                setValues((previous) => ({ ...previous, [name]: event.target.value }))
+              }
+            />
+          </div>
+        ),
+      )}
       <button className="primary" type="submit" disabled={busy}>
         Save and continue
       </button>
@@ -314,7 +368,9 @@ function WebhookSecret({ value }: { value: string }) {
   return (
     <div data-testid="webhook-secret">
       <p>Webhook secret — paste this into Sonarr and Radarr&apos;s webhook settings now:</p>
-      <code data-testid="webhook-secret-value">{value}</code>
+      <code data-testid="webhook-secret-value" style={{ wordBreak: "break-all" }}>
+        {value}
+      </code>
       <button
         type="button"
         onClick={() => {
