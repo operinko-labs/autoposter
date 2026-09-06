@@ -13,11 +13,12 @@ from fastapi.exceptions import RequestValidationError
 from plexapi.server import PlexServer
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import func, select
-from starlette.responses import JSONResponse, Response
+from starlette.responses import Response
 
 from autoposter.api.auth import LoginRateLimiter
 from autoposter.artwork_modes.base import WorkerPause
 from autoposter.api.dashboard_stream import StatusBroadcaster
+from autoposter.api.errors import validation_error_without_input
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.api.version import VersionPoller
@@ -61,46 +62,6 @@ from autoposter.scheduler.merge import make_merge_job
 from autoposter.scheduler.prune import make_prune_job
 
 logger = logging.getLogger(__name__)
-
-
-async def _validation_error_without_input(_request, exc: RequestValidationError) -> JSONResponse:
-    """FastAPI's request-body 422, minus the operator's own paste.
-
-    The default handler serves ``jsonable_encoder(exc.errors())``, and pydantic
-    puts the rejected value in every entry's ``input``. For the ``missing`` arm
-    of ``OverridesBody`` that value is the ENTIRE body -- so a document sent
-    bare (what a hand-written fetch produces, and the 2026-09-01 incident's own
-    shape) came back carrying ``plex.url``'s token, ``notifications.url``'s path
-    token and all three ``*.base_url`` values in one response. A self-echo to
-    the session that sent it, but one that lands in reverse-proxy logs, a HAR
-    export and the frontend's retained ``ApiError.detail``.
-
-    Kept: ``type``, ``loc``, ``msg`` -- ``loc`` and ``msg`` are what
-    ``fieldErrors`` (``frontend/src/api/overrides.ts``) renders, and ``type`` is
-    what a client would branch on. Dropped: ``input`` (the paste) and ``url``
-    (pydantic's docs link, which no caller uses). ``ctx`` is dropped too rather
-    than filtered: it carries a raw value for some error types (``ctx.error``
-    wraps a ValueError's message), and an allow-list of three keys is a rule
-    that stays true as pydantic adds error types.
-
-    Registered once, on the app object, so it covers every endpoint -- including
-    ones added after this -- rather than each request model separately. Logs
-    nothing: the refusal is the operator's own mistake, and the value it carries
-    is exactly what must not be written down.
-    """
-    return JSONResponse(
-        status_code=422,
-        content={
-            "detail": [
-                {
-                    "type": error["type"],
-                    "loc": list(error["loc"]),
-                    "msg": error["msg"],
-                }
-                for error in exc.errors()
-            ],
-        },
-    )
 
 
 def create_app(
@@ -630,7 +591,27 @@ def create_app(
     # Before the routers, though order does not matter to starlette: this is a
     # property of the application, not of any one endpoint. See the handler's
     # own docstring for what it drops and why.
-    app.add_exception_handler(RequestValidationError, _validation_error_without_input)
+    app.add_exception_handler(RequestValidationError, validation_error_without_input)
+
+    # Roadmap row 121. The SPA probes this before it holds any credential, to
+    # decide whether to render the login form or the first-start wizard, so it
+    # must answer without one -- and it answers the same shape the setup
+    # application answers, with the one bit reversed. `password_set` is
+    # deliberately absent here: whether this deployment has an admin hash is
+    # not something an unauthenticated caller may ask.
+    #
+    # Registered on the app rather than on api_router, and out of the schema,
+    # on purpose. tests/test_api_login.py's structural sweep enumerates the
+    # DOCUMENTED /api surface and requires every path on it to 401 without a
+    # session; that sweep is the guard that a route added later cannot ship
+    # open, and exempting a path from it is how such a sweep stops being
+    # structural. This one route is pinned instead by tests/test_api_setup.py,
+    # which asserts it is the ONLY /api path on this application registered
+    # outside the schema.
+    @app.get("/api/setup/state", include_in_schema=False)
+    async def setup_state() -> dict:
+        return {"setup": False}
+
     app.include_router(router)
     app.include_router(api_router)
 
