@@ -23,16 +23,22 @@ three decisions that are not TMDb's to make.
   ``SourceClients``; a 404 raises out of the client for the same reason. An
   empty membership one layer down means "remove every member".
 
-No summary, and a poster on one builder only, unlike ``imdb_chart``: that
-builder's title and summary are Kometa translation strings transcribed
-verbatim in ``docs/research/kometa-collections.md`` §5, and no such
-transcription exists for TMDb's charts. A summary invented here would not be
-parity, and a guessed poster key is a hosted URL that 404s and leaves the
-collection quietly without artwork (``posters.hosted_poster_url``). The
-definition's own ``summary:`` is the way to set one until the strings are
-recorded. ``tmdb_collection`` is the exception on the poster half alone, and
-only because upstream's franchise art is keyed by a name the definition
-already carries; see that builder.
+Five of the eight charts carry a summary and a poster; three carry neither. The
+five are Kometa's own (``defaults/chart/tmdb.yml``): their titles and summaries
+are its translation strings, transcribed verbatim in
+``docs/research/kometa-collections.md`` §5 and held in ``CHART_TITLES`` below,
+and the same title is the poster key, because upstream keys chart art by the
+mapping name -- so ``posters.hosted_poster_url("chart", title)`` resolves the
+URL its own template builds. ``now_playing``, ``upcoming`` and ``trending_day``
+are charts this service has and that file does not, so there is nothing to
+transcribe for them and they get nothing: an invented summary would not be
+parity, and a poster keyed on a title of ours is a guess even when it happens
+not to 404. A definition's own ``summary:`` is the way to set one for those
+three. The transcription is English only -- Kometa serves a translated summary
+when ``language:`` is set, and §5 records ``en.yml`` and nothing else, so a
+region- or language-filtered chart still gets the generic English string and
+the generic poster. ``tmdb_collection`` keys its poster the same way, off a
+name the definition already carries; see that builder.
 """
 import re
 
