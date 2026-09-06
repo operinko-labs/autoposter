@@ -58,11 +58,13 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from autoposter.collections.builders.base import (
     BuilderContext,
     BuilderResult,
+    LibraryTypeMismatch,
     SmartContext,
     require_library_type,
 )
 from autoposter.collections.filters import (
     BY_NAME,
+    DISCOVERED,
     LANGUAGE_FOLD_ATTRIBUTES,
     base_language_code,
     language_fold_key,
@@ -129,9 +131,13 @@ _REFUSED_KEYS: dict[str, str] = {
     ),
     "type": (
         "`type:` selects the season, episode, album or track libtype "
-        "(modules/builder.py:4109-4121). This builder searches movie and show "
-        "libraries; accepting the key and ignoring it would be a setting that "
-        "reads as applied and is not"
+        "(modules/builder.py:4109-4121), and Kometa reads it for PLAYLISTS "
+        "only -- under a collection the search's level comes from "
+        "`builder_level` instead (modules/builder.py:4093-4121). This service "
+        "has ONE spelling of that selector: write `builder_level: season` or "
+        "`builder_level: episode` beside the builder, which both collection "
+        "and playlist definitions accept and which this builder honours. Two "
+        "spellings of one selector would be two ways to write one membership"
     ),
 }
 
@@ -262,7 +268,7 @@ class PlexSearchParams(BaseModel):
             )
         # The two empty-base messages Kometa's own ``build_filter`` raises
         # (``{base} attribute is blank`` / ``{base} must be a dictionary``,
-        # kometa_build_filter.py:971/:973) -- reproduced here because a bare
+        # kometa_build_filter.py:976/:978) -- reproduced here because a bare
         # `all:` with nothing under it (YAML's ``{"all": None}``) is the most
         # common way to hit this, and naming ``any`` -- the base the operator
         # never wrote -- sends them looking for a block that does not exist.
@@ -349,6 +355,28 @@ class PlexSearchBuilder:
             "the 'plex_search' builder", ctx.library_type, ("Movie", "Show")
         )
         libtype = ctx.library_type.lower()
+        # Search-tail E-2 (roadmap rows 173/179). The definition's own
+        # ``builder_level`` IS the search level -- Kometa derives its
+        # ``sort_type`` from exactly the same field (modules/builder.py:4093-4121)
+        # and reads a ``type:`` key only for playlists, which is why ``type:``
+        # stays refused above. ``getattr`` rather than an attribute read: a
+        # direct caller may pass no definition at all, and every playlist and
+        # collection definition that does carries the field.
+        level = getattr(ctx.definition, "builder_level", "item")
+        # BEFORE the search, and beside ``require_library_type`` rather than in
+        # the engine: the engine's "seasons and episodes exist only in a Show
+        # library" guard runs after ``builder.build(ctx)`` returns, so without
+        # this a Movie library would send a ``type=4`` query at a movie section
+        # and be refused only afterwards.
+        if level != "item" and ctx.library_type != "Show":
+            raise LibraryTypeMismatch(
+                f"a 'builder_level: {level}' search asks a library for the "
+                f"{level}s inside its shows, but this pass is running against "
+                f"a {ctx.library_type} library, where it would match nothing at "
+                "all. Narrow the definition with `libraries:` so it only "
+                "targets Show libraries."
+            )
+        search_type = libtype if level == "item" else level
         access = ctx.sources.plex
         if access is None:
             raise PlexSearchUnavailable(
@@ -376,9 +404,10 @@ class PlexSearchBuilder:
         url = build_search_url(
             resolve_search_values(params.group, now=dt.datetime.now()),
             libtype=libtype,
+            search_type=search_type,
             sort_by=params.sort_by or (),
             limit=params.limit,
-            resolve_tag=LibraryTagResolver(ctx, section, libtype),
+            resolve_tag=LibraryTagResolver(ctx, section, libtype, search_type=search_type),
         )
         logger.debug("plex_search: %s", url)
         # Blanket, deliberately, and NOT the three-clause shape
@@ -401,7 +430,7 @@ class PlexSearchBuilder:
             ) from None
         ids = [("plex", str(item.ratingKey)) for item in items]
         logger.debug("plex_search: %d item(s)", len(ids))
-        return BuilderResult(ids=ids)
+        return BuilderResult(ids=ids, level=level)
 
 
 # Above ``LibraryTagResolver``, its only user, rather than at the bottom of the
@@ -436,10 +465,26 @@ class LibraryTagResolver:
     also Kometa's (plain assignment, not ``setdefault``).
     """
 
-    def __init__(self, ctx: BuilderContext | SmartContext, section, libtype: str) -> None:
+    def __init__(
+        self, ctx: BuilderContext | SmartContext, section, libtype: str,
+        *, search_type: str | None = None,
+    ) -> None:
         self._ctx = ctx
         self._section = section
         self._libtype = libtype
+        # The SEARCH type, which is not the library kind (search-tail E-2's
+        # split, one layer down). It matters to exactly one caller -- the field
+        # discovery below, whose ``listFilters`` argument is the search type
+        # (Kometa passes ``libtype=sort_type``, modules/builder.py:4179) while
+        # its re-scope tests the library kind. Keyword-only with a default so
+        # a construction site that does not pass it stays byte-identical; two
+        # do -- ``PlexSearchBuilder.build`` and ``smart_filter``'s
+        # ``search_url``, because both can reach a ``builder_level`` other
+        # than the library's own (Task 2 review, Important 2). ``smart_filter``
+        # refuses the one attribute that would ever read this back (row 176
+        # ruling C5), so passing it there is defence in depth, not something
+        # read today.
+        self._search_type = search_type or libtype
 
     def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]:
         scope, name = self._field_and_scope(attribute)
@@ -517,9 +562,121 @@ class LibraryTagResolver:
             for choice in self._raw_choices(attribute, scope, name)
         )
 
+    def discover_field(self, attribute: str, libtype: str, /) -> str:
+        """The Plex query field for the one attribute whose field is not a
+        constant -- roadmap row 176, ``folder_location``.
+
+        The repo's first FIELD enumeration. Every other run-time Plex read in
+        this stack is ``listFilterChoices``, which asks what one filter's VALUES
+        are; this asks which filters the library HAS, which is a different call,
+        a different key space and a different failure.
+
+        Transcribed from Kometa's ``Library.get_search_key``
+        (modules/plex.py:1286-1297), whose match is a two-clause ``next()`` and
+        not a lookup: ``f.filter == "source"`` first, then the displayed title
+        folded (``"Folder Location"`` -> ``folder_location``). So the field is a
+        property of the SERVER and ``source`` is only the likely answer -- the
+        2026-09-06 probe found this server answers ``location``, through the
+        second clause.
+
+        Two variables, deliberately not one. The libtype ASKED FOR is the SEARCH
+        type (Kometa passes ``libtype=sort_type``, modules/builder.py:4179); the
+        re-scope tests the LIBRARY kind (the ``libtype`` argument). They differ
+        only under ``builder_level: season``, where Kometa asks the season
+        libtype as-is and lets Plex's silence raise -- mirrored here, with this
+        service's own sentence rather than Kometa's, because whether a season
+        libtype carries a folder filter is a fact about the server. The search
+        type is resolver STATE rather than a third parameter because the one
+        call site that has one (``search_url._render_predicate``) has no search
+        type to pass: it renders a tree, not a pass.
+
+        The ``episode.`` prefix on a show library is deliberate and does double
+        duty: it is the URL term AND the enumeration scope ``_field_and_scope``
+        splits back out. It is the mirror image of ``ENUMERATES_AS``, which
+        de-scopes; this exists to FORCE the scope the library's own libtype
+        would not give.
+
+        Memoised under its own key, success AND failure --
+        ``BuilderContext.run_cache``'s docstring requires the failure too
+        (builders/base.py:145-149), or a library with no folder filter is asked
+        once per definition.
+        """
+        is_show = libtype == "show"
+        filter_type = self._search_type
+        if is_show and filter_type == "show":
+            # Plex exposes no folder filter above the episode (plex.py:1288-1289).
+            filter_type = "episode"
+        key = f"plex_search:field:{self._ctx.library}:{filter_type}:{attribute}"
+        cached = self._ctx.run_cache.get(key, _MISSING)
+        if cached is not _MISSING:
+            if isinstance(cached, Exception):
+                raise cached
+            return self._scoped(cached, is_show, filter_type)
+        try:
+            available = list(self._section.listFilters(filter_type))
+        # The same two-clause split ``_raw_choices`` makes, and for the same
+        # reason: a blanket catch here does not just report a failure, it
+        # MEMOISES one for the rest of the pass as a fact about the LIBRARY.
+        except (NotFound, BadRequest) as error:
+            failure = PlexSearchUnavailable(
+                f"Plex reports no folder filter for this library's "
+                f"{filter_type} items ({type(error).__name__}), so "
+                f"{attribute!r} cannot be searched here"
+            )
+            self._ctx.run_cache[key] = failure
+            raise failure from None
+        except (PlexApiException, requests.RequestException, ElementTree.ParseError) as error:
+            failure = PlexSearchUnavailable(
+                f"Plex would not answer the {attribute!r} field lookup for "
+                f"this library: {type(error).__name__}"
+            )
+            self._ctx.run_cache[key] = failure
+            raise failure from None
+        found = next(
+            (
+                one for one in available
+                if str(one.filter) == "source"
+                or str(one.title).lower().replace(" ", "_") == attribute
+            ),
+            None,
+        )
+        if found is None:
+            # Row 213: the attribute and a libtype token from a closed set, and
+            # nothing else. Kometa's own message builds the server's whole
+            # filter schema into it (``available_filters``, plex.py:1294-1295)
+            # -- a dump of the library's shape into a served string, which is
+            # exactly what that rule exists to stop.
+            failure = PlexSearchUnavailable(
+                f"{attribute}: this Plex library reports no folder filter for "
+                f"its {filter_type} items, so this search cannot be built. "
+                f"Remove the {attribute} clause, or narrow the definition with "
+                "`libraries:`"
+            )
+            self._ctx.run_cache[key] = failure
+            raise failure from None
+        field = str(found.filter)
+        self._ctx.run_cache[key] = field
+        return self._scoped(field, is_show, filter_type)
+
+    @staticmethod
+    def _scoped(field: str, is_show: bool, filter_type: str) -> str:
+        # plex.py:1297. Applied outside the memo because the memo holds what the
+        # SERVER said and this is what the QUERY needs -- and because the two
+        # facts it reads are both fixed by the memo's own key.
+        return f"episode.{field}" if is_show and filter_type == "episode" else field
+
     def _field_and_scope(self, attribute: str) -> tuple[str, str]:
         row = BY_NAME[attribute]
-        field = row.field_for(self._libtype)
+        # Roadmap row 176: one row's field is not in the table at all, and
+        # ``field_for`` raises on its sentinel rather than guessing. The
+        # discovery answers ``episode.<field>`` on a show library, and the two
+        # lines below then split that prefix into the enumeration scope with no
+        # new code -- which is byte-for-byte what Kometa's ``get_tags`` regex
+        # does with the same string (plex.py:1352-1354).
+        if row.search_field is DISCOVERED:
+            field = self.discover_field(attribute, self._libtype)
+        else:
+            field = row.field_for(self._libtype)
         # ``ENUMERATES_AS`` (module top): the two fields whose vocabulary
         # lives at the library's own libtype rather than at the dotted
         # scope. A bare name has no dot, so ``rpartition`` yields an empty

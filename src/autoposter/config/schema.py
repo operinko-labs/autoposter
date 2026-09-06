@@ -2166,28 +2166,38 @@ class CollectionDefinition(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _builder_level_needs_a_list_builder(self) -> "CollectionDefinition":
-        """Row 88 ships the LIST half of season/episode collections.
+    def _builder_level_needs_a_builder_that_reads_it(self) -> "CollectionDefinition":
+        """Row 88 shipped the LIST half of season/episode collections and
+        search-tail E-2 (rows 173/179) shipped the SEARCH half.
 
-        A smart collection's membership is a filter Plex evaluates itself, so
-        the level is part of the SEARCH -- the ``type:`` selector (roadmap row
-        179) and the season/episode predicate families (row 173), both filed as
-        their own rows with their own sort matrices. Accepting the field here
-        would load clean, apply nothing, and read as configured.
+        ``plex_search`` and ``smart_filter`` now read ``builder_level`` and
+        search at that level -- it becomes the ``type=`` byte of the query
+        (``collections/search_url.build_search_url``'s ``search_type``) and,
+        for the smart one, of the collection Plex creates. So the blanket
+        "a smart collection's members are chosen by Plex" refusal this used to
+        be is simply wrong for ``smart_filter``.
+
+        The four smart builders that remain refused derive their query
+        themselves and never pass a level to ``build_search_url``: ``dynamic``
+        and ``credits_family`` build one per unit, ``cs_bucket`` one per
+        content-rating bucket, and ``smart_url`` accepts a pasted Plex URL
+        whose ``type=`` the operator has already written. A ``builder_level``
+        on any of those would load clean, apply nothing, and read as
+        configured -- which is the failure this validator exists for.
         """
         from autoposter.collections.builders import REGISTRY
 
         if self.builder_level == "item":
             return self
-        if getattr(REGISTRY.get(self.builder), "smart", False):
+        if getattr(REGISTRY.get(self.builder), "smart", False) and (
+            self.builder != "smart_filter"
+        ):
             raise ValueError(
-                f"'builder_level' does not apply to {self.builder!r}: a smart "
-                "collection's members are chosen by a filter Plex evaluates "
-                "itself, so asking for seasons or episodes is a question about "
-                "the SEARCH -- the 'type:' selector (roadmap row 179) and the "
-                "season/episode predicate families (row 173), neither of which "
-                "is built yet. Use a list builder for a season- or "
-                "episode-level collection"
+                f"'builder_level' does not apply to {self.builder!r}: this "
+                "builder derives its own Plex search and never reads the "
+                "level, so a season or an episode here would load clean and "
+                "apply nothing. 'plex_search' and 'smart_filter' both honour "
+                "'builder_level'; use one of those, or a list builder"
             )
         # A non-item builder_level resolves against a season/episode index,
         # so this definition's members are seasons or episodes -- and

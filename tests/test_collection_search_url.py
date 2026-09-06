@@ -7,7 +7,9 @@ this file is what says WHICH branch broke when it does.
 import pytest
 
 from autoposter.collections.filters import parse_filters
+from autoposter.collections.search_sorts import EPISODE_SORTS, SEASON_SORTS
 from autoposter.collections.search_url import (
+    SearchAttributeNotAvailable,
     SearchProducedNothing,
     TagValueNotFound,
     build_search_url,
@@ -37,6 +39,10 @@ CHOICES = {
     ("episode_collection", "Pilots"): ("302",),
     ("episode_label", "Overlay"): ("3",),
     ("episode_actor", "Uma Thurman"): ("6",),
+    # Roadmap row 176. Keyed by the ROW name like every other entry; the
+    # discovered FIELD is a separate answer, from ``discover_field`` below.
+    ("folder_location", "/mnt/media/Movies"): ("1",),
+    ("folder_location", "/mnt/media/TV"): ("2",),
 }
 
 
@@ -44,9 +50,34 @@ def resolve(attribute, value, /):
     return CHOICES.get((attribute, value), ())
 
 
-def url(raw, *, libtype="movie", base="all", **kwargs):
+def discover_field(attribute, libtype, /):
+    """``TagResolver``'s third member as a fixture (roadmap row 176).
+
+    The live resolver reads this from ``listFilters``; here it is the answer the
+    2026-09-06 probe recorded (``location``, not the plan's placeholder
+    ``source``), with Kometa's own show-library re-scope applied
+    (``episode.<field>``, plex.py:1288-1297). A plain function attribute rather
+    than a class, because ``resolve`` is a function everywhere else in this file
+    and every other test would otherwise change shape for one row.
+
+    Two arguments, not three: the SEARCH type is resolver STATE in production
+    (``LibraryTagResolver(..., search_type=...)``), not a per-call argument, and
+    a bare function fixture has nowhere to hold one. Every ``url(...)`` call
+    below that names ``folder_location`` leaves ``search_type`` at its default,
+    so the search type and the library kind agree and this two-argument answer
+    is the one the live resolver gives (round-1 review m-3).
+    """
+    return "episode.location" if libtype == "show" else "location"
+
+
+resolve.discover_field = discover_field
+
+
+def url(raw, *, libtype="movie", search_type=None, base="all", **kwargs):
     group = parse_filters(raw, field="params", searching=True, base=base)
-    return build_search_url(group, libtype=libtype, resolve_tag=resolve, **kwargs)
+    return build_search_url(
+        group, libtype=libtype, search_type=search_type, resolve_tag=resolve, **kwargs
+    )
 
 
 def test_a_single_tag_term_carries_the_resolved_key_not_the_written_word():
@@ -397,7 +428,7 @@ def test_a_family_e_row_renders_at_the_show_level_as_kometa_renders_it(raw, term
 def test_every_family_e_row_refuses_on_a_movie_library_naming_the_kind():
     """Kometa refuses nineteen of the twenty by name on a movie library
     (``is_movie and final_attr in show_only_searches``,
-    kometa_build_filter.py:914) rather than sending a query a library with no
+    kometa_build_filter.py:919) rather than sending a query a library with no
     episodes answers with nothing; ``episode_actor`` it would send, and this
     table refuses it too -- a DECLARED DIVERGENCE, argued on its row note and
     pinned here so it stays deliberate. All twenty refuse before any tag
@@ -412,3 +443,114 @@ def test_every_family_e_row_refuses_on_a_movie_library_naming_the_kind():
         assert next(iter(raw)).split(".")[0] in message
         assert "show" in message
         assert "libraries:" in message
+
+
+def test_the_search_type_defaults_to_the_library_kind():
+    """The whole reason the split is invisible: every caller that passes only a
+    ``libtype`` gets the URL it got before, which is what makes all 22 oracle
+    goldens byte-identical and is the roadmap's own claim for this row."""
+    assert url({"genre": "Horror"}) == url({"genre": "Horror"}, search_type="movie")
+    assert url({"genre": "Horror"}, libtype="show") == (
+        url({"genre": "Horror"}, libtype="show", search_type="show")
+    )
+
+
+def test_an_episode_search_types_by_the_level_and_scopes_by_the_library():
+    """The split, in one string. ``type=4`` comes from the SEARCH level and
+    ``episode.title``/``show.unmatched`` from the LIBRARY's kind -- Kometa
+    applies ``show_translation`` because ``self.library.is_show``, whatever the
+    level is (modules/builder.py:4176-4181). Composed against ``EPISODE_SORTS``
+    rather than a retyped literal because that table is pinned by value against
+    the vendored driver, and a second spelling of it here would be a second
+    transcription."""
+    assert url(
+        {"episode_title.begins": "Pilot", "show_unmatched": False},
+        libtype="show", search_type="episode",
+    ) == (
+        "?type=4&sort=" + EPISODE_SORTS["title.asc"]
+        + "&episode.title%3C=Pilot&and=1&show.unmatched!=1"
+    )
+
+
+def test_a_season_search_carries_type_three():
+    assert url(
+        {"season_collection": "Specials"}, libtype="show", search_type="season",
+    ) == "?type=3&sort=" + SEASON_SORTS["season.asc"] + "&season.collection=301"
+
+
+def test_a_search_type_never_changes_which_attributes_are_legal():
+    """Job 4 keeps the LIBRARY kind, and it has to: every family-E row is
+    ``search_kinds=("show",)`` (they are library-kind columns, recon §2), so a
+    search type reaching ``_render_predicate`` would refuse all twenty of them.
+    A movie-only attribute is still refused on a show library at episode level,
+    and by the library's kind.
+
+    ``duration``, not the brief's original ``resolution``: ``resolution`` is
+    ``search_kinds=_BOTH`` (filters.py:770-792, and already proved legal on a
+    show library by ``test_a_show_library_gets_the_rescoped_fields`` above),
+    so it never raises here regardless of ``search_type`` -- confirmed
+    empirically (``pytest ... -k test_a_search_type_never_changes`` failed
+    ``DID NOT RAISE`` with ``resolution``). ``duration`` is
+    ``search_kinds=("movie",)`` and is what the docstring's "movie-only
+    attribute" actually names."""
+    with pytest.raises(SearchAttributeNotAvailable) as error:
+        url({"duration.gt": 90}, libtype="show", search_type="episode")
+    message = str(error.value)
+    assert "movie" in message
+    assert "show library" in message
+
+
+def test_a_discovered_field_row_takes_its_field_from_the_resolver_not_the_table():
+    """Roadmap row 176, and the ONE line in this module that asks for a field
+    (``_render_predicate``). ``folder_location``'s table row holds the
+    ``DISCOVERED`` sentinel and ``field_for`` raises on it, so a renderer that
+    kept the old call would fail loudly rather than send the sentinel -- but the
+    thing this pins is the OTHER half: the show library's field is
+    ``episode.location``, not ``location``, and a renderer that dropped the
+    prefix would send a field Plex answers with nothing rather than with an
+    error."""
+    assert url({"folder_location": "/mnt/media/Movies"}) == (
+        "?type=1&sort=titleSort&location=1"
+    )
+    assert url({"folder_location": "/mnt/media/TV"}, libtype="show") == (
+        "?type=2&sort=titleSort&episode.location=2"
+    )
+
+
+def test_every_other_row_still_takes_its_field_from_the_table():
+    """The sentinel is a branch on one row, not a redirection of all of them: a
+    resolver with no ``discover_field`` at all still renders every shipped row,
+    which is what keeps ``TagResolver``'s new member optional in practice the
+    way ``choices`` is."""
+
+    def bare(attribute, value, /):
+        return CHOICES.get((attribute, value), ())
+
+    from autoposter.collections.filters import parse_filters
+    from autoposter.collections.search_url import build_search_url
+
+    group = parse_filters({"genre": "Horror"}, field="params", searching=True, base="all")
+    assert build_search_url(group, libtype="movie", resolve_tag=bare) == (
+        "?type=1&sort=titleSort&genre=1138"
+    )
+
+
+def test_folder_location_regex_expands_over_the_discovered_fields_vocabulary():
+    """``.regex`` rides along for free and must be proven to: the branch calls
+    ``resolve_tag.choices(row.name)``, which goes through ``_field_and_scope``
+    and therefore through the discovery, so a pattern is tested against the
+    TITLES of the discovered field's own values."""
+
+    def choices(attribute, /):
+        assert attribute == "folder_location"
+        return (("1", "/mnt/media/Movies"), ("2", "/mnt/media/TV"))
+
+    resolve.choices = choices
+    try:
+        assert url({"folder_location.regex": "^/mnt/media/M"}) == (
+            "?type=1&sort=titleSort&location=1"
+        )
+        with pytest.raises(TagValueNotFound, match="matched none of"):
+            url({"folder_location.regex": "^/nope"})
+    finally:
+        del resolve.choices

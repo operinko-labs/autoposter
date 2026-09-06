@@ -72,10 +72,14 @@ ROOT = Path(__file__).resolve().parent.parent
 ORACLE = ROOT / "tests" / "oracle" / "9b" / "kometa_build_filter.py"
 SURFACES = (
     ROOT / "src" / "autoposter" / "collections" / "filters.py",
+    ROOT / "src" / "autoposter" / "collections" / "search_sorts.py",
+    ROOT / "src" / "autoposter" / "collections" / "search_url.py",
     ROOT / "src" / "autoposter" / "collections" / "builders" / "plex_search.py",
     ROOT / "tests" / "test_collection_filters.py",
     ROOT / "tests" / "test_builder_plex_search.py",
     ROOT / "tests" / "test_collection_search_url.py",
+    ROOT / "tests" / "test_smart_collection_oracle.py",
+    ROOT / "tests" / "test_collection_search_oracle.py",
 )
 # 21 filename-anchored + 9 bare continuations. The whole inventory is 38
 # counting the roadmap's 8, which sit outside this guard's scope (see the
@@ -103,7 +107,53 @@ SURFACES = (
 # file to SURFACES -- plus one brand-new citation, the FAMILY_E header's
 # added M-6 clause in filters.py noting Kometa's kind gate is keyed on
 # ``name.modifier`` (kometa_build_filter.py:914).
-EXPECTED_REF_COUNT = 114
+#
+# Search-tail E-2 (roadmap rows 173/179) adds ``search_sorts.py`` and
+# ``search_url.py`` to SURFACES -- the same move the branch-review fix wave
+# made for ``test_collection_search_url.py`` above, for the same class of
+# reason: both files gained by-line citations into Kometa's builder.py/plex.py
+# with the season/episode matrices and the kind/search-type split. Measured
+# by re-running this guard rather than by hand (C9): those two additions do
+# NOT move the census. Every one of those citations names ``builder.py`` or
+# ``plex.py`` -- Kometa's ORIGINAL module names -- and never the vendored
+# file's own name (``kometa_build_filter.py``), so ``_oracle_refs``'s
+# antecedent tracking (above, "a tracker that only remembered the oracle's
+# name would mis-resolve...") sets a different antecedent for every one of
+# them and counts none. Widening SURFACES still matters -- a FUTURE citation
+# in either file spelled ``kometa_build_filter.py:<n>`` is now guarded rather
+# than invisible.
+#
+# The Task 4 review (I-2) found the other half: the same branch ALSO added
+# ``tests/test_smart_collection_oracle.py`` and
+# ``tests/test_collection_search_oracle.py`` to SURFACES, so the three
+# citations those two files add land under the guard too --
+# ``test_smart_collection_oracle.py:65`` (the level configs' own
+# ``kometa_build_filter.py:63``) and ``test_collection_search_oracle.py:533``/
+# ``:568`` (``:853``/``:904``). The 3 added past 114 are those, re-derived by
+# running this guard: the census moves to 117.
+#
+# Search tail H (roadmap row 176) adds the citation its own oracle-test
+# docstring makes: ``tests/test_collection_search_oracle.py``'s new
+# twenty-fifth/twenty-sixth section names ``kometa_build_filter.py:904-907``
+# (the restored branch). Growing the driver's ``CHOICES`` literal in place
+# (beside it, per C6) shifted every absolute-line citation below it by a
+# constant +5 -- the existing citations across ``filters.py``,
+# ``plex_search.py``, ``test_collection_filters.py``,
+# ``test_builder_plex_search.py``, ``test_collection_search_url.py`` and this
+# file were renumbered by that same +5 so each still resolves to the anchor
+# it always named; none of that is a NEW citation, so it does not move the
+# census. Re-derived by RUNNING this guard, never counted by hand: the
+# census moves to 118.
+#
+# Search tail H's SECOND move, at Task 2: the ``folder_location`` row's own
+# note in ``filters.py`` and the table test that reads it both cite
+# ``kometa_build_filter.py:422`` (``folder_location`` in the driver's
+# ``tag_attributes``) -- TWO new guarded references, not the one the brief
+# predicted, because the row's checksum test quotes the row's own source line.
+# ``:422`` and not ``:417``: Task 1's five-line ``CHOICES`` growth shifted the
+# driver's ``tag_attributes`` list down with everything else below it.
+# Re-derived by RUNNING this guard: 120.
+EXPECTED_REF_COUNT = 120
 
 _FILE_REF = re.compile(r"\b([\w./-]+\.(?:py|md|ts|tsx|yml|yaml)):(\d+)(?:-(\d+))?")
 _BARE_REF = re.compile(r"(?<![\w:]):(\d+)(?:-(\d+))?")

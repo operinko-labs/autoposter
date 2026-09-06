@@ -72,10 +72,11 @@ class FakeServer:
 
 
 class FakeCollection:
-    def __init__(self, title, labels=(), rating_key="12345", smart=True):
+    def __init__(self, title, labels=(), rating_key="12345", smart=True, subtype="movie"):
         self.title = title
         self.ratingKey = rating_key
         self.smart = smart
+        self.subtype = subtype
         self.summary = None
         self.titleSort = None
         self.collectionMode = None

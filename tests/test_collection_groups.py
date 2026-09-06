@@ -604,8 +604,11 @@ async def test_a_smart_collection_gets_its_groups_prefix_and_then_settles(
 
     # Plex's own create marks the collection smart; ``FakeSection.collection``
     # is shape-agnostic, so without this the passes below meet ``shape_conflict``
-    # instead of the hash.
+    # instead of the hash. Same story for ``subtype`` (Task 4 review I-1): a
+    # collection this fake creates carries no level of its own, so the passes
+    # below would meet the level refusal instead of the hash without it.
     made.smart = True
+    made.subtype = "movie"
 
     # The action string itself, not merely "something happened": what the
     # migration pass has to report is the sort title it wrote.

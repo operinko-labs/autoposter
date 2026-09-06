@@ -1513,13 +1513,48 @@ type.
 - **They select shows, not episodes.** `episode_title.begins: Pilot` builds
   the collection of shows *having* an episode whose title begins with
   `Pilot`, which is exactly what the same key does in Kometa under a show
-  collection. Collecting the matching episodes themselves — a collection
-  whose members are episodes — is the `builder_level` selector on a search
-  definition, which is not shipped yet. Until it is, a `builder_level:` on a
-  `smart_filter` definition is refused when the config loads, and one on a
-  `plex_search` definition loads but is not honoured — the search still runs
-  at the show level and the definition resolves to nothing. Leave
-  `builder_level` off search definitions until the selector lands.
+  collection. Collecting the matching episodes *themselves* — a collection
+  whose members are episodes — is the `builder_level:` selector, and it now
+  works on a search definition. `builder_level: episode` on a `plex_search`
+  or a `smart_filter` makes the query a `type=4` search: Plex answers with
+  episodes, and the collection holds episodes. `builder_level: season` does
+  the same at `type=3`. The predicates keep being scoped by the *library's*
+  kind, so `episode_title.begins: Pilot` is still written the same way and
+  still renders `episode.title` — what changes is what comes back.
+
+  Three things to know before you set it:
+
+  - **The sort has to match the level.** `sort_by: episode_added.desc` is a
+    *show* sort; an episode-level search has its own sort list and will refuse
+    that name, saying so. Pick a sort from the level you are searching, or
+    leave `sort_by` off and take the level's default.
+  - **An episode-level definition costs one extra walk of the library per
+    pass.** Resolving episode rating keys needs an episode-level index, which
+    is a second traversal of the whole library
+    (`section.search(libtype="episode")`). It is memoised per level per pass,
+    so ten episode-level definitions pay for it once — but on a 16,000-item
+    library that walk is a real per-pass cost, and it is paid whether the
+    search matched two episodes or two thousand. Item-level definitions pay
+    nothing: a pass with no season- or episode-level definition never
+    searches at all.
+  - **Adding `builder_level` to an *existing* smart collection is refused, not
+    applied.** Plex has no edit that re-levels a smart collection in place —
+    creating one at a new level takes a delete and a recreate, not a filter
+    edit — so this service refuses the update rather than PUT the new
+    level's filter onto a collection Plex created at the old one. The
+    collection is left exactly as it is, and the pass reports the refusal by
+    name. If you want the new level, delete the collection in Plex yourself
+    and let the next pass recreate it there — this service will not delete
+    it for you. The same refusal, worded the same way, also covers a smart
+    collection that was never this service's own to begin with — one another
+    tool created at a different level, such as an episode-level collection
+    Kometa built and this service would otherwise adopt — and one whose level
+    Plex does not report at all; both are left untouched, with no adoption
+    and no write.
+
+  `type:` — Kometa's own spelling of this selector — is still refused by
+  name, and the refusal says why: Kometa reads `type:` for playlists only,
+  and this service has one spelling of one selector rather than two.
 - **Show libraries only.** On a Movie library each name is refused by name;
   for nineteen of them that is Kometa's own refusal, and `episode_actor` is
   refused by this service's judgement because a movie library has no
@@ -1543,6 +1578,43 @@ type.
 - **They cannot be written in a `filters:` block or an overlay
   `condition:`.** Kometa has no client-side filter of any of these names, and
   the refusal says which block they belong in.
+
+## Searching by folder
+
+`plex_search` accepts `folder_location` — the library folder an item lives in —
+and it is the one attribute in this vocabulary whose Plex field this service
+does not know in advance.
+
+- **The field is read from your library, once per pass.** Plex does not have a
+  fixed name for this filter, so the search asks your server which filter it
+  has (one extra read per pass per library, memoised — ten definitions naming
+  the attribute pay for it once) and uses whatever it answers. Kometa does the
+  same thing for the same reason.
+- **Write the folder the way your library lists it.** The value is resolved
+  against your library's own folder list, exactly like `genre` or `label`: a
+  spelling the library does not have is refused by name rather than producing
+  an empty collection. `folder_location.regex: "^/mnt/media"` matches against
+  those same listed folders.
+- **On a Show library it matches by EPISODE folder.** Plex exposes no folder
+  filter above the episode, so a show search asks the episode level and selects
+  shows having an episode in that folder. That is Kometa's behaviour too. With
+  `builder_level: episode` the members are those episodes themselves.
+- **If your server has no folder filter, the definition is refused by name.**
+  The pass reports which attribute could not be built and for which kind of
+  item, and writes nothing. `builder_level: season` is the case most likely to
+  hit this: current Plex servers do not expose a folder filter at the season
+  level, and the refusal says so rather than quietly matching nothing.
+- **It cannot be used with `smart_filter`, deliberately.** A smart collection
+  stores its query on the server and Plex evaluates it forever, so this service
+  keeps a hash of that stored query to know when a definition changed. Because
+  the folder field is read from the server rather than written in your config, a
+  Plex-side rename of the filter would look like a config change and rewrite
+  every smart collection naming it. `plex_search` asks the question on every
+  pass instead, so it has no stored query to go stale — the refusal points you
+  there.
+- **It cannot be written in a `filters:` block or an overlay `condition:`.**
+  Kometa has no client-side filter of this name; the refusal says which block it
+  belongs in.
 
 ## Collection posters
 

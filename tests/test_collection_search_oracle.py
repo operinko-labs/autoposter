@@ -7,7 +7,7 @@ runs, and produces a full, plausible, wrong collection. Every other test in
 this phase asserts the transcription against itself -- against a string
 hand-derived from the same source, by the same reading, in the same sitting.
 
-This file asserts it against Kometa. Twenty-two configs, and twenty-two URI
+This file asserts it against Kometa. Twenty-four configs, and twenty-four URI
 strings produced by **Kometa's own build_filter** -- fetched, transcribed
 standalone, run, and pinned below as data. Ours must reproduce them byte for
 byte.
@@ -141,9 +141,32 @@ row through ``.begins``, the three dates through the window / ``.after`` /
 through ``.gte`` / ``.lt`` / ``.rated``, ``episode_year.gte``, and all six
 booleans -- plus a limit and a show sort so the head is pinned with the body.
 The golden came from the same driver in the same way -- predicted from the
-transcription first, then confirmed by running it. The season/episode SEARCH
-level (``type=3``/``4``) is E-2's, and its configs 23/24 will follow the same
-recipe.
+transcription first, then confirmed by running it. Configs 23 and 24 are
+search-tail E-2's, and they are the first two whose
+SEARCH type is not the library's kind: a ``season``/``episode`` level against
+a ``show`` library, which is what ``builder_level`` selects. They pin the two
+halves of the split at once -- the ``type=`` byte and the default sort come
+from the level, and ``season.collection``/``episode.title``/``show.unmatched``
+come from the library -- and neither writes a ``sort_by``, because a show sort
+under an episode search is a refusal (``search_sorts.require_sort_for_libtype``)
+rather than a golden.
+
+## The twenty-fifth and twenty-sixth configs
+
+Roadmap row 176 -- `folder_location`, the one attribute in Kometa's search
+grammar whose Plex FIELD is a run-time answer rather than a table entry
+(`get_search_key`, `modules/plex.py:1286-1297`), restored in the driver's
+call site for `get_search_key` at `kometa_build_filter.py:904-907` after being removed by name in 9b's D3. The
+driver therefore grows a SECOND shared-by-value fixture, `FILTERS`, standing in
+for `LibrarySection.listFilters` the way `CHOICES` stands in for
+`get_search_choices`: `CHOICES` says what a filter's values are, `FILTERS` says
+which filters exist at all. Config 25 pins the movie column (`location=<key>`
+on this server -- the probe found the folder filter's key is `location`, not
+`source`); config 26 pins the show column, which is the half a movie config
+cannot reach -- Kometa forces the episode libtype on a show library and
+returns the field PREFIXED `episode.`, and a transcription that kept the show
+libtype would send a field Plex answers with nothing rather than with an
+error.
 
 ## `current_year`, row 171's other half
 
@@ -212,6 +235,25 @@ CHOICES = {
     ("episode_collection", "Pilots"): ("302",),
     ("episode_label", "Overlay"): ("3",),
     ("episode_actor", "Uma Thurman"): ("6",),
+    ("folder_location", "/mnt/media/Movies"): ("1",),
+    ("folder_location", "/mnt/media/TV"): ("2",),
+}
+
+# The library's FILTER SCHEMA. A COPY of the oracle driver's ``FILTERS``, shared
+# by value for the reason ``CHOICES`` is: the driver imports nothing from this
+# repository and must not import anything into it. The next-but-one test holds
+# the two copies equal, the same way and in the same place.
+#
+# ``CHOICES`` is what a filter's VALUES are; this is which filters EXIST. Row
+# 176 is the only row that needs the second question asked, because it is the
+# only row whose Plex field is not in ``FILTER_ATTRIBUTES``. The observed key
+# on this server is ``location``, not ``source`` -- the probe's substitution
+# rule (docs/research/plex-search-probe/listfilters-folder-location.md).
+FILTERS = {
+    "movie": (("genre", "Genre"), ("location", "Folder Location")),
+    "show": (("genre", "Genre"),),
+    "season": (),
+    "episode": (("genre", "Genre"), ("location", "Folder Location")),
 }
 
 
@@ -219,52 +261,75 @@ def resolve(attribute, value, /):
     return CHOICES.get((attribute, value), ())
 
 
-# (id, libtype, params) -- OUR spelling. Config 7 is the one place the two
-# spellings differ: ``2:30`` is 9a's written duration form and Kometa has no
-# equivalent, so the oracle is driven with the same value written ``150``.
+def discover_field(attribute, libtype, /):
+    """``TagResolver``'s third member, as a fixture.
+
+    The production resolver answers this from a live ``listFilters``; here it is
+    the fixture above, read the way ``get_search_key`` reads it -- the first
+    filter matching either of Kometa's two clauses, ``episode.``-prefixed on a
+    show library. Attached to ``resolve`` below rather than written as a class,
+    because ``resolve`` is a function everywhere else in this file and a class
+    here would change what the goldens are driven with.
+    """
+    filter_type = "episode" if libtype == "show" else libtype
+    key = next(
+        f[0] for f in FILTERS[filter_type]
+        if f[0] == "source" or str(f[1]).lower().replace(" ", "_") == attribute
+    )
+    return f"episode.{key}" if libtype == "show" else key
+
+
+resolve.discover_field = discover_field
+
+
+# (id, search_type, library_kind, params) -- OUR spelling. Config 7 is the one
+# place the two spellings differ: ``2:30`` is 9a's written duration form and
+# Kometa has no equivalent, so the oracle is driven with the same value
+# written ``150``. ``search_type`` and ``library_kind`` are the same string
+# for every config but 23/24 (search-tail E-2), which is what those two pin.
 CONFIGS = [
-    ("1-multi-value-tag", "movie", {"all": {"content_rating": ["PG-13", "R"]}}),
-    ("2-any-base", "movie", {
+    ("1-multi-value-tag", "movie", "movie", {"all": {"content_rating": ["PG-13", "R"]}}),
+    ("2-any-base", "movie", "movie", {
         "any": {"studio": "A24", "year.gte": 2020},
         "sort_by": "critic_rating.desc", "limit": 25,
     }),
-    ("3-list-nesting", "movie", {"all": {
+    ("3-list-nesting", "movie", "movie", {"all": {
         "content_rating": "PG-13",
         "any": [{"studio": "A24", "year.gte": 2020}, {"genre": "Horror"}],
     }}),
-    ("4-mapping-nesting", "movie", {"all": {
+    ("4-mapping-nesting", "movie", "movie", {"all": {
         "year.gte": 2000, "all": {"studio": "A24", "critic_rating.gte": 8},
     }}),
-    ("5-relative-dates", "movie", {"all": {
+    ("5-relative-dates", "movie", "movie", {"all": {
         "added": 30, "release.not": "6o", "last_played.not": "2y",
     }}),
-    ("6-absolute-dates", "movie", {"all": {
+    ("6-absolute-dates", "movie", "movie", {"all": {
         "release.after": "2000-01-01", "added.before": "12/25/2020",
     }}),
-    ("7-duration", "movie", {"all": {"duration.gt": 90, "duration.lte": "2:30"}}),
-    ("8-rated", "movie", {"all": {
+    ("7-duration", "movie", "movie", {"all": {"duration.gt": 90, "duration.lte": "2:30"}}),
+    ("8-rated", "movie", "movie", {"all": {
         "critic_rating.rated": True, "audience_rating.rated": False,
     }}),
-    ("9-booleans", "movie", {"all": {"unplayed": True, "progress": False}}),
-    ("10-string-quoting", "movie", {"all": {
+    ("9-booleans", "movie", "movie", {"all": {"unplayed": True, "progress": False}}),
+    ("10-string-quoting", "movie", "movie", {"all": {
         "studio.begins": "Warner Bros",
         "studio.not": "Hallmark & Co",
         "studio.is": "A24",
     }}),
-    ("11-several-sorts", "movie", {
+    ("11-several-sorts", "movie", "movie", {
         "all": {"year.gte": 2010},
         "sort_by": ["critic_rating.desc", "title.asc"], "limit": 100,
     }),
-    ("12-show-rescoping", "show", {
+    ("12-show-rescoping", "show", "show", {
         "all": {
             "genre": "Drama", "resolution": "1080", "audio_language": "en",
             "network": "HBO", "added.after": "2024-01-01",
         },
         "sort_by": "episode_added.desc", "limit": 10,
     }),
-    ("13-language-expansion", "movie", {"all": {"audio_language": "es"}}),
-    ("14-multi-value-under-any", "movie", {"any": {"content_rating": ["PG-13", "R"]}}),
-    ("15-unreached-renders-and-rows", "movie", {"all": {
+    ("13-language-expansion", "movie", "movie", {"all": {"audio_language": "es"}}),
+    ("14-multi-value-under-any", "movie", "movie", {"any": {"content_rating": ["PG-13", "R"]}}),
+    ("15-unreached-renders-and-rows", "movie", "movie", {"all": {
         "genre.not": "Horror",
         "studio.isnot": "A24",
         "studio.ends": "Pictures & Co",
@@ -273,9 +338,9 @@ CONFIGS = [
         "plays.gt": 3,
         "plays.lte": 10,
     }}),
-    ("16-decade-and-country", "movie", {"all": {"decade": 1980, "country": "France"}}),
-    ("17-country-on-a-show", "show", {"all": {"country": "France"}}),
-    ("18-the-tails-on-a-movie", "movie", {"all": {
+    ("16-decade-and-country", "movie", "movie", {"all": {"decade": 1980, "country": "France"}}),
+    ("17-country-on-a-show", "show", "show", {"all": {"country": "France"}}),
+    ("18-the-tails-on-a-movie", "movie", "movie", {"all": {
         "title": "Dune",
         "edition.begins": "Director",
         "hdr": True,
@@ -284,7 +349,7 @@ CONFIGS = [
         "duplicate": True,
         "unmatched": False,
     }}),
-    ("19-the-tails-on-a-show", "show", {"all": {
+    ("19-the-tails-on-a-show", "show", "show", {"all": {
         "title.isnot": "Dune",
         "edition.ends": "Cut",
         "hdr": True,
@@ -292,11 +357,11 @@ CONFIGS = [
         "trash": True,
         "unmatched": False,
     }}),
-    ("20-actor-on-a-show", "show", {"all": {"actor": "Uma Thurman"}}),
-    ("21-people-on-a-movie", "movie", {"all": {
+    ("20-actor-on-a-show", "show", "show", {"all": {"actor": "Uma Thurman"}}),
+    ("21-people-on-a-movie", "movie", "movie", {"all": {
         "actor": "Uma Thurman", "director": "Sofia Coppola",
     }}),
-    ("22-family-e-on-a-show", "show", {
+    ("22-family-e-on-a-show", "show", "show", {
         "all": {
             "season_collection": "Specials",
             "season_label": "Overlay",
@@ -321,6 +386,24 @@ CONFIGS = [
         },
         "sort_by": "episode_added.desc", "limit": 5,
     }),
+    ("23-season-level-on-a-show", "season", "show", {
+        "all": {"season_collection": "Specials", "season_label": "Overlay"},
+    }),
+    ("24-episode-level-on-a-show", "episode", "show", {
+        "all": {
+            "episode_title.begins": "Pilot",
+            "episode_added": 30,
+            "episode_unplayed": True,
+            "show_unmatched": False,
+        },
+        "limit": 5,
+    }),
+    ("25-folder-on-a-movie", "movie", "movie", {
+        "all": {"folder_location": "/mnt/media/Movies"},
+    }),
+    ("26-folder-on-a-show", "show", "show", {
+        "all": {"folder_location": "/mnt/media/TV"},
+    }),
 ]
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
@@ -332,10 +415,12 @@ CONFIGS = [
 # predicted at Step 6 before the driver ran, then confirmed by it, same as the
 # fifteen before them), search-tails-1's plan (eighteen and nineteen,
 # predicted from the transcription, then confirmed by the driver) and
-# search-tails-1's Task 2 report (twenty and twenty-one, the same way), and
+# search-tails-1's Task 2 report (twenty and twenty-one, the same way),
 # search-tail E-1's plan (twenty-two, predicted from the transcription, then
-# confirmed by the driver). Do not edit a string here to make a test pass: if
-# ours differs, ours is wrong.
+# confirmed by the driver), and search-tail E-2's Task 2 (twenty-three and
+# twenty-four, the season and episode levels, predicted then confirmed the
+# same way). Do not edit a string here to make a test pass: if ours differs,
+# ours is wrong.
 KOMETA = {
     "1-multi-value-tag": "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7",
     "2-any-base": "?type=1&limit=25&sort=rating%3Adesc&push=1&studio=A24&or=1&year%3E=2020&pop=1",
@@ -359,11 +444,17 @@ KOMETA = {
     "20-actor-on-a-show": "?type=2&sort=titleSort&show.actor=6",
     "21-people-on-a-movie": "?type=1&sort=titleSort&actor=6&and=1&director=58",
     "22-family-e-on-a-show": "?type=2&limit=5&sort=episode.addedAt%3Adesc&season.collection=301&and=1&season.label=3&and=1&episode.collection=302&and=1&episode.label!=3&and=1&episode.title%3C=Pilot&and=1&episode.actor=6&and=1&episode.addedAt%3E%3E=-30d&and=1&episode.originallyAvailableAt%3E%3E=2024-01-01&and=1&episode.lastViewedAt%3C%3C=-2y&and=1&episode.viewCount%3E%3E=3&and=1&episode.userRating%3E=7.0&and=1&episode.rating%3C%3C=5.0&and=1&episode.audienceRating!=-1&and=1&episode.year%3E=2010&and=1&episode.unwatched=1&and=1&episode.duplicate!=1&and=1&episode.inProgress=1&and=1&episode.unmatched!=1&and=1&show.unmatched!=1&and=1&show.unwatchedLeaves=1",
+    "23-season-level-on-a-show": "?type=3&sort=season.index%2Cseason.titleSort&season.collection=301&and=1&season.label=3",
+    "24-episode-level-on-a-show": "?type=4&limit=5&sort=titleSort&episode.title%3C=Pilot&and=1&episode.addedAt%3E%3E=-30d&and=1&episode.unwatched=1&and=1&show.unmatched!=1",
+    "25-folder-on-a-movie": "?type=1&sort=titleSort&location=1",
+    "26-folder-on-a-show": "?type=2&sort=titleSort&episode.location=2",
 }
 
 
-@pytest.mark.parametrize(("name", "libtype", "params"), CONFIGS, ids=[c[0] for c in CONFIGS])
-def test_our_url_is_byte_identical_to_kometas(name, libtype, params):
+@pytest.mark.parametrize(
+    ("name", "search_type", "library_kind", "params"), CONFIGS, ids=[c[0] for c in CONFIGS]
+)
+def test_our_url_is_byte_identical_to_kometas(name, search_type, library_kind, params):
     base = "all" if "all" in params else "any"
     group = parse_filters(params[base], field="params", searching=True, base=base)
     sort_by = params.get("sort_by") or ()
@@ -371,7 +462,8 @@ def test_our_url_is_byte_identical_to_kometas(name, libtype, params):
         sort_by = [sort_by]
     ours = build_search_url(
         group,
-        libtype=libtype,
+        libtype=library_kind,
+        search_type=search_type,
         sort_by=sort_by,
         limit=params.get("limit"),
         resolve_tag=resolve,
@@ -379,10 +471,10 @@ def test_our_url_is_byte_identical_to_kometas(name, libtype, params):
     assert ours == KOMETA[name]
 
 
-def test_the_oracles_vocabulary_fixture_matches_this_files_copy():
+def test_the_oracles_vocabulary_fixtures_match_this_files_copies():
     """The driver imports nothing from here and this file imports nothing from
-    there, so the shared fixture is shared by VALUE. This reads the driver as
-    text and compares the literal, which is the only coupling that does not
+    there, so the shared fixtures are shared by VALUE. This reads the driver as
+    text and compares the literals, which is the only coupling that does not
     break the isolation.
 
     Anchored to ``__file__`` rather than to the working directory: what this
@@ -392,16 +484,26 @@ def test_the_oracles_vocabulary_fixture_matches_this_files_copy():
     -- ``.superpowers/`` is gitignored, so a driver there would be absent from
     a fresh clone and this test would fail (or, worse, be made to skip) for a
     reason that has nothing to do with the transcription.
+
+    TWO fixtures since roadmap row 176, checked the same way and in one pass:
+    ``CHOICES`` (what a filter's values are) and ``FILTERS`` (which filters the
+    library has at all). A row whose field is discovered at run time needs the
+    second question asked, and a second fixture drifting silently is the same
+    failure as the first one drifting.
     """
     import ast
 
-    source = ORACLE_DRIVER.read_text()
-    tree = ast.parse(source)
+    expected = {"CHOICES": CHOICES, "FILTERS": FILTERS}
+    found = {}
+    tree = ast.parse(ORACLE_DRIVER.read_text())
     for node in tree.body:
-        if isinstance(node, ast.Assign) and node.targets[0].id == "CHOICES":
-            assert ast.literal_eval(node.value) == CHOICES
-            return
-    pytest.fail("the oracle driver has no CHOICES literal")
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in expected
+        ):
+            found[node.targets[0].id] = ast.literal_eval(node.value)
+    assert found == expected, "the oracle driver's shared fixtures have drifted"
 
 
 def test_the_driver_still_produces_the_pinned_strings():
@@ -425,11 +527,13 @@ def test_the_driver_still_produces_the_pinned_strings():
     driver = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(driver)
 
-    for index, ((libtype, plex_filter), (name, pinned)) in enumerate(
+    for index, ((sort_type, library_kind, plex_filter), (name, pinned)) in enumerate(
         zip(driver.CONFIGS, KOMETA.items(), strict=True), start=1
     ):
         assert name.startswith(f"{index}-"), f"{name} is not config {index}"
-        _, url = driver.build_filter("plex_search", plex_filter, libtype)
+        _, url = driver.build_filter(
+            "plex_search", plex_filter, sort_type, library_kind=library_kind
+        )
         assert url == pinned, name
 
 
@@ -445,7 +549,7 @@ def test_the_configs_cover_every_shipped_value_type():
     from autoposter.collections.filters import FILTER_ATTRIBUTES
 
     exercised = set()
-    for _, _, params in CONFIGS:
+    for _, _, _, params in CONFIGS:
         base = "all" if "all" in params else "any"
         stack = [params[base]]
         while stack:
@@ -497,3 +601,76 @@ def test_current_year_matches_kometas_own_transcribed_algorithm():
     assert evaluate(bare, {"year": moment.year - 1}, now=moment) is False
     assert evaluate(offset, {"year": moment.year - 5}, now=moment) is True
     assert evaluate(offset, {"year": moment.year}, now=moment) is False
+
+
+def test_the_driver_defaults_its_library_kind_to_its_sort_type():
+    """Search-tail E-2 (facts C4). The driver conflated two things Kometa keeps
+    apart: ``is_show = sort_type == "show"`` (kometa_build_filter.py:858) drove
+    ``show_translation`` and the kind gates, which Kometa derives from
+    ``self.library.is_show`` (modules/builder.py:4176-4181) and NOT from the
+    search level. Un-conflating them is a signature change to a vendored
+    transcription, so the first thing pinned is that it changed nothing: with
+    ``library_kind`` left at its default every config produces the byte it
+    produced before -- Task 2's added 23/24 too, trivially: passing
+    ``library_kind=sort_type`` explicitly is definitionally the same as
+    omitting it, whatever the config's OWN (possibly different) library_kind
+    is. That the two can differ is what
+    ``test_the_driver_types_by_the_sort_type_and_scopes_by_the_library_kind``
+    and the byte-identical oracle configs 23/24 pin instead.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kometa_oracle_driver", ORACLE_DRIVER)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+
+    for sort_type, _library_kind, plex_filter in driver.CONFIGS:
+        _, defaulted = driver.build_filter("plex_search", plex_filter, sort_type)
+        _, explicit = driver.build_filter(
+            "plex_search", plex_filter, sort_type, library_kind=sort_type
+        )
+        assert defaulted == explicit
+
+
+def test_the_driver_types_by_the_sort_type_and_scopes_by_the_library_kind():
+    """The half the default cannot prove, with a predicate that actually
+    discriminates it. ``episode_title``/``show_unmatched`` both resolve
+    through ``search_translation``, which is kind-independent -- so a driver
+    that kept the conflation (``is_show = sort_type == "show"``) answers the
+    original version of this test identically whether ``library_kind`` is
+    honoured or ignored (Task 1 review, Important I-1). ``title.begins`` is
+    the discriminating case: ``title`` is bare in ``search_translation`` and
+    reachable through ``show_translation`` only (kometa_build_filter.py:909),
+    so it renders ``show.title`` under ``library_kind="show"`` and bare
+    ``title`` when the kind is left to default from ``sort_type`` --
+    "episode" here, neither "movie" nor "show" -- and ONLY if ``is_show`` is
+    actually gated on ``library_kind``. A conflated driver renders both calls
+    as bare ``title`` (confirmed empirically against a driver copy with the
+    conflated ``is_show = sort_type == "show"`` restored, without touching
+    this repo's tracked driver file: both calls answer
+    ``?type=4&sort=titleSort&title%3C=Pilot``, so the first assertion below
+    fails).
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("kometa_oracle_driver", ORACLE_DRIVER)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+
+    _, show = driver.build_filter(
+        "plex_search",
+        {"all": {"title.begins": "Pilot"}},
+        "episode",
+        library_kind="show",
+    )
+    assert show.startswith("?type=4&")
+    assert "show.title%3C=Pilot" in show
+
+    _, bare = driver.build_filter(
+        "plex_search",
+        {"all": {"title.begins": "Pilot"}},
+        "episode",
+    )
+    assert bare.startswith("?type=4&")
+    assert "title%3C=Pilot" in bare
+    assert "show.title" not in bare

@@ -96,15 +96,50 @@ class FakeCollection:
 
 
 class FakeSection:
-    """A Show library that answers ``all()`` and ``search(libtype=...)``."""
+    """A library that answers ``all()`` and ``search(libtype=...)``.
 
-    def __init__(self, shows=(), episodes=(), seasons=(), existing=()):
+    ``filters`` and ``choices`` are search tail H's (roadmap row 176): a
+    ``folder_location`` search makes TWO reads -- ``listFilters`` for the field
+    and ``listFilterChoices`` for the value -- and the entry-point law needs
+    both to come from the real chain rather than from a helper.
+
+    ``fetch_level`` says which of ``_by_libtype``'s lists ``fetchItems``
+    answers with, so the same fake can stand in for a Movie library (row 176 has
+    a movie column, unlike E-2) without pretending its movies are episodes.
+    """
+
+    key = 1
+
+    def __init__(self, shows=(), episodes=(), seasons=(), movies=(), existing=(),
+                 filters=None, choices=None, fetch_level="episode"):
         self._shows = list(shows)
-        self._by_libtype = {"episode": list(episodes), "season": list(seasons)}
+        self._by_libtype = {
+            "episode": list(episodes), "season": list(seasons), "movie": list(movies),
+        }
         self._existing = {c.title: c for c in existing}
+        self._filters = dict(filters or {})
+        self._choices = dict(choices or {})
+        self._fetch_level = fetch_level
         self.all_calls = 0
         self.searches: list[str] = []
         self.created: dict[str, list] = {}
+        # Search-tail E-2: what a ``plex_search`` at episode level asks for.
+        self.fetch_calls: list[str] = []
+        # Search tail H: the field read, and the value read behind it.
+        self.filter_type_calls: list[str] = []
+        self.filter_calls: list[tuple[str, str]] = []
+
+    def fetchItems(self, key):
+        self.fetch_calls.append(key)
+        return list(self._by_libtype[self._fetch_level])
+
+    def listFilters(self, libtype=None):
+        self.filter_type_calls.append(libtype)
+        return list(self._filters.get(libtype, []))
+
+    def listFilterChoices(self, field, libtype=None):
+        self.filter_calls.append((field, libtype))
+        return list(self._choices.get((field, libtype), []))
 
     def all(self):
         self.all_calls += 1
@@ -175,6 +210,32 @@ def _section():
             FakeItem("S01E02", ["tvdb://7645237"], "episode"),
         ],
         seasons=[FakeItem("Season 1", [], "season")],
+    )
+
+
+class FakeFilter:
+    def __init__(self, filter_name, title):
+        self.filter = filter_name
+        self.title = title
+
+
+class FakeChoice:
+    def __init__(self, title, key):
+        self.title = title
+        self.key = key
+
+
+# The 2026-09-06 probe's own answer, with a leading non-folder row so a
+# discovery that took the first filter rather than the matching one fails here.
+FOLDER_FILTERS = [FakeFilter("genre", "Genre"), FakeFilter("location", "Folder Location")]
+
+
+def _movie_section(**kw):
+    return FakeSection(
+        shows=[FakeItem("Dune", ["tmdb://438631"], "movie")],
+        movies=[FakeItem("Dune", ["tmdb://438631"], "movie")],
+        fetch_level="movie",
+        **kw,
     )
 
 
@@ -395,14 +456,28 @@ async def test_a_non_item_level_on_a_movie_library_is_refused(
     assert "libraries:" in action and "Movie" in action
 
 
-def test_builder_level_is_refused_on_a_smart_builder():
-    """Rows 173/179 own the smart/`plex_search` side of this question. A
-    definition that asked for it here would load clean and never apply."""
+def test_builder_level_is_refused_on_a_smart_builder_that_cannot_read_it():
+    """Search-tail E-2 lifted this for ``smart_filter``, which now types its
+    stored filter by the level. The other four derive their own query and
+    would load clean and apply nothing."""
     with pytest.raises(Exception) as error:
         CollectionDefinition(
             title="Smart", builder="cs_bucket", builder_level="episode"
         )
-    assert "173" in str(error.value) and "179" in str(error.value)
+    message = str(error.value)
+    assert "cs_bucket" in message
+    assert "derives its own Plex search" in message
+
+
+def test_builder_level_is_accepted_on_smart_filter():
+    """The lift, from the other side. A ``smart_filter`` definition with a
+    level loads, because the level reaches Plex as the search's ``type=``."""
+    definition = CollectionDefinition(
+        title="Pilots", builder="smart_filter",
+        params={"all": {"episode_title.begins": "Pilot"}},
+        builder_level="episode",
+    )
+    assert definition.builder_level == "episode"
 
 
 def test_builder_level_is_refused_with_sync_to_mdb_list():
@@ -484,3 +559,168 @@ async def test_an_effective_episode_level_with_an_arr_tag_is_refused_not_sent(
     assert run.definitions[0].failed is True
     [action] = [a for a in run.actions if "Pilots" in a]
     assert "episode" in action
+
+
+# --- search-tail E-2: the real plex_search builder, through the real entry point
+
+
+async def test_a_plex_search_definition_at_episode_level_collects_episodes(session):
+    """Search-tail E-2 through the REAL ``run_library`` and the REAL
+    ``plex_search`` builder -- the entry-point law. The chain this proves end
+    to end is the one no helper test covers: ``definition.builder_level`` ->
+    ``build_search_url``'s ``search_type`` -> a ``type=4`` query ->
+    ``BuilderResult(level='episode')`` -> ``owned_index('episode')`` ->
+    ``resolve_external`` -> a collection whose members are episodes."""
+    section = _section()
+
+    run = await run_library(
+        session, section, "TV Shows", "Show",
+        [CollectionDefinition(
+            title="Pilots", builder="plex_search",
+            params={"all": {"episode_title.begins": "Pilot"}},
+            builder_level="episode",
+        )],
+        _config(), sources=SourceClients(),
+    )
+
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=4&sort=titleSort&episode.title%3C=Pilot"
+    ]
+    assert [i.title for i in section.created["Pilots"]] == ["S01E01", "S01E02"]
+    assert section.searches == ["episode"]
+    assert run.definitions[0].unresolved == 0
+
+
+# --- search tail H: folder_location through the real entry point (row 176) ----
+#
+# The entry-point law again, and this row needs it more than most: the chain it
+# proves is definition -> params -> LibraryTagResolver(search_type=...) ->
+# listFilters -> the discovered field -> listFilterChoices at the field's OWN
+# scope -> the query. Every link but the last is invisible to a helper test, and
+# the two failures that matter -- a show library asked at the show libtype, and
+# a value looked up at the library's libtype rather than the field's -- both
+# produce a plausible, empty, silent result rather than an error.
+
+
+async def test_a_folder_search_on_a_movie_library_sends_the_discovered_field(session):
+    """The movie column. ``location``, discovered, with the value resolved
+    through the same field -- and no ``episode.`` prefix anywhere, which is what
+    a re-scope applied unconditionally would produce."""
+    section = _movie_section(
+        filters={"movie": FOLDER_FILTERS},
+        choices={("location", "movie"): [FakeChoice("/mnt/media/Movies", "1")]},
+    )
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="On the NAS", builder="plex_search",
+            params={"all": {"folder_location": "/mnt/media/Movies"}},
+        )],
+        _config(), sources=SourceClients(),
+    )
+
+    assert section.filter_type_calls == ["movie"]
+    assert section.filter_calls == [("location", "movie")]
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=1&sort=titleSort&location=1"
+    ]
+    assert run.definitions[0].unresolved == 0
+
+
+async def test_a_folder_search_on_a_show_library_scopes_to_the_episode_field(session):
+    """The show column, and the half a movie library cannot reach. Plex exposes
+    no folder filter above the episode, so the SCHEMA is read at ``episode``,
+    the field comes back prefixed, and the VALUE is then enumerated at
+    ``episode`` too -- which is the prefix doing its second job."""
+    section = FakeSection(
+        shows=[FakeItem("Severance", ["tvdb://371980"], "show")],
+        filters={"episode": FOLDER_FILTERS},
+        choices={("location", "episode"): [FakeChoice("/mnt/media/TV", "2")]},
+    )
+
+    run = await run_library(
+        session, section, "TV Shows", "Show",
+        [CollectionDefinition(
+            title="On the NAS", builder="plex_search",
+            params={"all": {"folder_location": "/mnt/media/TV"}},
+        )],
+        _config(), sources=SourceClients(),
+    )
+
+    assert section.filter_type_calls == ["episode"]
+    assert section.filter_calls == [("location", "episode")]
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=2&sort=titleSort&episode.location=2"
+    ]
+    assert run.definitions[0].unresolved == 0
+
+
+async def test_a_library_with_no_folder_filter_refuses_the_definition_by_name(
+    session, caplog
+):
+    """Roadmap row 213 through the real pass: the definition fails, nothing is
+    written, and the refusal names the attribute and a libtype token and NOT the
+    server's filter schema.
+
+    Read from the LOG, not from ``run.actions``. The brief expected the action
+    string to carry it; the engine's containment invariant
+    (``engine.py:683-690``) is stricter than that -- nothing derived from a
+    builder exception reaches an action string at all, because a provider error
+    commonly carries the URL it failed on. So the action is asserted to be the
+    generic one, and the sentence is asserted where it actually goes."""
+    section = _movie_section(filters={"movie": [FakeFilter("genre", "Genre")]})
+
+    with caplog.at_level("ERROR", logger="autoposter.collections.engine"):
+        run = await run_library(
+            session, section, "Movies", "Movie",
+            [CollectionDefinition(
+                title="On the NAS", builder="plex_search",
+                params={"all": {"folder_location": "/mnt/media/Movies"}},
+            )],
+            _config(), sources=SourceClients(),
+        )
+
+    assert section.created == {}, "nothing written"
+    assert run.definitions[0].failed is True
+    [action] = [a for a in run.actions if "On the NAS" in a]
+    assert "folder_location" not in action, "the containment invariant"
+
+    refusal = caplog.text
+    assert "folder_location: this Plex library reports no folder filter" in refusal
+    assert "movie items" in refusal
+    assert "narrow the definition with `libraries:`" in refusal
+    # The whole point of row 213 here: Kometa's own message for this failure
+    # builds the server's filter schema into it (``available_filters``,
+    # plex.py:1294-1295). Ours names one filter the server has, and that one is
+    # named by the FAKE, not by the refusal -- so the assertion is on the
+    # refusal's own sentence rather than on the log as a whole.
+    [sentence] = [
+        line for line in refusal.splitlines() if "reports no folder filter" in line
+    ]
+    assert "genre" not in sentence, "the server's filter schema must not be served"
+
+
+async def test_the_folder_field_miss_is_read_once_for_the_whole_pass(session):
+    """``BuilderContext.run_cache``'s own requirement (builders/base.py:145-149)
+    at the level it was written for: a dead lookup memoised, so two definitions
+    naming the attribute cost ONE schema read rather than one each."""
+    section = _movie_section(filters={"movie": [FakeFilter("genre", "Genre")]})
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [
+            CollectionDefinition(
+                title="On the NAS", builder="plex_search",
+                params={"all": {"folder_location": "/mnt/media/Movies"}},
+            ),
+            CollectionDefinition(
+                title="On the other NAS", builder="plex_search",
+                params={"all": {"folder_location": "/mnt/media/TV"}},
+            ),
+        ],
+        _config(), sources=SourceClients(),
+    )
+
+    assert section.filter_type_calls == ["movie"], "one schema read for the pass"
+    assert [d.failed for d in run.definitions] == [True, True]

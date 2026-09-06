@@ -49,7 +49,7 @@ from autoposter.collections.builders.plex_search import (
     PlexSearchParams,
     PlexSearchUnavailable,
 )
-from autoposter.collections.filters import resolve_search_values
+from autoposter.collections.filters import predicates, resolve_search_values
 from autoposter.collections.search_sorts import SortNotAvailable
 from autoposter.collections.search_url import (
     SearchAttributeNotAvailable,
@@ -155,7 +155,44 @@ class SmartFilterBuilder:
         require_library_type(
             "the 'smart_filter' builder", ctx.library_type, ("Movie", "Show")
         )
+        # Roadmap row 176, ruling C5. ``smart_definition_hash``
+        # (collections/smart.py:225) hashes the URL this method returns, and for
+        # every other attribute that URL is a pure function of the config.
+        # ``folder_location``'s Plex field is discovered from the SERVER at run
+        # time, so shipping it here would make a stored definition hash a
+        # function of the server as well -- and a Plex-side rename of the filter
+        # would re-PUT the filter of every smart collection naming it, with
+        # nothing in the config having changed. Refused rather than disclosed:
+        # a definition hash that is a function of the config alone is a property
+        # worth keeping whole. AFTER ``require_library_type`` (Task 2 review,
+        # Minor 6): a Music library naming this attribute is told it needs a
+        # Movie or Show library, the more useful refusal for that operator,
+        # rather than being told about an attribute it could never reach anyway.
+        if any(one.attribute.name == "folder_location" for one in predicates(params.group)):
+            raise SearchAttributeNotAvailable(
+                "folder_location: this attribute's Plex field is discovered "
+                "from the server at run time, and a smart collection stores "
+                "its query on the server forever -- so a Plex-side rename of "
+                "that filter would silently rewrite every definition naming "
+                "it. Use the `plex_search` builder, which asks the question on "
+                "every pass, or remove the clause"
+            )
         libtype = ctx.library_type.lower()
+        # Search-tail E-2, the same read ``PlexSearchBuilder.build`` makes and
+        # for the same reason: Kometa's ``sort_type`` under a collection IS
+        # ``builder_level`` (modules/builder.py:4093-4121). Refused here rather
+        # than left to Plex, because the URI a smart collection stores is
+        # evaluated live and forever: a ``type=4`` filter written into a movie
+        # library would keep matching nothing until someone noticed.
+        level = getattr(ctx.definition, "builder_level", "item")
+        if level != "item" and ctx.library_type != "Show":
+            raise LibraryTypeMismatch(
+                f"a 'builder_level: {level}' search asks a library for the "
+                f"{level}s inside its shows, but this pass is running against "
+                f"a {ctx.library_type} library, where it would match nothing at "
+                "all. Narrow the definition with `libraries:` so it only "
+                "targets Show libraries."
+            )
         # ``resolve_search_values`` first, against ONE moment for this build --
         # the same fix ``PlexSearchBuilder.build`` applies, and needed here for
         # a stronger reason than there: this URI is not a transient query, it
@@ -166,9 +203,13 @@ class SmartFilterBuilder:
         return build_search_url(
             resolve_search_values(params.group, now=dt.datetime.now()),
             libtype=libtype,
+            search_type=libtype if level == "item" else level,
             sort_by=params.sort_by or (DEFAULT_SORT,),
             limit=params.limit,
-            resolve_tag=LibraryTagResolver(ctx, ctx.section, libtype),
+            resolve_tag=LibraryTagResolver(
+                ctx, ctx.section, libtype,
+                search_type=libtype if level == "item" else level,
+            ),
         )
 
     async def apply(self, ctx: SmartContext) -> list[str]:
@@ -211,6 +252,7 @@ class SmartFilterBuilder:
                 config=ctx.config,
                 settings=definition,
                 sort_prefix=ctx.sort_prefix,
+                level=getattr(definition, "builder_level", "item"),
             )
         except REFUSALS as refusal:
             # Contained deliberately -- see the module docstring. Logged as well

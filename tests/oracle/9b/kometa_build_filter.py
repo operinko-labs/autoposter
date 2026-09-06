@@ -65,6 +65,11 @@ CHOICES = {
     ("episode_collection", "Pilots"): ("302",),
     ("episode_label", "Overlay"): ("3",),
     ("episode_actor", "Uma Thurman"): ("6",),
+    # Roadmap row 176. Keyed by ATTRIBUTE NAME like every other entry -- the
+    # discovered FIELD is what the URL carries, and it is ``get_search_key``'s
+    # job, not this table's.
+    ("folder_location", "/mnt/media/Movies"): ("1",),
+    ("folder_location", "/mnt/media/TV"): ("2",),
 }
 
 
@@ -524,9 +529,9 @@ show_sorts = {
 }
 
 # --- modules/plex.py:779-787 --------------------------------------------------
-# REMOVED: the "season", "episode", "artist", "album" and "track" entries. Their
-# sort matrices (plex.py:668-778) are not transcribed -- v1 searches movie and
-# show libraries, and no config names another libtype.
+# REMOVED HERE: the "season", "episode", "artist", "album" and "track" entries.
+# "season" and "episode" are RESTORED in the appendix at the foot of this file
+# (search-tail E-2); artist/album/track stay absent -- no config names them.
 sort_types = {
     "movie": ("title.asc", 1, movie_sorts),
     "show": ("title.asc", 2, show_sorts),
@@ -838,7 +843,7 @@ def validate_attribute(attribute, modifier, final, data, plex_search=False, plex
 # ``smart_filter`` call site does -- ``default_sort="random"``
 # (modules/builder.py:1478) -- so it is restored here, defaulting to None
 # exactly as upstream does, which leaves all fifteen 9b goldens untouched.
-def build_filter(method, plex_filter, sort_type, default_sort=None):
+def build_filter(method, plex_filter, sort_type, default_sort=None, library_kind=None):
     if plex_filter is None:
         raise Failed(f"{TYPE} Error: {method} attribute is blank")
     if not isinstance(plex_filter, dict):
@@ -849,8 +854,8 @@ def build_filter(method, plex_filter, sort_type, default_sort=None):
     if "any" in filter_alias and "all" in filter_alias:
         raise Failed(f"{TYPE} Error: Cannot have more than one base")
 
-    is_movie = sort_type == "movie"
-    is_show = sort_type == "show"
+    is_movie = (library_kind or sort_type) == "movie"
+    is_show = (library_kind or sort_type) == "show"
 
     type_default_sort, type_key, sorts = sort_types[sort_type]
 
@@ -896,10 +901,10 @@ def build_filter(method, plex_filter, sort_type, default_sort=None):
             attr, modifier, final_attr = split(_key)
 
             def build_url_arg(arg, mod=None):
-                # REMOVED: the ``folder_location`` branch of ``arg_key``, which
-                # calls ``Library.get_search_key`` -> ``listFilters`` (a network
-                # read). ``folder_location`` is deferred by name and no config
-                # reaches it.
+                # modules/builder.py:4179's ``folder_location`` branch, RESTORED
+                # (row 176). Exactly four lines: see the appendix's note on :904.
+                if attr == "folder_location":
+                    return f"{get_search_key(attr, sort_type, is_show)}{(modifier_translation[modifier] if modifier in modifier_translation else modifier) if mod is None else mod}={arg}&"
                 arg_key = search_translation[attr] if attr in search_translation else attr
                 arg_key = show_translation[arg_key] if is_show and arg_key in show_translation else arg_key
                 if mod is None:
@@ -981,58 +986,203 @@ def build_filter(method, plex_filter, sort_type, default_sort=None):
     return type_key, filter_url
 
 
+# --- modules/plex.py:668-715 (season_sorts, episode_sorts) --------------------
+# APPENDED HERE rather than beside ``sort_types`` at :526, and the reason is
+# mechanical: ten by-line citations into this file point at lines below :530,
+# so an insertion there moves every one of them onto a different construct
+# while still resolving -- the exact failure
+# ``tests/test_citation_anchors.py``'s own docstring exists to describe.
+# ``sort_types`` is read INSIDE ``build_filter`` at call time, so two entries
+# added after the function is defined are in the table by the time it runs.
+# Verbatim from v2.4.8; the values carry ``%2C`` inside themselves, which is
+# what the shipped movie/show tables do not.
+season_sorts = {
+    "season.asc": "season.index%2Cseason.titleSort",
+    "season.desc": "season.index%3Adesc%2Cseason.titleSort",
+    "show.asc": "show.titleSort%2Cindex",
+    "show.desc": "show.titleSort%3Adesc%2Cindex",
+    "user_rating.asc": "userRating",
+    "user_rating.desc": "userRating%3Adesc",
+    "added.asc": "addedAt",
+    "added.desc": "addedAt%3Adesc",
+    "random": "random",
+}
+episode_sorts = {
+    "title.asc": "titleSort",
+    "title.desc": "titleSort%3Adesc",
+    "show.asc": "show.titleSort%2Cseason.index%3AnullsLast%2Cepisode.index%3AnullsLast%2Cepisode.originallyAvailableAt%3AnullsLast%2Cepisode.titleSort%2Cepisode.id",
+    "show.desc": "show.titleSort%3Adesc%2Cseason.index%3AnullsLast%2Cepisode.index%3AnullsLast%2Cepisode.originallyAvailableAt%3AnullsLast%2Cepisode.titleSort%2Cepisode.id",
+    "year.asc": "year",
+    "year.desc": "year%3Adesc",
+    "originally_available.asc": "originallyAvailableAt",
+    "originally_available.desc": "originallyAvailableAt%3Adesc",
+    "episode_originally_available.asc": "episode.originallyAvailableAt",
+    "episode_originally_available.desc": "episode.originallyAvailableAt%3Adesc",
+    "release.asc": "originallyAvailableAt",
+    "release.desc": "originallyAvailableAt%3Adesc",
+    "episode_release.asc": "episode.originallyAvailableAt",
+    "episode_release.desc": "episode.originallyAvailableAt%3Adesc",
+    "critic_rating.asc": "rating",
+    "critic_rating.desc": "rating%3Adesc",
+    "audience_rating.asc": "audienceRating",
+    "audience_rating.desc": "audienceRating%3Adesc",
+    "user_rating.asc": "userRating",
+    "user_rating.desc": "userRating%3Adesc",
+    "duration.asc": "duration",
+    "duration.desc": "duration%3Adesc",
+    "progress.asc": "viewOffset",
+    "progress.desc": "viewOffset%3Adesc",
+    "plays.asc": "viewCount",
+    "plays.desc": "viewCount%3Adesc",
+    "added.asc": "addedAt",
+    "added.desc": "addedAt%3Adesc",
+    "viewed.asc": "lastViewedAt",
+    "viewed.desc": "lastViewedAt%3Adesc",
+    "resolution.asc": "mediaHeight",
+    "resolution.desc": "mediaHeight%3Adesc",
+    "bitrate.asc": "mediaBitrate",
+    "bitrate.desc": "mediaBitrate%3Adesc",
+    "random": "random",
+}
+# --- modules/plex.py:779-787, the two entries the note at :527 removed --------
+sort_types["season"] = ("season.asc", 3, season_sorts)
+sort_types["episode"] = ("title.asc", 4, episode_sorts)
+
+
+# --- the FILTER-SCHEMA fixture, shared BY VALUE with tests/test_collection_search_oracle.py
+# Roadmap row 176. ``CHOICES`` above stands in for ``get_search_choices`` (the
+# VALUES a filter offers); this stands in for ``LibrarySection.listFilters``
+# (the FIELDS the library offers at all), which is a different network read and
+# the only one Kometa's search grammar makes to decide a FIELD rather than a
+# value. Shaped like plexapi's ``FilteringFilter`` rows -- ``(filter, title)``,
+# the two members ``get_search_key`` reads (plexapi/library.py:2878-2897).
+# Placed here rather than beside ``CHOICES`` -- APPENDED, for the same reason
+# ``get_search_key`` below is: an insertion beside ``CHOICES`` would shift
+# every by-line citation into the translation tables and configs that follow
+# it, which this file's whole citation web depends on staying put.
+#
+# Transcribed from the live probe of 2026-09-06
+# (docs/research/plex-search-probe/listfilters-folder-location.md), not guessed.
+# The observed key is ``location``, not ``source`` -- the probe's substitution
+# rule fires here. ``genre`` leads each tuple deliberately: a driver that
+# returned the FIRST filter rather than the matching one would produce a
+# different golden, and these two configs are what would catch it.
+FILTERS = {
+    "movie": (("genre", "Genre"), ("location", "Folder Location")),
+    "show": (("genre", "Genre"),),
+    "season": (),
+    "episode": (("genre", "Genre"), ("location", "Folder Location")),
+}
+
+
+# --- modules/plex.py:1283-1298 (Library.get_search_key) -----------------------
+# Roadmap row 176, and the branch the ``# REMOVED:`` comment inside
+# ``build_url_arg`` used to stand for. APPENDED here for E-2's reason (facts
+# C4, restated by row 176's C6): every by-line citation into this file points
+# at a line below :530, so an insertion beside the construct it belongs to
+# would move all of them onto different constructs while still resolving.
+# ``build_url_arg`` reads this name at CALL time, so a function defined after
+# it is in scope by the time it runs -- the same argument the ``sort_types``
+# entries above make.
+#
+# The in-place edit this replaced is four lines because seven by-line citations
+# point at :909 and below; a longer or shorter one moves every one of them onto
+# a neighbouring line that may still contain its anchor, which is the guard's
+# own stated blind spot (tests/test_citation_anchors.py:59-64). That is also
+# why the branch re-spells the modifier lookup instead of falling through to
+# :910-911.
+#
+# REPLACES the network read: ``self.Plex.listFilters(filter_type)`` becomes
+# ``FILTERS`` above, in the same ``(filter, title)`` shape.
+#
+# REMOVED: the two ``final_search`` lines (:1284-1285) and the
+# ``return final_search`` tail (:1298). They serve every OTHER attribute, and
+# ``build_url_arg`` calls this function for ``folder_location`` alone -- it
+# returns (:907) before the translation tables are applied (:908-909), unlike
+# upstream's ``arg_key``, which still falls through ``show_translation``
+# (modules/builder.py:4180). Harmless here because ``show_translation``
+# (modules/plex.py:168-193) holds neither ``location`` nor ``episode.location``.
+#
+# The signature differs from upstream's ``(self, search_name, libtype=None)``
+# for the reason the whole file's signatures differ: with no Builder and no
+# Library, the two facts the method reads off ``self`` are parameters.
+# ``sort_type`` is upstream's ``libtype`` argument, which ``build_url_arg``
+# passes as the SEARCH type (modules/builder.py:4179); ``is_show`` is
+# ``self.is_show``, the LIBRARY kind. They are two different questions, which
+# is exactly what E-2 un-conflated at :857-858.
+def get_search_key(search_name, sort_type, is_show):
+    filter_type = sort_type
+    if is_show and filter_type == "show":
+        filter_type = "episode"  # Plex only exposes a folder filter for shows at the episode libtype
+    filters = FILTERS.get(filter_type, ())
+    try:
+        folder_filter = next(
+            f for f in filters
+            if f[0] == "source"
+            or str(f[1]).lower().replace(" ", "_") == "folder_location"
+        )
+    except StopIteration:
+        available_filters = [f[0] for f in filters]
+        raise Failed(
+            f'Unknown filter field "{search_name}" for libtype "{filter_type}". '
+            f"Available filters: {available_filters}"
+        ) from None
+    # Prefix so get_tags() resolves against "episode" instead of self.Plex.TYPE ("show")
+    return f"episode.{folder_filter[0]}" if is_show and filter_type == "episode" else folder_filter[0]
+
+
 # --- the seventeen configs, in KOMETA'S spelling -----------------------------
 # Config 7 is the one place the two spellings differ: ours writes the second
 # duration as ``2:30``, which is 9a's own written form (``_as_minutes``) and has
 # no Kometa equivalent. The MINUTE VALUE is identical -- 150 -- which is the
 # point of the comparison.
 CONFIGS = [
-    ("movie", {"all": {"content_rating": ["PG-13", "R"]}}),
-    ("movie", {
+    ("movie", "movie", {"all": {"content_rating": ["PG-13", "R"]}}),
+    ("movie", "movie", {
         "any": {"studio": "A24", "year.gte": 2020},
         "sort_by": "critic_rating.desc", "limit": 25,
     }),
-    ("movie", {"all": {
+    ("movie", "movie", {"all": {
         "content_rating": "PG-13",
         "any": [{"studio": "A24", "year.gte": 2020}, {"genre": "Horror"}],
     }}),
-    ("movie", {"all": {
+    ("movie", "movie", {"all": {
         "year.gte": 2000, "all": {"studio": "A24", "critic_rating.gte": 8},
     }}),
-    ("movie", {"all": {
+    ("movie", "movie", {"all": {
         "added": 30, "release.not": "6o", "last_played.not": "2y",
     }}),
-    ("movie", {"all": {
+    ("movie", "movie", {"all": {
         "release.after": "2000-01-01", "added.before": "12/25/2020",
     }}),
-    ("movie", {"all": {"duration.gt": 90, "duration.lte": 150}}),
-    ("movie", {"all": {
+    ("movie", "movie", {"all": {"duration.gt": 90, "duration.lte": 150}}),
+    ("movie", "movie", {"all": {
         "critic_rating.rated": True, "audience_rating.rated": False,
     }}),
-    ("movie", {"all": {"unplayed": True, "progress": False}}),
-    ("movie", {"all": {
+    ("movie", "movie", {"all": {"unplayed": True, "progress": False}}),
+    ("movie", "movie", {"all": {
         "studio.begins": "Warner Bros",
         "studio.not": "Hallmark & Co",
         "studio.is": "A24",
     }}),
-    ("movie", {
+    ("movie", "movie", {
         "all": {"year.gte": 2010},
         "sort_by": ["critic_rating.desc", "title.asc"], "limit": 100,
     }),
-    ("show", {
+    ("show", "show", {
         "all": {
             "genre": "Drama", "resolution": "1080", "audio_language": "en",
             "network": "HBO", "added.after": "2024-01-01",
         },
         "sort_by": "episode_added.desc", "limit": 10,
     }),
-    ("movie", {"all": {"audio_language": "es"}}),
+    ("movie", "movie", {"all": {"audio_language": "es"}}),
     # 14: the only config whose multi-term join sits under ``any``. Configs 1
     # and 13 pin that join under ``all``, so without this one a renderer that
     # hard-codes ``and=1&`` between the terms of a single written key passes
     # every oracle case -- which is the self-agreement the oracle exists to
     # escape (Task 3 review, Minor 3).
-    ("movie", {"any": {"content_rating": ["PG-13", "R"]}}),
+    ("movie", "movie", {"any": {"content_rating": ["PG-13", "R"]}}),
     # 15: the render classes and the rows the first fourteen never reach
     # (whole-branch review, Minor 1). ``studio.isnot`` is the only modifier
     # wire string (``!%3D``) absent from every other golden; ``studio.ends``
@@ -1044,7 +1194,7 @@ CONFIGS = [
     # by 60000 and prints a float, so the plain-int branch was unpinned. The
     # rows ``label``, ``collection`` and ``plays`` pass through the oracle here
     # for the first time.
-    ("movie", {"all": {
+    ("movie", "movie", {"all": {
         "genre.not": "Horror",
         "studio.isnot": "A24",
         "studio.ends": "Pictures & Co",
@@ -1058,18 +1208,18 @@ CONFIGS = [
     # (builder.py:4242-4248 takes it through the same multi-term branch as the
     # tag rows, but validate_attribute returned ints); ``country`` is an
     # ordinary tag resolved to its key.
-    ("movie", {"all": {"decade": 1980, "country": "France"}}),
+    ("movie", "movie", {"all": {"decade": 1980, "country": "France"}}),
     # 17: ``country`` on a SHOW library, which is the only thing about either
     # row that a movie config cannot reach -- show_translation re-scopes it to
     # ``show.country`` (plex.py:170) and a row that forgot the rescoping would
     # build a query Plex answers with the wrong set rather than with an error.
-    ("show", {"all": {"country": "France"}}),
+    ("show", "show", {"all": {"country": "France"}}),
     # 18: the search-tails-1 rows on a movie library -- the text pair through
     # the STRING branch (``title`` on its bare field; ``edition.begins``
     # through search_translation's ``editionTitle``, plex.py:64 here at :88)
     # and all five media booleans on their bare movie fields, ``duplicate``
     # legal here alone (movie_only_searches, :282).
-    ("movie", {"all": {
+    ("movie", "movie", {"all": {
         "title": "Dune",
         "edition.begins": "Director",
         "hdr": True,
@@ -1084,7 +1234,7 @@ CONFIGS = [
     # composed), ``hdr``/``dovi``/``trash`` to the EPISODE libtype (:184-188)
     # and ``unmatched`` to ``show.unmatched`` (:175). ``duplicate`` is
     # movie-only and absent by law.
-    ("show", {"all": {
+    ("show", "show", {"all": {
         "title.isnot": "Dune",
         "edition.ends": "Cut",
         "hdr": True,
@@ -1096,12 +1246,12 @@ CONFIGS = [
     # show_translation entry (:178) is the one thing a movie config cannot
     # reach; a wrong or absent rescope would send the bare ``actor`` field
     # and Plex would answer with the wrong set, not an error.
-    ("show", {"all": {"actor": "Uma Thurman"}}),
+    ("show", "show", {"all": {"actor": "Uma Thurman"}}),
     # 21: the people rows on a movie library -- ``actor``'s bare field beside
     # a movie-only crew row (``director``, movie_only_searches :275), both
     # resolved to keys through CHOICES like every tag. One config cannot hold
     # both halves: ``director`` on a show library is refused upstream.
-    ("movie", {"all": {"actor": "Uma Thurman", "director": "Sofia Coppola"}}),
+    ("movie", "movie", {"all": {"actor": "Uma Thurman", "director": "Sofia Coppola"}}),
     # 22: search-tail E-1 -- all twenty family-E rows on a SHOW library at the
     # show search level (``sort_type = "show"``, type 2), one config because
     # every one of them is legal there and none is legal anywhere else. Each
@@ -1113,7 +1263,7 @@ CONFIGS = [
     # (``8.0``-style floats, ``!=-1`` for rated), ``episode_year.gte`` through
     # the year branch, and the six booleans both ways (``=1`` / ``!=1``). A
     # limit and a show sort so the head is pinned too.
-    ("show", {
+    ("show", "show", {
         "all": {
             "season_collection": "Specials",
             "season_label": "Overlay",
@@ -1138,12 +1288,40 @@ CONFIGS = [
         },
         "sort_by": "episode_added.desc", "limit": 5,
     }),
+    ("season", "show", {
+        "all": {"season_collection": "Specials", "season_label": "Overlay"},
+    }),
+    ("episode", "show", {
+        "all": {
+            "episode_title.begins": "Pilot",
+            "episode_added": 30,
+            "episode_unplayed": True,
+            "show_unmatched": False,
+        },
+        "limit": 5,
+    }),
+    # 25: roadmap row 176 -- ``folder_location`` on a MOVIE library. The only
+    # attribute in Kometa's search grammar whose FIELD is a function call
+    # (builder.py:4179): ``get_search_key`` reads the filter schema and answers
+    # ``location`` here, so the term is ``location=<key>`` and not
+    # ``folder_location=<key>``. ``genre`` leads FILTERS["movie"], so a driver
+    # taking the first filter rather than the matching one fails this config.
+    ("movie", "movie", {"all": {"folder_location": "/mnt/media/Movies"}}),
+    # 26: the same row on a SHOW library, which is the half a movie config
+    # cannot reach. ``is_show`` forces ``filter_type = "episode"``
+    # (plex.py:1288-1289) and the returned key is PREFIXED ``episode.`` on
+    # purpose (:1297) -- the prefix is the URL term AND the enumeration scope,
+    # which is the mirror image of ``ENUMERATES_AS``. A transcription that kept
+    # the show libtype would send ``location=`` and Plex would answer nothing.
+    ("show", "show", {"all": {"folder_location": "/mnt/media/TV"}}),
 ]
 
 
 def main():
-    for index, (libtype, plex_filter) in enumerate(CONFIGS, start=1):
-        _, url = build_filter("plex_search", plex_filter, libtype)
+    for index, (sort_type, library_kind, plex_filter) in enumerate(CONFIGS, start=1):
+        _, url = build_filter(
+            "plex_search", plex_filter, sort_type, library_kind=library_kind
+        )
         print(f"{index} {url}")
 
 

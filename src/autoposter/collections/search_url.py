@@ -43,6 +43,7 @@ from typing import Protocol
 from urllib.parse import quote
 
 from autoposter.collections.filters import (
+    DISCOVERED,
     SEARCH_MODIFIERS,
     FilterGroup,
     FilterPredicate,
@@ -79,10 +80,20 @@ class TagResolver(Protocol):
     A ``resolve_tag`` whose config never writes ``.regex`` in a search never
     needs to implement it -- ``_arguments`` calls it only from the branch
     below.
+
+    ``discover_field`` (roadmap row 176) is the FIELD half, and it is asked for
+    exactly one row: ``folder_location``, whose ``search_field`` is the
+    ``DISCOVERED`` sentinel because Kometa cannot hard-code the field either
+    (``Library.get_search_key`` reads ``listFilters`` at run time,
+    modules/plex.py:1286-1297). It answers the query field for one attribute on
+    one library type, already re-scoped -- ``episode.<field>`` on a show library
+    -- and a ``resolve_tag`` whose config never writes ``folder_location`` never
+    needs to implement it, the same escape hatch ``choices`` has.
     """
 
     def __call__(self, attribute: str, value: str, /) -> tuple[str, ...]: ...
     def choices(self, attribute: str, /) -> tuple[tuple[str, str], ...]: ...
+    def discover_field(self, attribute: str, libtype: str, /) -> str: ...
 
 
 class TagValueNotFound(Exception):
@@ -98,9 +109,15 @@ class TagValueNotFound(Exception):
 
 
 class SearchAttributeNotAvailable(Exception):
-    """This attribute is real, but Plex will not answer it for this library
-    type. Its own class so the engine's class-name-only log line says so; the
-    same shape as ``LibraryTypeMismatch`` (builders/base.py:237-243)."""
+    """This attribute is real, but it will not be answered here.
+
+    Two cases, both refusals of a real name rather than of a typo: Plex will not
+    answer it for this LIBRARY TYPE (the original case, and the same shape as
+    ``LibraryTypeMismatch``, builders/base.py:237-243); or this service will not
+    answer it on this BUILDER -- ``folder_location`` under ``smart_filter``,
+    whose stored query would otherwise carry a run-time-discovered field into a
+    definition hash (roadmap row 176, ruling C5). Its own class so the engine's
+    class-name-only log line says so."""
 
 
 class SearchProducedNothing(Exception):
@@ -117,6 +134,7 @@ def build_search_url(
     group: FilterGroup,
     *,
     libtype: str,
+    search_type: str | None = None,
     sort_by: Sequence[str] = (),
     limit: int | None = None,
     resolve_tag: TagResolver,
@@ -132,19 +150,33 @@ def build_search_url(
     (builder.py:4287-4289). An ``all`` base has its trailing ``&`` stripped; an
     ``any`` base is wrapped in ``push=1&...pop=1`` instead, because a top-level
     OR needs a scope and the query string has no other way to give it one.
+
+    ``libtype`` and ``search_type`` are two different questions and this
+    function is where they part (search-tail E-2, roadmap rows 173/179).
+    ``search_type`` decides the ``type=`` byte, which sort matrix a name must
+    be in, and the encoded sort value; ``libtype`` decides which attributes
+    Plex will answer and whether a field renders as ``show.genre`` or bare.
+    They are the same for every definition that writes no ``builder_level``,
+    which is why ``search_type`` defaults to ``libtype`` and why every URL
+    built before E-2 is byte-identical after it. Kometa splits them the same
+    way and for the same reason: ``sort_type = self.builder_level``
+    (modules/builder.py:4093-4121) while ``show_translation`` applies
+    ``if self.library.is_show`` (:4176-4181), so a ``type=4`` search on a show
+    library still renders ``episode.title`` and ``show.genre``.
     """
     # The gate, as the FIRST statement -- ahead of ``_render_group`` and every
     # ``resolve_tag`` round-trip it makes. ``sort_argument`` indexes the
-    # libtype's table directly, so a sort that is real for the OTHER libtype
-    # -- ``episode_added.desc`` against a movie library -- would otherwise
-    # reach it as a bare ``KeyError``, which the engine reports as a dead
-    # source with no explanation. One site rather than two (Task 4 review,
-    # ruling on Minor 1): this function is public and pure, so it has to hold
-    # for every caller, not only ``PlexSearchBuilder``; and hoisting it above
-    # the body means a wrong-libtype sort refuses before this call resolves a
-    # single tag value, which used to require a second, earlier call at the
-    # builder's own call site.
-    require_sort_for_libtype(libtype, sort_by)
+    # search type's table directly, so a sort that is real for another search
+    # level -- ``episode_added.desc`` against a movie library -- would
+    # otherwise reach it as a bare ``KeyError``, which the engine reports as a
+    # dead source with no explanation. One site rather than two (Task 4
+    # review, ruling on Minor 1): this function is public and pure, so it has
+    # to hold for every caller, not only ``PlexSearchBuilder``; and hoisting it
+    # above the body means a wrong-libtype sort refuses before this call
+    # resolves a single tag value, which used to require a second, earlier
+    # call at the builder's own call site.
+    search_type = search_type or libtype
+    require_sort_for_libtype(search_type, sort_by)
     body = _render_group(group, libtype=libtype, resolve_tag=resolve_tag)
     if not body:
         raise SearchProducedNothing(
@@ -152,7 +184,7 @@ def build_search_url(
             "with the entire library"
         )
     tail = body[:-1] if group.op == "all" else f"push=1&{body}pop=1"
-    head = f"?type={SORT_TYPES[libtype].key}&"
+    head = f"?type={SORT_TYPES[search_type].key}&"
     # ``if limit``, not ``if limit is not None`` -- Kometa's own test
     # (builder.py:4289). A zero would otherwise emit ``limit=0&``, a byte Kometa
     # never sends and which Plex would answer with nothing at all. Kometa
@@ -162,7 +194,7 @@ def build_search_url(
     # the params model should not be able to build a query no server answers.
     if limit:
         head += f"limit={limit}&"
-    head += f"sort={sort_argument(libtype, sort_by)}&"
+    head += f"sort={sort_argument(search_type, sort_by)}&"
     return head + tail
 
 
@@ -233,7 +265,19 @@ def _render_predicate(
             f"where the query would match nothing at all. Narrow the definition "
             f"with `libraries:` so it only targets {kinds} libraries"
         )
-    field = row.field_for(libtype)
+    # THE one line in this module that asks for a field, and the one place a
+    # run-time-discovered field can enter a URL (roadmap row 176). Every row but
+    # ``folder_location`` answers from the table; that one holds the
+    # ``DISCOVERED`` sentinel and ``field_for`` raises on it, so the branch is
+    # not an optimisation -- it is the only path that produces a field at all.
+    # Kometa's own shape, one layer up: ``arg_key = get_search_key(attr, ...) if
+    # attr == "folder_location" else <the translation tables>``
+    # (modules/builder.py:4179), the only attribute in its grammar whose field
+    # is a function call.
+    if row.search_field is DISCOVERED:
+        field = resolve_tag.discover_field(row.name, libtype)
+    else:
+        field = row.field_for(libtype)
     conjunction = "and=1&" if block_op == "all" else "or=1&"
     args = _arguments(predicate, resolve_tag=resolve_tag)
     return "".join(

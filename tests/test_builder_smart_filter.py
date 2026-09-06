@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from autoposter.collections import smart
 from autoposter.collections.builders import REGISTRY
-from autoposter.collections.builders.base import SmartContext
+from autoposter.collections.builders.base import LibraryTypeMismatch, SmartContext
 from autoposter.collections.builders.smart_filter import SmartFilterBuilder
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
@@ -513,3 +513,117 @@ async def test_the_reconcilers_transport_refusal_is_returned_not_raised(
     assert len(actions) == 1
     assert actions[0].startswith("refused 'Recent Horror'")
     assert "ConnectionError" in actions[0]
+
+
+# --- search-tail E-2: builder_level types the stored query (roadmap rows 173/179)
+
+
+def test_an_episode_builder_level_types_the_smart_query_at_four(session):
+    """The same field, the same split, on the builder whose query Plex STORES.
+    ``smart_filter``'s default sort is ``random`` (Kometa's own call site,
+    modules/builder.py:1478), which is in every one of the four matrices, so
+    the only thing that moves here is the ``type=`` byte and the scoping."""
+    definition = _definition(
+        params={"all": {"episode_title.begins": "Pilot"}}, builder_level="episode",
+    )
+    url = SmartFilterBuilder().search_url(
+        _ctx(session, FakeSection(), definition, library_type="Show")
+    )
+    assert url.startswith("?type=4&")
+    assert "episode.title%3C=Pilot" in url
+
+
+def test_a_non_item_level_on_a_movie_library_refuses_in_search_url(session):
+    definition = _definition(
+        params={"all": {"genre": "Horror"}}, builder_level="episode",
+    )
+    with pytest.raises(LibraryTypeMismatch) as error:
+        SmartFilterBuilder().search_url(
+            _ctx(session, FakeSection(), definition, library_type="Movie")
+        )
+    assert "episode" in str(error.value) and "Movie library" in str(error.value)
+
+
+async def test_the_level_reaches_the_reconciler(session, monkeypatch):
+    """``apply`` is what turns the level into a Plex ``type=`` on the POST, and
+    the reconciler is where that byte is chosen. Pinned as the argument rather
+    than as the byte -- the byte itself is
+    ``tests/test_collection_smart.py``'s."""
+    seen = {}
+
+    async def fake_reconcile(*args, **kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "autoposter.collections.builders.smart_filter.reconcile_smart_collection",
+        fake_reconcile,
+    )
+    definition = _definition(
+        params={"all": {"episode_title.begins": "Pilot"}}, builder_level="episode",
+    )
+    await SmartFilterBuilder().apply(
+        _ctx(session, FakeSection(), definition, library_type="Show")
+    )
+    assert seen["level"] == "episode"
+
+
+def test_the_resolver_carries_the_computed_search_type(session, monkeypatch):
+    """Task 2 review, Important 2. ``search_url`` computes ``search_type``
+    (``libtype if level == "item" else level``) for ``build_search_url``
+    itself, but built its ``LibraryTagResolver`` without passing that same
+    value along -- so the resolver's own field discovery would ask
+    ``listFilters`` at the LIBRARY's kind rather than the SEARCH type the
+    moment a second ``DISCOVERED`` row exists, or C5 is ever lifted. Captured
+    at the resolver's constructor, not through ``discover_field``, because C5
+    refuses ``folder_location`` -- the one attribute that reads the search
+    type -- before this resolver is ever asked to discover anything."""
+    captured = {}
+
+    class CapturingResolver:
+        def __init__(self, ctx, section, libtype, *, search_type=None):
+            captured["search_type"] = search_type
+
+        def __call__(self, attribute, value):
+            return ("1",)
+
+    monkeypatch.setattr(
+        "autoposter.collections.builders.smart_filter.LibraryTagResolver",
+        CapturingResolver,
+    )
+    definition = _definition(
+        params={"all": {"episode_title.begins": "Pilot"}}, builder_level="episode",
+    )
+    SmartFilterBuilder().search_url(
+        _ctx(session, FakeSection(), definition, library_type="Show")
+    )
+    assert captured["search_type"] == "episode"
+
+
+def test_smart_filter_refuses_folder_location_by_name(session):
+    """Roadmap row 176, ruling C5. ``smart_definition_hash``
+    (collections/smart.py:225) hashes the BUILT URL, and for every other
+    attribute that URL is a pure function of the config. ``folder_location``'s
+    field is discovered from the server, so a smart collection naming it would
+    have a stored hash that is a function of the SERVER too -- and a Plex-side
+    rename of the filter would silently re-PUT every definition naming it
+    (``update_smart_collection``: replacing the stored filter is the only edit a
+    smart collection has, there is no partial one).
+
+    Refused rather than shipped-and-disclosed, so no definition hash in this
+    service is ever a function of anything but the config. The refusal is
+    contained to this definition like every other ``REFUSALS`` member, and it
+    names the builder that CAN answer the question."""
+    from autoposter.collections.search_url import SearchAttributeNotAvailable
+
+    ctx = _ctx(session, FakeSection(), _definition(
+        params={"all": {"folder_location": "/mnt/media/Movies"}}
+    ))
+
+    with pytest.raises(SearchAttributeNotAvailable) as error:
+        SmartFilterBuilder().search_url(ctx)
+
+    message = str(error.value)
+    assert "folder_location" in message
+    assert "plex_search" in message
+    assert "discovered" in message
