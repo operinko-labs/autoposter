@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
 import { ApiError } from "../api/client";
 import {
@@ -191,6 +191,7 @@ function OneFieldPane({
   action,
   busy,
   autoComplete,
+  clearAlways,
   onSubmit,
 }: {
   id: string;
@@ -200,16 +201,22 @@ function OneFieldPane({
   action: string;
   busy: boolean;
   autoComplete?: string;
-  onSubmit: (value: string) => void;
+  // The password pane's own exception (see PasswordPane): a wrong-password
+  // refusal clearing the field is correct, and it is not a paste the operator
+  // has to reconstruct.
+  clearAlways?: boolean;
+  onSubmit: (value: string) => Promise<boolean>;
 }) {
   const [value, setValue] = useState("");
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    onSubmit(value);
-    // Cleared rather than kept: nothing the wizard collects is ever displayed
-    // back, including by the field it was typed into.
-    setValue("");
+    const accepted = await onSubmit(value);
+    // Cleared only once the server has accepted the value (or for the
+    // password pane, always): a database or config refusal -- a typo in the
+    // DSN, a Plex URL rejected -- must not force the whole value to be
+    // retyped or re-pasted from wherever it came from.
+    if (accepted || clearAlways) setValue("");
   }
 
   return (
@@ -240,7 +247,7 @@ function PasswordPane({
 }: {
   busy: boolean;
   passwordSet: boolean;
-  onSubmit: (v: string) => void;
+  onSubmit: (v: string) => Promise<boolean>;
 }) {
   return (
     <>
@@ -252,6 +259,7 @@ function PasswordPane({
         action="Continue"
         busy={busy}
         autoComplete="new-password"
+        clearAlways
         onSubmit={onSubmit}
       />
       {passwordSet && (
@@ -265,7 +273,13 @@ function PasswordPane({
   );
 }
 
-function DatabasePane({ busy, onSubmit }: { busy: boolean; onSubmit: (v: string) => void }) {
+function DatabasePane({
+  busy,
+  onSubmit,
+}: {
+  busy: boolean;
+  onSubmit: (v: string) => Promise<boolean>;
+}) {
   return (
     <OneFieldPane
       id="setup-database"
@@ -280,7 +294,13 @@ function DatabasePane({ busy, onSubmit }: { busy: boolean; onSubmit: (v: string)
   );
 }
 
-function ConfigPane({ busy, onSubmit }: { busy: boolean; onSubmit: (v: string) => void }) {
+function ConfigPane({
+  busy,
+  onSubmit,
+}: {
+  busy: boolean;
+  onSubmit: (v: string) => Promise<boolean>;
+}) {
   return (
     <OneFieldPane
       id="setup-plex-url"
@@ -365,20 +385,52 @@ function ProvidersPane({
 }
 
 function WebhookSecret({ value }: { value: string }) {
+  const codeRef = useRef<HTMLElement | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "manual">("idle");
+
+  function selectCodeText() {
+    const node = codeRef.current;
+    const selection = node !== null ? window.getSelection() : null;
+    if (node === null || selection === null) return;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  async function copy() {
+    // `navigator.clipboard` is undefined outside a secure context -- exactly
+    // the shape a plain-HTTP compose deployment runs in, which is what this
+    // wizard is for -- so a missing API is one of the failure branches, never
+    // a silent no-op: this value is shown exactly once, and a click that does
+    // nothing reads as success to an operator who then moves on without it.
+    if (navigator.clipboard === undefined) {
+      selectCodeText();
+      setCopyStatus("manual");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyStatus("copied");
+    } catch {
+      selectCodeText();
+      setCopyStatus("manual");
+    }
+  }
+
   return (
     <div data-testid="webhook-secret">
       <p>Webhook secret — paste this into Sonarr and Radarr&apos;s webhook settings now:</p>
-      <code data-testid="webhook-secret-value" style={{ wordBreak: "break-all" }}>
+      <code ref={codeRef} data-testid="webhook-secret-value" style={{ wordBreak: "break-all" }}>
         {value}
       </code>
-      <button
-        type="button"
-        onClick={() => {
-          navigator.clipboard?.writeText(value).catch(() => undefined);
-        }}
-      >
+      <button type="button" onClick={copy}>
         Copy
       </button>
+      {copyStatus === "copied" && <p data-testid="webhook-copy-status">Copied</p>}
+      {copyStatus === "manual" && (
+        <p data-testid="webhook-copy-status">Select and copy the value above.</p>
+      )}
       <p>This will not be shown again.</p>
     </div>
   );

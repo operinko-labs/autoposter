@@ -227,4 +227,100 @@ describe("Setup", () => {
       );
     },
   );
+
+  it("keeps a typed database URL on a 400 (the database step's designed-for refusal)", async () => {
+    // /api/setup/database answers 400 by connecting and failing -- the single
+    // most likely outcome of this step, and the one Task 4 round 2 found
+    // wiped the whole connection string on every refusal.
+    const fetchMock = vi.fn(async (path: unknown, init?: RequestInit) => {
+      if (path === "/api/setup/database" && init?.method === "POST") {
+        return respond({ detail: "the database did not answer (OperationalError)" }, 400);
+      }
+      return respond(PROGRESS);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await waitFor(() => screen.getByLabelText("Database URL"));
+
+    fireEvent.change(screen.getByLabelText("Database URL"), {
+      target: { value: "postgresql+asyncpg://u:p@bad-host:5432/autoposter" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Test and continue" }));
+
+    await waitFor(() => screen.getByText("the database did not answer (OperationalError)"));
+    expect(screen.getByLabelText<HTMLInputElement>("Database URL").value).toBe(
+      "postgresql+asyncpg://u:p@bad-host:5432/autoposter",
+    );
+  });
+
+  it("clears the master password field on a wrong-password refusal regardless", async () => {
+    // The one OneFieldPane caller that keeps clearing unconditionally: a
+    // wrong-password 401 emptying the field is correct behaviour, not a paste
+    // the operator has to reconstruct.
+    const fetchMock = vi.fn(async (path: unknown) => {
+      if (path === "/api/setup/state") return respond({ setup: true, password_set: true });
+      if (path === "/api/setup/password") return respond({ detail: "invalid credentials" }, 401);
+      return respond({ detail: "not authenticated" }, 401);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await waitFor(() => screen.getByLabelText("Prove the master password"));
+
+    fireEvent.change(screen.getByLabelText("Prove the master password"), {
+      target: { value: "wrong-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => screen.getByText("invalid credentials"));
+    expect(screen.getByLabelText<HTMLInputElement>("Prove the master password").value).toBe("");
+  });
+
+  describe("the webhook secret's Copy control", () => {
+    async function renderWithSecret() {
+      const fetchMock = vi.fn(async (path: unknown, init?: RequestInit) => {
+        if (path === "/api/setup/providers" && init?.method === "POST") {
+          return respond({
+            providers: { ...PROGRESS.providers, AUTOPOSTER_TMDB_TOKEN: "***REDACTED***" },
+            webhook_secret: "row-121-generated-secret",
+          });
+        }
+        return respond(PROGRESS);
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<Setup />);
+      await waitFor(() => screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"));
+      fireEvent.change(screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"), {
+        target: { value: "pasted-value" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+      await waitFor(() => screen.getByTestId("webhook-secret-value"));
+    }
+
+    it("says Copied when the Clipboard API succeeds", async () => {
+      const writeText = vi.fn(async () => undefined);
+      vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+
+      await renderWithSecret();
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+      await waitFor(() => expect(screen.getByTestId("webhook-copy-status")).toHaveTextContent("Copied"));
+      expect(writeText).toHaveBeenCalledWith("row-121-generated-secret");
+    });
+
+    it("never clicks into silence when navigator.clipboard is unavailable (plain-HTTP compose)", async () => {
+      vi.stubGlobal("navigator", { ...navigator, clipboard: undefined });
+
+      await renderWithSecret();
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("webhook-copy-status")).toHaveTextContent(
+          "Select and copy the value above.",
+        ),
+      );
+    });
+  });
 });
