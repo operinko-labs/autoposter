@@ -117,6 +117,7 @@ def build_search_url(
     group: FilterGroup,
     *,
     libtype: str,
+    search_type: str | None = None,
     sort_by: Sequence[str] = (),
     limit: int | None = None,
     resolve_tag: TagResolver,
@@ -132,19 +133,33 @@ def build_search_url(
     (builder.py:4287-4289). An ``all`` base has its trailing ``&`` stripped; an
     ``any`` base is wrapped in ``push=1&...pop=1`` instead, because a top-level
     OR needs a scope and the query string has no other way to give it one.
+
+    ``libtype`` and ``search_type`` are two different questions and this
+    function is where they part (search-tail E-2, roadmap rows 173/179).
+    ``search_type`` decides the ``type=`` byte, which sort matrix a name must
+    be in, and the encoded sort value; ``libtype`` decides which attributes
+    Plex will answer and whether a field renders as ``show.genre`` or bare.
+    They are the same for every definition that writes no ``builder_level``,
+    which is why ``search_type`` defaults to ``libtype`` and why every URL
+    built before E-2 is byte-identical after it. Kometa splits them the same
+    way and for the same reason: ``sort_type = self.builder_level``
+    (modules/builder.py:4093-4121) while ``show_translation`` applies
+    ``if self.library.is_show`` (:4176-4181), so a ``type=4`` search on a show
+    library still renders ``episode.title`` and ``show.genre``.
     """
     # The gate, as the FIRST statement -- ahead of ``_render_group`` and every
     # ``resolve_tag`` round-trip it makes. ``sort_argument`` indexes the
-    # libtype's table directly, so a sort that is real for the OTHER libtype
-    # -- ``episode_added.desc`` against a movie library -- would otherwise
-    # reach it as a bare ``KeyError``, which the engine reports as a dead
-    # source with no explanation. One site rather than two (Task 4 review,
-    # ruling on Minor 1): this function is public and pure, so it has to hold
-    # for every caller, not only ``PlexSearchBuilder``; and hoisting it above
-    # the body means a wrong-libtype sort refuses before this call resolves a
-    # single tag value, which used to require a second, earlier call at the
-    # builder's own call site.
-    require_sort_for_libtype(libtype, sort_by)
+    # search type's table directly, so a sort that is real for another search
+    # level -- ``episode_added.desc`` against a movie library -- would
+    # otherwise reach it as a bare ``KeyError``, which the engine reports as a
+    # dead source with no explanation. One site rather than two (Task 4
+    # review, ruling on Minor 1): this function is public and pure, so it has
+    # to hold for every caller, not only ``PlexSearchBuilder``; and hoisting it
+    # above the body means a wrong-libtype sort refuses before this call
+    # resolves a single tag value, which used to require a second, earlier
+    # call at the builder's own call site.
+    search_type = search_type or libtype
+    require_sort_for_libtype(search_type, sort_by)
     body = _render_group(group, libtype=libtype, resolve_tag=resolve_tag)
     if not body:
         raise SearchProducedNothing(
@@ -152,7 +167,7 @@ def build_search_url(
             "with the entire library"
         )
     tail = body[:-1] if group.op == "all" else f"push=1&{body}pop=1"
-    head = f"?type={SORT_TYPES[libtype].key}&"
+    head = f"?type={SORT_TYPES[search_type].key}&"
     # ``if limit``, not ``if limit is not None`` -- Kometa's own test
     # (builder.py:4289). A zero would otherwise emit ``limit=0&``, a byte Kometa
     # never sends and which Plex would answer with nothing at all. Kometa
@@ -162,7 +177,7 @@ def build_search_url(
     # the params model should not be able to build a query no server answers.
     if limit:
         head += f"limit={limit}&"
-    head += f"sort={sort_argument(libtype, sort_by)}&"
+    head += f"sort={sort_argument(search_type, sort_by)}&"
     return head + tail
 
 

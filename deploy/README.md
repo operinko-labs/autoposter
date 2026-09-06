@@ -1263,13 +1263,48 @@ type.
 - **They select shows, not episodes.** `episode_title.begins: Pilot` builds
   the collection of shows *having* an episode whose title begins with
   `Pilot`, which is exactly what the same key does in Kometa under a show
-  collection. Collecting the matching episodes themselves — a collection
-  whose members are episodes — is the `builder_level` selector on a search
-  definition, which is not shipped yet. Until it is, a `builder_level:` on a
-  `smart_filter` definition is refused when the config loads, and one on a
-  `plex_search` definition loads but is not honoured — the search still runs
-  at the show level and the definition resolves to nothing. Leave
-  `builder_level` off search definitions until the selector lands.
+  collection. Collecting the matching episodes *themselves* — a collection
+  whose members are episodes — is the `builder_level:` selector, and it now
+  works on a search definition. `builder_level: episode` on a `plex_search`
+  or a `smart_filter` makes the query a `type=4` search: Plex answers with
+  episodes, and the collection holds episodes. `builder_level: season` does
+  the same at `type=3`. The predicates keep being scoped by the *library's*
+  kind, so `episode_title.begins: Pilot` is still written the same way and
+  still renders `episode.title` — what changes is what comes back.
+
+  Three things to know before you set it:
+
+  - **The sort has to match the level.** `sort_by: episode_added.desc` is a
+    *show* sort; an episode-level search has its own sort list and will refuse
+    that name, saying so. Pick a sort from the level you are searching, or
+    leave `sort_by` off and take the level's default.
+  - **An episode-level definition costs one extra walk of the library per
+    pass.** Resolving episode rating keys needs an episode-level index, which
+    is a second traversal of the whole library
+    (`section.search(libtype="episode")`). It is memoised per level per pass,
+    so ten episode-level definitions pay for it once — but on a 16,000-item
+    library that walk is a real per-pass cost, and it is paid whether the
+    search matched two episodes or two thousand. Item-level definitions pay
+    nothing: a pass with no season- or episode-level definition never
+    searches at all.
+  - **Adding `builder_level` to an *existing* smart collection is refused, not
+    applied.** Plex has no edit that re-levels a smart collection in place —
+    creating one at a new level takes a delete and a recreate, not a filter
+    edit — so this service refuses the update rather than PUT the new
+    level's filter onto a collection Plex created at the old one. The
+    collection is left exactly as it is, and the pass reports the refusal by
+    name. If you want the new level, delete the collection in Plex yourself
+    and let the next pass recreate it there — this service will not delete
+    it for you. The same refusal, worded the same way, also covers a smart
+    collection that was never this service's own to begin with — one another
+    tool created at a different level, such as an episode-level collection
+    Kometa built and this service would otherwise adopt — and one whose level
+    Plex does not report at all; both are left untouched, with no adoption
+    and no write.
+
+  `type:` — Kometa's own spelling of this selector — is still refused by
+  name, and the refusal says why: Kometa reads `type:` for playlists only,
+  and this service has one spelling of one selector rather than two.
 - **Show libraries only.** On a Movie library each name is refused by name;
   for nineteen of them that is Kometa's own refusal, and `episode_actor` is
   refused by this service's judgement because a movie library has no

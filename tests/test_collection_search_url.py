@@ -7,7 +7,9 @@ this file is what says WHICH branch broke when it does.
 import pytest
 
 from autoposter.collections.filters import parse_filters
+from autoposter.collections.search_sorts import EPISODE_SORTS, SEASON_SORTS
 from autoposter.collections.search_url import (
+    SearchAttributeNotAvailable,
     SearchProducedNothing,
     TagValueNotFound,
     build_search_url,
@@ -44,9 +46,11 @@ def resolve(attribute, value, /):
     return CHOICES.get((attribute, value), ())
 
 
-def url(raw, *, libtype="movie", base="all", **kwargs):
+def url(raw, *, libtype="movie", search_type=None, base="all", **kwargs):
     group = parse_filters(raw, field="params", searching=True, base=base)
-    return build_search_url(group, libtype=libtype, resolve_tag=resolve, **kwargs)
+    return build_search_url(
+        group, libtype=libtype, search_type=search_type, resolve_tag=resolve, **kwargs
+    )
 
 
 def test_a_single_tag_term_carries_the_resolved_key_not_the_written_word():
@@ -412,3 +416,58 @@ def test_every_family_e_row_refuses_on_a_movie_library_naming_the_kind():
         assert next(iter(raw)).split(".")[0] in message
         assert "show" in message
         assert "libraries:" in message
+
+
+def test_the_search_type_defaults_to_the_library_kind():
+    """The whole reason the split is invisible: every caller that passes only a
+    ``libtype`` gets the URL it got before, which is what makes all 22 oracle
+    goldens byte-identical and is the roadmap's own claim for this row."""
+    assert url({"genre": "Horror"}) == url({"genre": "Horror"}, search_type="movie")
+    assert url({"genre": "Horror"}, libtype="show") == (
+        url({"genre": "Horror"}, libtype="show", search_type="show")
+    )
+
+
+def test_an_episode_search_types_by_the_level_and_scopes_by_the_library():
+    """The split, in one string. ``type=4`` comes from the SEARCH level and
+    ``episode.title``/``show.unmatched`` from the LIBRARY's kind -- Kometa
+    applies ``show_translation`` because ``self.library.is_show``, whatever the
+    level is (modules/builder.py:4176-4181). Composed against ``EPISODE_SORTS``
+    rather than a retyped literal because that table is pinned by value against
+    the vendored driver, and a second spelling of it here would be a second
+    transcription."""
+    assert url(
+        {"episode_title.begins": "Pilot", "show_unmatched": False},
+        libtype="show", search_type="episode",
+    ) == (
+        "?type=4&sort=" + EPISODE_SORTS["title.asc"]
+        + "&episode.title%3C=Pilot&and=1&show.unmatched!=1"
+    )
+
+
+def test_a_season_search_carries_type_three():
+    assert url(
+        {"season_collection": "Specials"}, libtype="show", search_type="season",
+    ) == "?type=3&sort=" + SEASON_SORTS["season.asc"] + "&season.collection=301"
+
+
+def test_a_search_type_never_changes_which_attributes_are_legal():
+    """Job 4 keeps the LIBRARY kind, and it has to: every family-E row is
+    ``search_kinds=("show",)`` (they are library-kind columns, recon §2), so a
+    search type reaching ``_render_predicate`` would refuse all twenty of them.
+    A movie-only attribute is still refused on a show library at episode level,
+    and by the library's kind.
+
+    ``duration``, not the brief's original ``resolution``: ``resolution`` is
+    ``search_kinds=_BOTH`` (filters.py:770-792, and already proved legal on a
+    show library by ``test_a_show_library_gets_the_rescoped_fields`` above),
+    so it never raises here regardless of ``search_type`` -- confirmed
+    empirically (``pytest ... -k test_a_search_type_never_changes`` failed
+    ``DID NOT RAISE`` with ``resolution``). ``duration`` is
+    ``search_kinds=("movie",)`` and is what the docstring's "movie-only
+    attribute" actually names."""
+    with pytest.raises(SearchAttributeNotAvailable) as error:
+        url({"duration.gt": 90}, libtype="show", search_type="episode")
+    message = str(error.value)
+    assert "movie" in message
+    assert "show library" in message

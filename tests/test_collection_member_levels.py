@@ -98,6 +98,8 @@ class FakeCollection:
 class FakeSection:
     """A Show library that answers ``all()`` and ``search(libtype=...)``."""
 
+    key = 1
+
     def __init__(self, shows=(), episodes=(), seasons=(), existing=()):
         self._shows = list(shows)
         self._by_libtype = {"episode": list(episodes), "season": list(seasons)}
@@ -105,6 +107,12 @@ class FakeSection:
         self.all_calls = 0
         self.searches: list[str] = []
         self.created: dict[str, list] = {}
+        # Search-tail E-2: what a ``plex_search`` at episode level asks for.
+        self.fetch_calls: list[str] = []
+
+    def fetchItems(self, key):
+        self.fetch_calls.append(key)
+        return list(self._by_libtype["episode"])
 
     def all(self):
         self.all_calls += 1
@@ -395,14 +403,28 @@ async def test_a_non_item_level_on_a_movie_library_is_refused(
     assert "libraries:" in action and "Movie" in action
 
 
-def test_builder_level_is_refused_on_a_smart_builder():
-    """Rows 173/179 own the smart/`plex_search` side of this question. A
-    definition that asked for it here would load clean and never apply."""
+def test_builder_level_is_refused_on_a_smart_builder_that_cannot_read_it():
+    """Search-tail E-2 lifted this for ``smart_filter``, which now types its
+    stored filter by the level. The other four derive their own query and
+    would load clean and apply nothing."""
     with pytest.raises(Exception) as error:
         CollectionDefinition(
             title="Smart", builder="cs_bucket", builder_level="episode"
         )
-    assert "173" in str(error.value) and "179" in str(error.value)
+    message = str(error.value)
+    assert "cs_bucket" in message
+    assert "derives its own Plex search" in message
+
+
+def test_builder_level_is_accepted_on_smart_filter():
+    """The lift, from the other side. A ``smart_filter`` definition with a
+    level loads, because the level reaches Plex as the search's ``type=``."""
+    definition = CollectionDefinition(
+        title="Pilots", builder="smart_filter",
+        params={"all": {"episode_title.begins": "Pilot"}},
+        builder_level="episode",
+    )
+    assert definition.builder_level == "episode"
 
 
 def test_builder_level_is_refused_with_sync_to_mdb_list():
@@ -484,3 +506,33 @@ async def test_an_effective_episode_level_with_an_arr_tag_is_refused_not_sent(
     assert run.definitions[0].failed is True
     [action] = [a for a in run.actions if "Pilots" in a]
     assert "episode" in action
+
+
+# --- search-tail E-2: the real plex_search builder, through the real entry point
+
+
+async def test_a_plex_search_definition_at_episode_level_collects_episodes(session):
+    """Search-tail E-2 through the REAL ``run_library`` and the REAL
+    ``plex_search`` builder -- the entry-point law. The chain this proves end
+    to end is the one no helper test covers: ``definition.builder_level`` ->
+    ``build_search_url``'s ``search_type`` -> a ``type=4`` query ->
+    ``BuilderResult(level='episode')`` -> ``owned_index('episode')`` ->
+    ``resolve_external`` -> a collection whose members are episodes."""
+    section = _section()
+
+    run = await run_library(
+        session, section, "TV Shows", "Show",
+        [CollectionDefinition(
+            title="Pilots", builder="plex_search",
+            params={"all": {"episode_title.begins": "Pilot"}},
+            builder_level="episode",
+        )],
+        _config(), sources=SourceClients(),
+    )
+
+    assert section.fetch_calls == [
+        "/library/sections/1/all?type=4&sort=titleSort&episode.title%3C=Pilot"
+    ]
+    assert [i.title for i in section.created["Pilots"]] == ["S01E01", "S01E02"]
+    assert section.searches == ["episode"]
+    assert run.definitions[0].unresolved == 0

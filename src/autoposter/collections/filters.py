@@ -1551,12 +1551,15 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     # (builder.py:4122-4123), which is ``show`` (builder.py:994-995), so
     # ``episode_title.begins: Pilot`` renders
     # ``type=2&...&episode.title%3C=Pilot``: SHOWS having
-    # such an episode. That is what these rows do here, without any
-    # selector. Searching for the episodes THEMSELVES (``type=4``, the
-    # season/episode sort matrices, ``BuilderResult.level``) is E-2 -- the
-    # ``builder_level`` selector, roadmap row 179 as reframed -- and until it
-    # lands the ``type=`` term is the library's own. Oracle config 22 pins all
-    # twenty at ``type=2`` against the vendored driver.
+    # such an episode. That is what these rows do here with no
+    # ``builder_level``. Searching for the episodes THEMSELVES is
+    # search-tail E-2 (roadmap row 179 as reframed): a ``builder_level:
+    # season``/``episode`` on the definition becomes the ``type=`` term
+    # (``search_url.build_search_url``'s ``search_type``), while every field
+    # below keeps being scoped by the LIBRARY's kind -- which is why the
+    # ``search_kinds`` column of all twenty rows is ``("show",)`` and must
+    # stay so. Oracle config 22 pins all twenty at ``type=2``, and configs
+    # 23/24 pin the season and episode levels against the vendored driver.
     #
     # Two rows carry MECHANISM beyond the row (``episode_actor``,
     # ``episode_collection``): their enumeration scope is not the dotted

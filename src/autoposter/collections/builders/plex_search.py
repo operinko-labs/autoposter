@@ -58,6 +58,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from autoposter.collections.builders.base import (
     BuilderContext,
     BuilderResult,
+    LibraryTypeMismatch,
     SmartContext,
     require_library_type,
 )
@@ -129,9 +130,13 @@ _REFUSED_KEYS: dict[str, str] = {
     ),
     "type": (
         "`type:` selects the season, episode, album or track libtype "
-        "(modules/builder.py:4109-4121). This builder searches movie and show "
-        "libraries; accepting the key and ignoring it would be a setting that "
-        "reads as applied and is not"
+        "(modules/builder.py:4109-4121), and Kometa reads it for PLAYLISTS "
+        "only -- under a collection the search's level comes from "
+        "`builder_level` instead (modules/builder.py:4093-4121). This service "
+        "has ONE spelling of that selector: write `builder_level: season` or "
+        "`builder_level: episode` beside the builder, which both collection "
+        "and playlist definitions accept and which this builder honours. Two "
+        "spellings of one selector would be two ways to write one membership"
     ),
 }
 
@@ -349,6 +354,28 @@ class PlexSearchBuilder:
             "the 'plex_search' builder", ctx.library_type, ("Movie", "Show")
         )
         libtype = ctx.library_type.lower()
+        # Search-tail E-2 (roadmap rows 173/179). The definition's own
+        # ``builder_level`` IS the search level -- Kometa derives its
+        # ``sort_type`` from exactly the same field (modules/builder.py:4093-4121)
+        # and reads a ``type:`` key only for playlists, which is why ``type:``
+        # stays refused above. ``getattr`` rather than an attribute read: a
+        # direct caller may pass no definition at all, and every playlist and
+        # collection definition that does carries the field.
+        level = getattr(ctx.definition, "builder_level", "item")
+        # BEFORE the search, and beside ``require_library_type`` rather than in
+        # the engine: the engine's "seasons and episodes exist only in a Show
+        # library" guard runs after ``builder.build(ctx)`` returns, so without
+        # this a Movie library would send a ``type=4`` query at a movie section
+        # and be refused only afterwards.
+        if level != "item" and ctx.library_type != "Show":
+            raise LibraryTypeMismatch(
+                f"a 'builder_level: {level}' search asks a library for the "
+                f"{level}s inside its shows, but this pass is running against "
+                f"a {ctx.library_type} library, where it would match nothing at "
+                "all. Narrow the definition with `libraries:` so it only "
+                "targets Show libraries."
+            )
+        search_type = libtype if level == "item" else level
         access = ctx.sources.plex
         if access is None:
             raise PlexSearchUnavailable(
@@ -376,6 +403,7 @@ class PlexSearchBuilder:
         url = build_search_url(
             resolve_search_values(params.group, now=dt.datetime.now()),
             libtype=libtype,
+            search_type=search_type,
             sort_by=params.sort_by or (),
             limit=params.limit,
             resolve_tag=LibraryTagResolver(ctx, section, libtype),
@@ -401,7 +429,7 @@ class PlexSearchBuilder:
             ) from None
         ids = [("plex", str(item.ratingKey)) for item in items]
         logger.debug("plex_search: %d item(s)", len(ids))
-        return BuilderResult(ids=ids)
+        return BuilderResult(ids=ids, level=level)
 
 
 # Above ``LibraryTagResolver``, its only user, rather than at the bottom of the

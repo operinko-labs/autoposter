@@ -61,6 +61,9 @@ CHOICES = {
     ("audio_language", "es"): ("es-419", "es-MX", "spa"),
     ("label", "Overlay"): ("3",),
     ("collection", "The Fast and the Furious Collection"): ("77",),
+    # search-tail E-2's level configs (17): the vendored driver's own copy,
+    # tests/oracle/9b/kometa_build_filter.py:63.
+    ("season_collection", "Specials"): ("301",),
 }
 
 MACHINE_IDENTIFIER = "abc123"
@@ -146,9 +149,11 @@ CONFIGS = [
 ]
 
 # The libtype key Kometa sends as ``type`` in BOTH the query and the POST args:
-# 1 for movie, 2 for show (modules/plex.py:779-787). Kometa reads it off
-# ``build_filter``'s first return value, which is what the driver returns too.
-SMART_TYPE = {"movie": 1, "show": 2}
+# 1 for movie, 2 for show, and -- since search-tail E-2 -- 3 for a season
+# search and 4 for an episode one (modules/plex.py:779-787). Kometa reads it
+# off ``build_filter``'s first return value, which is what the driver returns
+# too, so this table is a restatement rather than a second decision.
+SMART_TYPE = {"movie": 1, "show": 2, "season": 3, "episode": 4}
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
 # ``tests/oracle/9c/kometa_smart_collection.py`` wrapping
@@ -361,3 +366,60 @@ def test_config_16_differs_from_config_1_only_in_the_sort():
     assert KOMETA_POST["1-multi-value-tag"].replace(
         "sort%3DtitleSort", "sort%3Drandom"
     ) == KOMETA_POST["16-random-default-sort"]
+
+
+# (id, search_type, library_kind, params, default_sort) -- search-tail E-2's
+# two, whose SEARCH type is not the library's kind. Separate from CONFIGS
+# above so the sixteen pinned envelopes keep their shape exactly.
+LEVEL_CONFIGS = [
+    ("17-season-level-on-a-show", "season", "show",
+     {"all": {"season_collection": "Specials"}}, None),
+    ("18-episode-level-on-a-show", "episode", "show",
+     {"all": {"episode_title.begins": "Pilot"}}, None),
+]
+
+KOMETA_POST_LEVELS = {
+    "17-season-level-on-a-show": "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=3&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D3%26sort%3Dseason.index%252Cseason.titleSort%26season.collection%3D301",
+    "18-episode-level-on-a-show": "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=4&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D4%26sort%3DtitleSort%26episode.title%253C%3DPilot",
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "search_type", "library_kind", "params", "default_sort"),
+    LEVEL_CONFIGS, ids=[c[0] for c in LEVEL_CONFIGS],
+)
+def test_a_level_envelope_is_byte_identical_to_kometas(
+    name, search_type, library_kind, params, default_sort
+):
+    """The smart collection's own ``type=`` byte, against Kometa's. This file
+    already byte-pinned that byte for movie and show; search-tail E-2 makes it
+    reachable for season and episode, and ``smart.py``'s
+    ``COLLECTION_TYPES[...]`` is the shipped side of the same pin."""
+    base = "all" if "all" in params else "any"
+    group = parse_filters(params[base], field="params", searching=True, base=base)
+    sort_by = (default_sort,) if default_sort else ()
+    ours = build_search_url(
+        group, libtype=library_kind, search_type=search_type,
+        sort_by=sort_by, limit=params.get("limit"), resolve_tag=resolve,
+    )
+    driver = load(SMART_DRIVER)
+    key = driver.create_smart_collection(
+        TITLE, SMART_TYPE[search_type], ours, item_count=7,
+    )
+    assert key == KOMETA_POST_LEVELS[name]
+
+
+def test_the_smart_driver_still_produces_the_pinned_level_strings():
+    """Both drivers end to end, ours nowhere in sight -- the same guard
+    ``test_the_smart_driver_still_produces_the_pinned_strings`` is, for the two
+    configs whose search level is not their library kind."""
+    smart = load(SMART_DRIVER)
+    build = load(FILTER_DRIVER)
+    for name, search_type, library_kind, params, default_sort in LEVEL_CONFIGS:
+        type_key, uri_args = build.build_filter(
+            "smart_filter", params, search_type,
+            default_sort=default_sort, library_kind=library_kind,
+        )
+        assert smart.create_smart_collection(
+            TITLE, type_key, uri_args, item_count=7
+        ) == KOMETA_POST_LEVELS[name], name

@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from autoposter.collections import smart
 from autoposter.collections.builders import REGISTRY
-from autoposter.collections.builders.base import SmartContext
+from autoposter.collections.builders.base import LibraryTypeMismatch, SmartContext
 from autoposter.collections.builders.smart_filter import SmartFilterBuilder
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
@@ -513,3 +513,56 @@ async def test_the_reconcilers_transport_refusal_is_returned_not_raised(
     assert len(actions) == 1
     assert actions[0].startswith("refused 'Recent Horror'")
     assert "ConnectionError" in actions[0]
+
+
+# --- search-tail E-2: builder_level types the stored query (roadmap rows 173/179)
+
+
+def test_an_episode_builder_level_types_the_smart_query_at_four(session):
+    """The same field, the same split, on the builder whose query Plex STORES.
+    ``smart_filter``'s default sort is ``random`` (Kometa's own call site,
+    modules/builder.py:1478), which is in every one of the four matrices, so
+    the only thing that moves here is the ``type=`` byte and the scoping."""
+    definition = _definition(
+        params={"all": {"episode_title.begins": "Pilot"}}, builder_level="episode",
+    )
+    url = SmartFilterBuilder().search_url(
+        _ctx(session, FakeSection(), definition, library_type="Show")
+    )
+    assert url.startswith("?type=4&")
+    assert "episode.title%3C=Pilot" in url
+
+
+def test_a_non_item_level_on_a_movie_library_refuses_in_search_url(session):
+    definition = _definition(
+        params={"all": {"genre": "Horror"}}, builder_level="episode",
+    )
+    with pytest.raises(LibraryTypeMismatch) as error:
+        SmartFilterBuilder().search_url(
+            _ctx(session, FakeSection(), definition, library_type="Movie")
+        )
+    assert "episode" in str(error.value) and "Movie library" in str(error.value)
+
+
+async def test_the_level_reaches_the_reconciler(session, monkeypatch):
+    """``apply`` is what turns the level into a Plex ``type=`` on the POST, and
+    the reconciler is where that byte is chosen. Pinned as the argument rather
+    than as the byte -- the byte itself is
+    ``tests/test_collection_smart.py``'s."""
+    seen = {}
+
+    async def fake_reconcile(*args, **kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(
+        "autoposter.collections.builders.smart_filter.reconcile_smart_collection",
+        fake_reconcile,
+    )
+    definition = _definition(
+        params={"all": {"episode_title.begins": "Pilot"}}, builder_level="episode",
+    )
+    await SmartFilterBuilder().apply(
+        _ctx(session, FakeSection(), definition, library_type="Show")
+    )
+    assert seen["level"] == "episode"

@@ -19,6 +19,7 @@ from autoposter.collections.smart import (
     SmartCollectionUnavailable,
     SmartFilterMatchedNothing,
     count_matches,
+    create_smart_collection,
     reconcile_smart_collection,
     smart_definition_hash,
     smart_filter_uri,
@@ -51,6 +52,11 @@ KOMETA_POST_8 = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collect
 
 URL_15 = "?type=1&sort=titleSort&genre!=1138&and=1&studio!%3D=A24&and=1&studio%3E=Pictures%20%26%20Co&and=1&label=3&and=1&collection=77&and=1&viewCount%3E%3E=3&and=1&viewCount%3C=10"
 KOMETA_POST_15 = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=1&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26genre%21%3D1138%26and%3D1%26studio%21%253D%3DA24%26and%3D1%26studio%253E%3DPictures%2520%2526%2520Co%26and%3D1%26label%3D3%26and%3D1%26collection%3D77%26and%3D1%26viewCount%253E%253E%3D3%26and%3D1%26viewCount%253C%3D10"
+
+# The digest ``smart_definition_hash`` produces for config 1's URI with no
+# summary, no settings and no config. Recorded at d2a332c, BEFORE search-tail
+# E-2 touched search_url.py, and unchanged by it.
+SHIPPED_ITEM_LEVEL_HASH = "a0b9ad71f00bbf4de576642440659bb0de5acbdb6baace2529313cc9e961d820"
 
 
 class FakeContainer:
@@ -94,10 +100,13 @@ class FakeServer:
 class FakeCollection:
     """Mirrors plexapi's lazy ``labels``/``fields``: empty until ``reload()``."""
 
-    def __init__(self, title, labels=(), rating_key="12345", smart=True, summary=None):
+    def __init__(
+        self, title, labels=(), rating_key="12345", smart=True, summary=None, subtype="movie",
+    ):
         self.title = title
         self.ratingKey = rating_key
         self.smart = smart
+        self.subtype = subtype
         self.summary = summary
         self.titleSort = None
         self.collectionMode = None
@@ -726,3 +735,117 @@ async def test_a_list_collection_under_a_smart_definition_refuses(session):
     assert len(actions) == 1
     assert "shape conflict" in actions[0]
     assert await _row(session, "Movies", TITLE) is None
+
+
+# --- search-tail E-2: the creation type comes from the level, not the library kind
+
+
+def test_the_creation_type_comes_from_the_collection_types_table():
+    """``smart.py``'s last surviving ``1 if libtype == 'movie' else 2``. Row 88
+    replaced the same expression in ``reconcile.create_blank_collection`` and
+    its comment says why in as many words: that expression answered 'season'
+    and 'episode' with 'show', creating a real collection of the wrong kind and
+    reporting it as a success. A KeyError on an unknown libtype is the loud
+    failure that replaces it."""
+    from autoposter.collections.reconcile import COLLECTION_TYPES
+
+    assert COLLECTION_TYPES == {"movie": 1, "show": 2, "season": 3, "episode": 4}
+    section = FakeSection(matches=7)
+    create_smart_collection(section, "episode", TITLE, URL)
+    assert "type=4" in section._server.queries[0][0]
+
+
+async def test_an_episode_level_smart_create_posts_type_four(session):
+    """End to end through the reconciler, which is the seam ``smart_filter``
+    actually uses: the level chooses the POST's ``type``, and the library kind
+    no longer does."""
+    section = FakeSection(matches=7)
+    await reconcile_smart_collection(
+        session, section, "TV Shows", "Show", TITLE, URL, LABEL,
+        dry_run=False, level="episode",
+    )
+    assert "type=4" in section._server.queries[0][0]
+    assert section._server.queries[0][1] == "POST"
+
+
+async def test_an_agreeing_episode_level_smart_collection_proceeds_to_the_update(session):
+    """Branch review I-1: the agreeing branch of ``_level_conflict`` at a
+    non-item level, pinned through the real entry point. An existing
+    EPISODE-level smart collection under a definition that still asks for
+    episode level must not be caught by the refusal below -- ``have ==
+    want_level`` returns ``None`` and the pass proceeds to the PUT, the same
+    as the item-level case ``test_the_update_put_is_byte_identical_to_the_
+    oracles`` already pins one level over. Without this test, a mutation that
+    refuses whenever ``level != "item"`` leaves the suite green."""
+    existing = FakeCollection(TITLE, labels=[LABEL], smart=True, subtype="episode")
+    section = FakeSection(matches=7, existing=[existing])
+    actions = await reconcile_smart_collection(
+        session, section, "TV Shows", "Show", TITLE, URL, LABEL,
+        dry_run=False, level="episode",
+    )
+    assert section._server.queries[0][1] == "PUT"
+    assert any("updated" in action for action in actions)
+
+
+async def test_a_smart_collection_that_exists_at_another_level_is_refused(session):
+    """Task 3 review I-1: an existing SHOW-level smart collection whose
+    definition now asks for episode level. There is no PUT that re-levels a
+    smart collection, so this refuses -- the same call ``shape_conflict``
+    makes for a smart/list conversion, one axis over -- rather than PUTting
+    the episode-level filter onto the collection Plex created at show level.
+
+    Task 4 review I-3: the message names the collection and offers the delete
+    conditionally, mirroring ``shape_conflict``'s own wording exactly."""
+    existing = FakeCollection(TITLE, labels=[LABEL], smart=True, subtype="show")
+    section = FakeSection(matches=7, existing=[existing])
+    actions = await reconcile_smart_collection(
+        session, section, "TV Shows", "Show", TITLE, URL, LABEL,
+        dry_run=False, level="episode",
+    )
+    assert section._server.queries == []
+    assert actions == [
+        "level conflict: %r already exists in Plex at show level and this "
+        "definition asks for episode level. Plex has no PUT that re-levels "
+        "a smart collection, and this service will not delete and recreate "
+        "it. Either rename the definition so it builds a new collection, "
+        "or -- if %r is yours to delete -- delete it in Plex and let the "
+        "next pass create it." % (TITLE, TITLE)
+    ]
+    assert await _row(session, "TV Shows", TITLE) is None
+
+
+async def test_a_smart_collection_whose_level_cannot_be_read_is_refused(session):
+    """Task 4 review I-1: plexapi's ``Collection.subtype`` has no default, so
+    ``None`` means the running plexapi no longer carries it -- not "no level
+    recorded". The update must fail CLOSED: refuse rather than guess and PUT
+    the new level's filter onto a collection whose own level is unknown."""
+    existing = FakeCollection(TITLE, labels=[LABEL], smart=True, subtype=None)
+    section = FakeSection(matches=7, existing=[existing])
+    actions = await reconcile_smart_collection(
+        session, section, "TV Shows", "Show", TITLE, URL, LABEL,
+        dry_run=False, level="episode",
+    )
+    assert section._server.queries == []
+    assert actions == [
+        "%r already exists in Plex and this service cannot read its level, "
+        "so it will not update it -- this definition asks for episode "
+        "level. Either confirm the collection's level in Plex, or -- if %r "
+        "is yours to delete -- delete it and let the next pass create it."
+        % (TITLE, TITLE)
+    ]
+    assert await _row(session, "TV Shows", TITLE) is None
+
+
+def test_the_item_level_smart_hash_is_unmoved():
+    """Facts C8, the only leg of the storm guard search-tail E-2 could have
+    moved. ``smart_definition_hash`` hashes the BUILT URI, and every
+    item-level URI is byte-identical after the kind/search-type split -- so no
+    existing smart collection re-writes its filter on the first pass after this
+    ships. A definition that NEWLY sets ``builder_level`` gets a different URI
+    and a legitimately different hash, which is a definition the operator just
+    edited rather than a storm.
+
+    A literal rather than a recomputation: recomputing the sha256 here would be
+    a second implementation of the thing being pinned, and would agree with any
+    change to the payload."""
+    assert smart_definition_hash(URL, None) == SHIPPED_ITEM_LEVEL_HASH
