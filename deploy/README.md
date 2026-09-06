@@ -163,10 +163,15 @@ one. Writes are atomic (temp file in the same directory, `fsync`,
 **Precedence, in one line: the environment wins.** A name set in the
 environment is used even when the file also carries it, so adding an
 ExternalSecret later takes effect at the next restart with no need to edit or
-delete anything under `/state` for the six hard names themselves. It is not
-free for the SOFT names the wizard writes, though: once all six hard names
-resolve from the environment, `resolve_secret_values` never opens
-`secrets.env` again, for any name. A deployment the wizard configured, whose
+delete anything under `/state` for the six hard names themselves — with one
+exception among them: `AUTOPOSTER_WEBHOOK_SECRET` must be **carried over from
+`secrets.env`, never regenerated**. The wizard mints it, shows it exactly once
+and it is the value Sonarr and Radarr were given; a fresh one in the Secret
+wins over the file, and every webhook then fails verification silently until
+both applications are updated. Copy the existing line out of `secrets.env`
+into the Secret. It is not free for the SOFT names the wizard writes either:
+once all six hard names resolve from the environment, `resolve_secret_values`
+never opens `secrets.env` again, for any name. A deployment the wizard configured, whose
 hard names are later handed to an ExternalSecret, must carry every soft name
 the wizard wrote into the environment (or the Secret) in that same change:
 `AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, and every provider key step 3
@@ -183,7 +188,11 @@ restart.
 
 Add a PVC and mount it; nothing else changes, and the deployment stays
 env-configured — every hard name plus the admin hash already comes from
-`envFrom: secretRef`, so it never enters setup mode under any circumstances:
+`envFrom: secretRef`, so it enters setup mode only if one of those six names
+stops resolving from the environment. That is one reachable case and it is
+bounded: see "The unauthenticated-form question" above, where the four
+ExternalSecret-supplied names are the door and the SOPS-held admin hash makes
+step 1 verify-only. The two manifest changes are:
 
 ```yaml
 # kubernetes/apps/media/autoposter/app/helmrelease.yaml, under values.persistence

@@ -653,6 +653,11 @@ def test_the_state_directory_is_documented_in_both_places_an_operator_looks():
     assert "autoposter-state" in deploy_readme  # the homeops PVC, by name
     assert "First-start setup" in deploy_readme
     assert "First start" in readme
+    # The one instruction in that section whose omission fails SILENTLY: the
+    # wizard mints AUTOPOSTER_WEBHOOK_SECRET, shows it once, and Sonarr and
+    # Radarr sign with it -- a Secret that supplies a fresh one wins over the
+    # state file, and every webhook then fails verification with nothing said.
+    assert "never regenerated" in deploy_readme
 
 
 def test_the_deploy_readme_no_longer_claims_migrations_always_run():

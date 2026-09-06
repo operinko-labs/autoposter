@@ -83,10 +83,13 @@ all, `docker compose up web api` boots into the wizard, served at
 `http://localhost:5173`. `api` alone also enters setup mode, but serves no
 page on a fresh checkout — see "Docker Compose" in `deploy/README.md`.
 
-What the wizard collects goes to `$AUTOPOSTER_STATE_DIR` (default `/state`) —
-never into the config document, and never into the database — and **the
-process environment always wins over that file**. Adding an ExternalSecret
-later takes effect at the next restart, but once ALL six hard names resolve
+Every **credential** the wizard collects goes to `$AUTOPOSTER_STATE_DIR`
+(default `/state`) — into `secrets.env` there, never into the config document
+and never into the database — and **the process environment always wins over
+that file**. (Step 4 does write a config document, to
+`$AUTOPOSTER_STATE_DIR/autoposter.yaml`, when the deployment has none: it
+holds the Plex URL and nothing secret.) Adding an ExternalSecret later takes
+effect at the next restart, but once ALL six hard names resolve
 from the environment the state file stops being read at all, for any name —
 at that point also carry every soft name the wizard wrote into the
 environment (or the Secret) in the same change: `AUTOPOSTER_ADMIN_PASSWORD_HASH`
