@@ -3,8 +3,213 @@
 ## Database
 
 The app needs `AUTOPOSTER_DATABASE_URL` pointing at a PostgreSQL database it owns
-(nothing else should write to it). Migrations run automatically at container
-startup (`alembic upgrade head`), so no manual migration step is needed.
+(nothing else should write to it). Migrations run once the container's
+entrypoint, `python -m autoposter.boot`, has decided this deployment is
+CONFIGURED — every hard credential resolves and a config document is
+readable — and only then: `alembic upgrade head`, followed by the
+application itself. The database is deliberately **not** part of that
+decision, so a configured deployment whose Postgres is not yet reachable
+behaves exactly as it always has: the migration fails, the container exits
+non-zero, and the orchestrator restarts it until the database answers.
+
+A deployment missing either half never reaches that migration at all. One
+missing credential is a first-start wizard's whole reason to exist — see
+"First-start setup" below. Credentials all present with no readable document
+is not a first start, though, and is refused rather than served the wizard:
+`boot` logs one line naming the two paths it looked at and exits non-zero,
+the same restart loop a missing document produced before this row existed.
+
+## First-start setup
+
+A deployment is CONFIGURED when both of two things are true: every hard
+credential resolves (the process environment first, the state file second;
+an empty environment value counts as absent on both sides) **and** a config
+document is readable (the `AUTOPOSTER_CONFIG` path when it exists, the state
+directory's `autoposter.yaml` otherwise). The database is not part of that
+decision — see "Database" above. **Every GitOps/ExternalSecrets deployment
+resolves both halves and is unaffected by anything in this section.**
+
+Short of that, there are two outcomes, and only one of them is a wizard:
+
+- **A hard credential is missing.** `python -m autoposter.boot` serves a
+  setup wizard on the same port instead of migrating and starting the
+  application — no alembic, no database session. This is the *only* door
+  into setup mode.
+- **Every credential resolves but no config document does.** Something
+  already configured this deployment, so a missing document (a renamed
+  ConfigMap key is the reachable shape) is that somebody's mistake, not a
+  first start. `boot` logs one line naming the two paths it looked at
+  (`AUTOPOSTER_CONFIG`'s value, or "unset", and the state directory's
+  `autoposter.yaml`) and exits non-zero — never the wizard.
+
+The wizard is a **second** application, mounting only `/api/setup/*` and the
+web UI; every other `/api` path answers a fixed 503. `GET /healthz` answers
+`200 {"status": "setup"}` — without it, this pod's liveness and readiness
+probes both fail (the HelmRelease points both at `httpGet /healthz` on 8080)
+and Kubernetes kills the container at roughly the failure threshold, before
+the Ingress ever routes to the wizard that could fix the deployment.
+
+### The unauthenticated-form question
+
+Until a master password exists, whoever reaches this port first sets it and
+becomes the admin — intrinsic to any first-start wizard, and the row's own
+containment is that the wizard exists only while unconfigured. Two facts
+narrow that further for this deployment specifically, read out of the
+manifests rather than assumed:
+
+- The pod is reached through the internal gateway (`route.scope: internal`),
+  never one facing the internet.
+- The admin password hash is supplied by the SOPS-held Secret, not the
+  ExternalSecret that can render empty. The only reachable way into setup
+  mode here is that ExternalSecret blanking the database URL or a provider
+  key — the admin hash still resolves regardless. So step 1 on this
+  deployment is **verify-only**: an unauthenticated caller on the internal
+  gateway meets a bcrypt-backed password prompt, rate-limited, with no token
+  issued and nothing written until it succeeds — the same bound
+  `POST /api/login` already has, not an open form.
+
+The genuinely unbounded case is a true first start, where nobody has ever set
+a password anywhere: whoever arrives first becomes admin there, which is what
+any first-start wizard accepts.
+
+### The five steps
+
+1. **Master password.** Bcrypt-hashed and written to the state file
+   immediately — it is a soft secret, unlike everything below — and every
+   later step requires the token this mints. With a hash already
+   persisted (a reload, a second tab, or an admin hash supplied by
+   environment while other credentials are still missing) this step
+   *verifies* rather than *sets*: the submitted password is checked against
+   the stored hash instead of becoming it.
+2. **The database URL**, validated by connecting before it is kept, so a
+   well-formed URL pointing at nothing is refused here rather than passing
+   this step and failing hours later with the wizard already gone. Staged in
+   memory, not written, until step 5.
+3. **Provider keys**, each optional; an already-stored one is reported as
+   stored and never displayed, and a blank field keeps what is already held
+   rather than clearing it. One name on this list, the Sonarr/Radarr webhook
+   secret, is not collected but generated: minted the first time this step
+   completes with none on record, returned **once**, in that one response
+   body, and never again — every later read, the plain `GET` included,
+   reports only whether it is stored. Submitting a value for it yourself is
+   refused outright.
+4. **The Plex server URL**, written into a config document derived from the
+   shipped example — offered only while no document already resolves. A
+   deployment whose document already resolves (a mounted ConfigMap, compose's
+   bind-mounted example) is told so and never offered this step: writing
+   beside a document that already resolves would produce a file the next
+   boot never reads, with the operator's Plex URL landing in it. The refusal
+   is a server rule (a direct `POST` is answered a fixed 400), not merely an
+   unoffered button.
+5. **Finish.** Steps 2–4 are staged in memory rather than persisted as they
+   are collected. This step writes the config document **first**, then the
+   secrets file, each atomically, then re-runs the same CONFIGURED check the
+   next boot will run — over what was actually just written, not over what
+   this process believes it wrote. Only if that agrees does it hand the
+   process over: an `os.execv` into a fresh `python -m autoposter.boot`,
+   which is what makes the exit atomic — the setup token, its routes and the
+   wizard's application object all cease to exist in the same instant the
+   process image is replaced, with nothing left to invalidate. A check that
+   disagrees names the unmet step and leaves the wizard running.
+
+   **Why document-first.** Both write orders have a crash window between the
+   two files landing, and only this order's window is survivable.
+   Interrupted after the document lands but before the secrets file does, the
+   hard secrets are still absent — the next boot is the wizard again, from
+   step 1. Interrupted the other way round would leave every credential
+   present and no document: the configuration-error case above, which exits
+   forever and is never served the wizard that could fix it. The same
+   reasoning is why steps 2–4 are staged rather than written as they are
+   collected in the first place: a wizard abandoned mid-way, or a pod evicted
+   between two writes, has to land on the recoverable side.
+
+Reloading the page mid-wizard loses everything past step 1 — the setup token
+lives only in that browser tab's memory, nowhere else, so a reload always
+returns to the password pane. Because step 1's hash is already persisted by
+then, that returning pane asks to **prove** the password rather than set it
+again, the same distinction the admin-hash-supplied-by-environment case above
+makes.
+
+### Where it writes
+
+`$AUTOPOSTER_STATE_DIR` (default `/state`), a **private** volume:
+
+| File | Mode | Contents |
+|---|---|---|
+| `secrets.env` | 0600 | `AUTOPOSTER_*=value` lines, exactly the names "Secrets" below lists |
+| `autoposter.yaml` | 0600 | the config document, read only when `AUTOPOSTER_CONFIG` does not resolve one |
+
+The directory is 0700 and must not be one of the NFS shares Kometa and
+Posterizarr also mount (see "Volumes" below) — these are credentials, and
+putting them on a shared mount is a disclosure decision rather than a storage
+one. Writes are atomic (temp file in the same directory, `fsync`,
+`os.replace`), so a reader always sees a whole file, never a partial one.
+
+**Precedence, in one line: the environment wins.** A name set in the
+environment is used even when the file also carries it, so adding an
+ExternalSecret later takes effect at the next restart with no need to edit or
+delete anything under `/state`. To rotate a credential the wizard wrote, set
+it in the environment (preferred) or edit `secrets.env` and restart.
+
+### Kubernetes
+
+Add a PVC and mount it; nothing else changes, and the deployment stays
+env-configured — every hard name plus the admin hash already comes from
+`envFrom: secretRef`, so it never enters setup mode under any circumstances:
+
+```yaml
+# kubernetes/apps/media/autoposter/app/helmrelease.yaml, under values.persistence
+      state:
+        existingClaim: autoposter-state
+        globalMounts:
+          - path: /state
+```
+
+```yaml
+# a new PVC beside it: 1Gi, RWO, not shared with anything
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: autoposter-state
+  namespace: media
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+and one environment entry beside the others:
+
+```yaml
+              AUTOPOSTER_STATE_DIR: /state
+```
+
+The pod already runs as uid/gid 568 with `fsGroup: 568` and
+`fsGroupChangePolicy: OnRootMismatch`, which is what gives the mount the
+ownership the 0700 directory needs.
+
+### Docker Compose
+
+`docker-compose.yml` declares a named `state` volume and
+`AUTOPOSTER_STATE_DIR=/state`, and `.env` is no longer required:
+`docker compose up api` with no `.env` boots into the wizard at
+`http://localhost:8081`. That stack's `api` service also already sets
+`AUTOPOSTER_CONFIG` to the example config bind-mounted in from the repository
+(`.:/app`), so a document always resolves there — what a compose deployment
+is actually missing, when it is missing anything, is credentials, and the
+wizard's step 4 is never offered on it.
+
+### A note on TLS
+
+The master password is posted in plaintext to the server, which hashes it —
+there is no other usable shape for a first-start wizard. In Kubernetes the
+pod is fronted by an HTTPRoute and the hop is TLS-terminated (see "The
+unauthenticated-form question" above for the rest of that deployment's
+containment); on compose the operator is on `http://localhost:8081` and
+nothing leaves the host. Do not expose an unconfigured deployment on a
+plain-HTTP route reachable from elsewhere: until the master password is set,
+whoever reaches the port first becomes the admin.
 
 ## Volumes
 

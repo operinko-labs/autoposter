@@ -59,6 +59,41 @@ to a bcrypt hash (never the plaintext) to allow logins — unset, every login
 attempt fails closed rather than skipping auth. See `deploy/README.md`'s
 "Web UI authentication" section for how to generate the hash.
 
+## First start
+
+Booting without every required credential no longer crashloops. The
+container's entrypoint (`python -m autoposter.boot`) re-derives, at every
+boot, whether every hard credential resolves (environment first, the state
+file second) and a config document is readable — never against the
+database, which stays exactly as reachable or unreachable as it always was.
+Missing a credential serves a first-start setup wizard on the same port
+instead of migrating and starting the application; credentials all present
+with no document is instead a configuration error, logged and non-zero, not
+the wizard. The wizard itself walks through the master password, the
+database URL, the provider keys and the Plex server URL, then restarts the
+service into the application.
+
+**Every GitOps/ExternalSecrets deployment supplies every hard credential and
+never sees any of this.** In this project's own Kubernetes deployment that
+means a PersistentVolumeClaim (`autoposter-state`, 1Gi, `ReadWriteOnce`)
+mounted at `/state` — the pod's existing `fsGroup: 568` already owns it — and
+one `AUTOPOSTER_STATE_DIR=/state` environment entry; nothing else changes.
+Docker Compose gets the same private volume by default, so `docker compose up
+api` on a fresh checkout with no `.env` boots into the wizard rather than
+refusing to start.
+
+What the wizard collects goes to `$AUTOPOSTER_STATE_DIR` (default `/state`) —
+never into the config document, and never into the database — and **the
+process environment always wins over that file**, so adding an
+ExternalSecret later takes effect at the next restart with nothing to edit or
+delete under `/state`. See "First-start setup" in `deploy/README.md` for the
+five steps, the file modes and the rotation story, and for the one bound this
+project's own deployment relies on: the wizard, unauthenticated until a
+master password exists, is reachable only over an internal gateway route,
+and — because the admin password hash there is supplied by environment
+before any other credential is — its first step is a login prompt to prove
+that password rather than an open form to set one.
+
 ## Notifications
 
 A configured URL receives a POST when a run completes — a scheduled pass

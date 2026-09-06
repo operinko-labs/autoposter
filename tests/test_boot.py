@@ -635,3 +635,41 @@ async def test_the_probe_reports_a_class_name_and_never_the_url():
     assert answered is False
     assert "row-121-db-secret" not in failure
     assert FAKE_DB_URL not in failure
+
+
+# --- the two places an operator looks --------------------------------------
+
+
+def test_the_state_directory_is_documented_in_both_places_an_operator_looks():
+    """``.env.example`` is the compose path and ``deploy/README.md`` is the
+    Kubernetes one (the tests/test_api_key.py rule). A first-start story
+    documented in neither is a feature nobody can find."""
+    env_example = (REPO / ".env.example").read_text(encoding="utf-8")
+    deploy_readme = (REPO / "deploy" / "README.md").read_text(encoding="utf-8")
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+
+    assert "AUTOPOSTER_STATE_DIR" in env_example
+    assert "AUTOPOSTER_STATE_DIR" in deploy_readme
+    assert "autoposter-state" in deploy_readme  # the homeops PVC, by name
+    assert "First-start setup" in deploy_readme
+    assert "First start" in readme
+
+
+def test_the_deploy_readme_no_longer_claims_migrations_always_run():
+    """`deploy/README.md:3-7` said migrations run automatically at container
+    startup. They now run only once the boot decision has said this deployment
+    is configured, and an operator debugging a pod that came up in setup mode
+    needs the document to say so."""
+    text = (REPO / "deploy" / "README.md").read_text(encoding="utf-8")
+
+    assert "autoposter.boot" in text
+    assert "Migrations run automatically at container\nstartup" not in text
+
+
+def test_the_compose_stack_mounts_a_private_state_volume():
+    compose = yaml.safe_load((REPO / "docker-compose.yml").read_text(encoding="utf-8"))
+    api = compose["services"]["api"]
+
+    assert "state:/state" in api["volumes"]
+    assert api["environment"]["AUTOPOSTER_STATE_DIR"] == "/state"
+    assert "state" in compose["volumes"]
