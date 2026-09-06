@@ -209,7 +209,12 @@ async def test_a_library_sized_pass_answers_inside_one_request(
 
     assert response.json() == {"total": 15_000, "queued": 15_000, "skipped": 0}
     print(f"\nfull pass over 15,000 items answered in {elapsed:.2f}s")
-    assert elapsed < 10.0, f"full pass took {elapsed:.2f}s for 15,000 items"
+    # 60 s, not 10: the bound separates one set-based insert (seconds) from
+    # a commit per item (minutes), and that is all it needs to separate. At
+    # 10 s it failed main once when two runs shared the runner (10.84 s,
+    # run 358) -- a wall-clock bound in CI has to leave room for a loaded
+    # host without losing what it proves.
+    assert elapsed < 60.0, f"full pass took {elapsed:.2f}s for 15,000 items"
 
 
 async def test_the_response_does_not_wait_on_the_webhook(
