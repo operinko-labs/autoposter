@@ -67,7 +67,7 @@ def test_an_empty_any_base_names_any_not_all():
 
 def test_a_non_mapping_base_is_refused_naming_its_own_key():
     """Kometa's other empty-base message (``{base} must be a dictionary``,
-    kometa_build_filter.py:973), reproduced alongside the blank one."""
+    kometa_build_filter.py:978), reproduced alongside the blank one."""
     with pytest.raises(ValidationError) as error:
         PlexSearchParams.model_validate({"all": ["genre: Horror"]})
     assert "`all:` must be a mapping" in str(error.value)
@@ -312,7 +312,7 @@ async def test_today_in_a_plex_search_date_predicate_resolves_to_the_real_moment
     a bare ``YYYY-MM-DD`` -- the same shape every other date on this path
     renders (``_as_date`` returns a ``dt.date``), and the shape Kometa's own
     driver renders too -- its ``.before``/``.after`` branch is
-    ``return_as="%Y-%m-%d"`` (``tests/oracle/9b/kometa_build_filter.py:809``)
+    ``return_as="%Y-%m-%d"`` (``tests/oracle/9b/kometa_build_filter.py:814``)
     -- not a full ISO timestamp. Tolerant of ``today``/``yesterday`` rather
     than a frozen clock, to survive a midnight boundary during the run."""
     today = dt.date.today()

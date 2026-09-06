@@ -694,10 +694,10 @@ def test_country_is_rescoped_for_a_show_library_and_decade_refuses_one():
 
 def test_the_text_rows_take_the_string_operators_and_rescope():
     """Row 170's two rows. ``title`` is the bare field re-scoped to
-    ``show.title`` (kometa_build_filter.py:175); ``edition`` is the one row in
+    ``show.title`` (kometa_build_filter.py:180); ``edition`` is the one row in
     the table that composes BOTH translation tables -- search_translation's
-    ``editionTitle`` (:97), then show_translation's entry for the TRANSLATED
-    name (:191). Both are dual-vocabulary on ``unprobed`` (the ``country``
+    ``editionTitle`` (:102), then show_translation's entry for the TRANSLATED
+    name (:196). Both are dual-vocabulary on ``unprobed`` (the ``country``
     pattern): a ``filters:`` block parses the key and refuses at the accessor
     by naming the tier."""
     from autoposter.collections.filter_values import (
@@ -729,10 +729,10 @@ def test_the_text_rows_take_the_string_operators_and_rescope():
 
 def test_the_media_booleans_are_search_only_and_libtype_gated():
     """Row 172's five rows. ``duplicate`` is movie-only (movie_only_searches,
-    kometa_build_filter.py:291), so a show library refuses it BY NAME;
+    kometa_build_filter.py:296), so a show library refuses it BY NAME;
     ``hdr``/``dovi``/``trash`` re-scope to the EPISODE libtype on a show
     library (:193-197) exactly as ``resolution`` does, and ``unmatched`` to
-    ``show.unmatched`` (:184) -- the SHOW level, because a match belongs to
+    ``show.unmatched`` (:189) -- the SHOW level, because a match belongs to
     the item and not the file. All five are ``search-only``: Kometa has no
     filter of any of these names (row 96's 29-name search-only list), so a
     ``filters:`` block refuses by pointing at the search block."""
@@ -1711,7 +1711,7 @@ def test_resolve_search_values_replaces_today_with_the_moments_date():
     (``_as_date`` returns one), so a resolved ``_Today`` has to match --
     Kometa's own driver truncates to the day too, its ``.before``/``.after``
     branch being ``return_as="%Y-%m-%d"``
-    (``tests/oracle/9b/kometa_build_filter.py:809``). A full ``datetime``
+    (``tests/oracle/9b/kometa_build_filter.py:814``). A full ``datetime``
     here would render ``YYYY-MM-DDTHH:MM:SS.ffffff``, which is a query
     string Plex does not parse as a date."""
     group = parse_filters({"release.after": "today"}, searching=True)
@@ -2430,12 +2430,12 @@ def test_a_collection_filtering_on_a_facts_row_is_refused_naming_row_156():
 # tests/oracle/9b/kometa_build_filter.py.
 # FIELD: ``episode_actor`` is dotted already (kometa_build_filter.py:94-128, plex.py:61-95).
 # KIND: ``season_collection`` is show-only (kometa_build_filter.py:302-360, plex.py:446-506).
-# TYPE, from the category lists: ``episode_title`` is string (kometa_build_filter.py:364).
-# ``episode_unmatched`` is boolean (kometa_build_filter.py:366-382).
+# TYPE, from the category lists: ``episode_title`` is string (kometa_build_filter.py:369).
+# ``episode_unmatched`` is boolean (kometa_build_filter.py:371-387).
 # ``episode_last_played`` is date (kometa_build_filter.py:385-401).
-# ``episode_year`` is year (kometa_build_filter.py:403).
-# ``episode_plays`` is number (kometa_build_filter.py:404).
-# ``episode_critic_rating`` is float (kometa_build_filter.py:406).
+# ``episode_year`` is year (kometa_build_filter.py:408).
+# ``episode_plays`` is number (kometa_build_filter.py:409).
+# ``episode_critic_rating`` is float (kometa_build_filter.py:411).
 # ``episode_label`` is tag (kometa_build_filter.py:409-430).
 # One tuple per row so a reviewer checks the TABLE against the TRANSCRIPTION
 # rather than against this file's prose. The order is roadmap row 173's,
@@ -2474,7 +2474,7 @@ def test_a_family_e_row_is_typed_and_routed_as_kometa_routes_it(name, value_type
     show-only in both kind columns; unfilterable; search-only. ``field_for``
     refuses a movie library rather than falling back, because a movie library
     has no episodes. For nineteen of the twenty that is Kometa's own refusal
-    (kometa_build_filter.py:914,
+    (kometa_build_filter.py:919,
     ``is_movie and final_attr in show_only_searches``); ``episode_actor`` is
     in neither of Kometa's kind lists and is show-only here by this table's
     own judgement -- a DECLARED DIVERGENCE, argued on its row note."""
@@ -2493,10 +2493,10 @@ def test_a_family_e_row_is_typed_and_routed_as_kometa_routes_it(name, value_type
 
 def test_episode_plays_takes_the_ranges_only_and_episode_year_the_full_int_set():
     """The ``plays``/``year`` split, repeated one level down. ``episode_plays``
-    is a ``number_attribute`` only (kometa_build_filter.py:404) and so takes
+    is a ``number_attribute`` only (kometa_build_filter.py:409) and so takes
     ``number_modifiers`` alone -- no bare form, no ``.not``
     (show_only_searches lists exactly ``.gt``/``.gte``/``.lt``/``.lte``,
-    :330-333); ``episode_year`` is a ``year_attribute`` (:403) and reaches
+    :335-338); ``episode_year`` is a ``year_attribute`` (:408) and reaches
     ``tag_modifiers`` as well, so its bare form and ``.not`` survive
     (:349-354). Same two rows as ``plays``/``year``, same
     ``SEARCH_OPERATORS_EXCLUDED`` mechanism."""

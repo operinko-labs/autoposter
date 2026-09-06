@@ -401,7 +401,7 @@ def test_a_family_e_row_renders_at_the_show_level_as_kometa_renders_it(raw, term
 def test_every_family_e_row_refuses_on_a_movie_library_naming_the_kind():
     """Kometa refuses nineteen of the twenty by name on a movie library
     (``is_movie and final_attr in show_only_searches``,
-    kometa_build_filter.py:914) rather than sending a query a library with no
+    kometa_build_filter.py:919) rather than sending a query a library with no
     episodes answers with nothing; ``episode_actor`` it would send, and this
     table refuses it too -- a DECLARED DIVERGENCE, argued on its row note and
     pinned here so it stays deliberate. All twenty refuse before any tag
