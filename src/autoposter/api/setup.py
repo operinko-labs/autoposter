@@ -240,9 +240,20 @@ NO_DEPLOYMENT_URL = (
 )
 # `action` is "created" or "updated" -- facts C2a asks for the distinction on
 # the finish page -- and `failure` is a status marker or an exception class
-# name, never the *arr's own text.
-REGISTRATION_ACCEPTED = "{system} accepted the webhook registration ({action})."
+# name, never the *arr's own text. The second sentence on acceptance is the
+# `forceSave` fact: the *arr's own connection test never ran (setup_arr's
+# docstring), so the operator must not be left thinking one already proved the
+# hook works.
+REGISTRATION_ACCEPTED = (
+    "{system} accepted the webhook registration ({action}). No test was sent; "
+    "{system} will exercise the hook on its first real event."
+)
 REGISTRATION_REFUSED = "{system} would not accept the webhook registration ({failure})."
+# A second call for the same service while the first is still mid-flight
+# (review I1): the flag below refuses it outright rather than letting it list
+# and create a second time, which is the duplicate facts C2a exists to
+# prevent.
+REGISTRATION_IN_PROGRESS = "{system}'s webhook registration is already in progress."
 
 # Which wizard step an unmet requirement belongs to, and the whole of what the
 # finish step is allowed to say about it. Fixed strings: the check that
@@ -373,6 +384,14 @@ class SetupState:
         # this is the whole of "served once": the route below answers the value
         # while this is False and ``null`` forever after.
         self.webhook_secret_served = False
+        # The *arr services with a webhook registration in flight right now
+        # (review I1). Checked and added with no `await` between the two, so
+        # this is atomic under asyncio's cooperative scheduling: a second POST
+        # for a service already in this set is refused outright instead of
+        # listing and creating a second time, which is the duplicate facts
+        # C2a exists to prevent. Removed in a `finally`, so a raised or timed
+        # out registration frees the service too.
+        self.registering: set[str] = set()
         # One persisting step at a time: merge_secrets_file is a
         # read-modify-write over a single file, and two concurrent steps would
         # otherwise drop one of the two writes. The app.state.mode_lock
@@ -675,6 +694,13 @@ async def setup_progress(request: Request) -> dict:
     first. Without it a step's own submit deleted the step, and neither its
     ``Stored`` pill nor its empty-means-keep was reachable from the page.
 
+    ``checked_systems`` is ``public_url``'s idiom applied to the other half of
+    the *arr registration's precondition: WHICH systems have a successfully
+    checked address, never the address itself. The finish page reads it beside
+    ``providers`` to tell a service this deployment does not run at all --
+    "Not configured" -- from one that is configured but whose registration was
+    simply never pressed, or was pressed and failed -- "Not attempted".
+
     Presence and names only, on every line: ``***REDACTED***``/``null`` per
     provider, booleans per step, and NAMES in ``required``. The generated
     webhook secret is reported here exactly like the pasted ones -- as
@@ -697,6 +723,9 @@ async def setup_progress(request: Request) -> dict:
         # v2 step 2. Presence, like every other line here: the address is not
         # a credential, but /progress is a presence surface and stays one.
         "public_url": request.app.state.setup.public_url is not None,
+        # NAMES only -- which systems a successful check staged an address
+        # for, never the address itself.
+        "checked_systems": sorted(request.app.state.setup.base_urls),
     }
 
 
@@ -1046,6 +1075,13 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     The *arr's own response body reaches nothing here: ``setup_arr`` answers
     with a marker or an exception class name, and a 400 from an *arr echoes the
     fields it was sent -- one of which is the secret.
+
+    A second call for the same service while the first is still mid-flight is
+    refused with ``REGISTRATION_IN_PROGRESS`` and never reaches ``setup_arr``
+    at all: two overlapping calls would both list an empty registration and
+    both create, which is the duplicate facts C2a exists to prevent (review
+    I1). A sequential second call is unaffected -- it lists the first's own
+    entry and updates it.
     """
     if body.service not in setup_arr.NAMES:
         raise HTTPException(status_code=400, detail=NOT_A_SERVICE_THIS_WIZARD_REGISTERS)
@@ -1064,9 +1100,25 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     if not api_key or not secret:
         raise HTTPException(status_code=400, detail=STEP_PROVIDERS)
 
-    action, failure = await setup_arr.register(
-        body.service, base_url, api_key, state.public_url, secret
-    )
+    # The in-flight guard (review I1): a second POST for this service while
+    # the first is still mid-flight must not also list-and-create, which is
+    # the duplicate facts C2a exists to prevent. No `await` sits between the
+    # membership test and the add, so this is atomic under asyncio's
+    # cooperative scheduling -- whichever call reaches here first wins, and
+    # the other is refused without ever touching the *arr.
+    if body.service in state.registering:
+        return {
+            "ok": False,
+            "action": None,
+            "detail": REGISTRATION_IN_PROGRESS.format(system=label),
+        }
+    state.registering.add(body.service)
+    try:
+        action, failure = await setup_arr.register(
+            body.service, base_url, api_key, state.public_url, secret
+        )
+    finally:
+        state.registering.discard(body.service)
     # The step only -- C9/C10. Not the service's address, not which service, not
     # the outcome: the wizard's log lines name the STEP and nothing that would
     # let a reader of them reconstruct the deployment.

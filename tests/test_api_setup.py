@@ -515,7 +515,7 @@ async def test_progress_reports_presence_and_never_a_value(setup_client):
     assert response.status_code == 200, response.text
     assert set(body) == {
         "password", "database", "database_source", "providers", "required", "config",
-        "config_source", "public_url",
+        "config_source", "public_url", "checked_systems",
     }
     assert body["password"] is True
     assert body["database"] is False
@@ -526,6 +526,8 @@ async def test_progress_reports_presence_and_never_a_value(setup_client):
     assert body["required"] == list(HARD)
     assert set(body["providers"]) == set(setup_api._PROVIDER_ENV)
     assert set(body["providers"].values()) == {None}
+    # NAMES only, and none yet -- no check has succeeded.
+    assert body["checked_systems"] == []
     # The master password is reported ONCE, as the boolean above.
     assert "AUTOPOSTER_ADMIN_PASSWORD_HASH" not in body["providers"]
     assert stored not in response.text
@@ -1339,9 +1341,24 @@ async def test_the_progress_surface_reports_the_url_as_presence_and_never_as_a_v
 
     assert set(response.json()) == {
         "password", "database", "database_source", "providers", "required",
-        "config", "config_source", "public_url",
+        "config", "config_source", "public_url", "checked_systems",
     }
     assert PUBLIC_URL not in response.text
+
+
+async def test_the_progress_surface_reports_which_systems_have_a_checked_address(
+    setup_client, setup_state
+):
+    """`public_url`'s idiom applied to the other half of the registration
+    precondition: NAMES only, never the address itself -- the finish page
+    reads this to tell "not configured" from "not attempted"."""
+    token = await _authenticate(setup_client)
+    setup_state.base_urls["sonarr"] = "http://sonarr.invalid:8989"
+
+    response = await setup_client.get("/api/setup/progress", headers=_headers(token))
+
+    assert response.json()["checked_systems"] == ["sonarr"]
+    assert "sonarr.invalid" not in response.text
 
 
 @pytest.mark.parametrize(

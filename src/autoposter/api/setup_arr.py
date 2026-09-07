@@ -39,6 +39,18 @@ Three things are load-bearing in a NEW registration and nothing else is:
    an HTTP Basic ``Authorization`` header, which no code path in ``src/`` reads;
    Radarr's live entry has both set and they are doing nothing.
 
+Both writes carry ``forceSave=true``: on saving a Webhook notification the
+*arr POSTs a test event to ``fields[url]`` and refuses the save on anything
+but a 200 back -- an operator's own live log shows Radarr 400ing a save with
+``Unable to send test message ... [401]``. That test can never pass DURING
+setup, because the secret it would sign the test with is only staged here
+until the finish step, and this application serves no ``/webhook/*`` route at
+all. ``forceSave`` is the *arr's own documented switch for exactly this: a
+query PARAMETER on the API call this module makes, never on the url it
+registers, so row 213's no-token-in-URL rule is untouched. The *arr exercises
+the hook for real on its own first matching event instead, which is the
+sentence the finish page and the per-service result both carry.
+
 Two bodies from two tables rather than one with nulls: Sonarr 400s on
 ``onMovieAdded`` and Radarr on ``onSeriesAdd``. The ticked events are exactly
 the ones ``intake/arr.py`` accepts, plus the two that also arrive as
@@ -323,9 +335,21 @@ async def register(
                 existing = find_existing(entries if isinstance(entries, list) else [], service)
                 body = build_body(service, public_url, secret, existing)
 
+                # forceSave=true, the *arr's own documented switch, on both
+                # writes: on save the *arr POSTs a test event to `fields[url]`
+                # and refuses the save on anything but a 200 back from it, and
+                # during setup that test can never pass -- the secret is only
+                # STAGED here until finish, and this application serves no
+                # `/webhook/*` route yet. A query parameter on the *arr API
+                # call this module makes, never on the url it registers: row
+                # 213's no-token-in-URL rule is about `fields[url]` and is
+                # untouched by it.
                 if existing is None:
                     written = await client.post(
-                        f"{origin}{NOTIFICATION_PATH}", headers=headers, json=body
+                        f"{origin}{NOTIFICATION_PATH}",
+                        headers=headers,
+                        json=body,
+                        params={"forceSave": "true"},
                     )
                     action = "created"
                 else:
@@ -333,6 +357,7 @@ async def register(
                         f"{origin}{NOTIFICATION_PATH}/{existing['id']}",
                         headers=headers,
                         json=body,
+                        params={"forceSave": "true"},
                     )
                     action = "updated"
 

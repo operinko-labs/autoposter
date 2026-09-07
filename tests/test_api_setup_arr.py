@@ -347,6 +347,32 @@ async def test_an_existing_connection_is_updated_in_place():
     assert _fields(sent)["headers"] == [{"key": "X-Autoposter-Token", "value": SECRET}]
 
 
+async def test_the_create_write_carries_forcesave_so_the_arrs_connection_test_is_skipped():
+    """The live-found fact: on saving a Webhook the *arr POSTs a test event to
+    `fields[url]` and refuses the save on anything but a 200 back -- and that
+    test can never pass during setup, because the secret it would be signed
+    with is only staged here until finish. `forceSave=true` is the *arr's own
+    switch that skips it, and it belongs on the API call, never inside the url
+    this module registers."""
+    transport, seen = _arr_transport([])
+
+    await setup_arr.register("sonarr", SONARR_BASE, APIKEY, PUBLIC_URL, SECRET, transport=transport)
+
+    assert seen[1].method == "POST"
+    assert seen[1].url.params["forceSave"] == "true"
+    # On the *arr API call, never inside the url this module registers.
+    assert _fields(json.loads(seen[1].content))["url"] == f"{PUBLIC_URL}/webhook/sonarr"
+
+
+async def test_the_update_write_carries_forcesave_too():
+    transport, seen = _arr_transport([OTHER_ENTRY, EXISTING_SONARR_ENTRY])
+
+    await setup_arr.register("sonarr", SONARR_BASE, APIKEY, PUBLIC_URL, SECRET, transport=transport)
+
+    assert seen[1].method == "PUT"
+    assert seen[1].url.params["forceSave"] == "true"
+
+
 async def test_a_connection_of_another_implementation_is_never_overwritten():
     transport, seen = _arr_transport(
         [{"id": 5, "name": "Autoposter - Sonarr", "implementation": "PlexServer"}]
@@ -626,7 +652,8 @@ async def test_the_route_reports_created(setup_client, setup_state, monkeypatch)
     assert response.json() == {
         "ok": True,
         "action": "created",
-        "detail": "Sonarr accepted the webhook registration (created).",
+        "detail": "Sonarr accepted the webhook registration (created). No test was sent; "
+        "Sonarr will exercise the hook on its first real event.",
     }
 
 
@@ -644,7 +671,8 @@ async def test_the_route_reports_updated_as_its_own_word(setup_client, setup_sta
     assert response.json() == {
         "ok": True,
         "action": "updated",
-        "detail": "Sonarr accepted the webhook registration (updated).",
+        "detail": "Sonarr accepted the webhook registration (updated). No test was sent; "
+        "Sonarr will exercise the hook on its first real event.",
     }
 
 
@@ -682,6 +710,78 @@ async def test_the_route_registers_with_the_checked_address_and_the_staged_secre
         "public_url": PUBLIC_URL,
         "secret": SECRET,
     }
+
+
+async def test_a_concurrent_second_call_is_refused_without_reaching_the_arr(
+    setup_client, setup_state, monkeypatch
+):
+    """Review I1: the register button has no `disabled`, so a double press can
+    overlap two calls, and an overlapping pair both lists an empty
+    registration and both creates -- the duplicate facts C2a exists to
+    prevent. The in-flight guard refuses the second outright, and the fake
+    transport proves only one POST ever reached the *arr.
+    """
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    transport, seen = _arr_transport([])
+    real_register = setup_arr.register
+
+    async def gated(service, base_url, api_key, public_url, secret, transport=transport):
+        entered.set()
+        await release.wait()
+        return await real_register(
+            service, base_url, api_key, public_url, secret, transport=transport
+        )
+
+    monkeypatch.setattr(setup_arr, "register", gated)
+    token = await _authenticate(setup_client)
+    await _staged(setup_client, setup_state, token)
+
+    first_task = asyncio.create_task(
+        setup_client.post(
+            "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+        )
+    )
+    await entered.wait()
+
+    second = await setup_client.post(
+        "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+    )
+    release.set()
+    first = await first_task
+
+    assert first.json() == {
+        "ok": True,
+        "action": "created",
+        "detail": "Sonarr accepted the webhook registration (created). No test was sent; "
+        "Sonarr will exercise the hook on its first real event.",
+    }
+    assert second.json() == {
+        "ok": False,
+        "action": None,
+        "detail": "Sonarr's webhook registration is already in progress.",
+    }
+    # The whole point: the second call never listed or created.
+    assert [request.method for request in seen] == ["GET", "POST"]
+
+
+async def test_the_in_flight_flag_is_freed_after_the_call_so_a_later_one_still_works(
+    setup_client, setup_state, monkeypatch
+):
+    monkeypatch.setattr(setup_arr, "register", _answers("created", None))
+    token = await _authenticate(setup_client)
+    await _staged(setup_client, setup_state, token)
+
+    first = await setup_client.post(
+        "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+    )
+    second = await setup_client.post(
+        "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+    )
+
+    assert first.json()["ok"] is True
+    assert second.json()["ok"] is True
+    assert "already in progress" not in second.text
 
 
 async def test_the_route_reports_a_refusal_as_the_checks_own_sentence(
