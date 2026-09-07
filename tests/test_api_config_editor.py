@@ -262,6 +262,58 @@ PROVENANCE_KEYS = {
 }
 
 
+async def test_provenance_keys_names_exactly_the_keys_the_response_adds(app, client, auth_headers):
+    """Roadmap row 237. Set equality gives both directions for free.
+
+    ``GET /api/config`` serves the config's own fields plus ``secrets`` plus
+    eight provenance keys the handler adds (``api/routes.py:1621-1632``).
+    Subtracting the settings side leaves exactly the provenance keys, so an
+    added provenance key lands on the left of this equality and a key dropped
+    from the set lands on the right -- the same two-way shape row 107 gave
+    ``SCHEDULED_JOB_NAMES``.
+
+    ``secrets`` is named explicitly because it is not a ``Config`` field: the
+    handler adds it from the separate ``Secrets`` model at ``routes.py:1609``.
+    """
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    settings = set(app.state.config.model_dump(mode="json")) | {"secrets"}
+
+    assert set(body) - settings == PROVENANCE_KEYS, (
+        "the keys GET /api/config adds on top of the settings and "
+        "PROVENANCE_KEYS have drifted: a provenance key this set does not "
+        "name renders as an editable field the API is bound to reject"
+    )
+
+
+def test_the_settings_pages_provenance_keys_match_the_python_set():
+    """The half a Python-only guard cannot reach: the row's own symptom
+    ("renders as an editable field") is a FRONTEND symptom, and
+    ``Settings.tsx:475`` filters the rendered sections by its own copy of this
+    set.
+
+    Reads the source file as text and regexes out the string literals rather
+    than parsing TypeScript, so the pin survives reformatting -- the idiom
+    ``tests/test_action_flags.py:472-495`` already uses against
+    ``ActionCenter.tsx``'s ``ART_KINDS``.
+
+    One difference from that idiom, and it is load-bearing: the array's own
+    comment contains a quoted phrase ("Overrides revision"), so ``//`` line
+    comments are stripped before the literals are read. Without that the
+    comment's words would join the set and this test would pass on a broken
+    array.
+    """
+    import re
+
+    frontend = (
+        Path(__file__).parent.parent / "frontend" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"const PROVENANCE_KEYS = \[([^\]]*)\];", frontend)
+    assert match is not None, "Settings.tsx no longer declares a const PROVENANCE_KEYS = [...]"
+    literals = set(re.findall(r'"([^"]*)"', re.sub(r"//[^\n]*", "", match.group(1))))
+
+    assert literals == PROVENANCE_KEYS
+
+
 def _wildcarded(path: str) -> str:
     """A served path with its library name replaced by the map's wildcard.
 

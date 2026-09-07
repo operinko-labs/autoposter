@@ -176,7 +176,7 @@ collections:
   libraries: # Plex library names to reconcile
     - Movies
     - TV Shows
-  charts: true # IMDb Popular / Top 250 / Lowest Rated
+  charts: true # IMDb Popular / Top 250 / Lowest Rated -- one switch for all three; for a subset, turn this off and write the ones you want as definitions with builder: imdb_chart
   awards: true # Oscars winner collections
   separators: true # a blank section-divider collection per collection group
   assets_for_all_collections: false # apply a local poster (assets_root/<library>/<title>/poster.*) to collections we do not manage; ownership label never applied

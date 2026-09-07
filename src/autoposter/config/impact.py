@@ -314,21 +314,10 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
             versions[art_kind], art_kind, row.source_url, row.base_sha256,
             text_inputs, asset_hashes,
         )
-        # Roadmap row 111's dual-read grandfather, mirrored here because
-        # render_artifact holds it: a row still carrying the pre-111 wholesale
-        # element 0 is accepted and rewritten by the next pass rather than
-        # re-rendered, so counting it as affected would report ~16,000 items
-        # for a change that re-renders nothing. It only bites while
-        # config.version itself has not moved -- which is exactly the case
-        # _render_affecting lets through on `skip_tba` alone.
-        legacy = compute_fingerprint(
-            config.version, art_kind, row.source_url, row.base_sha256,
-            text_inputs, asset_hashes,
-        )
         candidates.append(
             _Candidate(
                 art_kind=art_kind,
-                affected=row.fingerprint not in (candidate, legacy),
+                affected=row.fingerprint != candidate,
                 kind=row.kind,
                 title=row.title,
                 tmdb_id=row.tmdb_id,

@@ -61,6 +61,10 @@ from autoposter.collections.builders.credits_family import (
     TITLE_FORMATS as CREDIT_TITLE_FORMATS,
 )
 from autoposter.collections.builders.imdb_award import EVENTS
+from autoposter.collections.builders.imdb_chart import (
+    CHARTS_FOR as IMDB_CHARTS_FOR,
+    CHART_TITLES as IMDB_CHART_TITLES,
+)
 from autoposter.collections.builders.tmdb import CHART_TITLES as TMDB_CHART_TITLES
 from autoposter.collections.dynamic_titles import render_title
 from autoposter.collections.dynamic_types import DYNAMIC_TYPES
@@ -375,6 +379,11 @@ class Preset:
     # each. Empty for an award preset (which derives its own from EVENTS) and
     # for every GATED row -- a gated row knows what it WOULD build and has no
     # way to build it, which is the whole point of the readiness column.
+    #
+    # A setting-backed row (``setting`` set) is the one place this field means
+    # something else: its table is a DISPLAY list for the picker, not a
+    # producer -- ``definitions()``'s ``setting`` branch below returns [] for
+    # every such row before this field is ever read.
     collections: tuple[PresetCollection, ...] = ()
 
     def definitions(self, library_type: str) -> list[CollectionDefinition]:
@@ -629,6 +638,28 @@ AWARD_PRESETS: tuple[Preset, ...] = tuple(
 _oscars = EVENTS["oscars"]
 CONTENT_RATINGS_DIVIDER_TITLE = "Ratings Collections"
 
+# The three IMDb chart collections as a DISPLAY table for the row below.
+#
+# Roadmap row 163. `collections.charts` is one boolean for three collections
+# and the row that shows it named none of them, so the picker printed no
+# "Builds:" line where the all-or-nothing shape is easiest to see. Derived
+# from the builder's own tables rather than retyped, because
+# `sources.chart_and_award_definitions` builds from exactly these -- a chart
+# renamed or dropped there moves this row with it.
+#
+# Not a producer: `Preset.definitions` returns [] for any row carrying a
+# `setting`, so these rows only ever reach `titles()` and the picker's
+# payload. The charts tab's checksum does not move.
+_IMDB_CHART_LIBRARY_TYPES: dict[str, list[str]] = {}
+for _library_type, _charts in IMDB_CHARTS_FOR.items():
+    for _chart in _charts:
+        _IMDB_CHART_LIBRARY_TYPES.setdefault(IMDB_CHART_TITLES[_chart][0], []).append(_library_type)
+
+_IMDB_CHART_COLLECTIONS: tuple[PresetCollection, ...] = tuple(
+    PresetCollection(title=title, builder="imdb_chart", library_types=tuple(types))
+    for title, types in _IMDB_CHART_LIBRARY_TYPES.items()
+)
+
 SETTING_PRESETS: tuple[Preset, ...] = (
     Preset(
         key="oscars",
@@ -651,11 +682,20 @@ SETTING_PRESETS: tuple[Preset, ...] = (
         description=(
             "IMDb Popular, IMDb Top 250, and IMDb Lowest Rated (Movie "
             "libraries only) -- the chart family collections.charts already "
-            "builds, refreshed from IMDb on every pass."
+            "builds, refreshed from IMDb on every pass. The switch is the "
+            "FAMILY's: collections.charts builds all three or none, and it "
+            "must be false before you write any of them yourself, or the "
+            "title collides with the built-in one. To build a subset, write "
+            "definitions with builder: imdb_chart and params: {chart: <key>} "
+            "-- popular_movies, top_movies, or lowest_rated, each narrowed "
+            "with libraries: to a Movie library; popular_shows or "
+            "top_shows, each narrowed with libraries: to a Show library -- "
+            "one definition per title and library type."
         ),
         kometa_source="defaults/chart/imdb.yml",
         library_types=("Movie", "Show"),
         setting="collections.charts",
+        collections=_IMDB_CHART_COLLECTIONS,
     ),
     Preset(
         key="content_ratings_divider",

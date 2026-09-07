@@ -117,14 +117,14 @@ def test_every_fingerprint_call_site_passes_the_config_version():
     """Leg 3, read off the source rather than asserted about a mock.
 
     ``compute_fingerprint``'s first component is a RENDER version at every
-    call site, and since roadmap row 111 there are two spellings of one:
+    call site, and since roadmap row 247 there is one spelling of one:
     ``render_version_for(art_kind, config)`` (or its cached
     ``versions[art_kind]``) at the three LIVE sites -- the render path,
-    ``adopted_fingerprint`` and the preview walk -- and the legacy
-    ``config.version`` at the two dual-read grandfather arms, which accept
-    fingerprints written before 111 landed. Leg 1 fixes BOTH values, because
-    both are functions of ``artwork`` and the roots alone. A site passing
-    anything else would be the quiet way this proof stops holding.
+    ``adopted_fingerprint`` and the preview walk. Row 111's two dual-read
+    grandfather arms, which passed the wholesale ``config.version``, are gone.
+    Leg 1 fixes that value, because it is a function of ``artwork`` and the
+    roots alone. A site passing anything else would be the quiet way this
+    proof stops holding.
     """
     sources = {
         "render/pipeline.py": (SRC / "render" / "pipeline.py").read_text(encoding="utf-8"),
@@ -139,19 +139,15 @@ def test_every_fingerprint_call_site_passes_the_config_version():
             seen += 1
             window = "\n".join(lines[index:index + 4])
             assert (
-                "render_version_for(art_kind, config)" in window
-                or "versions[art_kind]" in window
-                or "config.version" in window
+                "render_version_for(art_kind, config)" in window or "versions[art_kind]" in window
             ), (
                 f"{where}:{index + 1} calls compute_fingerprint with a first "
-                "component that is neither a per-kind render version nor the "
-                "legacy config.version"
+                "component that is not a per-kind render version"
             )
-    # Five since roadmap row 111: three live sites passing a per-kind
-    # version and two dual-read grandfather arms still passing the
-    # wholesale one. A sixth passing something else would be the quiet way
-    # this proof stopped holding.
-    assert seen >= 5, seen
+    # Three since roadmap row 247 removed row 111's two dual-read arms: the
+    # render path, `adopted_fingerprint` and the preview walk. Equality rather
+    # than `>=` -- a fourth site is exactly what this proof needs to notice.
+    assert seen == 3, seen
 
 
 # --------------------------------------------------------------------------

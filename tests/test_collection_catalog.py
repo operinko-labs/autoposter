@@ -2446,6 +2446,50 @@ def test_the_listings_active_reads_the_setting_for_setting_backed_rows():
     assert divider["active"] is False
 
 
+def test_the_imdb_charts_row_names_the_three_titles_its_one_switch_builds():
+    """Roadmap row 163, closed as a documented asymmetry.
+
+    This is the one catalog row that stands for THREE collections, and it
+    named none of them: it carried no ``collections`` table, so ``titles()``
+    was empty and ``CatalogPanel``'s "Builds:" line did not render for it.
+    The all-or-nothing shape of ``collections.charts`` was invisible exactly
+    where an operator meets it.
+
+    The titles are DERIVED from ``builders/imdb_chart.py``'s own
+    ``CHART_TITLES``/``CHARTS_FOR`` -- the tables
+    ``sources.chart_and_award_definitions`` builds from -- so this is an
+    agreement test and not a second transcription.
+    """
+    row = next(preset for preset in CATALOG if preset.key == "imdb_charts")
+
+    assert row.titles() == ["IMDb Popular", "IMDb Top 250", "IMDb Lowest Rated"]
+    assert [
+        collection.title
+        for collection in row.collections
+        if collection.library_types == ("Movie",)
+    ] == ["IMDb Lowest Rated"], "IMDb has no lowest-rated TV chart"
+
+    # A DISPLAY table, never a producer: `Preset.definitions` returns [] for
+    # any row carrying a `setting`, whatever else the row holds. So this adds
+    # a line to the picker and builds no collection -- the charts tab's
+    # checksum is the proof, and it does not move.
+    assert row.setting == "collections.charts"
+    assert row.definitions("Movie") == []
+    assert row.definitions("Show") == []
+    assert CATALOG_CHECKSUM["charts"] == (10, 0, 1)
+
+
+def test_the_imdb_charts_description_names_the_per_definition_escape_hatch():
+    """The other half of the close: an operator who wants two of the three
+    gets the answer at the point of asking rather than only in the roadmap --
+    turn the switch off and write the ones you want as definitions."""
+    row = next(preset for preset in CATALOG if preset.key == "imdb_charts")
+
+    assert "collections.charts" in row.description
+    assert "definitions" in row.description
+    assert "imdb_chart" in row.description
+
+
 def test_ordinary_preset_rows_carry_no_setting_in_the_listing():
     listing = catalog_listing(_config(["award_venice"]))
     awards = next(c for c in listing if c["key"] == "awards")

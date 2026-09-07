@@ -43,7 +43,12 @@ from autoposter.providers.base import ArtCandidate
 from autoposter.queue.worker import _served_reason
 from autoposter.render import compositor
 from autoposter.render import pipeline as pipeline_module
-from autoposter.render.pipeline import RENDER_MAX_BYTES, SourceRefused, render_artifact
+from autoposter.render.pipeline import (
+    RENDER_MAX_BYTES,
+    SourceRefused,
+    _stage_override,
+    render_artifact,
+)
 from autoposter.render.textfit import FitResult
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -341,6 +346,41 @@ async def test_a_body_inside_the_cap_is_kept(tmp_path):
 
     assert destination.read_bytes() == body
     assert digest == hashlib.sha256(body).hexdigest()
+
+
+def test_an_oversized_manual_override_is_refused_before_it_is_read(tmp_path):
+    """Roadmap row 238, surface 3. The one door into the render path with no
+    byte cap on it at all.
+
+    ``RENDER_MAX_BYTES`` bounds what a PROVIDER may hand ImageMagick and
+    ``PICK_MAX_BYTES`` bounds what the API's own upload may write, but a file
+    an operator drops straight onto the ``manual_assets_root`` NFS mount
+    reaches ``_stage_override`` past both -- ``manual_override_path`` and
+    ``find_logo_override`` do a bare ``.exists()``. Held to the same ceiling a
+    downloaded source is held to, and refused with the same exception, so the
+    render fails with a served reason instead of costing the pod its memory.
+
+    The file is SPARSE (``truncate``, no bytes written), which is also the
+    proof that the check is a ``stat()`` and not a read: a 50 MiB read would
+    not care that the extents are holes, and this test would be slow.
+
+    Row 213: the served detail names the stage and the byte counts, and must
+    never name the operator's path.
+    """
+    override = tmp_path / "poster.jpg"
+    with override.open("wb") as handle:
+        handle.truncate(RENDER_MAX_BYTES + 1)
+    working = tmp_path / "working.jpg"
+
+    with pytest.raises(SourceRefused) as excinfo:
+        _stage_override(override, working, stage="the poster source")
+
+    detail = str(excinfo.value)
+    assert "the poster source" in detail
+    assert str(RENDER_MAX_BYTES) in detail
+    assert str(override) not in detail
+    assert override.name not in detail
+    assert not working.exists(), "a refused override must not have been copied"
 
 
 # --- the pixel ceiling (M1) ---------------------------------------------------
