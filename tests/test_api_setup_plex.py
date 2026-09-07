@@ -815,3 +815,49 @@ async def test_the_manual_path_reaches_the_document_and_then_finish(
 
     assert response.status_code == 200, response.text
     assert response.json() == {"restarting": True}
+
+
+# --- the identifier through the routes, and the token a typed address may use
+
+
+async def test_the_client_identifier_is_one_string_across_every_route_that_calls_plex(
+    setup_client, monkeypatch
+):
+    """Through the REAL routes, and not the module beneath them.
+
+    plex.tv 404s a poll whose ``X-Plex-Client-Identifier`` differs from its
+    mint's, so a route that minted a fresh one per call is a sign-in that can
+    never complete -- and this branch shipped exactly that wiring broken
+    twice. The module-level test above passes one literal in and reads the same
+    literal out, which cannot see a route that forgot to persist it; this walks
+    mint, poll, servers and libraries the way the page does and asserts the
+    four requests agreed.
+
+    The identifier itself is never asserted against a literal and never
+    printed: it names THIS DEPLOYMENT as a device on the operator's account.
+    What is asserted is that there is exactly one of it.
+    """
+    seen = _install(monkeypatch, authorised=True)
+    token = await _authenticate(setup_client)
+
+    await setup_client.post("/api/setup/plex/pin", headers=_headers(token))
+    await setup_client.get("/api/setup/plex/pin", headers=_headers(token))
+    servers = await setup_client.get("/api/setup/plex/servers", headers=_headers(token))
+    libraries = await setup_client.post(
+        "/api/setup/plex/libraries",
+        json={"base_url": PLEX_BASE, "credential_value": ACCOUNT_TOKEN},
+        headers=_headers(token),
+    )
+
+    assert servers.status_code == 200, servers.text
+    assert libraries.status_code == 200, libraries.text
+    assert [request.url.path for request in seen] == [
+        "/api/v2/pins",
+        f"/api/v2/pins/{PIN_ID}",
+        "/api/v2/resources",
+        "/library/sections",
+    ]
+    identifiers = {request.headers.get("X-Plex-Client-Identifier") for request in seen}
+    assert None not in identifiers
+    assert len(identifiers) == 1
+
