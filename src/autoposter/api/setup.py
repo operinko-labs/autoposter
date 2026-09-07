@@ -269,6 +269,18 @@ REGISTRATION_REFUSED = "{system} would not accept the webhook registration ({fai
 # and create a second time, which is the duplicate facts C2a exists to
 # prevent.
 REGISTRATION_IN_PROGRESS = "{system}'s webhook registration is already in progress."
+# The residual, closed (final review I1, the controller's 2026-09-07 ruling).
+# A GENERATED secret that RESOLVES rather than being staged this session is
+# this deployment's own, not this wizard's -- so it may not follow wherever a
+# check happened to stage an address; it is bound instead to the address the
+# SAME deployment's own resolving configuration document already names for
+# the service. A document that names none refuses here too. No value and no
+# host in the sentence, like every other refusal this surface answers with.
+RESOLVED_SECRET_ADDRESS_MISMATCH = (
+    "this deployment's webhook secret already resolves; a registration built "
+    "from it may only be sent to the address this deployment's own "
+    "configuration already names for this service"
+)
 
 # Which wizard step an unmet requirement belongs to, and the whole of what the
 # finish step is allowed to say about it. Fixed strings: the check that
@@ -508,6 +520,38 @@ def _require_http_url(value: str, refusal: str) -> str:
     if "@" in authority or authority == "":
         raise HTTPException(status_code=400, detail=refusal)
     return cleaned.rstrip("/")
+
+
+def _resolving_arr_base_url(service: str) -> str | None:
+    """The base URL the RESOLVING configuration document names for one *arr
+    service, normalised the way ``_require_http_url`` normalises a typed one
+    -- or ``None`` when there is no resolving document, it fails to parse or
+    validate, or it names no address for this service.
+
+    The one caller this exists for is the residual closed by final review I1:
+    a GENERATED webhook secret that RESOLVES rather than being staged this
+    session is this deployment's own, given by its environment or its state
+    file and never by this wizard, so the address it may be sent to is bound
+    to that SAME deployment's own document rather than to whatever a check
+    happened to stage. Read exactly the way ``boot`` would read it --
+    ``config_document_path`` plus the config step's own
+    ``read_config_document``/``build_config`` idiom -- and never written
+    anywhere; this is a read of what the deployment already has.
+    """
+    path = config_document_path()
+    if path is None:
+        return None
+    try:
+        config = build_config(read_config_document(path))
+    except Exception:
+        return None
+    raw = getattr(config, service).base_url
+    if not raw:
+        return None
+    try:
+        return _require_http_url(raw, RESOLVED_SECRET_ADDRESS_MISMATCH)
+    except HTTPException:
+        return None
 
 
 def _presence_map(resolved: dict[str, str]) -> dict[str, str | None]:
@@ -1111,6 +1155,19 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     one is named as a STEP rather than reported as a value, which is why the
     three refusals below are step names.
 
+    **The webhook secret is the one credential that may still be RESOLVED
+    rather than staged (final review I1, the residual closed).** A deployment
+    whose ``AUTOPOSTER_WEBHOOK_SECRET`` already resolves mints nothing at the
+    provider step, so ``staged`` never holds it -- and refusing the
+    registration outright on that shape would be a dead end no operator could
+    satisfy. So a resolved secret is still read, and the bound moves onto the
+    ADDRESS instead: it may be sent only to the base URL this deployment's own
+    resolving configuration document already names for the service, checked
+    with ``RESOLVED_SECRET_ADDRESS_MISMATCH`` and never with the step
+    sentence, because the provider step IS complete on this shape. A STAGED
+    secret -- this wizard's own mint -- carries no such bound and may follow
+    whatever address a check staged, as it always has.
+
     Never a 500 and never a blocker (facts C3). A registration that did not work
     is answered with ``200`` and ``ok: false`` carrying one of two fixed
     sentences, because "the *arr would not take it" is a RESULT this step
@@ -1148,17 +1205,25 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     # supplied. The operator's remedy is the one the refusal names: type the
     # key at the provider step, which stages it.
     api_key = state.staged.get(f"AUTOPOSTER_{body.service.upper()}_APIKEY", "")
-    # The generated secret is read the OTHER way, deliberately. On a deployment
-    # whose `AUTOPOSTER_WEBHOOK_SECRET` already resolves, the provider step
-    # mints nothing (there is nothing to mint) and staging a replacement would
-    # write a secret the environment then shadows -- an *arr signing with a
-    # value this service does not expect. So it comes from `_effective`, and
-    # the residual is stated in `setup_arr`'s docstring rather than papered
-    # over: this is the one credential the registration may still carry to a
-    # checked address that the deployment, and not this wizard, supplied.
-    secret = _effective(request).get(_GENERATED_SECRET, "")
+    # The generated secret is read the OTHER way, deliberately (the residual,
+    # closed by the controller's ruling below). On a deployment whose
+    # `AUTOPOSTER_WEBHOOK_SECRET` already resolves, the provider step mints
+    # nothing -- there is nothing to mint -- and `staged` never holds it, so a
+    # staged-only rule here would refuse the registration with STEP_PROVIDERS
+    # on a shape no operator could satisfy. So a RESOLVED secret is still
+    # read; the bound moves onto the ADDRESS instead, below.
+    staged_secret = state.staged.get(_GENERATED_SECRET, "")
+    secret = staged_secret or resolve_secret_values().get(_GENERATED_SECRET, "")
     if not api_key or not secret:
         raise HTTPException(status_code=400, detail=STEP_PROVIDERS)
+    if not staged_secret:
+        # Closed (final review I1, the controller's 2026-09-07 ruling): this
+        # secret is the deployment's own and not this wizard's, so it may only
+        # follow the address the SAME deployment's own resolving document
+        # names for this service -- never whatever address a check happened
+        # to stage, since a check proves only that a host ANSWERED.
+        if base_url != _resolving_arr_base_url(body.service):
+            raise HTTPException(status_code=400, detail=RESOLVED_SECRET_ADDRESS_MISMATCH)
 
     # The in-flight guard (review I1): a second POST for this service while
     # the first is still mid-flight must not also list-and-create, which is

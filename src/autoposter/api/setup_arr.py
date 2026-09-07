@@ -91,21 +91,32 @@ failed registration must not block the wizard's finish (facts C3). The operator
 can paste the secret by hand, which is what they do today, and a registration
 that gated the exit would turn a third-party outage into an unfinishable wizard.
 
-**The residual, stated whole (final review I1).** The address this writes to was
-staged by a SUCCESSFUL check, and a check proves that a host ANSWERED -- never
-who owns it. So the API key is read from the wizard's ``staged`` map alone, the
-same rule ``check_connection`` applies one step earlier: a key the boot resolver
-supplied is never sent to an address a request named. The GENERATED WEBHOOK
-SECRET is the one exception, and a deliberate one: on a deployment whose
-``AUTOPOSTER_WEBHOOK_SECRET`` already resolves, the provider step mints nothing,
-and staging a replacement would write a secret the environment then shadows --
-an *arr signing its deliveries with a value this service does not expect. So on
-that shape a token-holder who types an address, types a key, has both answered
-by a host they control and presses Register does learn this deployment's webhook
-secret. It is Autoposter's OWN secret rather than a third party's, the wizard
-cannot mint a replacement for it, and refusing would leave that shape with no
-registration at all and no way to satisfy the refusal -- so it is written down
-here rather than closed.
+**The residual, stated whole (final review I1) -- and closed.** The address this
+writes to was staged by a SUCCESSFUL check, and a check proves that a host
+ANSWERED -- never who owns it. So the API key is read from the wizard's
+``staged`` map alone, the same rule ``check_connection`` applies one step
+earlier: a key the boot resolver supplied is never sent to an address a request
+names. The GENERATED WEBHOOK SECRET is the one credential this rule cannot apply
+to unmodified: on a deployment whose ``AUTOPOSTER_WEBHOOK_SECRET`` already
+resolves, the provider step mints nothing, and staging a replacement would write
+a secret the environment then shadows -- an *arr signing its deliveries with a
+value this service does not expect. Making it staged-only would therefore refuse
+the registration on that shape with a sentence no operator could satisfy: a dead
+end of exactly the class the review's other findings warn against.
+
+**The controller's 2026-09-07 ruling closes it a different way: the bound moves
+onto the ADDRESS.** When the secret this registration would send is RESOLVED --
+not staged this session -- ``api/setup.py``'s ``register_arr_webhook`` reads the
+base URL the SAME deployment's own resolving configuration document already
+names for the service (``radarr.base_url`` / ``sonarr.base_url``, read exactly
+as ``boot`` would read them and never written), and the checked address must
+equal it or the registration is refused with ``RESOLVED_SECRET_ADDRESS_MISMATCH``
+-- a fixed sentence with no value and no host in it. A token-holder who points a
+half-configured pod's Radarr accordion at a host they control can no longer learn
+this deployment's resolved webhook secret that way: the only address a resolved
+secret may reach is the one the deployment's own document already names, which
+is not an address the request gets to choose. A STAGED secret -- this wizard's
+own mint -- carries no such bound, exactly as before.
 """
 
 import asyncio

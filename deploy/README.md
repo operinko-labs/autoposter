@@ -171,6 +171,20 @@ returned 200.
      secret into the connection by hand, which is what an operator does today,
      and the finish page reports what did not happen.
 
+     The generated secret is usually minted this session, but on a deployment
+     whose `AUTOPOSTER_WEBHOOK_SECRET` already resolves from its environment
+     or its state file, nothing is minted and the registration reads that
+     existing secret instead — this deployment's own, not this wizard's. On
+     that one shape the registration is bound to the address the deployment's
+     own configuration document already names for the service (`radarr.base_url`
+     / `sonarr.base_url`), never to whatever address Check connection happened
+     to prove reachable: a check only proves a host answered, never who owns
+     it, and this deployment's resolved secret must not be sendable to a host
+     an operator merely typed into the panel. A checked address that does not
+     match the document's is refused with one fixed sentence and no request is
+     made. This bound applies only to a resolved secret; one minted this
+     session is unaffected.
+
    One credential on this step is not collected but generated: the
    Sonarr/Radarr webhook secret, minted the first time the step completes with
    none on record, and shown **once**, on the finish page. Submitting one

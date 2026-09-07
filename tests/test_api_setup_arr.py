@@ -40,6 +40,7 @@ from autoposter.api import setup_arr
 # copied; the two token helpers with it. The three fixtures this file needs are
 # DECLARED below instead -- see the note there.
 from tests.test_api_setup import (  # noqa: F401
+    EXAMPLE,
     _authenticate,
     _headers,
     isolated_state,
@@ -1180,3 +1181,126 @@ async def test_the_registration_never_sends_an_api_key_the_resolver_supplied(
     assert response.status_code == 400
     assert response.json()["detail"] == setup_api.STEP_PROVIDERS
     assert APIKEY not in response.text
+
+
+# --- the residual, closed: a RESOLVED secret is bound to the address the
+# resolving document names (final review I1, the controller's 2026-09-07
+# ruling). `AUTOPOSTER_WEBHOOK_SECRET` resolving from the environment rather
+# than being minted and staged this session means the provider step minted
+# nothing -- so this is the deployment's own secret, not this wizard's, and a
+# check only proves a host ANSWERED, never who owns it. Refusing outright
+# would dead-end a shape no operator could satisfy (the residual as it was
+# left open), so the bound moves onto the address instead: a resolved secret
+# may be sent only to the base URL this deployment's own resolving
+# configuration document already names for the service.
+
+
+def _resolving_document(tmp_path, monkeypatch, sonarr_base_url):
+    """A resolving ``AUTOPOSTER_CONFIG`` document -- ``config_document_path``'s
+    own idiom -- whose ``sonarr.base_url`` is the given value. Built from the
+    shipped example, which every other document-reading test here already
+    trusts to validate."""
+    document = EXAMPLE.read_text(encoding="utf-8").replace(
+        "base_url: http://sonarr.media.svc.cluster.local",
+        f"base_url: {sonarr_base_url}",
+    )
+    path = tmp_path / "row-121-resolving.yaml"
+    path.write_text(document, encoding="utf-8")
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(path))
+
+
+async def test_a_resolved_secret_is_refused_at_an_address_the_document_does_not_name(
+    setup_client, setup_state, monkeypatch, tmp_path
+):
+    """A token-holder who points Sonarr's address at a host they control must
+    not learn this deployment's resolved webhook secret that way: the checked
+    address does not match the one the resolving document names, so the
+    registration never runs at all."""
+    monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", SECRET)
+    _resolving_document(tmp_path, monkeypatch, "http://sonarr.elsewhere.invalid:8989")
+
+    async def _must_not_register(*_args, **_kwargs):
+        raise AssertionError("the registration ran at an address the document does not name")
+
+    monkeypatch.setattr(setup_arr, "register", _must_not_register)
+    token = await _authenticate(setup_client)
+    await _staged(setup_client, setup_state, token, secret=False)
+
+    response = await setup_client.post(
+        "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.RESOLVED_SECRET_ADDRESS_MISMATCH
+    assert SECRET not in response.text
+    assert SONARR_BASE not in response.text
+
+
+async def test_a_resolved_secret_with_no_resolving_document_is_the_same_refusal(
+    setup_client, setup_state, monkeypatch
+):
+    """No document resolves at all -- reachable mid-wizard, on this deployment's
+    own state directory -- so there is no address to compare against and the
+    same fixed refusal applies rather than a fall-through."""
+    monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", SECRET)
+
+    async def _must_not_register(*_args, **_kwargs):
+        raise AssertionError("the registration ran with no resolving document")
+
+    monkeypatch.setattr(setup_arr, "register", _must_not_register)
+    token = await _authenticate(setup_client)
+    await _staged(setup_client, setup_state, token, secret=False)
+
+    response = await setup_client.post(
+        "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.RESOLVED_SECRET_ADDRESS_MISMATCH
+
+
+async def test_a_resolved_secret_proceeds_at_the_address_the_document_names(
+    setup_client, setup_state, monkeypatch, tmp_path
+):
+    """The other side of the same rule: the checked address IS the one the
+    resolving document names for the service, so the registration proceeds --
+    carrying the resolved secret, never the wizard's own STEP_PROVIDERS
+    refusal, since the provider step is complete on this shape."""
+    monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", SECRET)
+    _resolving_document(tmp_path, monkeypatch, SONARR_BASE)
+    seen = {}
+
+    async def capture(service, base_url, api_key, public_url, secret):
+        seen.update(service=service, base_url=base_url, secret=secret)
+        return "created", None
+
+    monkeypatch.setattr(setup_arr, "register", capture)
+    token = await _authenticate(setup_client)
+    await _staged(setup_client, setup_state, token, secret=False)
+
+    response = await setup_client.post(
+        "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert seen == {"service": "sonarr", "base_url": SONARR_BASE, "secret": SECRET}
+
+
+async def test_a_staged_secret_still_proceeds_at_any_checked_address(
+    setup_client, setup_state, monkeypatch, tmp_path
+):
+    """The unchanged half (facts as they stood before the ruling): this
+    wizard's own mint carries no address bound at all, so a resolving document
+    naming a DIFFERENT address for the service changes nothing."""
+    _resolving_document(tmp_path, monkeypatch, "http://sonarr.elsewhere.invalid:8989")
+    monkeypatch.setattr(setup_arr, "register", _answers("created", None))
+    token = await _authenticate(setup_client)
+    await _staged(setup_client, setup_state, token)  # secret=True (default): staged this session
+
+    response = await setup_client.post(
+        "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
