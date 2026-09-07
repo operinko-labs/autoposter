@@ -2260,7 +2260,11 @@ class CollectionDefinition(BaseModel):
             BATCHED_ATTRIBUTES,
             SHIPPED_ATTRIBUTES,
         )
-        from autoposter.collections.filters import parse_filters, predicates
+        from autoposter.collections.filters import (
+            FACTS_FILTER_ROWS,
+            parse_filters,
+            predicates,
+        )
 
         try:
             parsed = parse_filters(self.filters)
@@ -2274,27 +2278,41 @@ class CollectionDefinition(BaseModel):
             if row.name in SHIPPED_ATTRIBUTES or row.source == "tier2-batched":
                 continue
             if row.source == "facts":
-                # ADJUDICATION A-2 (roadmap row 100, sub-phase C2c). NOT the
-                # `unprobed` sentence below -- that one claims a missing PROBE
-                # verdict, and there is no Plex listing that could ever carry
-                # a TMDb field, so it would be false rather than cautious.
-                # And not the `tier2-deferred` one -- nothing is deferred
-                # here, the value is held, in this service's own database.
-                # What is missing is the sparsity story, and row 156 owns it
-                # by name.
+                if row.name in FACTS_FILTER_ROWS:
+                    # ROADMAP ROW 156, and this is the fence A-2 named being
+                    # opened rather than moved. The sparsity story A-2 was
+                    # waiting for is now written down: the value is read once
+                    # per pass through an OUTER join (collections/
+                    # facts_read.py), and a NULL column or a missing facts row
+                    # EXCLUDES the item under every operator including `.not`
+                    # -- so a partially-gathered library builds a
+                    # correct-but-incomplete collection rather than a wrong
+                    # one. Coverage and the convergence rate are disclosed in
+                    # deploy/README.md. Only the COINED names pass: see below.
+                    continue
+                # ADJUDICATION A-2 (roadmap row 100, sub-phase C2c), as row
+                # 156 leaves it. These two carry KOMETA'S own names -- C2c's
+                # condition, the column holding exactly the value space
+                # Kometa's filter compares in -- and row 156 opened the
+                # collections fence only for facts values under names this
+                # service COINED, each carrying its own sparsity note. Neither
+                # of these was re-adjudicated for collections, so both stay
+                # refused, and the refusal still says where the value is and
+                # what CAN read it.
                 why = (
                     "this service holds that value in its own item_facts row "
                     "rather than reading it from Plex, and a facts-backed "
-                    "COLLECTION filter is not shipped: an item_facts column "
-                    "is NULL both for 'the provider has nothing for this "
-                    "title' and for 'this item has not been gathered yet', "
-                    "so a collection built on one would silently shrink to "
-                    "whatever the facts layer has caught up with -- roadmap "
-                    "row 156 owns that question and this service will not "
-                    "pre-empt it. The same attribute IS available to an "
-                    "overlay `condition:` (badges.definitions, "
-                    "badges.families), where the verdict is per item and a "
-                    "missing value simply draws no badge"
+                    "COLLECTION filter under KOMETA'S OWN name is not "
+                    "shipped: an item_facts column is NULL both for 'the "
+                    "provider has nothing for this title' and for 'this item "
+                    "has not been gathered yet'. Roadmap row 156 opened this "
+                    "gate for the values this service names itself -- "
+                    + ", ".join(FACTS_FILTER_ROWS)
+                    + " -- each of which declares that sparsity in its own "
+                    "note; this attribute was not part of that ruling. The "
+                    "same attribute IS available to an overlay `condition:` "
+                    "(badges.definitions, badges.families), where the verdict "
+                    "is per item and a missing value simply draws no badge"
                 )
             elif row.source == "tier2-deferred":
                 # NOT the pre-phase-B sentence, which cited the listing's

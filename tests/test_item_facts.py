@@ -135,3 +135,41 @@ async def test_the_two_status_columns_are_null_until_a_gather_fills_them(session
     row = (await session.execute(select(ItemFacts))).scalar_one()
     assert row.tmdb_status is None
     assert row.last_episode_aired is None
+
+
+async def test_the_three_row_156_columns_round_trip(session):
+    """Roadmap row 156's value-space pin, on `test_the_two_status_columns_
+    round_trip`'s model. These three columns are what `common_sense_rating`,
+    `imdb_rating` and `tmdb_rating` filter on, and each is a DIFFERENT value
+    from the Plex attrib the Kometa-named filter of the neighbouring name
+    reads -- which is why the three filters carry coined names."""
+    item = await _item(session, "row156")
+    session.add(ItemFacts(
+        item_id=item.id,
+        content_rating="13",
+        critic_rating=7.8,
+        audience_rating=6.9,
+        sources={"content_rating": "mdb_commonsense", "critic_rating": "imdb"},
+    ))
+    await session.commit()
+    row = (await session.execute(select(ItemFacts))).scalar_one()
+    assert row.content_rating == "13"
+    assert row.critic_rating == pytest.approx(7.8)
+    assert row.audience_rating == pytest.approx(6.9)
+    assert row.sources["content_rating"] == "mdb_commonsense"
+
+
+def test_the_common_sense_value_space_is_mdblists_age_rating_not_a_certification():
+    """What an operator writes on the right of `common_sense_rating:`. The
+    column is `parse_content_rating`'s output and nothing else writes it: a
+    bare age number as a STRING, gated on `commonsense` being truthy. A Plex
+    certification spelling (`PG-13`) can never appear in this column, so a
+    filter written with one matches nothing -- the disjointness the row's note
+    declares, pinned at the parser that creates the value space."""
+    from autoposter.facts.mdblist import parse_content_rating
+
+    assert parse_content_rating({"commonsense": True, "age_rating": 13}) == "13"
+    assert parse_content_rating({"commonsense": True, "age_rating": "8"}) == "8"
+    assert parse_content_rating({"commonsense": False, "age_rating": 13}) is None
+    assert parse_content_rating({"age_rating": "PG-13"}) is None
+    assert parse_content_rating({"commonsense": True, "age_rating": ""}) is None

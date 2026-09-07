@@ -324,6 +324,18 @@ collections:
   #       # building an empty collection, and a regional rating list stays
   #       # usable on a library that only uses part of it. A filter whose
   #       # values ALL drop matches nothing, and says that too.
+  #       # Row 156: three attributes read this service's own gathered facts
+  #       # rather than Plex -- common_sense_rating (the Common Sense age
+  #       # band, written as a bare number: 8, 13, 16), imdb_rating and
+  #       # tmdb_rating (0-10). They carry names of their own because
+  #       # Kometa's content_rating/critic_rating/audience_rating read
+  #       # DIFFERENT values out of Plex, and one spelling for two answers is
+  #       # the bug this avoids. An item the facts pass has not visited yet
+  #       # is EXCLUDED under every operator, `.not` included, so a
+  #       # collection on one of these starts small and grows as the sweep
+  #       # catches up; and their values are NOT vocabulary-checked, so a
+  #       # misspelling builds an empty collection silently. See the
+  #       # "Attributes this service holds itself" section of deploy/README.md.
   #       filters:
   #         year.gte: 2000
   #         content_rating: [PG-13, R]
