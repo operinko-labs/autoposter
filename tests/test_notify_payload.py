@@ -409,12 +409,19 @@ def test_example_config_notifications_defaults():
 def test_toggling_notifications_does_not_change_the_render_version(tmp_path):
     """The notifications block must never invalidate stored render
     fingerprints -- same cutover concern as ``adopt.apply`` in
-    ``test_config.py``."""
+    ``test_config.py``. ``mode`` as well as ``enabled``: row 20 added two
+    values to that Literal, and ``config/loader.py``'s render-version input is
+    an explicit six-key dict that does not include ``notifications``."""
+    baseline = load_config(EXAMPLE).version
     changed = load_config(
         _variant(tmp_path, "enabled: false # POST run-completion", "enabled: true # POST run-completion")
     )
     assert changed.notifications.enabled is True
-    assert changed.version == load_config(EXAMPLE).version
+    assert changed.version == baseline
+
+    remoded = load_config(_variant(tmp_path, "mode: apprise-json", "mode: discord"))
+    assert remoded.notifications.mode == "discord"
+    assert remoded.version == baseline
 
 
 # --- row 19's new events, pinned per mode -------------------------------------
