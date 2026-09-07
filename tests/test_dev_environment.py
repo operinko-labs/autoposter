@@ -148,6 +148,24 @@ def test_development_services_build_from_the_dockerfile():
         )
 
 
+def test_the_test_service_is_behind_a_profile():
+    """A bare ``docker compose up`` (or ``up -d``) must start the app, not the suite.
+
+    The ``test`` service shares ``postgres`` with ``api``, and the suite
+    truncates tables -- run alongside a live ``api`` it fights the running
+    app. Compose enables a service's profiles automatically when the service
+    is named on the command line, so ``docker compose run test ...`` and
+    ``docker compose up test`` still work unchanged; only the profile-less
+    default start excludes it.
+    """
+    service = _service("test")
+    assert service.get("profiles") == ["test"], (
+        f"the test service's profiles are {service.get('profiles')!r}, not "
+        "['test']; without that, a bare `docker compose up` starts the suite "
+        "against the same postgres the api service uses"
+    )
+
+
 def test_the_test_service_needs_no_secrets():
     """Running the suite must need nothing but Docker.
 

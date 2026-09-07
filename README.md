@@ -83,6 +83,9 @@ docker compose run --rm web npm test    # the frontend suite
 docker compose up web api               # the app, with hot reload
 ```
 
+`test` sits behind the `test` compose profile, so a bare `docker compose up`
+never starts it; naming it, as above, enables the profile automatically.
+
 The SPA is then on `http://localhost:5173` and the API on
 `http://localhost:8081`; the dev server proxies `/api` and `/healthz` through
 to the API container. The API is published on 8081 rather than 8080 for the
