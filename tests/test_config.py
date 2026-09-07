@@ -565,7 +565,7 @@ def test_public_url_defaults_to_empty_and_round_trips():
     """This deployment's own address is a config value, not a credential, and
     it is optional: a deployment that registers nothing needs none."""
     from autoposter.config.loader import build_config
-    from tests.test_example_config_matches_schema import EXAMPLE
+    from test_example_config_matches_schema import EXAMPLE
     import yaml
 
     document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))

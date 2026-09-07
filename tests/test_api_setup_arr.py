@@ -39,7 +39,7 @@ from autoposter.api import setup_arr
 # The autouse environment isolation is the wizard suite's, imported rather than
 # copied; the two token helpers with it. The three fixtures this file needs are
 # DECLARED below instead -- see the note there.
-from tests.test_api_setup import (  # noqa: F401
+from test_api_setup import (  # noqa: F401
     EXAMPLE,
     _authenticate,
     _headers,

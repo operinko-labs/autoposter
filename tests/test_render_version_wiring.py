@@ -260,7 +260,7 @@ def test_the_deployment_url_does_not_move_the_render_version():
     import yaml
 
     from autoposter.config.loader import build_config, render_version
-    from tests.test_example_config_matches_schema import EXAMPLE
+    from test_example_config_matches_schema import EXAMPLE
 
     document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
     before = render_version(build_config(document))

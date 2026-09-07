@@ -39,7 +39,7 @@ from autoposter.api import setup_plex
 # following `test_api_setup_check.py`: a fixture imported into this namespace
 # and then named as a test parameter is an F811 redefinition, and this
 # repository imports constants across test modules and not fixtures.
-from tests.test_api_setup import (  # noqa: F401
+from test_api_setup import (  # noqa: F401
     FAKE_DB_URL,
     HARD,
     _answering,

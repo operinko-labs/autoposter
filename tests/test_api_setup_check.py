@@ -27,7 +27,7 @@ from autoposter.api import setup_checks
 # imported: a fixture imported into this namespace and then named as a test
 # parameter is an F811 redefinition, and this repository has no precedent for
 # importing fixtures across test modules -- only constants.
-from tests.test_api_setup import _authenticate, _headers, isolated_state  # noqa: F401
+from test_api_setup import _authenticate, _headers, isolated_state  # noqa: F401
 
 
 @pytest.fixture
