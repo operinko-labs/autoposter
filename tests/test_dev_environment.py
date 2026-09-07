@@ -105,10 +105,41 @@ def test_the_webdev_entrypoint_installs_and_forwards_the_command():
     )
     script = "\n".join(re.findall(r"'([^']*)'", write_match.group(0)))
 
-    assert re.search(r"\[ -d node_modules/\S+ \]\s*\|\|\s*npm ci", script), (
+    assert re.search(r"^stamp=node_modules/\.package-lock\.sha256$", script, re.MULTILINE), (
+        f"the entrypoint script ({script!r}) does not define a stamp file "
+        "under node_modules recording the digest of the lockfile last "
+        "installed from -- without it there is nothing to compare a fresh "
+        "package-lock.json against"
+    )
+    assert re.search(r"sha256sum\s+package-lock\.json", script), (
+        f"the entrypoint script ({script!r}) does not hash package-lock.json, "
+        "so `npm ci` can't be keyed on whether the lockfile changed since the "
+        "volume was last installed into"
+    )
+    assert re.search(
+        r'if\s*\[\s*"\$\(cat\s+"\$stamp"[^]]*\)"\s*!=\s*"\$digest"\s*\]\s*;\s*then',
+        script,
+    ), (
         f"the entrypoint script ({script!r}) does not guard `npm ci` behind a "
-        "check for an already-populated node_modules -- either the lazy "
-        "install is gone, or it now reinstalls unconditionally on every `up`"
+        "comparison of the stamp against the freshly computed digest -- either "
+        "the lazy install is gone, a stale volume whose lockfile changed would "
+        "never reinstall (the bug this guards against: a volume seeded before "
+        "a dependency was added never picks it up), or it now reinstalls "
+        "unconditionally on every `up`"
+    )
+    guarded_block = re.search(r"if\b.*?\bfi\b", script, re.DOTALL)
+    assert guarded_block and re.search(r"\bnpm ci\b", guarded_block.group(0)), (
+        f"the entrypoint script ({script!r}) does not run `npm ci` inside the "
+        "stamp-mismatch branch"
+    )
+    assert re.search(
+        r'npm ci\s*\n\s*printf\s+"%s\\n"\s+"\$digest"\s*>\s*"\$stamp"', script
+    ), (
+        f"the entrypoint script ({script!r}) does not write the stamp "
+        "immediately after `npm ci` -- writing it anywhere else risks "
+        "stamping a lockfile digest whose install never happened, or never "
+        "happened successfully (the script has `set -e`, so a failed `npm "
+        "ci` must abort before the stamp line runs)"
     )
     last_line = script.strip().splitlines()[-1].strip()
     assert last_line == 'exec "$@"', (
