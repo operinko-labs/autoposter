@@ -20,9 +20,19 @@ SONARR_EVENTS = {"download", "rename", "seriesadd"}
 # dashboard stream. An over-long or non-string ``eventType`` reached that
 # column unchecked and the delivery died on the insert; so did a NUL, which
 # the length and type checks alone let through. The cap below stops the
-# first two; ``_reject_control_characters`` (applied to ``eventType`` here
-# and to the payload titles below) stops the third for both this
-# ``VARCHAR`` column and the ``JSONB`` one the accepted payload lands in.
+# first two; ``_reject_control_characters`` stops the third, but only for
+# the six fields it is actually attached to below: ``eventType`` here, and
+# ``_Movie``/``_Series`` ``title`` and ``imdbId``. Those six are refused
+# before they can reach either this ``VARCHAR`` column or the ``JSONB`` one
+# the accepted payload lands in (``tmdbId``/``tvdbId``/``year``/
+# ``seasonNumber``/``episodeNumber`` need no such guard -- ``StrictInt``
+# already refuses anything that is not an integer). Nothing else this module
+# declares is sanitised, and no field of any other model is. Separately,
+# ``routes.py``'s ``_without_nul`` strips a bare NUL -- not other control
+# characters -- from the *stored* ``events_log.payload`` copy kept as
+# evidence, keys and values alike, whatever the body's shape; that is a
+# narrower, storage-only mechanism and has no bearing on what these
+# validators let through to the parser.
 EVENT_TYPE_MAX_CHARS = 64
 
 
@@ -91,6 +101,7 @@ class _Movie(BaseModel):
     year: StrictInt | None = None
 
     _reject_control_title = field_validator("title")(_reject_control_characters)
+    _reject_control_imdb_id = field_validator("imdbId")(_reject_control_characters)
 
 
 class RadarrPayload(ArrEnvelope):
@@ -126,6 +137,7 @@ class _Series(BaseModel):
     year: StrictInt | None = None
 
     _reject_control_title = field_validator("title")(_reject_control_characters)
+    _reject_control_imdb_id = field_validator("imdbId")(_reject_control_characters)
 
 
 class SonarrPayload(ArrEnvelope):

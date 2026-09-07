@@ -431,6 +431,66 @@ async def test_an_explicit_null_episodes_is_tolerated(client):
     assert response.json()["queued"] >= 1
 
 
+async def test_a_nul_in_an_object_key_is_stripped_and_the_row_still_writes(client, session):
+    """`_without_nul` used to recurse into a dict's VALUES only, leaving the
+    KEY untouched. `eventType: "Test"` is clean, so the envelope validates and
+    the body falls to the unaccepted-event 200 path -- the key's NUL then
+    reached the `events_log.payload` JSONB insert unstripped and 500d with no
+    row at all. The key must now be stripped like any value: the row exists,
+    stays 200, and no NUL survives anywhere in the stored payload."""
+    payload = {"eventType": "Test", "a\x00b": 1}
+    response = await client.post(
+        "/webhook/radarr", json=payload, headers={"X-Autoposter-Token": TOKEN}
+    )
+    assert response.status_code == 200
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert len(events) == 1
+    assert events[0].outcome == "0 intents"
+    assert "a\x00b" not in events[0].payload
+    assert events[0].payload.get("ab") == 1
+    assert "\x00" not in json.dumps(events[0].payload)
+
+
+async def test_a_nul_in_a_non_json_body_is_stripped_and_the_row_still_writes(client, session):
+    """The unparseable-body branch builds `payload_for_log = {"_raw": text}`
+    straight from `decode(errors="replace")`, which lets a raw NUL byte
+    through untouched -- the one `payload_for_log` assignment `_without_nul`
+    was not applied to. Same 500-with-no-row failure as the object-key case,
+    for junk that is not JSON at all."""
+    response = await client.post(
+        "/webhook/radarr",
+        content=b"{not valid json\x00",
+        headers={"X-Autoposter-Token": TOKEN, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "unparseable payload (JSONDecodeError)"
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert len(events) == 1
+    assert events[0].outcome == "unparseable payload (JSONDecodeError)"
+    assert "\x00" not in events[0].payload["_raw"]
+    assert "not valid json" in events[0].payload["_raw"]
+
+
+async def test_a_nul_in_imdb_id_is_refused_on_an_accepted_event(client, session):
+    """`imdbId` is a declared string field with no control-character guard
+    until now: it is copied verbatim into `RenderIntent.imdb_id`, which
+    reaches `jobs.payload` and `dedupe_key` -- neither covered by
+    `_without_nul`, which only ever touches the `events_log.payload` copy.
+    An otherwise-valid, accepted Radarr Download with a NUL in `movie.imdbId`
+    must be refused at the gate, before the parser (and therefore the queue)
+    ever sees it."""
+    payload = load("radarr_download.json")
+    payload["movie"]["imdbId"] = "tt0000\x00"
+    response = await client.post(
+        "/webhook/radarr", json=payload, headers={"X-Autoposter-Token": TOKEN}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == REFUSED
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert [(e.event_type, e.outcome) for e in events] == [("Download", REFUSED)]
+    assert (await session.execute(select(Job))).scalars().all() == []
+
+
 async def test_a_tokenless_junk_post_writes_no_event_row(client, session):
     """The order pin. `_authorise` runs before `_ingest` is entered, so a caller
     with no secret reaches neither the body read, nor the JSON decode, nor the

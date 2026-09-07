@@ -37,19 +37,32 @@ NOT_AN_ARR_DELIVERY = "body does not match the webhook schema for this service"
 
 
 def _without_nul(value: object) -> object:
-    """Strip a literal NUL (U+0000) from every string in a JSON-shaped value.
+    """Strip a literal NUL (U+0000) from every string in a JSON-shaped value,
+    recursively -- a dict's KEYS as well as its values, not values alone.
 
     Postgres refuses NUL outright in both ``VARCHAR`` and ``JSONB`` columns.
-    ``ArrEnvelope``/``RadarrPayload``/``SonarrPayload`` now refuse a NUL in
-    ``eventType`` or a title before it is work, but the row committed below
-    always keeps the *raw* body as evidence -- refused or not -- so a NUL
-    anywhere else in that body would still crash this insert. Applied only to
-    the stored copy: validation and parsing still see the untouched payload.
+    ``ArrEnvelope``/``RadarrPayload``/``SonarrPayload`` refuse a NUL (or any
+    other control character) in the six fields they validate -- ``eventType``,
+    and ``_Movie``/``_Series`` ``title`` and ``imdbId`` -- before that payload
+    is any work, so a NUL in one of those is a 400, not a 500. But the row
+    committed below always keeps the *raw* body as evidence -- refused or
+    not -- and that includes every unmodelled key, not only the six validated
+    fields; a NUL in an object key, or in the unparseable-body branch's own
+    ``{"_raw": text}`` copy (built from a body that was never JSON and so was
+    never seen by any model), would still crash this insert. This function is
+    applied to both of those stored copies and covers keys as well as values
+    in each. It is deliberately narrow: it strips NUL only, and only from the
+    ``events_log.payload`` copy kept as evidence -- the payload the models
+    validate and the parser reads is untouched, and nothing outside this
+    module's declared string fields is sanitised anywhere else (an accepted
+    event's ``imdb_id`` reaches ``jobs.payload``/``dedupe_key`` clean only
+    because the field validator above already refused a control character in
+    it before the parser ever ran).
     """
     if isinstance(value, str):
         return value.replace("\x00", "")
     if isinstance(value, dict):
-        return {key: _without_nul(item) for key, item in value.items()}
+        return {_without_nul(key): _without_nul(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_without_nul(item) for item in value]
     return value
@@ -114,7 +127,7 @@ async def _ingest(
         text = raw_body.decode("utf-8", errors="replace")
         if len(text) > _MAX_RAW_BODY_CHARS:
             text = text[:_MAX_RAW_BODY_CHARS] + "...(truncated)"
-        payload_for_log = {"_raw": text}
+        payload_for_log = _without_nul({"_raw": text})
     else:
         payload_for_log = _without_nul(payload)
         accepted = False
