@@ -1,7 +1,7 @@
 import subprocess
 
 from autoposter.config.schema import TextStyle
-from autoposter.render.textfit import escape_caption_text
+from autoposter.render.textfit import cap_magick_stderr, escape_caption_text
 
 POSTER_SIZE = "2000x3000"
 BACKGROUND_SIZE = "3840x2160"
@@ -182,9 +182,25 @@ def build_logo_argv(
 
 
 def run(argv: list[str]) -> None:
-    """Execute a magick command, raising with stderr attached on failure."""
-    result = subprocess.run(argv, capture_output=True, text=True)
+    """Execute a magick command, raising with capped stderr attached on failure.
+
+    stdout is DISCARDED rather than buffered (roadmap row 238, surface 2).
+    This function returns None and no call site reads a stream from it, so
+    `capture_output=True` held whatever a composite step chose to print in
+    this process's memory for no reader -- with five workers doing it at once.
+    The one magick call whose output IS read is `textfit._run`, which keeps
+    its pipe.
+
+    stderr is still captured, because it is the failure message; it is capped
+    by `cap_magick_stderr` on the way into the RuntimeError, because that
+    message becomes `job.last_error`.
+
+    No argv token changes, so `tests/test_production_parity.py`'s full-list
+    equalities and `tests/test_golden.py`'s byte-exact parity are untouched.
+    """
+    result = subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
         raise RuntimeError(
-            f"magick failed ({result.returncode}): {' '.join(argv)}\n{result.stderr.strip()}"
+            f"magick failed ({result.returncode}): {' '.join(argv)}\n"
+            f"{cap_magick_stderr(result.stderr)}"
         )

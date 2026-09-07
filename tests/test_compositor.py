@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,9 @@ from autoposter.render.compositor import (
     build_logo_argv,
     build_stamp_argv,
     build_text_argv,
+    run,
 )
+from autoposter.render.textfit import MAX_MAGICK_STDERR_CHARS
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -166,3 +170,45 @@ def test_logo_argv_adds_density_for_svg(config):
         "magick", "/tmp/x.jpg", "/tmp/logo.svg", config.artwork.poster.text, "92%"
     )
     assert argv[argv.index("-density") + 1] == "300"
+
+
+def test_run_discards_stdout_and_caps_the_stderr_it_attaches(monkeypatch):
+    """Roadmap row 238, surface 2. Two unbounded buffers, one bound.
+
+    ``capture_output=True`` held BOTH of magick's streams in this process's
+    memory. Nothing reads ``compositor.run``'s stdout -- it returns None and
+    every call site discards it -- so that half is now written to
+    ``DEVNULL``; the one magick call whose output IS read is
+    ``textfit._run``, which keeps its pipe. stderr is still captured, because
+    it is the failure message, and is capped on its way into the
+    ``RuntimeError``: that message becomes ``jobs.last_error``, a database row
+    whose size must not be a subprocess's choice. Same bound and same marker
+    as ``intake/routes.py``'s ``_MAX_RAW_BODY_CHARS``.
+
+    Half one is the kwargs, spied without spawning anything. Half two is a
+    real flooding stub -- ``sys.executable`` rather than a magick binary, so
+    this test needs no ImageMagick and carries no ``imagemagick`` marker.
+    """
+    seen: dict = {}
+
+    def _spy(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, None, "")
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+    run(["magick", "/tmp/x.jpg"])
+    assert seen["stdout"] is subprocess.DEVNULL
+    assert seen["stderr"] is subprocess.PIPE
+    assert "capture_output" not in seen
+    monkeypatch.undo()
+
+    flood = (
+        "import sys;sys.stdout.write('o' * 2_000_000);sys.stderr.write('e' * 50_000);sys.exit(1)"
+    )
+    with pytest.raises(RuntimeError, match="magick failed") as excinfo:
+        run([sys.executable, "-c", flood])
+
+    message = str(excinfo.value)
+    assert message.endswith("...(truncated)")
+    assert "o" * 200 not in message
+    assert len(message) < MAX_MAGICK_STDERR_CHARS + 500

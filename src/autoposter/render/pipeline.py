@@ -115,8 +115,33 @@ def _file_sha256(path: Path) -> str:
         return ""
 
 
-def _stage_override(override: Path, working: Path) -> str:
-    """Copy the manual-override file into the working directory and hash it."""
+def _stage_override(override: Path, working: Path, *, stage: str) -> str:
+    """Copy the manual-override file into the working directory and hash it.
+
+    ``manual_assets_root`` is a mount an operator writes to directly, and
+    nothing between it and this read enforces a byte cap: ``PICK_MAX_BYTES``
+    guards the API door (``api/candidates.py``), ``RENDER_MAX_BYTES`` guards a
+    provider download, and ``manual_override_path``/``find_logo_override`` do
+    a bare ``.exists()``. A file dropped straight onto the share reached
+    ImageMagick past all three (roadmap row 238, surface 3).
+
+    A ``stat()`` before the read, at the ceiling a downloaded source is
+    already held to, so an override that would cost the pod its memory is
+    refused with a served reason. ``process_item``'s per-kind
+    ``except SourceRefused`` records it and moves to the next art kind.
+
+    Deliberately a PRE-CHECK and nothing more: the bytes copied and the bytes
+    hashed are exactly what they were, so this return value -- which is
+    ``compute_fingerprint``'s ``base_sha256`` at the base call site and one of
+    its ``asset_hashes`` at the logo one -- is unmoved for every file that was
+    already accepted, and no stored fingerprint changes.
+    """
+    size = override.stat().st_size
+    if size > RENDER_MAX_BYTES:
+        raise SourceRefused(
+            f"{stage} override is {size} bytes, over the "
+            f"{RENDER_MAX_BYTES}-byte render source ceiling"
+        )
     working.write_bytes(override.read_bytes())
     return hashlib.sha256(working.read_bytes()).hexdigest()
 
@@ -1235,7 +1260,9 @@ async def render_artifact(
         logo_text_fallback_taken = False
         text_point_size: int | None = None
         if override is not None:
-            base_sha = await asyncio.to_thread(_stage_override, override, working)
+            base_sha = await asyncio.to_thread(
+                _stage_override, override, working, stage=f"the {art_kind} source"
+            )
             source_url, provider_name, textless = str(override), "manual", None
             local_source = True
         else:
@@ -1377,7 +1404,9 @@ async def render_artifact(
             picked_logo = await asyncio.to_thread(find_logo_override, config, item)
             if picked_logo is not None:
                 logo_path = Path(tmpdir) / f"logo{picked_logo.suffix}"
-                logo_sha = await asyncio.to_thread(_stage_override, picked_logo, logo_path)
+                logo_sha = await asyncio.to_thread(
+                    _stage_override, picked_logo, logo_path, stage="the clearlogo"
+                )
             elif not online_fetch_disabled(config, art_kind):
                 logo_path, logo_sha, skipped_logos = await _pick_logo(
                     http, config, item, providers, Path(tmpdir),

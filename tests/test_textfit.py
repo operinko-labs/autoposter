@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -5,11 +6,13 @@ import pytest
 from autoposter.config.loader import load_config
 from autoposter.config.schema import TextStyle
 from autoposter.render.textfit import (
+    MAX_MAGICK_STDERR_CHARS,
     FitResult,
     build_fit_argv,
     escape_caption_text,
     fit_point_size,
     prepare_text,
+    _run,
 )
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -130,3 +133,21 @@ def test_run_attaches_stderr_and_the_command_on_failure(monkeypatch):
     assert "unable to read font" in str(excinfo.value)
     assert "/f.ttf" in str(excinfo.value)
     assert "1" in str(excinfo.value)
+
+
+def test_the_fit_probe_keeps_its_stdout_and_caps_its_stderr():
+    """The twin of ``compositor.run``, and the reason surface 2's bound is not
+    one line copied twice: ``_run`` READS stdout (``textfit.py:131`` parses the
+    point size out of it), so its pipe stays. Only the stderr that reaches the
+    RuntimeError -- and from there ``jobs.last_error`` -- is capped.
+    """
+    ok = "import sys; sys.stdout.write('  120  \\n')"
+    assert _run([sys.executable, "-c", ok]) == "120"
+
+    flood = "import sys; sys.stderr.write('e' * 50_000); sys.exit(1)"
+    with pytest.raises(RuntimeError, match="magick failed") as excinfo:
+        _run([sys.executable, "-c", flood])
+
+    message = str(excinfo.value)
+    assert message.endswith("...(truncated)")
+    assert len(message) < MAX_MAGICK_STDERR_CHARS + 500
