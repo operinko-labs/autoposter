@@ -11,7 +11,11 @@ SSRF shape, and it is bounded by being a TABLE rather than a fetcher:
   Radarr, Sonarr, Tracearr) take a base address that must pass
   ``api/setup._require_http_url`` -- http/https, a host, no userinfo;
 * the whole probe is bounded by ``asyncio.wait_for`` at five seconds, the value
-  and the idiom ``db/base.database_answers`` chose for the same reason.
+  and the idiom ``db/base.database_answers`` chose for the same reason;
+* the RESPONSE is streamed and its body abandoned unread, except for the one
+  subject that has to look inside it, which reads ``CHECK_BODY_LIMIT_BYTES``
+  and no more. Five seconds of a local network is gigabytes, and the pod's
+  memory limit is the first thing that would give.
 
 **What is deliberately NOT here: a private-IP denylist.** Every correct answer
 on every shipped deployment IS a private address -- ``http://sonarr``,
@@ -34,6 +38,7 @@ so the probe runs with that logger filtered here as well as clamped at boot.
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -48,6 +53,14 @@ logger = logging.getLogger(__name__)
 # connect implicitly and nothing bounds a response, so a host that accepts and
 # then stops answering is precisely the case this covers. db/base.py's value.
 CHECK_TIMEOUT_SECONDS = 5.0
+
+# The most of a response body this module will ever hold. Nine of the ten
+# subjects are answered by the status and one header and read no body at all;
+# MDBList's spent-budget shape is a shallow object, so its head is enough. The
+# timeout alone is not a bound on SIZE -- five seconds of a private network is
+# gigabytes into a pod with a memory limit -- and this is the one item on the
+# bound list that would otherwise be absent rather than argued.
+CHECK_BODY_LIMIT_BYTES = 64 * 1024
 
 
 class _DropEveryRecord(logging.Filter):
@@ -237,6 +250,16 @@ def _harbor_target(check: Check) -> Check:
     )
 
 
+async def _capped_body(response: httpx.Response) -> bytes:
+    """The head of a streamed body, with the rest abandoned rather than read."""
+    head = bytearray()
+    async for chunk in response.aiter_bytes():
+        head += chunk
+        if len(head) >= CHECK_BODY_LIMIT_BYTES:
+            break
+    return bytes(head[:CHECK_BODY_LIMIT_BYTES])
+
+
 async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) -> CheckOutcome:
     """One request, and the reading of its answer. Never its body's text."""
     headers: dict[str, str] = {"accept": "application/json"}
@@ -262,24 +285,37 @@ async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) 
     elif check.auth == "json":
         json_body = {check.json_credential_key or "apikey": value}
 
-    response = await client.request(
-        check.method, url, headers=headers, params=params, json=json_body
-    )
-
-    if response.status_code in (401, 403):
-        return CheckOutcome(ok=False, refused=True, failure=None)
-    if not response.is_success:
-        # A status is a number, not the service's text.
-        return CheckOutcome(ok=False, refused=False, failure=f"HTTPStatus{response.status_code}")
-    if check.require_header is not None and check.require_header not in response.headers:
-        raise TracearrDidNotAnswer()
-    if check.error_key is not None:
-        payload = response.json()
-        if isinstance(payload, dict) and payload.get(check.error_key):
-            # MDBList's spent-budget shape. "Refused" is the honest reading:
-            # the question this endpoint answers is whether the credential can
-            # do work now, and a spent key cannot.
+    # `params or None` and not `params`: httpx turns a FALSY params into
+    # `query=None` and then `copy_with(query=None)`, which drops the query the
+    # url string already carried rather than leaving it alone -- and three of
+    # these ten compile a query into their path, two of them (`limit=1`,
+    # `page_size=1`) precisely to keep the probe cheap.
+    #
+    # `stream` and not `request`: the latter buffers the whole body before this
+    # sees the status, and the body is a third party's.
+    async with client.stream(
+        check.method, url, headers=headers, params=params or None, json=json_body
+    ) as response:
+        if response.status_code in (401, 403):
             return CheckOutcome(ok=False, refused=True, failure=None)
+        if not response.is_success:
+            # A status is a number, not the service's text.
+            return CheckOutcome(
+                ok=False, refused=False, failure=f"HTTPStatus{response.status_code}"
+            )
+        if check.require_header is not None and check.require_header not in response.headers:
+            raise TracearrDidNotAnswer()
+        if check.error_key is not None:
+            # The head only. A body too large to be MDBList's shallow
+            # spent-budget object is not that object, and the JSONDecodeError a
+            # truncated head raises is reported as a class name like any other
+            # failure -- which is the honest answer, and a bounded one.
+            payload = json.loads(await _capped_body(response))
+            if isinstance(payload, dict) and payload.get(check.error_key):
+                # MDBList's spent-budget shape. "Refused" is the honest
+                # reading: the question this endpoint answers is whether the
+                # credential can do work now, and a spent key cannot.
+                return CheckOutcome(ok=False, refused=True, failure=None)
     return CheckOutcome(ok=True, refused=False, failure=None)
 
 

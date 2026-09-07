@@ -411,3 +411,116 @@ async def test_the_checked_addresses_are_stamped_onto_the_document_the_wizard_wr
     assert stamped["radarr"]["base_url"] == SONARR_BASE
     assert stamped["sonarr"]["base_url"] == SONARR_BASE
     assert stamped["tracearr"]["base_url"] == SONARR_BASE
+
+
+# --- the composed url, and the bound on the body it brings back --------------
+
+# `system`, the path the request must carry, the whole set of query NAMES it
+# must carry, and the non-secret pairs whose values are asserted. The names of
+# the two credential-bearing parameters are asserted and their values are not:
+# an assertion message is a place a key must never appear, which is also why
+# `CREDENTIALS` above is fake.
+COMPOSED = [
+    (
+        "plex_account",
+        "/api/v2/resources",
+        {"includeHttps", "includeRelay"},
+        {"includeHttps": "1", "includeRelay": "0"},
+    ),
+    ("tracearr", "/api/v2/public/history", {"limit"}, {"limit": "1"}),
+    ("sonarr", "/api/v3/system/status", set(), {}),
+    ("radarr", "/api/v3/system/status", set(), {}),
+    ("plex", "/library/sections", set(), {}),
+    ("tmdb", "/3/configuration", set(), {}),
+    ("tvdb", "/v4/login", set(), {}),
+    ("fanart", "/v3.2/movies/550", {"api_key"}, {}),
+    ("mdblist", "/tmdb/movie/550/", {"apikey"}, {}),
+]
+
+
+def _recording_transport(seen: list[httpx.URL]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url)
+        return httpx.Response(200, json={"ok": True}, headers={"x-ratelimit-limit": "100"})
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.parametrize(("system", "path", "names", "pairs"), COMPOSED)
+async def test_the_composed_url_is_the_path_and_query_the_table_compiled_in(
+    system, path, names, pairs
+):
+    """The table's paths carry query strings -- `?limit=1`, `?page_size=1`,
+    `?includeHttps=1&includeRelay=0` -- and httpx REPLACES a url's query with
+    whatever `params=` says, an empty mapping included. Nothing else in this
+    file looks at the url a request was actually built with, so the two bounds
+    that exist to keep the probe cheap could be erased in silence."""
+    seen: list[httpx.URL] = []
+
+    await setup_checks.run_check(
+        system, _address_for(system), CREDENTIALS, transport=_recording_transport(seen)
+    )
+
+    assert [url.path for url in seen] == [path]
+    assert set(seen[0].params.keys()) == names
+    for name, expected in pairs.items():
+        assert seen[0].params.get(name) == expected, name
+
+
+async def test_harbor_composes_the_derived_path_with_its_page_bound(monkeypatch):
+    """Harbor's is the one path built at call time, from AUTOPOSTER_IMAGE_REF,
+    so its `?page_size=1` is composed by `_harbor_target` rather than by the
+    table and is asserted separately."""
+    monkeypatch.setenv("AUTOPOSTER_IMAGE_REF", "registry.example.test/proj/repo:v1")
+    seen: list[httpx.URL] = []
+
+    await setup_checks.run_check("harbor", None, CREDENTIALS, transport=_recording_transport(seen))
+
+    assert seen[0].path == "/api/v2.0/projects/proj/repositories/repo/artifacts"
+    assert set(seen[0].params.keys()) == {"page_size"}
+    assert seen[0].params.get("page_size") == "1"
+
+
+def _oversized_transport(chunks: list[int], chunk_size: int = 1024, count: int = 4096):
+    """A response body far larger than anything this table reads, yielded a
+    chunk at a time so the test can see how much of it was consumed."""
+
+    async def body():
+        for index in range(count):
+            chunks.append(index)
+            yield b"x" * chunk_size
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body(), headers={"x-ratelimit-limit": "100"})
+
+    return httpx.MockTransport(handler)
+
+
+async def test_a_probe_that_reads_no_body_never_pulls_one():
+    """Nine of the ten subjects are answered by the status and one header. The
+    body behind them is a third party's, on the private network these checks
+    are aimed at, and five seconds of it is gigabytes."""
+    chunks: list[int] = []
+
+    outcome = await setup_checks.run_check(
+        "sonarr", SONARR_BASE, CREDENTIALS, transport=_oversized_transport(chunks)
+    )
+
+    assert outcome.ok is True
+    assert chunks == []
+
+
+async def test_the_one_probe_that_reads_a_body_stops_at_the_cap():
+    """MDBList's spent-budget shape is a shallow object, so the head of the
+    body is all this reads and the rest is abandoned rather than buffered. An
+    answer that does not fit in the cap is not that shape, and is reported as a
+    failure by class name like every other one."""
+    chunks: list[int] = []
+
+    outcome = await setup_checks.run_check(
+        "mdblist", None, CREDENTIALS, transport=_oversized_transport(chunks)
+    )
+
+    assert len(chunks) * 1024 <= setup_checks.CHECK_BODY_LIMIT_BYTES + 1024
+    assert outcome.ok is False
+    assert outcome.refused is False
