@@ -2674,13 +2674,20 @@ want the structured detail the Apprise shape has no field for:
 A notification describes work that already finished, so its failure never
 fails that work: no retry-forever, no parked jobs, no crashed scheduler.
 Each send makes up to `retry_count` attempts, each bounded by
-`timeout_seconds`, with backoff of 0.5s, 1s, 2s, ... between them. Transport
-errors and 5xx responses retry; any other status does not (a 4xx, or a 3xx
--- redirects are not followed) -- a wrong path or revoked
-token cannot be fixed by asking again. Worst case for one send on the
-defaults: `3 x 10s + 0.5s + 1s = 31.5s`, and that time is spent on a
-background task -- neither the scheduler loop nor the `/api/full-pass`
-response ever waits on the webhook.
+`timeout_seconds`, with backoff of 0.5s, 1s, 2s, ... between them.
+Transport errors, 5xx responses and 429 retry; any other status does not
+(a 4xx, or a 3xx — redirects are not followed) — a wrong path or a
+revoked token cannot be fixed by asking again. A 429 is the exception
+because it means "wait", not "you are misconfigured", and a rate-limited
+target (a Discord webhook's budget is roughly 5 requests per 2 seconds)
+answers one in normal operation. When a 429 carries a `Retry-After`, that
+number replaces the computed backoff for that one wait, clamped to
+`timeout_seconds` so a misconfigured header cannot park a background task.
+Worst case for one send on the defaults: `3 × 10s + 0.5s + 1s = 31.5s`
+against an ordinary target and `3 × 10s + 10s + 10s = 50s` against one
+that is rate-limiting us — and that time is spent on a background task
+— neither the scheduler loop nor the `/api/full-pass` response ever
+waits on the webhook.
 
 A send that exhausts its attempts logs exactly one warning (naming the
 host, the attempt count and the last error) and writes an `events_log` row
