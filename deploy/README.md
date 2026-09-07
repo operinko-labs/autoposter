@@ -1214,7 +1214,7 @@ class of setting this project does not ship.
 
 Five filter attributes read a value from this service's own database rather
 than from Plex, and they are listed here because nothing else in this document
-mentions three of them.
+mentions five of them.
 
 Three of them you can use in a collection's `filters:` block:
 
@@ -1252,15 +1252,21 @@ page. If `operations.enabled` is off, nothing is ever gathered and every one of
 these filters matches nothing.
 
 **An item nobody has looked at yet is EXCLUDED, under every operator,
-including `.not`.** This is the one place these attributes deliberately behave
-unlike every other tag attribute in the system, and it is the safe direction:
+including `.not`, for `common_sense_rating`, `imdb_rating`, `tmdb_rating` and
+`last_episode_aired`.** This is the safe direction for those four:
 `common_sense_rating.not: 13` on a library the sweep has not reached would
 otherwise select *everything*. The consequence to expect is that a collection
-built on one of these starts small and grows as the sweep catches up — an
-incomplete collection rather than a wrong one. "We looked and found nothing"
-and "nobody has looked yet" are recorded separately (`facts_attempted_at`), and
-the dynamic collection families that read the same data report their coverage
-in their own descriptions.
+built on one of them starts small and grows as the sweep catches up — an
+incomplete collection rather than a wrong one.
+
+`tmdb_status` is the one exception. It keeps Kometa's ordinary tag rule, under
+which a missing value is INCLUDED by a negative operator — so
+`tmdb_status.not: ended` in a badge `condition:` MATCHES a show the facts
+sweep has not visited yet, not only a show confirmed to be something other
+than ended. "We looked and found nothing" and "nobody has looked yet" are
+recorded separately (`facts_attempted_at`), and the dynamic collection
+families that read the same data report their coverage in their own
+descriptions.
 
 **These three values are NOT checked against your library's vocabulary.** The
 check described above walks Plex's own list for the attribute, and Plex has

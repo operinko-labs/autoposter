@@ -3189,7 +3189,9 @@ def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bo
       is excluded by a positive filter and included by a negative one; for
       ``int``/``float``/``date``/``duration`` attributes it is excluded by
       EVERY operator, including ``.not``. See the module docstring for the
-      transcription note on this split;
+      transcription note on this split. A ``FACTS_FILTER_ROWS`` row is the one
+      exception to the split itself: it is excluded by every operator
+      regardless of its declared type, ``tag`` included, per RULING C3 below;
     - **a list means any-of**: the predicate holds if ANY written value
       matches, and a negative operator is the negation of that -- so
       ``genre.not: [Horror, Comedy]`` means "neither", not "not Horror".
