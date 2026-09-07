@@ -1,0 +1,257 @@
+/* The first-start wizard.
+ *
+ * The wizard used to borrow login.css, which is a 320px box built for one
+ * password field; the provider step puts ten credentials through it. This
+ * sheet gives the wizard the same card, sections, pills and muted hints the
+ * rest of the application already uses -- every colour still a var() from
+ * theme.css, no palette of its own.
+ */
+
+.setup-screen {
+  display: flex;
+  /* Not centred vertically: the provider step is taller than a laptop
+     viewport, and a centred box hides its first section above the fold. */
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 100%;
+  padding: 32px 24px;
+}
+
+.setup-box {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  /* The width the Groups page already uses for a form column. A ten-field
+     form in login.css's 320px was the whole complaint. */
+  max-width: 640px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 32px;
+}
+
+.setup-title {
+  margin: 0;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* The five steps. Wraps rather than scrolls: a phone gets two rows of chips,
+   never a strip with steps hidden off the right edge. */
+.setup-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.setup-step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface);
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* Marked by weight and by the check mark in the disc, not by colour alone --
+   the same rule the catalog tab strip and the mismatch table follow. */
+.setup-step.current {
+  border-color: var(--accent);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.setup-step.current .setup-step-number {
+  background: var(--accent);
+  color: var(--text-strong);
+}
+
+.setup-step.done {
+  border-color: var(--ok);
+  color: var(--text);
+}
+
+.setup-step.done .setup-step-number {
+  background: var(--ok);
+  color: var(--bg);
+}
+
+.setup-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.setup-pane-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.setup-pane-title {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.setup-pane button {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.setup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* Wider than the 6px inside a field, so a label reads as belonging to the
+   input under it rather than to the input above it. */
+.setup-group {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.setup-group-title {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.setup-lead,
+.setup-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup-field-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.setup-field-label {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* The environment variable name, kept because operators know the credentials
+   by it -- quiet, monospaced, and allowed to break rather than widen the
+   card on a phone. */
+.setup-field-env {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.setup-badge {
+  padding: 0 8px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+/* A state, never text glued to the label: it takes the right-hand end of the
+   field's header row. */
+.setup-pill {
+  margin-left: auto;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.setup-pill.ok {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.setup-input {
+  width: 100%;
+}
+
+/* Shown once and never again, so it is the loudest thing on the page. */
+.setup-secret {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.setup-secret-value {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  word-break: break-all;
+}
+
+/* .page-error carries a bottom margin for the page layouts it was written
+   for; inside this gap-spaced column that reads as a stray gap. */
+.setup-box .page-error {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .setup-screen {
+    padding: 16px 12px;
+  }
+
+  .setup-box {
+    gap: 16px;
+    padding: 18px 16px;
+  }
+
+  /* Wrapped onto its own line the pill has no right-hand end to take. */
+  .setup-pill {
+    margin-left: 0;
+  }
+}

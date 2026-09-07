@@ -11,7 +11,7 @@ import {
   submitProviderKeys,
   type SetupProgress,
 } from "../api/setup";
-import "./login.css";
+import "./setup.css";
 
 /** The message shown for a failed wizard call.
  *
@@ -26,6 +26,72 @@ export function setupErrorMessage(caught: unknown): string {
   if (typeof caught.detail === "string") return caught.detail;
   return `The server returned an error (${caught.status}). Try again.`;
 }
+
+/** The wizard's five steps, in the order the server finishes them. Nothing
+ * here decides what is rendered -- the panes below are still chosen by what
+ * `/api/setup/progress` says is unfinished -- it is the operator's map of how
+ * far along they are. */
+const STEPS = ["Password", "Database", "Providers", "Configuration", "Start"] as const;
+
+/** Which of the five the operator is on, read off the progress the page
+ * already holds. Derived, never stored: a second source of truth for "where
+ * am I" is a second thing that can fall out of step with the server. */
+function stepNumber(progress: SetupProgress | null): number {
+  if (progress === null) return 1;
+  if (!progress.database) return 2;
+  if (progress.required.length > 0) return 3;
+  if (progress.config_source === null) return 4;
+  return 5;
+}
+
+/** A human name for each credential the provider step collects.
+ *
+ * The backend's `_PROVIDER_ENV` (api/setup.py) is the list and the server
+ * sends it; this is only how each name is spelled to a person. A name that is
+ * not here -- a provider secret added to the model after this map was written
+ * -- falls back to the environment name, which is what every field showed
+ * before. The raw name is rendered under the label either way: operators know
+ * these credentials by it.
+ */
+const PROVIDER_LABELS: Record<string, string> = {
+  AUTOPOSTER_PLEX_TOKEN: "Plex token",
+  AUTOPOSTER_TMDB_TOKEN: "TMDb token",
+  AUTOPOSTER_TVDB_APIKEY: "TVDB API key",
+  AUTOPOSTER_FANART_APIKEY: "Fanart API key",
+  AUTOPOSTER_WEBHOOK_SECRET: "Webhook secret",
+  AUTOPOSTER_MDBLIST_APIKEY: "MDBList API key",
+  AUTOPOSTER_RADARR_APIKEY: "Radarr API key",
+  AUTOPOSTER_SONARR_APIKEY: "Sonarr API key",
+  AUTOPOSTER_HARBOR_TOKEN: "Harbor token",
+  AUTOPOSTER_PLEX_ACCOUNT_TOKEN: "Plex account token",
+  AUTOPOSTER_TRACEARR_APIKEY: "Tracearr API key",
+};
+
+function providerLabel(name: string): string {
+  return PROVIDER_LABELS[name] ?? name;
+}
+
+/** The provider credentials a deployment cannot boot without: the hard half of
+ * config/schema.py's `_SECRET_ENV`, less the database URL, which has its own
+ * step.
+ *
+ * `progress.required` is NOT this list and cannot stand in for it: the server
+ * answers there with the hard names still UNRESOLVED, so a credential leaves
+ * it the moment it is stored. That is the right answer to "what is still
+ * outstanding" -- which is what the page reads it for everywhere else -- and
+ * the wrong one to "which heading does this field live under": filed by it, a
+ * Plex token would move itself from Required to Optional by being saved. A
+ * name the server calls required is treated as required whether or not it is
+ * named here, so a hard secret added to the model after this list was written
+ * is still filed correctly while it is missing.
+ */
+const REQUIRED_PROVIDER_NAMES = [
+  "AUTOPOSTER_PLEX_TOKEN",
+  "AUTOPOSTER_TMDB_TOKEN",
+  "AUTOPOSTER_TVDB_APIKEY",
+  "AUTOPOSTER_FANART_APIKEY",
+  "AUTOPOSTER_WEBHOOK_SECRET",
+];
 
 export function Setup() {
   const [progress, setProgress] = useState<SetupProgress | null>(null);
@@ -82,7 +148,7 @@ export function Setup() {
   if (restarting) return <Restarting />;
   if (progress === null) {
     return (
-      <Shell error={error}>
+      <Shell error={error} step={stepNumber(null)}>
         <PasswordPane
           busy={busy}
           passwordSet={passwordSet}
@@ -101,7 +167,7 @@ export function Setup() {
     progress.database && progress.required.length === 0 && progress.config_source !== null;
 
   return (
-    <Shell error={error}>
+    <Shell error={error} step={stepNumber(progress)}>
       {!progress.database && (
         <DatabasePane busy={busy} onSubmit={(url) => run(() => submitDatabaseUrl(url))} />
       )}
@@ -123,9 +189,21 @@ export function Setup() {
         // mounted ConfigMap, compose's bind-mounted example) is never offered
         // this step again -- writing beside it would produce a file the next
         // boot does not read, with the operator's Plex URL landing in it.
-        <p data-testid="config-satisfied">
-          Configuration already provided ({progress.config_source}).
-        </p>
+        // This is the configuration step's own status, so it is reported in
+        // that step's header rather than as a loose line under the
+        // credentials.
+        <section className="setup-pane">
+          <div className="setup-pane-head">
+            <h2 className="setup-pane-title">Configuration</h2>
+            <span className="setup-pill ok" data-testid="config-satisfied">
+              Already provided ({progress.config_source})
+            </span>
+          </div>
+          <p className="setup-lead">
+            The document the next boot reads already resolves, so there is nothing to write here.
+            Everything in it stays editable in Settings.
+          </p>
+        </section>
       )}
       {readyToFinish && (
         <FinishPane
@@ -142,19 +220,54 @@ export function Setup() {
   );
 }
 
-function Shell({ error, children }: { error: string | null; children: React.ReactNode }) {
+function Shell({
+  error,
+  step,
+  children,
+}: {
+  error: string | null;
+  step: number;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="login-screen">
-      <div className="login-box">
-        <h1 className="login-title">Set up Autoposter</h1>
+    <div className="setup-screen">
+      <div className="setup-box">
+        <h1 className="setup-title">Set up Autoposter</h1>
+        <Steps current={step} />
         {children}
         {error !== null && (
-          <p className="login-error" role="alert">
+          <p className="page-error" role="alert">
             {error}
           </p>
         )}
       </div>
     </div>
+  );
+}
+
+function Steps({ current }: { current: number }) {
+  return (
+    <ol className="setup-steps">
+      {STEPS.map((label, index) => {
+        const number = index + 1;
+        const state = number < current ? "done" : number === current ? "current" : "todo";
+        return (
+          <li
+            className={`setup-step ${state}`}
+            key={label}
+            aria-current={state === "current" ? "step" : undefined}
+          >
+            {/* A finished step is marked by what is in its disc as well as by
+                the disc's colour, so the distinction survives a colour-blind
+                reading. */}
+            <span aria-hidden="true" className="setup-step-number">
+              {state === "done" ? "✓" : number}
+            </span>
+            {label}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -174,10 +287,10 @@ function Restarting() {
   }, []);
 
   return (
-    <div className="login-screen">
-      <div className="login-box">
-        <h1 className="login-title">Starting Autoposter…</h1>
-        <p>This page reloads by itself once the service is up.</p>
+    <div className="setup-screen">
+      <div className="setup-box">
+        <h1 className="setup-title">Starting Autoposter…</h1>
+        <p className="setup-lead">This page reloads by itself once the service is up.</p>
       </div>
     </div>
   );
@@ -185,6 +298,7 @@ function Restarting() {
 
 function OneFieldPane({
   id,
+  title,
   label,
   type,
   hint,
@@ -195,6 +309,10 @@ function OneFieldPane({
   onSubmit,
 }: {
   id: string;
+  /** The step's own heading, for the panes whose field label alone does not
+   * say which step this is. The password pane has none: the card's own title
+   * is already its heading. */
+  title?: string;
   label: string;
   type: string;
   hint: string;
@@ -220,19 +338,29 @@ function OneFieldPane({
   }
 
   return (
-    <form onSubmit={submit}>
-      <label className="login-label" htmlFor={id}>
-        {label}
-      </label>
-      <input
-        id={id}
-        aria-label={label}
-        type={type}
-        autoComplete={autoComplete}
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-      />
-      {hint !== "" && <p>{hint}</p>}
+    <form className="setup-pane" onSubmit={submit}>
+      {title !== undefined && (
+        <div className="setup-pane-head">
+          <h2 className="setup-pane-title">{title}</h2>
+        </div>
+      )}
+      <div className="setup-field">
+        <div className="setup-field-head">
+          <label className="setup-field-label" htmlFor={id}>
+            {label}
+          </label>
+        </div>
+        <input
+          className="setup-input"
+          id={id}
+          aria-label={label}
+          type={type}
+          autoComplete={autoComplete}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      </div>
+      {hint !== "" && <p className="setup-hint">{hint}</p>}
       <button className="primary" type="submit" disabled={busy || value === ""}>
         {action}
       </button>
@@ -263,7 +391,7 @@ function PasswordPane({
         onSubmit={onSubmit}
       />
       {passwordSet && (
-        <p data-testid="password-reload-note">
+        <p className="setup-hint" data-testid="password-reload-note">
           Reloading this page loses any progress past this step, by design: the setup token lives
           only in this tab's memory and nowhere else. Prove the master password again to pick up a
           fresh one.
@@ -283,6 +411,7 @@ function DatabasePane({
   return (
     <OneFieldPane
       id="setup-database"
+      title="Database"
       label="Database URL"
       type="text"
       hint="postgresql+asyncpg://user:password@host:5432/database — it is tried before it is saved."
@@ -304,6 +433,7 @@ function ConfigPane({
   return (
     <OneFieldPane
       id="setup-plex-url"
+      title="Configuration"
       label="Plex server URL"
       type="text"
       hint="http://plex:32400 — everything else starts from the shipped defaults and is editable in Settings."
@@ -320,6 +450,43 @@ function ConfigPane({
 // so it is not a field here -- an input the server can never accept is not a
 // credential to paste, it is a status to read.
 const GENERATED_SECRET_NAME = "AUTOPOSTER_WEBHOOK_SECRET";
+
+/** One credential's header row: its human name, whether the server calls it
+ * required, whether the deployment already holds it -- and, under those, the
+ * environment name operators know it by. */
+function FieldHead({
+  name,
+  required,
+  held,
+  labelFor,
+}: {
+  name: string;
+  required: boolean;
+  held: string | null;
+  /** The input this names, or `undefined` for the generated secret, which has
+   * no input to name -- and must not look as though it has one. */
+  labelFor?: string;
+}) {
+  const text = providerLabel(name);
+  return (
+    <>
+      <div className="setup-field-head">
+        {labelFor === undefined ? (
+          <span className="setup-field-label">{text}</span>
+        ) : (
+          <label className="setup-field-label" htmlFor={labelFor}>
+            {text}
+          </label>
+        )}
+        {required && <span className="setup-badge">Required</span>}
+        <span className={`setup-pill${held === null ? "" : " ok"}`} data-testid={`held-${name}`}>
+          {held === null ? "Not set" : "Stored"}
+        </span>
+      </div>
+      <code className="mono setup-field-env">{name}</code>
+    </>
+  );
+}
 
 function ProvidersPane({
   busy,
@@ -342,40 +509,64 @@ function ProvidersPane({
     if (await onSubmit(values)) setValues({});
   }
 
+  // The server owns the list and its order; each group keeps the order it was
+  // served in.
+  const isRequired = (name: string) =>
+    REQUIRED_PROVIDER_NAMES.includes(name) || progress.required.includes(name);
+  const entries = Object.entries(progress.providers);
+  const required = entries.filter(([name]) => isRequired(name));
+  const optional = entries.filter(([name]) => !isRequired(name));
+
+  function field([name, held]: [string, string | null]) {
+    return name === GENERATED_SECRET_NAME ? (
+      <div className="setup-field" key={name}>
+        <FieldHead held={held} name={name} required={isRequired(name)} />
+        <p className="setup-hint">
+          Generated for you when you save this form, and shown once, immediately after. There is
+          nothing to paste here.
+        </p>
+      </div>
+    ) : (
+      <div className="setup-field" key={name}>
+        <FieldHead held={held} labelFor={name} name={name} required={isRequired(name)} />
+        <input
+          className="setup-input"
+          id={name}
+          aria-label={name}
+          type="password"
+          value={values[name] ?? ""}
+          onChange={(event) =>
+            setValues((previous) => ({ ...previous, [name]: event.target.value }))
+          }
+        />
+      </div>
+    );
+  }
+
   return (
-    <form onSubmit={submit}>
-      <p>
-        Required names are marked. A stored credential is shown as stored and never
-        displayed; leave a field blank to keep what is already there.
+    <form className="setup-pane setup-form" onSubmit={submit}>
+      <div className="setup-pane-head">
+        <h2 className="setup-pane-title">Provider credentials</h2>
+      </div>
+      <p className="setup-lead">
+        A stored credential is shown as stored and never displayed; leave a field blank to keep
+        what is already there.
       </p>
-      {Object.entries(progress.providers).map(([name, held]) =>
-        name === GENERATED_SECRET_NAME ? (
-          <div key={name}>
-            <span className="login-label">{name}</span>
-            <span data-testid={`held-${name}`}>{held === null ? "Not set" : "Stored"}</span>
-            <p>
-              Generated for you when you save this form, and shown once, immediately after.
-              There is nothing to paste here.
-            </p>
-          </div>
-        ) : (
-          <div key={name}>
-            <label className="login-label" htmlFor={name}>
-              {name}
-              {progress.required.includes(name) ? " (required)" : ""}
-            </label>
-            <span data-testid={`held-${name}`}>{held === null ? "Not set" : "Stored"}</span>
-            <input
-              id={name}
-              aria-label={name}
-              type="password"
-              value={values[name] ?? ""}
-              onChange={(event) =>
-                setValues((previous) => ({ ...previous, [name]: event.target.value }))
-              }
-            />
-          </div>
-        ),
+      {required.length > 0 && (
+        <section className="setup-group">
+          <h3 className="setup-group-title">Required</h3>
+          <p className="setup-hint">Autoposter does not leave setup until these are held.</p>
+          {required.map(field)}
+        </section>
+      )}
+      {optional.length > 0 && (
+        <section className="setup-group">
+          <h3 className="setup-group-title">Optional</h3>
+          <p className="setup-hint">
+            Leave blank whatever this deployment does not use. Each one can be added later.
+          </p>
+          {optional.map(field)}
+        </section>
       )}
       <button className="primary" type="submit" disabled={busy}>
         Save and continue
@@ -419,30 +610,45 @@ function WebhookSecret({ value }: { value: string }) {
   }
 
   return (
-    <div data-testid="webhook-secret">
-      <p>Webhook secret — paste this into Sonarr and Radarr&apos;s webhook settings now:</p>
-      <code ref={codeRef} data-testid="webhook-secret-value" style={{ wordBreak: "break-all" }}>
+    <div className="setup-secret" data-testid="webhook-secret">
+      <p className="setup-lead">
+        Webhook secret — paste this into Sonarr and Radarr&apos;s webhook settings now:
+      </p>
+      <code className="mono setup-secret-value" ref={codeRef} data-testid="webhook-secret-value">
         {value}
       </code>
-      <button type="button" onClick={copy}>
-        Copy
-      </button>
-      {copyStatus === "copied" && <p data-testid="webhook-copy-status">Copied</p>}
-      {copyStatus === "manual" && (
-        <p data-testid="webhook-copy-status">Select and copy the value above.</p>
-      )}
-      <p>This will not be shown again.</p>
+      <div className="setup-field-head">
+        <button type="button" onClick={copy}>
+          Copy
+        </button>
+        {copyStatus === "copied" && (
+          <span className="setup-hint" data-testid="webhook-copy-status">
+            Copied
+          </span>
+        )}
+        {copyStatus === "manual" && (
+          <span className="setup-hint" data-testid="webhook-copy-status">
+            Select and copy the value above.
+          </span>
+        )}
+      </div>
+      <p className="setup-hint">This will not be shown again.</p>
     </div>
   );
 }
 
 function FinishPane({ busy, onSubmit }: { busy: boolean; onSubmit: () => void }) {
   return (
-    <div>
-      <p>Everything Autoposter needs is set. Starting it restarts this service once.</p>
+    <section className="setup-pane">
+      <div className="setup-pane-head">
+        <h2 className="setup-pane-title">Ready</h2>
+      </div>
+      <p className="setup-lead">
+        Everything Autoposter needs is set. Starting it restarts this service once.
+      </p>
       <button className="primary" type="button" disabled={busy} onClick={onSubmit}>
         Start autoposter
       </button>
-    </div>
+    </section>
   );
 }
