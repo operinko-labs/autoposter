@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 import pytest
 import requests
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 
 from autoposter.db.models import Job
 from autoposter.intake.arr import RenderIntent
@@ -12,6 +12,7 @@ from autoposter.plex.client import ItemNotFound, PlexPathMismatch
 from autoposter.artwork_modes.base import WorkerPause
 from autoposter.queue.jobs import MAX_ATTEMPTS, enqueue
 from autoposter.queue.worker import run_once, run_worker
+from queue_support import bring_horizon_forward, enqueue_due, make_due
 
 
 def _only_process_item(handler):
@@ -36,7 +37,7 @@ async def test_run_once_processes_a_due_job(session):
         handled.append(intent)
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     assert await run_once(session, "worker-1", _only_process_item(handler)) is True
     assert handled[0].tmdb_id == 1
     job = (await session.execute(select(Job))).scalar_one()
@@ -64,7 +65,7 @@ async def test_the_handler_runs_with_no_open_transaction(session):
         seen["in_transaction"] = session_.in_transaction()
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
 
     assert await run_once(session, "worker-1", _only_process_item(handler)) is True
 
@@ -76,7 +77,7 @@ async def test_item_not_found_defers_rather_than_failing(session):
         raise ItemNotFound("plex has not scanned yet")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     await run_once(session, "worker-1", _only_process_item(handler))
     job = (await session.execute(select(Job))).scalar_one()
     assert job.state == "deferred"
@@ -98,7 +99,7 @@ async def test_the_deferral_reason_is_class_prefixed_and_payload_only(session, c
         raise ItemNotFound("no Plex item for movie 'Dune' (tmdb=1, tvdb=None)")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=31)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     with caplog.at_level(logging.INFO, logger="autoposter.queue.worker"):
         await run_once(session, "worker-1", _only_process_item(handler))
 
@@ -121,7 +122,7 @@ async def test_a_plex_outage_reason_never_carries_the_server_address(session, ca
         )
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=32)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     with caplog.at_level(logging.INFO, logger="autoposter.queue.worker"):
         await run_once(session, "worker-1", _only_process_item(handler))
 
@@ -154,7 +155,7 @@ async def test_path_mismatch_parks_instead_of_deferring_forever(session, session
         # reusing one session let a stale, never-expired identity-map ``Job``
         # mask claim()'s raw-SQL state/attempts writes between iterations.
         async with session_factory() as attempt_session:
-            await _make_due_now(attempt_session, job_id)
+            await make_due(attempt_session, job_id)
             # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
             attempt_session.expire_all()
             await run_once(attempt_session, "worker-1", _only_process_item(handler))
@@ -178,7 +179,7 @@ async def test_a_path_mismatch_reason_keeps_the_diagnosis(session, caplog):
         )
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=33)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     with caplog.at_level(logging.WARNING, logger="autoposter.queue.worker"):
         await run_once(session, "worker-1", _only_process_item(handler))
     job = (await session.execute(select(Job))).scalar_one()
@@ -201,7 +202,7 @@ async def test_unexpected_errors_also_reschedule(session, caplog):
         raise RuntimeError("provider exploded")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=2)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     with caplog.at_level(logging.WARNING, logger="autoposter.queue.worker"):
         await run_once(session, "worker-1", _only_process_item(handler))
     job = (await session.execute(select(Job))).scalar_one()
@@ -215,7 +216,7 @@ async def test_unknown_job_kinds_are_parked_not_retried(session):
     async def handler(session_, intent):
         raise AssertionError("should not be called")
 
-    await enqueue(session, "not_a_real_kind", {})
+    await enqueue_due(session, "not_a_real_kind", {})
     await run_once(session, "worker-1", _only_process_item(handler))
     job = (await session.execute(select(Job))).scalar_one()
     assert job.state == "parked"
@@ -229,7 +230,9 @@ async def test_cancelled_handler_releases_job_without_consuming_an_attempt(sessi
         raise asyncio.CancelledError()
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=3)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await run_once(session, "worker-1", _only_process_item(handler))
@@ -256,7 +259,9 @@ async def test_cancelled_mid_db_operation_still_releases_and_propagates(session)
         raise asyncio.CancelledError()
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=21)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await run_once(session, "worker-1", _only_process_item(handler))
@@ -265,26 +270,6 @@ async def test_cancelled_mid_db_operation_still_releases_and_propagates(session)
     await session.refresh(job)
     assert job.state == "pending"
     assert job.claimed_by is None
-
-
-async def _make_due_now(session, job_id: int) -> None:
-    """Reset a job to pending and due, using the database clock."""
-    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-    job.state = "pending"
-    job.run_after = (await session.execute(select(func.now()))).scalar_one()
-    await session.commit()
-
-
-async def _bring_horizon_forward(session, job_id: int) -> None:
-    """Make a job due without touching its state, using the database clock.
-
-    ``_make_due_now`` above flips the row back to ``pending``, which would hide
-    the very thing the deferral tests are about: that ``claim()`` picks a
-    ``deferred`` row up by itself once ``run_after`` passes.
-    """
-    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-    job.run_after = (await session.execute(select(func.now()))).scalar_one()
-    await session.commit()
 
 
 async def test_item_not_found_defers_forever_instead_of_parking(session):
@@ -298,7 +283,7 @@ async def test_item_not_found_defers_forever_instead_of_parking(session):
     intent = RenderIntent(kind="movie", title="Dog Stars", tmdb_id=12)
     job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     for _ in range(MAX_ATTEMPTS + 5):
-        await _bring_horizon_forward(session, job_id)
+        await bring_horizon_forward(session, job_id)
         await run_once(session, "worker-1", _only_process_item(not_found_handler))
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -324,7 +309,7 @@ async def test_a_generic_failure_still_parks(session, session_factory):
         # A fresh session per simulated attempt -- see the comment on the
         # PlexPathMismatch test above.
         async with session_factory() as attempt_session:
-            await _make_due_now(attempt_session, job_id)
+            await make_due(attempt_session, job_id)
             # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
             attempt_session.expire_all()
             await run_once(attempt_session, "worker-1", _only_process_item(generic_handler))
@@ -353,7 +338,7 @@ async def test_plex_connection_error_survives_more_attempts_than_a_generic_failu
         # A fresh session per simulated attempt -- see the comment on the
         # PlexPathMismatch test above.
         async with session_factory() as attempt_session:
-            await _make_due_now(attempt_session, job_id)
+            await make_due(attempt_session, job_id)
             # Explicit, not reliant on the ``job`` local's refcount lifetime to evict it.
             attempt_session.expire_all()
             await run_once(
@@ -384,7 +369,9 @@ async def test_source_refused_parks_on_the_first_attempt(session):
         raise exc
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=40)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
     await run_once(session, "worker-1", _only_process_item(handler))
 
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -418,7 +405,9 @@ async def test_retry_after_a_source_refused_park_succeeds_once_the_source_is_fix
         # Second attempt: the source is fixed upstream. Nothing raises.
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=41)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
     await run_once(session, "worker-1", _only_process_item(handler))
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     assert job.state == "parked"
@@ -426,12 +415,14 @@ async def test_retry_after_a_source_refused_park_succeeds_once_the_source_is_fix
     # retry_job's own reset (api/routes.py), reproduced here rather than
     # through the HTTP layer -- this file has no app/client fixture, and
     # test_api_actions.py already pins the endpoint's own mechanics.
-    job.state = "pending"
     job.attempts = 0
     job.claimed_by = None
     job.claimed_at = None
-    job.run_after = func.now()
     await session.commit()
+    # state -> pending and a due horizon with an hour of margin, so a backwards
+    # clock step between this commit and claim()'s transaction cannot make the
+    # row not-yet-due (tests/queue_support.py).
+    await make_due(session, job_id)
 
     assert await run_once(session, "worker-1", _only_process_item(handler)) is True
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -450,7 +441,9 @@ async def test_db_error_in_handler_reschedules_instead_of_stranding_at_running(s
         await session_.execute(text("SELECT 1/0"))
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=12)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
 
     with caplog.at_level(logging.WARNING, logger="autoposter.queue.worker"):
         await run_once(session, "worker-1", _only_process_item(handler))
@@ -489,7 +482,7 @@ async def test_run_worker_skips_claiming_while_unhealthy_and_resumes_on_recovery
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=30)
     async with session_factory() as setup_session:
-        job_id = await enqueue(
+        job_id = await enqueue_due(
             setup_session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
         )
 
@@ -541,7 +534,7 @@ async def test_a_registered_new_job_kind_dispatches_to_its_handler(session):
         seen.append(job.kind)
 
     handlers = {**_only_process_item(process), "backup": backup}
-    await enqueue(session, "backup", {"library": "Movies"})
+    await enqueue_due(session, "backup", {"library": "Movies"})
 
     assert await run_once(session, "worker-1", handlers) is True
     assert seen == ["backup"]
@@ -561,7 +554,7 @@ async def test_paused_pool_claims_nothing_then_resumes_on_clear(session_factory)
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=40)
     async with session_factory() as setup_session:
-        job_id = await enqueue(
+        job_id = await enqueue_due(
             setup_session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
         )
 
@@ -613,7 +606,7 @@ async def test_a_job_claimed_as_the_fence_rises_is_handed_back_uncharged(session
         raise AssertionError("the fence was up; this job must not have run")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=41)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
 
     pause = WorkerPause()
     pause.pause()
@@ -639,7 +632,7 @@ async def test_a_running_job_is_counted_active_for_the_drain(session):
         seen.append(pause.active_jobs)
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=42)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
 
     await run_once(session, "worker-1", _only_process_item(handler), pause)
 
@@ -655,7 +648,7 @@ async def test_run_worker_processes_jobs_normally_when_healthy(session_factory):
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=31)
     async with session_factory() as setup_session:
-        job_id = await enqueue(
+        job_id = await enqueue_due(
             setup_session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
         )
 
@@ -700,7 +693,9 @@ async def test_a_cancelled_job_is_dismissed_rather_than_rescheduled_on_failure(s
         raise RuntimeError("provider exploded")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=50)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
     await _cancel_requested(session, job_id)
 
     await run_once(session, "worker-1", _only_process_item(handler))
@@ -719,7 +714,9 @@ async def test_a_cancelled_job_waiting_for_plex_is_also_dismissed(session):
         raise ItemNotFound("no Plex item for movie 'Dune'")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=51)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
     await _cancel_requested(session, job_id)
 
     await run_once(session, "worker-1", _only_process_item(handler))
@@ -739,7 +736,9 @@ async def test_a_cancelled_job_that_succeeds_still_completes(session):
         handled.append(intent)
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=52)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
     await _cancel_requested(session, job_id)
 
     await run_once(session, "worker-1", _only_process_item(handler))
@@ -757,7 +756,9 @@ async def test_an_uncancelled_job_still_reschedules_after_a_failure(session):
         raise RuntimeError("provider exploded")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=53)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
 
     await run_once(session, "worker-1", _only_process_item(handler))
 
@@ -778,7 +779,9 @@ async def test_a_cancel_requested_mid_attempt_is_still_honoured(session):
         raise RuntimeError("provider exploded")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=55)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
 
     await run_once(session, "worker-1", _only_process_item(handler))
 

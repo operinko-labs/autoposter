@@ -694,26 +694,31 @@ def test_the_aspect_accessor_costs_no_plex_request():
     assert PlexItemView(a_movie()).get("aspect") is None
 
 
-def test_a_facts_sourced_row_is_in_no_runtime_accessor_set(): 
-    """Sub-phase C2c's `facts` tier, from the collections side: the three
-    derived tuples are computed from `FILTER_ATTRIBUTES`' `source` column, so
-    a new tier lands in none of them WITHOUT any edit to this module -- which
-    is the whole reason the tier is a column rather than a hand-maintained
-    list. `SHIPPED_ATTRIBUTES` must be exactly as long as it was before C2c.
+def test_a_facts_sourced_row_reaches_the_accessor_sets_only_by_being_coined():
+    """Sub-phase C2c's premise, as roadmap row 156 leaves it, and the split is
+    the whole point. The three DERIVED tuples are still computed from
+    `FILTER_ATTRIBUTES`' `source` column, so no `facts` row of either kind
+    lands in `SHIPPED_ATTRIBUTES`, `BATCHED_ATTRIBUTES` or
+    `DEFERRED_ATTRIBUTES`, and `SHIPPED_ATTRIBUTES` is still C2b's fourteen --
+    row 156 adds no listing row.
 
-    And the refusal `PlexItemView` already gives is already the right one: it
-    falls through to the generic branch and names the tier, so an operator
-    who somehow reaches evaluation gets 'its source tier is 'facts''
-    rather than a `KeyError`. No `filter_values.py` edit was needed for
-    either half."""
+    What changed is the VIEW. The two Kometa-named C2c rows still fall through
+    to the generic branch and refuse by naming the tier, which is still the
+    right sentence for an attribute a collection may not filter on. The three
+    COINED rows have their own branch and their own refusal -- "built without
+    its values", `tags=`'s sentence one tier along -- because for them None
+    must mean "this item has no value" only when the values were actually
+    read."""
     from autoposter.collections.filter_values import (
         AttributeNotInListing,
         BATCHED_ATTRIBUTES,
         DEFERRED_ATTRIBUTES,
+        EnrichmentNotLoaded,
         PlexItemView,
         SHIPPED_ATTRIBUTES,
         _ACCESSORS,
     )
+    from autoposter.collections.filters import FACTS_FILTER_ROWS
 
     for name in ("tmdb_status", "last_episode_aired"):
         assert name not in SHIPPED_ATTRIBUTES, name
@@ -723,6 +728,14 @@ def test_a_facts_sourced_row_is_in_no_runtime_accessor_set():
         with pytest.raises(AttributeNotInListing, match="facts"):
             PlexItemView(object()).get(name)
 
+    for name in FACTS_FILTER_ROWS:
+        assert name not in SHIPPED_ATTRIBUTES, name
+        assert name not in BATCHED_ATTRIBUTES, name
+        assert name not in DEFERRED_ATTRIBUTES, name
+        assert name not in _ACCESSORS, name
+        with pytest.raises(EnrichmentNotLoaded, match=name):
+            PlexItemView(object()).get(name)
+
     assert len(SHIPPED_ATTRIBUTES) == 14, (
-        "C2c adds no listing row; SHIPPED_ATTRIBUTES is C2b's fourteen"
+        "row 156 adds no listing row; SHIPPED_ATTRIBUTES is C2b's fourteen"
     )

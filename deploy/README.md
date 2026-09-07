@@ -1211,6 +1211,71 @@ values, so it never meets the case where a correct config names a value one
 library lacks. There is no switch for this — an error-downgrade switch is a
 class of setting this project does not ship.
 
+### Attributes this service holds itself
+
+Five filter attributes read a value from this service's own database rather
+than from Plex, and they are listed here because nothing else in this document
+mentions five of them.
+
+Three of them you can use in a collection's `filters:` block:
+
+| Attribute | What it is | Written as |
+|---|---|---|
+| `common_sense_rating` | The Common Sense Media **age band**, from MDBList | a bare age number — `8`, `13`, `16` |
+| `imdb_rating` | **IMDb's** own rating, 0–10 | `imdb_rating.gte: 7.5` |
+| `tmdb_rating` | **TMDb's** own rating, 0–10 | `tmdb_rating.lt: 5` |
+
+These are not Kometa attribute names — Kometa has none of the three — and that
+is deliberate. Kometa's `content_rating` filter reads Plex's own certification
+(`PG-13`, `gb/U`, `TV-Y`), which is a completely different thing from a Common
+Sense age band, and its `critic_rating`/`audience_rating` read whatever your
+library's agent wrote into Plex, which is usually Rotten Tomatoes rather than
+IMDb or TMDb. Shipping our values under Kometa's names would mean two filters
+that agree on the spelling and disagree on the answer. So the three carry names
+of their own, and `content_rating`, `critic_rating` and `audience_rating`
+continue to mean exactly what Kometa means by them.
+
+Two more — `tmdb_status` (`returning`, `planned`, `production`, `ended`,
+`canceled`, `pilot`) and `last_episode_aired` (a window in days, so
+`last_episode_aired: 14` is "aired in the last fortnight") — are also held
+here, but they carry Kometa's own names because they mean exactly what Kometa
+means, and they are usable **only in a badge `condition:`**, not in a
+collection's `filters:`. A collection naming either is refused when the config
+loads, and the refusal says so.
+
+**Coverage — read this before you build a collection on one of these.** The
+facts these five read are gathered by the mass-operations pass, and only for
+items it has visited. A fresh install has visited nothing. The drift sweep
+visits `scheduler.drift_batch_size` items (default **500**) every
+`scheduler.drift_days` (default **7**), so a 16,000-item library converges over
+roughly **32 weeks** unless you drive the facts backfill from the Operations
+page. If `operations.enabled` is off, nothing is ever gathered and every one of
+these filters matches nothing.
+
+**An item nobody has looked at yet is EXCLUDED, under every operator,
+including `.not`, for `common_sense_rating`, `imdb_rating`, `tmdb_rating` and
+`last_episode_aired`.** This is the safe direction for those four:
+`common_sense_rating.not: 13` on a library the sweep has not reached would
+otherwise select *everything*. The consequence to expect is that a collection
+built on one of them starts small and grows as the sweep catches up — an
+incomplete collection rather than a wrong one.
+
+`tmdb_status` is the one exception. It keeps Kometa's ordinary tag rule, under
+which a missing value is INCLUDED by a negative operator — so
+`tmdb_status.not: ended` in a badge `condition:` MATCHES a show the facts
+sweep has not visited yet, not only a show confirmed to be something other
+than ended. "We looked and found nothing" and "nobody has looked yet" are
+recorded separately (`facts_attempted_at`), and the dynamic collection
+families that read the same data report their coverage in their own
+descriptions.
+
+**These three values are NOT checked against your library's vocabulary.** The
+check described above walks Plex's own list for the attribute, and Plex has
+never heard of these values — it does not hold them. So a misspelled band
+(`common_sense_rating: 13plus`) builds an **empty collection and says nothing**,
+which is exactly the behaviour that check was added to fix, one attribute
+along. Copy the value from an item you know carries it.
+
 ### Smart collections from a pasted Plex URL
 
 `builder: smart_url` takes a Plex Web address and turns the search in it into a
@@ -2581,15 +2646,46 @@ consequences worth knowing:
 The `notifications:` block in `autoposter.yaml` controls the Phase 5a
 run-completion webhook: one POST to a configured URL when a run boundary is
 crossed, replacing the notification capability Posterizarr's Apprise config
-provided. Two events exist in v1, both hooked where completion is already
-recorded:
+provided. Six events exist, each hooked where the fact it reports is already
+recorded. Three are global, at the scheduler boundary:
 
-- `scheduled_run_completed` -- a named scheduler job (collections reconcile,
-  ratings-drift sweep, asset cleanup, Arr sync) finished, successfully or
-  not. Fires only after the `scheduled_runs` row is committed, so a
-  notification can never describe a run the database does not yet show.
-- `full_pass_enqueued` -- `POST /api/full-pass` enqueued its batch, carrying
-  the real `{total, queued, skipped}` counts, after their commit.
+- `scheduled_run_started` -- a named scheduler job began, after its claim
+  committed. Detail: `{job}`.
+- `scheduled_run_completed` -- a named scheduler job (collections
+  reconcile, ratings-drift sweep, asset cleanup, Arr sync) finished,
+  successfully or not. Fires only after the `scheduled_runs` row is
+  committed, so a notification can never describe a run the database does
+  not yet show. Detail: `{job, status, detail}`, with `status` exactly
+  `ok` or `failed` and `detail` truncated to 2000 characters.
+- `scheduled_run_failed` -- the same boundary, when the run failed.
+  Additive: the completion event still fires for a failed run, because
+  renaming or dropping a shipped event would break the automation this
+  webhook exists for. Detail: `{job, status, detail}`.
+
+One is an API boundary:
+
+- `full_pass_enqueued` -- `POST /api/full-pass` enqueued its batch,
+  carrying the real `{total, queued, skipped}` counts, after their commit.
+
+Two are per collection, and they are the only ones that can go somewhere
+other than `notifications.url`:
+
+- `collection_changed` -- a collection's membership changed during a
+  reconcile. Detail: `{library, collection, added, removed}`. This one is
+  **opt-in per definition** and never falls back to the global target: it
+  goes only to that definition's own `changes_webhook`, because a POST per
+  changed collection per pass would be an unbounded volume change to the
+  shipped integration. On a family definition the field rides along to
+  every expanded member, so one pass POSTs once per changed member --
+  worth knowing before pointing it at a rate-limited target.
+- `collection_deleted` -- a collection was swept. Detail:
+  `{library, collection, rating_key, reason}`. This one **does** fall back
+  to the global target: a collection swept because no definition builds it
+  any more has no per-collection target by construction.
+
+A per-collection webhook URL is read live from the definition at dispatch
+time -- unlike the `notifications` block, which is frozen because the
+sender is built once. Both are still gated on `notifications.enabled`.
 
 Settings:
 
@@ -2600,14 +2696,22 @@ Settings:
   (as Uptime-Kuma-style push URLs do), so the full URL is never logged or
   stored -- log lines and events rows name only the host. `enabled: true`
   with an empty URL is a named misconfiguration: one warning at startup and
-  a no-op notifier, not one warning per event.
+  a no-op notifier, not one warning per event. A Discord webhook URL fits
+  this rule with nothing new: both the id and the token live in the path,
+  exactly the shape the host-only reduction was written for. One honest
+  cost comes with it -- every Discord target reduces to the host
+  `discord.com`, so a warning or an events row no longer identifies *which*
+  webhook failed when several are configured. The row carries the event
+  name and the summary, which name the job or the collection, and that is
+  the real answer to "which one"; widening what is served to include the
+  webhook id was considered and rejected.
 - `mode` (default `apprise-json`) -- the payload shape, below. An unknown
   mode fails config validation at load time; there is no runtime fallback.
 - `timeout_seconds` (default `10`) -- per-attempt HTTP timeout.
 - `retry_count` (default `3`) -- total attempts per notification, not
   retries after the first.
 
-### The two payload shapes
+### The four payload shapes
 
 `apprise-json` (the default) is the body Apprise's `json://` scheme POSTs,
 so anything already built to consume Apprise webhooks works unchanged
@@ -2653,18 +2757,80 @@ want the structured detail the Apprise shape has no field for:
 `status` exactly `ok` or `failed`; for `full_pass_enqueued` it is
 `{total, queued, skipped}`.
 
+`discord` is a Discord webhook embed, for a `notifications.url` pointing
+at `https://discord.com/api/webhooks/{id}/{token}`:
+
+```json
+{
+  "embeds": [
+    {
+      "title": "autoposter: collection_changed",
+      "description": "Movies: 'Top Rated' changed: +3 -1",
+      "color": 5763719,
+      "timestamp": "2026-09-07T12:00:00+00:00",
+      "fields": [
+        {"name": "library", "value": "Movies", "inline": true},
+        {"name": "collection", "value": "Top Rated", "inline": true},
+        {"name": "added", "value": "3", "inline": true},
+        {"name": "removed", "value": "1", "inline": true}
+      ]
+    }
+  ],
+  "allowed_mentions": {"parse": []}
+}
+```
+
+`color` is `5763719` (`0x57F287`, Discord's own green) or `16711680`
+(`0xFF0000`, red) on the same `status: failed` derivation `apprise-json`'s
+`type` uses -- two colours, no third severity tier. `fields` is a generic
+flattening of the event's detail dict, so every event above reaches a
+Discord consumer with its structured facts intact -- the thing
+`apprise-json` has no field for. `allowed_mentions` is always
+`{"parse": []}`: collection titles and library names come from Plex, and a
+collection titled `@everyone` must not be able to ping a server. Discord's
+limits (256-character title, 4096-character description, at most 25 fields
+of at most 1024 characters each, 6000 characters across the embed) are
+enforced when the payload is built, with a visible `...[truncated]` marker
+-- a scheduler failure detail runs to 2000 characters and would otherwise
+produce a 400. Success is `204 No Content`.
+
+`apprise-api` is the body an Apprise API server accepts at
+`/notify/{key}` -- the opposite direction from `apprise-json`, which
+impersonates Apprise as a sender:
+
+```json
+{
+  "title": "autoposter: scheduled_run_completed",
+  "body": "scheduled run ratings_drift_sweep finished: ok",
+  "type": "success"
+}
+```
+
+`body` (not `message`) is the field that matters; `type` takes Apprise's
+own `info`/`success`/`warning`/`failure` vocabulary and this service emits
+the last two, on the same derivation as above. `tag` and `format` are
+omitted deliberately: both have server-side defaults, and `text` is right
+for these plain-text summaries.
+
 ### Retry, timeout, and what failure looks like
 
 A notification describes work that already finished, so its failure never
 fails that work: no retry-forever, no parked jobs, no crashed scheduler.
 Each send makes up to `retry_count` attempts, each bounded by
-`timeout_seconds`, with backoff of 0.5s, 1s, 2s, ... between them. Transport
-errors and 5xx responses retry; any other status does not (a 4xx, or a 3xx
--- redirects are not followed) -- a wrong path or revoked
-token cannot be fixed by asking again. Worst case for one send on the
-defaults: `3 x 10s + 0.5s + 1s = 31.5s`, and that time is spent on a
-background task -- neither the scheduler loop nor the `/api/full-pass`
-response ever waits on the webhook.
+`timeout_seconds`, with backoff of 0.5s, 1s, 2s, ... between them.
+Transport errors, 5xx responses and 429 retry; any other status does not
+(a 4xx, or a 3xx — redirects are not followed) — a wrong path or a
+revoked token cannot be fixed by asking again. A 429 is the exception
+because it means "wait", not "you are misconfigured", and a rate-limited
+target (a Discord webhook's budget is roughly 5 requests per 2 seconds)
+answers one in normal operation. When a 429 carries a `Retry-After`, that
+number replaces the computed backoff for that one wait, clamped to
+`timeout_seconds` so a misconfigured header cannot park a background task.
+Worst case for one send on the defaults: `3 × 10s + 0.5s + 1s = 31.5s`
+against an ordinary target and `3 × 10s + 10s + 10s = 50s` against one
+that is rate-limiting us — and that time is spent on a background task
+— neither the scheduler loop nor the `/api/full-pass` response ever
+waits on the webhook.
 
 A send that exhausts its attempts logs exactly one warning (naming the
 host, the attempt count and the last error) and writes an `events_log` row

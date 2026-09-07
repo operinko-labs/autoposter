@@ -324,6 +324,18 @@ collections:
   #       # building an empty collection, and a regional rating list stays
   #       # usable on a library that only uses part of it. A filter whose
   #       # values ALL drop matches nothing, and says that too.
+  #       # Row 156: three attributes read this service's own gathered facts
+  #       # rather than Plex -- common_sense_rating (the Common Sense age
+  #       # band, written as a bare number: 8, 13, 16), imdb_rating and
+  #       # tmdb_rating (0-10). They carry names of their own because
+  #       # Kometa's content_rating/critic_rating/audience_rating read
+  #       # DIFFERENT values out of Plex, and one spelling for two answers is
+  #       # the bug this avoids. An item the facts pass has not visited yet
+  #       # is EXCLUDED under every operator, `.not` included, so a
+  #       # collection on one of these starts small and grows as the sweep
+  #       # catches up; and their values are NOT vocabulary-checked, so a
+  #       # misspelling builds an empty collection silently. See the
+  #       # "Attributes this service holds itself" section of deploy/README.md.
   #       filters:
   #         year.gte: 2000
   #         content_rating: [PG-13, R]
@@ -648,7 +660,7 @@ arr_sync:
 notifications:
   enabled: false # POST run-completion webhooks to `url`; off until pointed somewhere
   url: "" # e.g. http://n8n.n8n-prod.svc.cluster.local:5678/webhook/autoposter -- may embed a token, never logged in full
-  # Payload shape (see src/autoposter/notify/payload.py for both contracts):
+  # Payload shape (see src/autoposter/notify/payload.py for all four modes):
   #   apprise-json (default): the body Apprise's json:// scheme POSTs --
   #     {"version": "1.0", "title": ..., "message": ..., "attachments": [],
   #      "type": "success" | "failure"} -- what an Apprise-trained consumer
@@ -656,6 +668,15 @@ notifications:
   #   autoposter-v1: this service's own versioned shape --
   #     {"schema": "autoposter/v1", "event": ..., "at": <ISO 8601 UTC>,
   #      "summary": ..., "detail": {...}} -- carries the full detail dict.
+  #   discord: a Discord webhook embed --
+  #     {"embeds": [{"title": ..., "description": ..., "color": ...,
+  #      "timestamp": ..., "fields": [...]}], "allowed_mentions": {"parse": []}}
+  #     -- detail becomes embed fields, and mentions are suppressed so a
+  #     collection titled @everyone cannot ping a server.
+  #   apprise-api: the body an Apprise API server accepts at /notify/{key} --
+  #     {"title": ..., "body": ..., "type": "success" | "failure"} -- the
+  #     opposite direction from apprise-json, which impersonates Apprise as a
+  #     sender. tag and format are left to the server's defaults.
   mode: apprise-json
   timeout_seconds: 10 # per-attempt HTTP timeout
   retry_count: 3 # attempts before giving up; notification failure never fails the run it reports on
