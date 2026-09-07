@@ -222,6 +222,15 @@ describe("Settings configuration", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/3 settings/)).toBeInTheDocument();
   });
+
+  it("carries the webhook secret rotation panel", async () => {
+    stubConfig();
+    await renderSettings();
+
+    expect(
+      screen.getByRole("button", { name: /rotate webhook secret/i }),
+    ).toBeInTheDocument();
+  });
 });
 
 /** The editor's own fixture: it carries the two provenance keys the enriched

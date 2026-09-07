@@ -27,6 +27,7 @@ import type {
 import { ProviderAttribution } from "../ProviderAttribution";
 import { ConfigSafetyPanel } from "./ConfigSafetyPanel";
 import { LibraryOverridesPanel } from "./LibraryOverridesPanel";
+import { WebhookSecretPanel } from "./WebhookSecretPanel";
 import "./settings.css";
 
 /** The attribution block and its required wording live with the component now
@@ -813,6 +814,8 @@ export function Settings() {
           }}
         />
       )}
+
+      <WebhookSecretPanel />
 
       {dirty && (
         <section className="panel config-pending">

@@ -27,7 +27,7 @@ from autoposter.config.image_ref import parse_image_ref
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
-from autoposter.config.schema import Config, Secrets
+from autoposter.config.schema import STATE_FILE_NAMES_ENV, Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
@@ -503,6 +503,24 @@ def create_app(
     # to the fixture that made it and must not be disposed here.
     app.state.engine = engine
     app.state.secrets = secrets
+    # WHICH of this deployment's secrets came from the state file, as a
+    # per-name boolean -- read with `.get(name, False)`, so a name the marker
+    # does not carry is "not from the file". `boot` publishes the NAMES across
+    # its exec (see `state_file_secret_names`), and this is the only reader.
+    #
+    # Read from os.environ directly at this construction path, the way
+    # AUTOPOSTER_IMAGE_REF just below is and for the same reason: it is not a
+    # credential, it is a deployment fact, and routing it through Secrets
+    # would make every test app fake a value for it.
+    #
+    # FAIL CLOSED. An application that never went through `boot` -- every test
+    # app, and an operator running `python -m autoposter.main` -- has no
+    # marker and answers False for every name, which is the C5 refusal. That
+    # is deliberate: the refusal is the path a test gets for free and the
+    # permission is the one a test has to opt into.
+    app.state.secret_from_state_file = {
+        name: True for name in os.environ.get(STATE_FILE_NAMES_ENV, "").split(",") if name
+    }
     # ``(registry, project, repository)``, or None -- see api/version.py.
     # Read here, once, rather than through Secrets: it is not a credential,
     # it is a deployment fact (the image reference the pod already runs), so
@@ -536,6 +554,21 @@ def create_app(
     # Per process, so every worker pod limits its own callers -- see
     # LoginRateLimiter.
     app.state.login_rate_limiter = LoginRateLimiter()
+    # One rotation at a time in this process. `merge_secrets_file` is a
+    # read-modify-write over one file, and two concurrent rotations would
+    # additionally mint two secrets, leave the *arrs holding one and this
+    # application the other, and show both to the operator as if each had
+    # worked. Created here for the reason `mode_lock` above is: every
+    # application must have one for the route to reach.
+    app.state.secret_rotation_lock = asyncio.Lock()
+    # Its own limiter rather than the login table, so a rotation cannot spend
+    # an operator's login budget and a login flood cannot lock the rotation
+    # out. Five a minute: the action writes a file and makes two 10-second
+    # outbound calls, and an operator performs it a handful of times in a
+    # deployment's life.
+    app.state.rotation_rate_limiter = LoginRateLimiter(
+        max_attempts=5, window_seconds=60.0
+    )
     # Created here so the /api/logs endpoints always have one to read, but
     # attached to the root logger only by the lifespan above (run_background
     # deployments) -- see the comment there.

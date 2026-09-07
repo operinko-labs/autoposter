@@ -1146,3 +1146,29 @@ export interface RunsResponse {
   runs: RunEntry[];
   generated_at: string;
 }
+
+/** One service's re-registration result from the webhook secret rotation.
+ *
+ * The same three keys `api/setup.ts`'s `ArrRegistration` carries, and
+ * deliberately declared again rather than imported: that module is the
+ * WIZARD's client, with its own fetch and its own memory-only setup token,
+ * and this file is the session API's vocabulary. A type import across that
+ * line would be the first thread of a dependency neither side wants. */
+export interface WebhookRotationResult {
+  ok: boolean;
+  /** `"created"` or `"updated"` on success, `null` otherwise. */
+  action: string | null;
+  /** A fixed sentence from the server, rendered verbatim -- never translated
+   * from a status code. */
+  detail: string;
+}
+
+export interface WebhookRotationResponse {
+  /** The one and only serve of this value. There is no GET. */
+  webhook_secret: string;
+  /** The audit row's own timestamp, so the panel and the Dashboard's events
+   * list cannot disagree. */
+  rotated_at: string;
+  /** Keyed by service name: `radarr`, `sonarr`. */
+  registrations: Record<string, WebhookRotationResult>;
+}

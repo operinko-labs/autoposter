@@ -30,6 +30,7 @@ from autoposter import boot
 from autoposter.config import loader as loader_module
 from autoposter.config import state as state_module
 from autoposter.config.schema import (
+    STATE_FILE_NAMES_ENV,
     Secrets,
     missing_hard_secret_names,
     resolve_secret_values,
@@ -77,7 +78,10 @@ def clean_secret_environment(monkeypatch, tmp_path):
     records no undo entry for a name that was absent when the test began, so
     a boot test would otherwise leak a credential into every test after it.
     """
-    names = (*HARD, *SOFT, "AUTOPOSTER_CONFIG")
+    # The boot marker joins the save/restore list for the reason the docstring
+    # above gives: `boot.main` assigns it into `os.environ` directly, ahead of
+    # `_export`, so a boot test would otherwise leak it into every test after.
+    names = (*HARD, *SOFT, "AUTOPOSTER_CONFIG", STATE_FILE_NAMES_ENV)
     saved = {name: os.environ[name] for name in names if name in os.environ}
     for name in names:
         monkeypatch.delenv(name, raising=False)
@@ -678,3 +682,78 @@ def test_the_compose_stack_mounts_a_private_state_volume():
     assert "state:/state" in api["volumes"]
     assert api["environment"]["AUTOPOSTER_STATE_DIR"] == "/state"
     assert "state" in compose["volumes"]
+
+
+# --- the boot marker: which names came from the STATE FILE ------------------
+
+
+def _booted(monkeypatch) -> str:
+    """Run a configured boot to completion with the exec and the migration
+    stubbed, and hand back the marker it published.
+
+    Through `boot.main` rather than through `state_file_secret_names` directly:
+    the whole point of the marker is that it survives `_export`, which
+    publishes the FILE's values into `os.environ` and is what would otherwise
+    erase the answer. A test that called the helper alone would pass with the
+    assignment on the wrong side of that line.
+    """
+    _write_state_config()
+    monkeypatch.setattr(boot, "_migrate", lambda: None)
+    monkeypatch.setattr(boot.os, "execv", lambda path, argv: None)
+    boot.main([])
+    return os.environ.get(boot.STATE_FILE_NAMES_ENV, "<absent>")
+
+
+def test_a_state_file_boot_publishes_the_names_it_read_from_the_file(monkeypatch):
+    _write_state_secrets({name: "from-file" for name in HARD})
+
+    marker = _booted(monkeypatch)
+
+    assert "AUTOPOSTER_WEBHOOK_SECRET" in marker.split(",")
+    assert sorted(marker.split(",")) == sorted(HARD)
+
+
+def test_an_env_configured_boot_publishes_an_empty_marker(monkeypatch):
+    """Fail closed, structurally: an env-complete deployment never opens the
+    file at all (`schema.py:76`), so there is nothing for the marker to name
+    and the rotation refuses -- which is C5's whole point."""
+    for name in HARD:
+        monkeypatch.setenv(name, "from-env")
+
+    assert _booted(monkeypatch) == ""
+
+
+def test_the_environment_wins_name_by_name_in_the_marker_too(monkeypatch):
+    """The migration `deploy/README.md:240-243` sends operators through: the
+    file and the environment hold the SAME string for the webhook secret. The
+    marker follows `resolve_secret_values`' precedence rather than the file's
+    contents, so that name is absent -- which is the case a value comparison
+    gets wrong and this design exists for."""
+    _write_state_secrets({name: "from-file" for name in HARD})
+    monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", "from-file")
+
+    marker = _booted(monkeypatch)
+
+    assert "AUTOPOSTER_WEBHOOK_SECRET" not in marker.split(",")
+    assert "AUTOPOSTER_PLEX_TOKEN" in marker.split(",")
+
+
+def test_the_marker_carries_no_value_only_names(monkeypatch):
+    """Row 213. `FAKE_PLEX_TOKEN` and `FAKE_DB_URL` are distinctive so the T4
+    grep gate can prove the same thing about the whole tree."""
+    _write_state_secrets(
+        {
+            "AUTOPOSTER_DATABASE_URL": FAKE_DB_URL,
+            "AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN,
+            "AUTOPOSTER_TMDB_TOKEN": "x",
+            "AUTOPOSTER_TVDB_APIKEY": "x",
+            "AUTOPOSTER_FANART_APIKEY": "x",
+            "AUTOPOSTER_WEBHOOK_SECRET": "row-255-file-secret-8b1e",
+        }
+    )
+
+    marker = _booted(monkeypatch)
+
+    assert FAKE_PLEX_TOKEN not in marker
+    assert FAKE_DB_URL not in marker
+    assert "row-255-file-secret-8b1e" not in marker

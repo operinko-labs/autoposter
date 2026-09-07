@@ -33,6 +33,7 @@ from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
 from autoposter.api.mismatches import router as mismatches_router
 from autoposter.api.playlists import router as playlists_router
+from autoposter.api.secret_rotation import router as secret_rotation_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.testing import router as testing_router
 from autoposter.api.version import router as version_router
@@ -254,6 +255,12 @@ router.include_router(action_center_router)
 # necessary -- never seed a row from a provider (the freezing hazard) and
 # never echo the value in a refusal (row 213) -- are the substance of it.
 router.include_router(item_overrides_router)
+
+# Webhook secret rotation (roadmap row 255). Its own module because it is the
+# only handler here that imports `setup_arr`, and because the rule that makes
+# it safe -- refuse unless `boot` said the secret came from the state file --
+# is the substance of it.
+router.include_router(secret_rotation_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
