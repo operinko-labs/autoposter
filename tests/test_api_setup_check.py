@@ -603,3 +603,62 @@ async def test_an_empty_credential_field_probes_the_one_the_deployment_holds(
     )
 
     assert seen["AUTOPOSTER_SONARR_APIKEY"] == held
+
+
+# --- the checked Plex address, and the config step's own ---------------------
+
+
+async def test_a_checked_plex_address_is_stamped_when_no_configuration_submit_follows(
+    setup_client, monkeypatch
+):
+    """The `plex` arm of `_apply_staged_urls` -- the one whose config key is
+    `url` rather than `base_url` -- which nothing asserted, and which the test
+    below turns off."""
+
+    async def answered(system, base_url, credentials, transport=None):
+        return setup_checks.CheckOutcome(ok=True, refused=False, failure=None)
+
+    monkeypatch.setattr(setup_api.setup_checks, "run_check", answered)
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/check",
+        json={"system": "plex", "base_url": PLEX_BASE},
+        headers=_headers(token),
+    )
+
+    state = setup_client._transport.app.state.setup
+
+    assert setup_api._apply_staged_urls({}, state)["plex"]["url"] == PLEX_BASE
+
+
+async def test_a_configuration_submit_wins_over_the_address_the_plex_check_staged(
+    setup_client, monkeypatch
+):
+    """Both panes render on the SAME step, so this is one operator correcting
+    one field: the address that answered is the NAT one, the address in-cluster
+    traffic must use is the one typed into the configuration field second, and
+    before this the endpoint answered 200 and wrote the first one anyway --
+    at the config step AND again at finish, which applies the staged map a
+    second time."""
+
+    async def answered(system, base_url, credentials, transport=None):
+        return setup_checks.CheckOutcome(ok=True, refused=False, failure=None)
+
+    monkeypatch.setattr(setup_api.setup_checks, "run_check", answered)
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/check",
+        json={"system": "plex", "base_url": PLEX_BASE},
+        headers=_headers(token),
+    )
+
+    corrected = "http://plex:32400"
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": corrected}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    state = setup_client._transport.app.state.setup
+    assert state.config_document["plex"]["url"] == corrected
+    # And the second application, the one `finish` makes over the same map.
+    assert setup_api._apply_staged_urls(state.config_document, state)["plex"]["url"] == corrected

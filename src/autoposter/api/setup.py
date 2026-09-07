@@ -958,8 +958,14 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
             detail=f"{EXAMPLE_CONFIG_UNREADABLE} ({type(exc).__name__})",
         ) from None
 
-    document.setdefault("plex", {})["url"] = body_plex_url
     _apply_staged_urls(document, request.app.state.setup)
+    # AFTER the staged addresses and not before them: the Plex accordion and
+    # this field render on the same step, so an operator who checked
+    # `http://plex.lan:32400`, realised that is the NAT address and typed the
+    # in-cluster one here is one operator correcting one value. The typed
+    # document wins, and the staged entry is dropped below so that finish --
+    # which applies the staged map a second time -- cannot put it back.
+    document.setdefault("plex", {})["url"] = body_plex_url
     try:
         build_config(document)
     except Exception as exc:
@@ -972,6 +978,10 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
 
     async with request.app.state.setup.lock:
         request.app.state.setup.config_document = document
+        # Only once the document validated, so a refusal changes nothing. The
+        # three *arr entries stay: each has exactly one writer, and it is the
+        # check. `plex` is the one address two panes can write.
+        request.app.state.setup.base_urls.pop("plex", None)
     logger.info("first-start setup: the configuration step completed")
     return {"path": str(state_config_path())}
 
@@ -993,7 +1003,9 @@ def _apply_staged_urls(document: dict, state: SetupState) -> dict:
         document["public_url"] = state.public_url
     for system, base_url in state.base_urls.items():
         # `plex` is the one whose config key is `url` rather than `base_url` --
-        # PlexConfig predates the three *arr-shaped sections. `plex_account`
+        # PlexConfig predates the three *arr-shaped sections -- and the one an
+        # explicit config submit DROPS from this map, because it is the one
+        # address two panes on the same step can write. `plex_account`
         # and the six built-in hosts never reach here: only the four typed
         # systems are ever staged, and the account has no address of its own.
         if system == "plex":
