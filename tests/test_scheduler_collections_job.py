@@ -20,17 +20,9 @@ from autoposter.collections.service import CollectionsPassFailed, ReconcileResul
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.schema import Secrets
 from autoposter.scheduler.jobs import make_collections_job
+from plex_doubles import FakeSection as PlexSection
 
 LABEL = "autoposter"
-
-
-class FakeChoice:
-    def __init__(self, title):
-        self.title = title
-        # Plex answers contentRating's key and title with the same string, so
-        # the resolver the Common Sense family builds its query through is the
-        # identity here.
-        self.key = title
 
 
 class FakeCollection:
@@ -74,42 +66,8 @@ class FakeCollection:
         self._labels.append(type("L", (), {"tag": labels})())
 
 
-class FakeSection:
-    def __init__(self, ratings, section_type="movie"):
-        self._ratings = list(ratings)
-        self._existing = {}
-        self.type = section_type
-        # The Common Sense family writes through the raw POST/PUT routes since
-        # phase 10a-2, so this fake stands in for ``section._server`` too.
-        self.key = "42"
-        self._server = self
-        self._session = type("Sess", (), {
-            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
-        })()
-
-    def _uriRoot(self):
-        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
-
-    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """The create POST (which carries a ``title``) and the filter-replacing
-        PUT (which carries only a ``uri``)."""
-        args = parse_qs(urlsplit(key).query)
-        if "title" not in args:
-            return None
-        title = args["title"][0]
-        self._existing[title] = FakeCollection(
-            title, rating_key=str(len(self._existing) + 1),
-        )
-        return None
-
-    def collection(self, title):
-        return self._existing[title]
-
-    def listFilterChoices(self, field, libtype=None):
-        return [FakeChoice(r) for r in self._ratings]
-
-    def collections(self, **kw):
-        return list(self._existing.values())
+class FakeSection(PlexSection):
+    collection_factory = FakeCollection
 
 
 class FakeLibrary:
@@ -218,8 +176,8 @@ async def test_the_job_is_skipped_entirely_when_collections_are_disabled(session
 
 async def test_a_successful_pass_returns_a_summary_naming_each_library(session):
     server = FakeServer({
-        "Movies": FakeSection({"R", "17"}),
-        "TV Shows": FakeSection({"TV-14"}, section_type="show"),
+        "Movies": FakeSection(ratings={"R", "17"}),
+        "TV Shows": FakeSection(ratings={"TV-14"}, section_type="show"),
     })
     config = _config(["Movies", "TV Shows"])
 
@@ -238,7 +196,7 @@ async def test_a_failure_reconciling_one_library_does_not_prevent_the_other(sess
     reconciled and still named -- but the *job* now fails, which is the whole
     of roadmap row 115: the run this test used to assert was ``ok`` was a run
     where a configured library had not been reconciled at all."""
-    server = BreaksOnSecondLibrary({"Movies": FakeSection({"R", "17"})})
+    server = BreaksOnSecondLibrary({"Movies": FakeSection(ratings={"R", "17"})})
     config = _config(["Movies", "TV Shows"])
 
     async with httpx.AsyncClient() as http:
@@ -345,7 +303,7 @@ async def test_a_real_secrets_bundle_reaches_the_reconcile(session, monkeypatch)
     config.sonarr = SimpleNamespace(enabled=False, base_url="")
     config.tracearr = SimpleNamespace(enabled=False, base_url="")
     config.manual_assets_root = "/manual"
-    server = FakeServer({"Movies": FakeSection({"R"})})
+    server = FakeServer({"Movies": FakeSection(ratings={"R"})})
 
     async with httpx.AsyncClient() as http:
         job = make_collections_job(ConfigHolder(config), lambda: server, http, secrets=secrets)
@@ -366,7 +324,7 @@ async def test_the_plex_connection_runs_off_the_event_loop(session):
 
     def server_factory():
         connect_thread["thread"] = threading.current_thread()
-        return FakeServer({"Movies": FakeSection({"R"})})
+        return FakeServer({"Movies": FakeSection(ratings={"R"})})
 
     config = _config(["Movies"])
     async with httpx.AsyncClient() as http:

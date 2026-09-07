@@ -17,18 +17,9 @@ from autoposter.collections.reconcile import (
 )
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
+from plex_doubles import FakeSection as PlexSection
 
 LABEL = "autoposter"
-
-
-class FakeChoice:
-    def __init__(self, title, key=None):
-        self.title = title
-        # Plex answers this filter's key and title with the same string -- the
-        # 10a-1 probe measured it (``dynamic_types.py``'s content_rating note)
-        # -- so the resolver is the identity here, which is also what the
-        # equivalence proof's driver assumes and says out loud.
-        self.key = title if key is None else key
 
 
 class FakeCollection:
@@ -91,62 +82,27 @@ class FakeCollection:
         self._labels = self._real_labels
 
 
-class FakeSection:
-    """Also stands in for ``section._server``: since phase 10a-2 a bucket's
-    collection is created with a raw POST and its filter replaced with a raw
-    PUT, both against ``section._server.query``, exactly as the separator's
-    blank collection and every ``smart_filter`` collection already were.
+class FakeSection(PlexSection):
+    """The shared Plex double plus this file's own question.
 
-    ``createCollection`` is KEPT even though nothing calls it any more. Its job
-    is now to prove it is never called: a fake that simply lacked the method
-    would fail an accidental call with an ``AttributeError`` several frames
-    away, where recording it lets ``section.created == []`` say what is actually
-    being asserted.
+    ``listFilterChoices`` asserts the attribute it is asked for: every
+    assertion in this file is about the Common Sense family, and a bucket
+    query that drifted onto another attribute would otherwise pass here by
+    answering the same ratings.
     """
 
-    def __init__(self, ratings, existing=(), section_type="movie"):
-        self._ratings = list(ratings)
-        self._existing = {c.title: c for c in existing}
-        self.created = []
-        self.queries = []
-        self.key = "42"
-        self.type = section_type
-        self._server = self
-        self._session = type("Sess", (), {
-            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
-        })()
+    collection_factory = FakeCollection
+    created_labels = [LABEL]
 
-    def _uriRoot(self):
-        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
-
-    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """Both raw routes: the create POST (which carries a ``title``) and the
-        filter-replacing PUT (which carries only a ``uri``)."""
-        self.queries.append({"key": key, "method": method})
-        args = parse_qs(urlsplit(key).query)
-        if "title" in args:
-            title = args["title"][0]
-            self._existing[title] = FakeCollection(
-                title, rating_key=str(len(self._existing) + 1),
-            )
-        return None
-
-    def collection(self, title):
-        return self._existing[title]
+    def __init__(self, ratings=(), **kw):
+        """``test_collection_adoption.py`` imports this class as
+        ``SmartSection`` and calls it positionally (``SmartSection({...},
+        existing=[...])``); this keeps that call site working."""
+        super().__init__(ratings=ratings, **kw)
 
     def listFilterChoices(self, field, libtype=None):
         assert field == "contentRating"
-        return [FakeChoice(r) for r in self._ratings]
-
-    def collections(self, **kw):
-        return list(self._existing.values())
-
-    def createCollection(self, title, items=None, smart=False, limit=None,
-                         libtype=None, sort=None, filters=None, **kw):
-        self.created.append((title, smart, libtype, sort, filters))
-        collection = FakeCollection(title, labels=[LABEL], rating_key=str(len(self.created)))
-        self._existing[title] = collection
-        return collection
+        return super().listFilterChoices(field, libtype=libtype)
 
 
 def _posted(section, title):
@@ -169,7 +125,7 @@ def _put(section, collection):
 
 
 async def test_dry_run_performs_no_writes(session):
-    section = FakeSection({"R", "17"})
+    section = FakeSection(ratings={"R", "17"})
     actions = await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=True)
     assert section.created == []
     assert section.queries == []
@@ -179,7 +135,7 @@ async def test_dry_run_performs_no_writes(session):
 
 
 async def test_creates_a_smart_collection_with_the_derived_filter(session):
-    section = FakeSection({"R", "17"})
+    section = FakeSection(ratings={"R", "17"})
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
     uri = _posted(section, "Age 17+ Movies")
     assert uri.startswith(
@@ -199,14 +155,14 @@ async def test_creates_a_smart_collection_with_the_derived_filter(session):
 
 async def test_an_empty_bucket_creates_nothing(session):
     """An empty filter would match the entire library."""
-    section = FakeSection({"R"})
+    section = FakeSection(ratings={"R"})
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
     assert "Age 1+ Movies" not in section._existing
     assert "Age 17+ Movies" in section._existing
 
 
 async def test_a_second_pass_over_an_unchanged_library_writes_nothing(session):
-    section = FakeSection({"R", "17"})
+    section = FakeSection(ratings={"R", "17"})
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
     first = len(section.queries)
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
@@ -215,7 +171,7 @@ async def test_a_second_pass_over_an_unchanged_library_writes_nothing(session):
 
 
 async def test_a_changed_rating_set_updates_the_existing_filter(session):
-    section = FakeSection({"R"})
+    section = FakeSection(ratings={"R"})
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
     section._ratings.append("TV-MA")
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
@@ -229,7 +185,7 @@ async def test_an_unlabelled_collection_with_a_colliding_title_is_never_touched(
     """The operator has hand-made collections. Overwriting one because its
     name collides would be the worst failure this phase could have."""
     theirs = FakeCollection("Age 17+ Movies", labels=["something-else"])
-    section = FakeSection({"R", "17"}, existing=[theirs])
+    section = FakeSection(ratings={"R", "17"}, existing=[theirs])
     actions = await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
     assert theirs.updated_filters is None
     assert theirs.summary_set is None
@@ -246,7 +202,7 @@ async def test_nothing_is_ever_deleted(session):
 
 
 async def test_managed_collections_are_recorded(session):
-    section = FakeSection({"R", "17"})
+    section = FakeSection(ratings={"R", "17"})
     await reconcile_content_ratings(session, section, "Movies", "Movie", LABEL, dry_run=False)
     rows = (await session.execute(select(ManagedCollection))).scalars().all()
     titles = {r.title for r in rows}
@@ -259,8 +215,8 @@ async def test_two_libraries_of_the_same_type_do_not_collide(session):
     'Kids Movies'). Both have library_type='Movie', but ManagedCollection is
     keyed on the section name, so their rows must stay distinct and a second
     pass over either must write nothing."""
-    movies = FakeSection({"R", "17"})
-    kids = FakeSection({"PG"})
+    movies = FakeSection(ratings={"R", "17"})
+    kids = FakeSection(ratings={"PG"})
 
     await reconcile_content_ratings(session, movies, "Movies", "Movie", LABEL, dry_run=False)
     await reconcile_content_ratings(session, kids, "Kids Movies", "Movie", LABEL, dry_run=False)
@@ -287,7 +243,7 @@ async def test_ownership_check_reloads_before_reading_labels(session):
     our label must still be recognised as ours."""
     ours = FakeCollection("Age 17+ Movies", labels=[LABEL])
     assert ours.labels == []  # unloaded, like a real object fresh off search
-    section = FakeSection({"R", "17"}, existing=[ours])
+    section = FakeSection(ratings={"R", "17"}, existing=[ours])
 
     actions = await reconcile_content_ratings(
         session, section, "Movies", "Movie", LABEL, dry_run=False
@@ -302,7 +258,7 @@ async def test_a_labelled_collection_with_no_database_row_is_adopted(session):
     ManagedCollection row exists for it -- it should be updated once and then
     recorded, not treated as a conflict or duplicated."""
     orphan = FakeCollection("Age 17+ Movies", labels=[LABEL])
-    section = FakeSection({"17"}, existing=[orphan])
+    section = FakeSection(ratings={"17"}, existing=[orphan])
 
     actions = await reconcile_content_ratings(
         session, section, "Movies", "Movie", LABEL, dry_run=False
@@ -324,7 +280,7 @@ async def test_a_database_row_with_no_matching_plex_collection_is_recreated(sess
     """Divergence case (b): a ManagedCollection row exists but its Plex
     collection is gone -- the next pass must create a fresh one and reuse the
     existing row rather than raising an IntegrityError on a duplicate."""
-    section = FakeSection({"17"})
+    section = FakeSection(ratings={"17"})
     row = ManagedCollection(
         library="Movies", title="Age 17+ Movies", kind="smart",
         plex_rating_key="999", definition_hash="stale",
@@ -350,7 +306,7 @@ async def test_smart_collection_rows_never_get_reconcile_stats(session):
     stat columns exist for list collections only and must stay NULL on these
     rows -- a zero would read as "this collection is empty", which is a
     different and wrong claim."""
-    section = FakeSection({"17", "PG"})
+    section = FakeSection(ratings={"17", "PG"})
 
     await reconcile_content_ratings(
         session, section, "Movies", "Movie", LABEL, dry_run=False
@@ -391,7 +347,7 @@ async def test_a_settings_only_edit_is_applied_to_an_unchanged_smart_membership(
     over the same bucket filter, the second with a label the first did not
     have. Before the fold, the second pass short-circuited on the unchanged
     filter hash and the label was silently never written."""
-    section = FakeSection({"R", "17"})
+    section = FakeSection(ratings={"R", "17"})
     plain = CollectionDefinition(title="X", builder="cs_bucket")
 
     await reconcile_content_ratings(
@@ -516,7 +472,7 @@ async def test_a_bucket_is_created_with_a_raw_post_and_no_plexapi_filters(sessio
     """Roadmap row 185. The second query grammar is retired: this family now
     writes the same oracle-proven URI ``smart_filter`` writes, through the same
     two functions, so there is exactly one smart write path in this service."""
-    section = FakeSection(["G", "TV-G", "PG"])
+    section = FakeSection(ratings=["G", "TV-G", "PG"])
 
     actions = await reconcile_content_ratings(
         session, section, "Movies", "Movie", LABEL, dry_run=False,
@@ -536,7 +492,7 @@ async def test_a_bucket_whose_filter_changed_is_updated_with_a_put(session):
     predates the port is not current, so the pass re-PUTs its filter. One PUT
     per collection, once."""
     existing = FakeCollection("Age 1+ Movies", labels=[LABEL])
-    section = FakeSection(["G"], existing=[existing])
+    section = FakeSection(ratings=["G"], existing=[existing])
     session.add(ManagedCollection(
         library="Movies", title="Age 1+ Movies", kind="smart",
         plex_rating_key="1", definition_hash="the-pre-port-hash",
@@ -570,7 +526,7 @@ def test_the_hash_folds_the_built_uri_so_the_migration_actually_happens():
 async def test_an_unchanged_second_pass_still_writes_nothing(session):
     """The migration is ONE pass. The second finds the new hash stored and
     short-circuits exactly as it did before."""
-    section = FakeSection(["G", "TV-G", "PG"])
+    section = FakeSection(ratings=["G", "TV-G", "PG"])
     await reconcile_content_ratings(
         session, section, "Movies", "Movie", LABEL, dry_run=False,
     )
@@ -597,7 +553,7 @@ async def test_an_empty_bucket_is_still_never_created_and_never_deleted(session)
     from autoposter.collections.builders.cs_bucket import CsBucketBuilder
 
     stale = FakeCollection("Age 18+ Movies", labels=[LABEL])
-    section = FakeSection(["G"], existing=[stale])
+    section = FakeSection(ratings=["G"], existing=[stale])
 
     actions = await reconcile_content_ratings(
         session, section, "Movies", "Movie", LABEL, dry_run=False,
@@ -616,7 +572,7 @@ async def test_a_bucket_whose_query_cannot_be_built_refuses_only_itself(session)
     does not wrap -- so an uncaught refusal here costs the whole library its
     reconcile. Contained to one bucket, like every other per-key refusal in this
     service."""
-    section = FakeSection(["G", "PG"])
+    section = FakeSection(ratings=["G", "PG"])
 
     actions = await reconcile_content_ratings(
         session, section, "Movies", "Movie", LABEL, dry_run=False,
@@ -642,7 +598,7 @@ async def test_a_dead_filter_lookup_refuses_the_whole_family_rather_than_raising
         def __call__(self, attribute, value, /):  # pragma: no cover - never reached
             raise AssertionError("nothing may resolve after the listing failed")
 
-    section = FakeSection(["G"])
+    section = FakeSection(ratings=["G"])
 
     actions = await reconcile_content_ratings(
         session, section, "Movies", "Movie", LABEL, dry_run=False,

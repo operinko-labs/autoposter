@@ -25,17 +25,9 @@ from autoposter.collections.service import (
     reconcile_libraries,
 )
 from autoposter.db.models import ManagedCollection
+from plex_doubles import FakeSection as PlexSection
 
 LABEL = "autoposter"
-
-
-class FakeChoice:
-    def __init__(self, title):
-        self.title = title
-        # Plex answers contentRating's key and title with the same string, so
-        # the resolver the Common Sense family builds its query through is the
-        # identity here.
-        self.key = title
 
 
 class FakeCollection:
@@ -79,42 +71,8 @@ class FakeCollection:
         self._labels.append(type("L", (), {"tag": labels})())
 
 
-class FakeSection:
-    def __init__(self, ratings, section_type="movie"):
-        self._ratings = list(ratings)
-        self._existing = {}
-        self.type = section_type
-        # The Common Sense family writes through the raw POST/PUT routes since
-        # phase 10a-2, so this fake stands in for ``section._server`` too.
-        self.key = "42"
-        self._server = self
-        self._session = type("Sess", (), {
-            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
-        })()
-
-    def _uriRoot(self):
-        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
-
-    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """The create POST (which carries a ``title``) and the filter-replacing
-        PUT (which carries only a ``uri``)."""
-        args = parse_qs(urlsplit(key).query)
-        if "title" not in args:
-            return None
-        title = args["title"][0]
-        self._existing[title] = FakeCollection(
-            title, rating_key=str(len(self._existing) + 1),
-        )
-        return None
-
-    def collection(self, title):
-        return self._existing[title]
-
-    def listFilterChoices(self, field, libtype=None):
-        return [FakeChoice(r) for r in self._ratings]
-
-    def collections(self, **kw):
-        return list(self._existing.values())
+class FakeSection(PlexSection):
+    collection_factory = FakeCollection
 
 
 class BreaksOnTheLeftoversScan(FakeSection):
@@ -177,7 +135,7 @@ def _config(libraries):
 async def test_a_failure_on_the_second_library_does_not_roll_back_the_first(
     session, session_factory
 ):
-    server = BreaksOnSecondLibrary({"Movies": FakeSection({"R", "17"})})
+    server = BreaksOnSecondLibrary({"Movies": FakeSection(ratings={"R", "17"})})
     config = _config(["Movies", "TV Shows"])
 
     async with httpx.AsyncClient() as http:
@@ -206,7 +164,7 @@ async def test_a_failed_leftovers_scan_does_not_discard_the_librarys_rows(
     row for that library -- and the next pass, seeing no rows, would rewrite
     the whole library. That is precisely what the per-library commit
     boundary exists to prevent."""
-    server = BreaksOnSecondLibrary({"Movies": BreaksOnTheLeftoversScan({"R", "17"})})
+    server = BreaksOnSecondLibrary({"Movies": BreaksOnTheLeftoversScan(ratings={"R", "17"})})
 
     async with httpx.AsyncClient() as http:
         result = await reconcile_libraries(session, server, _config(["Movies"]), http)
@@ -228,7 +186,7 @@ async def test_a_failed_library_is_visible_to_a_caller_watching_the_exit_code(se
     into an exit code -- without it ``python -m autoposter.collections`` exits
     0 after a library failed and a cron wrapper watching the exit code never
     sees it."""
-    server = BreaksOnSecondLibrary({"Movies": FakeSection({"R", "17"})})
+    server = BreaksOnSecondLibrary({"Movies": FakeSection(ratings={"R", "17"})})
 
     async with httpx.AsyncClient() as http:
         failed = await reconcile_libraries(session, server, _config(["Movies", "TV Shows"]), http)

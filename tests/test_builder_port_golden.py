@@ -96,6 +96,7 @@ from plexapi.exceptions import NotFound
 
 from autoposter.collections.engine import run_definitions
 from autoposter.collections.sources import default_definitions
+from plex_doubles import FakeSection as PlexSection
 
 GOLDEN = Path("tests/fixtures/collections/golden_port.json")
 
@@ -148,17 +149,6 @@ class FakeItem:
         self.ratingKey = key
         self.title = key
         self.guids = [FakeGuid(g) for g in guids]
-
-
-class FakeChoice:
-    def __init__(self, title):
-        self.title = title
-        # Plex answers contentRating's key and title with the same string (the
-        # 10a-1 dynamic probe measured it), so the resolver is the identity
-        # here. Added when the Common Sense family started resolving its values
-        # through LibraryTagResolver rather than handing plexapi the written
-        # words.
-        self.key = title
 
 
 class FakeCollection:
@@ -258,69 +248,36 @@ class FakeCollection:
         self.locks += 1
 
 
-class FakeSection:
-    """Also stands in for ``section._server``: the separator is created with a
-    raw POST against ``section._server.query``."""
+class FakeSection(PlexSection):
+    """The shared Plex double plus this file's own capture.
 
-    def __init__(self, items=(), ratings=(), section_type="movie"):
-        self._items = [FakeItem(key, guids) for key, guids in items]
-        self._ratings = list(ratings)
-        self._existing: dict[str, FakeCollection] = {}
-        self.key = "42"
-        self.type = section_type
-        self._server = self
-        self._session = type("Sess", (), {"post": "POST-SENTINEL"})()
+    A SMART create's ``uri`` is recorded into ``updated_filters``
+    DELIBERATELY, and that is the one amendment to this harness the phase's
+    adjudication licensed (``.superpowers/sdd/p10a-facts.md``, Addendum 2
+    point 1): the cell used to hold a plexapi call shape and now holds the
+    raw-POST evidence that replaced it. Same cell, same question ("what
+    filter was this collection given"), different grammar. ``smart=0`` --
+    the separator's blank POST -- is deliberately NOT recorded: its write
+    path did not move, and its cell is the capture's.
+    """
 
-    def _uriRoot(self):
-        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
+    collection_factory = FakeCollection
 
-    def all(self):
-        return list(self._items)
+    def __init__(self, *, items=(), **kw):
+        super().__init__(items=[FakeItem(key, guids) for key, guids in items], **kw)
 
-    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """Both raw routes now.
-
-        ``title`` is the create POST (the separator's, and since phase 10a-2
-        every Common Sense bucket's). A key with no ``title`` is the smart
-        filter's replacing PUT, whose only argument is the uri; no scenario here
-        reaches it, so it is accepted and dropped rather than given machinery
-        nothing exercises.
-
-        A SMART create's ``uri`` is recorded into ``updated_filters``
-        DELIBERATELY, and that is the one amendment to this harness the phase's
-        adjudication licensed (`.superpowers/sdd/p10a-facts.md`, Addendum 2
-        point 1): the cell used to hold a plexapi call shape, and now holds the
-        raw-POST evidence that replaced it. Same cell, same question ("what
-        filter was this collection given"), different grammar. ``smart=0`` --
-        the separator's blank POST -- is deliberately NOT recorded: its write
-        path did not move, and its cell is the capture's.
-        """
-        args = parse_qs(urlsplit(key).query)
-        if "title" not in args:
-            return None
-        title = args["title"][0]
-        collection = FakeCollection(title, rating_key=str(len(self._existing) + 1))
+    def _record_post(self, collection, args, key, method):
         if args.get("smart", ["0"])[0] == "1":
             collection.updated_filters = args["uri"][0]
-        self._existing[title] = collection
-        return None
 
-    def collection(self, title):
-        return self._existing[title]
-
-    def listFilterChoices(self, field, libtype=None):
-        return [FakeChoice(rating) for rating in self._ratings]
-
-    def collections(self, **kw):
-        return list(self._existing.values())
-
-    def createCollection(self, title, items=None, smart=False, limit=None,
-                         libtype=None, sort=None, filters=None, **kw):
-        collection = FakeCollection(title, rating_key=str(len(self._existing) + 1))
+    def _created_collection(self, title, items=None, filters=None, **kw):
+        collection = self.collection_factory(
+            title,
+            rating_key=str(len(self._existing) + 1),
+        )
         collection._live = list(items or [])
         collection._cache = list(items or [])
         collection.updated_filters = filters
-        self._existing[title] = collection
         return collection
 
 
@@ -438,25 +395,25 @@ async def _scenarios(session, config_factory, tmp_path) -> dict:
         recorded[name] = {"actions": actions, "state": _state(section)}
 
     # 1. A dry run over a Movie library: everything reported, nothing written.
-    section = FakeSection(MOVIE_GUIDS, MOVIE_RATINGS)
+    section = FakeSection(items=MOVIE_GUIDS, ratings=MOVIE_RATINGS)
     await record(
         "movies_dry_run", section, "Movies", "Movie",
         _config(config_factory, tmp_path, apply_to_plex=False), _handler(),
     )
 
     # 2. The same library for real, then 3. the unchanged second pass.
-    section = FakeSection(MOVIE_GUIDS, MOVIE_RATINGS)
+    section = FakeSection(items=MOVIE_GUIDS, ratings=MOVIE_RATINGS)
     config = _config(config_factory, tmp_path)
     await record("movies_apply", section, "Movies", "Movie", config, _handler())
     await record("movies_apply_again", section, "Movies", "Movie", config, _handler())
 
     # 4/5. A Show library: fewer charts, no awards, show-worded summaries.
-    section = FakeSection(SHOW_GUIDS, SHOW_RATINGS, section_type="show")
+    section = FakeSection(items=SHOW_GUIDS, ratings=SHOW_RATINGS, section_type="show")
     await record(
         "shows_dry_run", section, "TV Shows", "Show",
         _config(config_factory, tmp_path, apply_to_plex=False), _handler(),
     )
-    section = FakeSection(SHOW_GUIDS, SHOW_RATINGS, section_type="show")
+    section = FakeSection(items=SHOW_GUIDS, ratings=SHOW_RATINGS, section_type="show")
     await record(
         "shows_apply", section, "TV Shows", "Show",
         _config(config_factory, tmp_path), _handler(),
@@ -464,14 +421,14 @@ async def _scenarios(session, config_factory, tmp_path) -> dict:
 
     # 6. Posters on, every hosted default missing: the failure string carries
     # the URL, which is what pins each collection's poster kind and key.
-    section = FakeSection(MOVIE_GUIDS, MOVIE_RATINGS)
+    section = FakeSection(items=MOVIE_GUIDS, ratings=MOVIE_RATINGS)
     await record(
         "movies_posters_missing", section, "Poster Movies", "Movie",
         _config(config_factory, tmp_path, posters=True), _handler(posters="missing"),
     )
 
     # 7. Posters on and served: the upload path.
-    section = FakeSection(MOVIE_GUIDS, MOVIE_RATINGS)
+    section = FakeSection(items=MOVIE_GUIDS, ratings=MOVIE_RATINGS)
     await record(
         "movies_posters_served", section, "Art Movies", "Movie",
         _config(config_factory, tmp_path, posters=True), _handler(posters="served"),
@@ -479,21 +436,21 @@ async def _scenarios(session, config_factory, tmp_path) -> dict:
 
     # 8. A dead chart fetcher must not touch its collections, nor stop the
     # award family from being built.
-    section = FakeSection(MOVIE_GUIDS, MOVIE_RATINGS)
+    section = FakeSection(items=MOVIE_GUIDS, ratings=MOVIE_RATINGS)
     await record(
         "movies_chart_source_down", section, "Broken Charts", "Movie",
         _config(config_factory, tmp_path), _handler(charts_ok=False),
     )
 
     # 9. ...and the same the other way around.
-    section = FakeSection(MOVIE_GUIDS, MOVIE_RATINGS)
+    section = FakeSection(items=MOVIE_GUIDS, ratings=MOVIE_RATINGS)
     await record(
         "movies_award_source_down", section, "Broken Awards", "Movie",
         _config(config_factory, tmp_path), _handler(awards_ok=False),
     )
 
     # 10. A library that owns none of the ids every source names.
-    section = FakeSection([("x1", ["imdb://tt9999999"])], MOVIE_RATINGS)
+    section = FakeSection(items=[("x1", ["imdb://tt9999999"])], ratings=MOVIE_RATINGS)
     await record(
         "movies_owning_nothing", section, "Sparse Movies", "Movie",
         _config(config_factory, tmp_path), _handler(),

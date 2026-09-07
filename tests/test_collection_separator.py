@@ -22,6 +22,7 @@ from autoposter.collections import groups
 from autoposter.collections.reconcile import reconcile_separator
 from autoposter.config.schema import CollectionDefinition, CollectionsConfig
 from autoposter.db.models import ManagedCollection
+from plex_doubles import FakeSection as PlexSection
 
 LABEL = "autoposter"
 
@@ -115,59 +116,27 @@ class FakeCollection:
         self.items_added.extend(items)
 
 
-class FakeSection:
-    """Also stands in for ``section._server``: the raw POST used to create
-    an empty collection targets ``section._server.query(...)``, so this
-    fake plays both roles rather than needing a second fake object."""
+class FakeSection(PlexSection):
+    """The shared Plex double plus this file's own filter.
 
-    def __init__(self, existing=(), section_type="movie"):
-        self._existing = {c.title: c for c in existing}
-        self.created = []
-        self.key = "42"
-        self.type = section_type
-        self._server = self
-        self._session = type("Sess", (), {
-            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
-        })()
+    ``raw_posts`` keeps only the SEPARATOR's create POST. Since phase 10a-2
+    the age buckets are written through this same route too -- a create POST
+    carrying a ``title``, a filter-replacing PUT carrying only a ``uri`` --
+    and every assertion in this file is about the separator, so recording
+    those here as well would make each of them read as a claim about the
+    buckets instead.
+    """
+
+    collection_factory = FakeCollection
+    created_labels = [LABEL]
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
         self.raw_posts = []
-        self.queries = []
 
-    def _uriRoot(self):
-        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
-
-    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """Every raw section route lands here; ``raw_posts`` keeps only the
-        SEPARATOR's.
-
-        Since phase 10a-2 the age buckets are written through this same route
-        too -- a create POST carrying a ``title``, a filter-replacing PUT
-        carrying only a ``uri`` -- and every assertion in this file is about the
-        separator, so recording those here as well would make each of them read
-        as a claim about the buckets instead.
-        """
-        self.queries.append({"key": key, "method": method})
-        args = parse_qs(urlsplit(key).query)
-        if "title" not in args:
-            return None
-        title = args["title"][0]
-        if title == SEPARATOR_TITLE:
+    def _record_post(self, collection, args, key, method):
+        if args["title"][0] == SEPARATOR_TITLE:
             self.raw_posts.append({"key": key, "method": method})
-        collection = FakeCollection(title, rating_key=str(len(self._existing) + 1))
-        self._existing[title] = collection
-        return None
-
-    def collection(self, title):
-        return self._existing[title]
-
-    def collections(self, **kw):
-        return list(self._existing.values())
-
-    def createCollection(self, title, items=None, smart=False, limit=None,
-                          libtype=None, sort=None, filters=None, **kw):
-        self.created.append((title, smart, libtype, sort, filters))
-        collection = FakeCollection(title, labels=[LABEL], rating_key=str(len(self.created)))
-        self._existing[title] = collection
-        return collection
 
 
 def _query(raw_posts):
