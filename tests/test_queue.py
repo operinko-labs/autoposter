@@ -118,12 +118,20 @@ async def test_a_job_stamped_a_step_into_the_future_is_not_claimed(session):
     waited for: deterministic, machine-independent, and over in milliseconds,
     where looping for the real 0.019%-per-execution event is neither.
 
+    The stamp itself is 5 minutes, not the ~2.7 s measured step: the first
+    assertion below only holds while less time passes between this commit and
+    ``claim``'s ``now()`` than the stamp is ahead -- a few seconds is a real
+    budget this suite can blow under load (recon logs multi-second stalls in
+    this same shared container), which would flake the assertion for reasons
+    having nothing to do with the mechanism under test. Minutes of margin cost
+    nothing (the row still isn't due) and remove that budget entirely.
+
     The second half is the fix: ``make_due``'s hour of backdating absorbs a
     step three orders of magnitude larger than any measured one.
     """
     job_id = await enqueue(session, "process_item", {})
     await session.execute(
-        text("UPDATE jobs SET run_after = now() + interval '3 seconds' WHERE id = :id"),
+        text("UPDATE jobs SET run_after = now() + interval '5 minutes' WHERE id = :id"),
         {"id": job_id},
     )
     await session.commit()
@@ -271,9 +279,14 @@ async def test_a_deferred_job_waits_the_long_horizon_and_never_parks(session):
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
     # The horizon, not the backoff curve: this row is waiting for the library
-    # to catch up, which happens on a scale of days.
+    # to catch up, which happens on a scale of days. ``run_after`` is stamped
+    # by ``fail()``'s committed transaction and ``db_now`` is read in a later
+    # one, so a backwards clock step between them can push ``remaining`` above
+    # DEFER_INTERVAL_SECONDS; the upper bound gets the same 300 s tolerance as
+    # the lower one rather than the zero-tolerance edge a single ~2.7 s step
+    # could redden.
     remaining = (job.run_after - db_now).total_seconds()
-    assert DEFER_INTERVAL_SECONDS - 300 < remaining <= DEFER_INTERVAL_SECONDS
+    assert DEFER_INTERVAL_SECONDS - 300 < remaining <= DEFER_INTERVAL_SECONDS + 300
     assert job.attempts == 0
 
 
