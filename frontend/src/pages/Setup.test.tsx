@@ -26,6 +26,7 @@ const PROGRESS: SetupProgress = {
   config: false,
   config_source: null,
   public_url: false,
+  checked_systems: [],
 };
 
 function respond(body: unknown, status = 200): Response {
@@ -818,6 +819,7 @@ describe("Setup", () => {
         required: [],
         config: true,
         config_source: "staged",
+        checked_systems: ["sonarr"],
       },
       (path, init) => {
         if (path === "/api/setup/arr/webhook" && init?.method === "POST") {
@@ -858,6 +860,72 @@ describe("Setup", () => {
         "https://autoposter.example.test/webhook/sonarr",
       ),
     );
-    expect(screen.getByTestId("registration-radarr")).toHaveTextContent("Not attempted");
+    // Radarr has no staged API key in this fixture -- a deployment that does
+    // not run it at all -- so it is "Not configured", never "Not attempted".
+    expect(screen.getByTestId("registration-radarr")).toHaveTextContent("Not configured");
+  });
+
+  it("disables the register button while the call is in flight and shows the result beside it", async () => {
+    // Review I1: no `disabled` and no visible result meant a double press
+    // could fire two overlapping registrations -- the duplicate C2a exists to
+    // prevent -- and a success was invisible until the finish pane. Both are
+    // fixed on the SAME control the operator presses, through the real entry
+    // point.
+    let resolveRegister: ((value: Response) => void) | undefined;
+    const fetchMock = progressMock(
+      {
+        ...PROGRESS,
+        database: true,
+        database_source: "resolved",
+        providers: {
+          AUTOPOSTER_PLEX_TOKEN: "***REDACTED***",
+          AUTOPOSTER_SONARR_APIKEY: "***REDACTED***",
+        },
+        required: [],
+        config: true,
+        config_source: "staged",
+        checked_systems: ["sonarr"],
+      },
+      (path, init) => {
+        if (path === "/api/setup/arr/webhook" && init?.method === "POST") {
+          return new Promise<Response>((resolve) => {
+            resolveRegister = resolve;
+          }) as unknown as Response;
+        }
+        return undefined;
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await goToUrlStep();
+    await submitPublicUrlStep();
+    await waitFor(() => screen.getByTestId("systems-step"));
+    fireEvent.click(screen.getByRole("button", { name: /Sonarr API key/ }));
+    await waitFor(() => expect(screen.getByTestId("accordion-body-sonarr")).toBeInTheDocument());
+
+    const button = screen.getByRole("button", { name: "Register the webhook for me" });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(button).toBeDisabled());
+    // A second press while the first is in flight must not fire a second call.
+    fireEvent.click(button);
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === "/api/setup/arr/webhook"),
+    ).toHaveLength(1);
+
+    resolveRegister?.(
+      respond({
+        ok: true,
+        action: "created",
+        detail: "Sonarr accepted the webhook registration (created). No test was sent; "
+          + "Sonarr will exercise the hook on its first real event.",
+      }),
+    );
+
+    await waitFor(() => expect(button).not.toBeDisabled());
+    expect(screen.getByTestId("accordion-body-sonarr")).toHaveTextContent(
+      "Sonarr accepted the webhook registration (created)",
+    );
   });
 });

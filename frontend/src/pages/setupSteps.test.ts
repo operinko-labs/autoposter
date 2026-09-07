@@ -12,6 +12,7 @@ const BASE: SetupProgress = {
   config: false,
   config_source: null,
   public_url: false,
+  checked_systems: [],
 };
 
 describe("visibleSteps", () => {

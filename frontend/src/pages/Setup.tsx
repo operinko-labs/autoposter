@@ -125,6 +125,12 @@ export function Setup() {
   // a server surface: a registration is an EVENT, the server keeps no record of
   // one, and the finish page reports what happened during THIS wizard.
   const [registrations, setRegistrations] = useState<Record<string, ArrRegistration>>({});
+  // Which services have a registration call in flight right now (review I1).
+  // `onRegister` does not go through `run()` -- it must not advance the step
+  // or block on the page's own error banner -- so it needs its own busy flag,
+  // and a per-service SET rather than one boolean because Sonarr and Radarr's
+  // buttons must not disable each other.
+  const [registering, setRegistering] = useState<Set<string>>(new Set());
   // The address the URL step submitted. Held here because /progress reports
   // `public_url` as PRESENCE and never as a value -- it is a presence surface
   // for every line it serves -- and the finish page has to show the operator
@@ -247,6 +253,8 @@ export function Setup() {
           <SystemsPane
             busy={busy}
             progress={progress}
+            registering={registering}
+            registrations={registrations}
             onSave={(values) => run(() => submitProviderKeys(values))}
             onSelectPlex={(plexUrl, excluded) =>
               run(() => submitPlexSelection(plexUrl, excluded))
@@ -258,11 +266,22 @@ export function Setup() {
               // reported per service on the last pane. The route answers 200
               // with `ok: false` for every failure it has, so the only reject
               // reachable here is the fetch itself.
+              // `registering` is what disables the button for the DURATION of
+              // this call (review I1): a double press before the first call
+              // lands is what let two overlapping registrations create the
+              // duplicate C2a exists to prevent.
+              setRegistering((previous) => new Set(previous).add(service));
               try {
                 const result = await registerArrWebhook(service);
                 setRegistrations((previous) => ({ ...previous, [service]: result }));
               } catch (caught) {
                 setError(setupErrorMessage(caught));
+              } finally {
+                setRegistering((previous) => {
+                  const next = new Set(previous);
+                  next.delete(service);
+                  return next;
+                });
               }
             }}
           />
@@ -607,6 +626,8 @@ function accordionBody(
   progress: SetupProgress,
   onSelectPlex: (plexUrl: string, excludedLibraries: string[]) => Promise<boolean>,
   onRegister: (service: string) => Promise<void>,
+  registering: Set<string>,
+  registrations: Record<string, ArrRegistration>,
 ) {
   if (system === "plex") {
     return (fields: { address: string; credential: string; setAddress: (v: string) => void }) => (
@@ -620,15 +641,31 @@ function accordionBody(
     );
   }
   if (SYSTEMS_WITH_A_WEBHOOK.has(system)) {
+    // Disabled for the duration of the call, and the result rendered right
+    // beside it (review I1): the check button two lines below already answers
+    // into a pill in the accordion's own header, and this was the one control
+    // on the pane that wrote to a third party and answered silently.
+    const inFlight = registering.has(system);
+    const result = registrations[system];
     return () => (
       <div className="setup-field">
         <p className="setup-hint">
           Save the API key and run Check connection first: the registration uses the address that
           check proved, and the secret this wizard generated.
         </p>
-        <button type="button" onClick={() => onRegister(system)}>
-          Register the webhook for me
-        </button>
+        <div className="setup-field-head">
+          <button type="button" disabled={inFlight} onClick={() => onRegister(system)}>
+            Register the webhook for me
+          </button>
+          {result !== undefined && (
+            <span
+              className={`setup-pill${result.ok ? " ok" : ""}`}
+              data-testid={`register-result-${system}`}
+            >
+              {result.detail}
+            </span>
+          )}
+        </div>
       </div>
     );
   }
@@ -650,12 +687,20 @@ function accordionBody(
 function SystemsPane({
   busy,
   progress,
+  registering,
+  registrations,
   onSave,
   onSelectPlex,
   onRegister,
 }: {
   busy: boolean;
   progress: SetupProgress;
+  /** Services with a registration call in flight right now (review I1) --
+   * disables that service's own button and no other. */
+  registering: Set<string>;
+  /** What each *arr answered, keyed by service -- rendered beside the button
+   * that produced it, not only on the finish pane. */
+  registrations: Record<string, ArrRegistration>;
   onSave: (values: Record<string, string>) => Promise<boolean>;
   /** "Register the webhook for me", for the two systems that HAVE a webhook to
    * register. It reads nothing from this form: everything the route needs was
@@ -708,6 +753,8 @@ function SystemsPane({
               progress,
               onSelectPlex,
               onRegister,
+              registering,
+              registrations,
             )}
           </SetupAccordion>
         ),

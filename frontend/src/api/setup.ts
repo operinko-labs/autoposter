@@ -52,6 +52,12 @@ export interface SetupProgress {
    * address (v2 step 2). Presence, never the value: /progress is a presence
    * surface for every line it serves. */
   public_url: boolean;
+  /** Which systems a SUCCESSFUL check has staged an address for -- `public_url`'s
+   * idiom, NAMES only and never the address. The finish page reads it beside
+   * `providers` to tell a service this deployment does not run at all
+   * ("Not configured") from one that is configured but simply was not
+   * registered yet ("Not attempted"). */
+  checked_systems: string[];
 }
 
 let setupToken: string | null = null;

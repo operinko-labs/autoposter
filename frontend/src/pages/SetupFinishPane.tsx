@@ -4,19 +4,28 @@ import type { ArrRegistration, SetupProgress } from "../api/setup";
 import { providerLabel } from "./Setup";
 
 /** The two services this wizard registers a webhook with, in the order the
- * finish page lists them. `setup_arr.NAMES` is the server's own allowlist and
- * this is its rendering; a third *arr would be added in both places, because
- * the page must not offer a registration the route refuses. */
+ * finish page lists them, and the provider name that answers whether each is
+ * even staged. `setup_arr.NAMES` is the server's own allowlist and this is its
+ * rendering; a third *arr would be added in both places, because the page
+ * must not offer a registration the route refuses. */
 const ARR_SERVICES = [
-  { service: "sonarr", label: "Sonarr" },
-  { service: "radarr", label: "Radarr" },
+  { service: "sonarr", label: "Sonarr", apiKey: "AUTOPOSTER_SONARR_APIKEY" },
+  { service: "radarr", label: "Radarr", apiKey: "AUTOPOSTER_RADARR_APIKEY" },
 ];
 
-/** A registration nobody asked for. Not a failure and not a success: the
- * operator simply did not press the button, and the honest next instruction is
- * the one they follow today. */
+/** A registration nobody asked for, on a service this wizard is otherwise
+ * READY to register: an API key is staged and an address was checked. Not a
+ * failure and not a success: the operator simply did not press the button,
+ * and the honest next instruction is the one they follow today. */
 const NOT_ATTEMPTED =
   "Not attempted — paste the secret into that service's Webhook connection by hand.";
+
+/** A service this deployment does not appear to run at all -- no API key
+ * staged, or no address ever checked. Distinct from `NOT_ATTEMPTED` (the
+ * Missing, task 4 review): "paste it in by hand" is the wrong instruction for
+ * a service the operator never set up, and conflating the two tells them to
+ * go configure something they deliberately left out. */
+const NOT_CONFIGURED = "Not configured — no API key staged, or its address was never checked.";
 
 export function WebhookSecret({ value }: { value: string }) {
   const codeRef = useRef<HTMLElement | null>(null);
@@ -138,13 +147,21 @@ export function SetupFinishPane({
 
       <section className="setup-group setup-report">
         <h3 className="setup-group-title">Webhook registrations</h3>
-        {ARR_SERVICES.map(({ service, label }) => {
+        {ARR_SERVICES.map(({ service, label, apiKey }) => {
           const result = registrations[service];
+          // No key staged, or no successful check for this service -- a
+          // deployment shape, not something the operator forgot to press.
+          // `== null` on purpose: a provider name the fixture never set is the
+          // same "nothing staged" as one the server reported `null` for.
+          const configured =
+            progress.providers[apiKey] != null && progress.checked_systems.includes(service);
           return (
             <p className="setup-hint" data-testid={`registration-${service}`} key={service}>
               <strong>{label}:</strong>{" "}
               {result === undefined
-                ? NOT_ATTEMPTED
+                ? configured
+                  ? NOT_ATTEMPTED
+                  : NOT_CONFIGURED
                 : result.ok && publicUrl !== null
                   ? `${result.detail} ${publicUrl}/webhook/${service}`
                   : result.detail}

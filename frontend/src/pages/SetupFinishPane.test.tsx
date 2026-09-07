@@ -18,11 +18,18 @@ const PROGRESS: SetupProgress = {
     AUTOPOSTER_PLEX_TOKEN: "***REDACTED***",
     AUTOPOSTER_MDBLIST_APIKEY: null,
     AUTOPOSTER_HARBOR_TOKEN: null,
+    // Both *arr services are configured in the base fixture -- staged key,
+    // checked address -- so the existing "not attempted" cases below stay
+    // about an operator who simply did not press the button. The one test
+    // for "not configured" overrides these two fields directly.
+    AUTOPOSTER_SONARR_APIKEY: "***REDACTED***",
+    AUTOPOSTER_RADARR_APIKEY: "***REDACTED***",
   },
   required: [],
   config: true,
   config_source: "staged",
   public_url: true,
+  checked_systems: ["sonarr", "radarr"],
 };
 
 function renderPane(overrides: Partial<Parameters<typeof SetupFinishPane>[0]> = {}) {
@@ -94,6 +101,24 @@ describe("SetupFinishPane", () => {
 
     expect(screen.getByTestId("registration-sonarr")).toHaveTextContent("Not attempted");
     expect(screen.getByTestId("registration-radarr")).toHaveTextContent("Not attempted");
+  });
+
+  it("reports a service with no staged key or no checked address as not configured", () => {
+    // The Missing, task 4 review: a deployment that does not run Radarr at all
+    // gets told to go configure it by hand, which is the wrong instruction.
+    // Two distinct causes, both routed to the same fourth state -- no key
+    // (radarr) and no checked address (sonarr).
+    renderPane({
+      progress: {
+        ...PROGRESS,
+        providers: { ...PROGRESS.providers, AUTOPOSTER_RADARR_APIKEY: null },
+        checked_systems: ["radarr"],
+      },
+      registrations: {},
+    });
+
+    expect(screen.getByTestId("registration-sonarr")).toHaveTextContent("Not configured");
+    expect(screen.getByTestId("registration-radarr")).toHaveTextContent("Not configured");
   });
 
   it("lists every credential left empty by its human label and its environment name", () => {
