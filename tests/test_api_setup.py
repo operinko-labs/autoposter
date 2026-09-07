@@ -742,9 +742,13 @@ async def test_the_database_url_never_reaches_a_response_or_the_log(
     assert "row-121-db-secret" not in "\n".join(r.getMessage() for r in caplog.records)
 
 
-async def test_a_real_database_url_is_accepted_through_the_real_probe(setup_client):
+async def test_a_real_database_url_is_accepted_through_the_real_probe(setup_client, engine):
     """Not mocked: the step's contract is that the URL is validated by being
-    USED, and a probe that is only ever faked proves the mock."""
+    USED, and a probe that is only ever faked proves the mock.
+
+    `engine` is unused in the body: it exists to create this worker's
+    database before the probe connects to it (the database is created
+    lazily inside the `engine` fixture, not by `TEST_DB_URL` alone)."""
     from conftest import TEST_DB_URL
 
     token = await _authenticate(setup_client)
