@@ -9,8 +9,10 @@ import {
   submitMasterPassword,
   submitPlexUrl,
   submitProviderKeys,
+  submitPublicUrl,
   type SetupProgress,
 } from "../api/setup";
+import { canNavigate, farthestStep, STEP_LABELS, visibleSteps, type StepId } from "./setupSteps";
 import "./setup.css";
 
 /** The message shown for a failed wizard call.
@@ -25,23 +27,6 @@ export function setupErrorMessage(caught: unknown): string {
   }
   if (typeof caught.detail === "string") return caught.detail;
   return `The server returned an error (${caught.status}). Try again.`;
-}
-
-/** The wizard's five steps, in the order the server finishes them. Nothing
- * here decides what is rendered -- the panes below are still chosen by what
- * `/api/setup/progress` says is unfinished -- it is the operator's map of how
- * far along they are. */
-const STEPS = ["Password", "Database", "Providers", "Configuration", "Start"] as const;
-
-/** Which of the five the operator is on, read off the progress the page
- * already holds. Derived, never stored: a second source of truth for "where
- * am I" is a second thing that can fall out of step with the server. */
-function stepNumber(progress: SetupProgress | null): number {
-  if (progress === null) return 1;
-  if (!progress.database) return 2;
-  if (progress.required.length > 0) return 3;
-  if (progress.config_source === null) return 4;
-  return 5;
 }
 
 /** A human name for each credential the provider step collects.
@@ -95,19 +80,15 @@ const REQUIRED_PROVIDER_NAMES = [
 
 export function Setup() {
   const [progress, setProgress] = useState<SetupProgress | null>(null);
-  // `/api/setup/state` is the one open route, readable before any token
-  // exists, and its `password_set` is what tells the first pane whether there
-  // is a password to SET or one to PROVE -- the same distinction the reload
-  // path creates. Defaults to "set": the closed, first-visit answer.
   const [passwordSet, setPasswordSet] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [restarting, setRestarting] = useState(false);
-  // Set once, by the one call that ever generates it (facts Amendment 5), and
-  // never cleared by a later call: a later provider submit answers `null` for
-  // this field (the secret already exists), and that must not make a value
-  // shown a moment ago disappear as if it had been withdrawn.
   const [webhookSecret, setWebhookSecret] = useState<string | null>(null);
+  // Which pane the operator is on. Page state, deliberately: the server owns
+  // how far forward this may go (`farthestStep`) and nothing else about it.
+  // Back is a `setCurrent` and no request at all -- see setupSteps.ts.
+  const [current, setCurrent] = useState<StepId>("password");
 
   const refresh = useCallback(async () => {
     setProgress(await fetchSetupProgress());
@@ -120,20 +101,33 @@ export function Setup() {
   }, []);
 
   useEffect(() => {
-    // Progress is only readable with the setup token, so a page that already
-    // holds one (the operator just set the password) picks up where it left
-    // off, and one that does not -- including a reloaded tab, since the token
-    // lives only in memory -- simply shows the password pane again.
     refresh().catch(() => setProgress(null));
   }, [refresh]);
 
+  // Once authenticated -- the first successful /progress fetch after mount --
+  // land one step past the password pane. "url" is always index 1 of
+  // visibleSteps(): the wizard walks one step at a time from here on, and this
+  // initial hop is the only step this page ever takes on its own, because it
+  // is the one that just produced the token rather than one the operator
+  // chose to skip.
+  const bootstrapped = useRef(false);
+  useEffect(() => {
+    if (progress !== null && !bootstrapped.current) {
+      bootstrapped.current = true;
+      setCurrent(visibleSteps(progress)[1]);
+    }
+  }, [progress]);
+
+  /** Run a step's submit, and advance only if the server accepted it. */
   const run = useCallback(
-    async (action: () => Promise<unknown>): Promise<boolean> => {
+    async (action: () => Promise<unknown>, advanceTo?: StepId): Promise<boolean> => {
       setBusy(true);
       setError(null);
       try {
         await action();
-        await refresh();
+        const next = await fetchSetupProgress();
+        setProgress(next);
+        if (advanceTo !== undefined) setCurrent(advanceTo);
         return true;
       } catch (caught) {
         setError(setupErrorMessage(caught));
@@ -142,99 +136,142 @@ export function Setup() {
         setBusy(false);
       }
     },
-    [refresh],
+    [],
   );
 
   if (restarting) return <Restarting />;
-  if (progress === null) {
-    return (
-      <Shell error={error} step={stepNumber(null)}>
+
+  const order = visibleSteps(progress);
+  // A pane the server has since said is unreachable (a reload dropped the
+  // token, so progress went back to null) must not stay on screen.
+  const pane: StepId = canNavigate(current, progress) && order.includes(current)
+    ? current
+    : "password";
+  const back = order[order.indexOf(pane) - 1];
+
+  function stepAfter(step: StepId): StepId {
+    return order[Math.min(order.indexOf(step) + 1, order.length - 1)];
+  }
+
+  return (
+    <Shell
+      error={error}
+      steps={order}
+      current={pane}
+      onBack={back === undefined ? undefined : () => setCurrent(back)}
+    >
+      {pane === "password" && (
         <PasswordPane
           busy={busy}
           passwordSet={passwordSet}
-          onSubmit={(value) => run(() => submitMasterPassword(value))}
-        />
-      </Shell>
-    );
-  }
-
-  // Every unfinished step is offered together rather than one at a time: the
-  // server, not step order, is what says which credentials are still needed,
-  // and the provider step in particular has no "done" moment of its own --
-  // several credentials are optional forever -- so it stays available
-  // alongside whatever else is unfinished.
-  const readyToFinish =
-    progress.database && progress.required.length === 0 && progress.config_source !== null;
-
-  return (
-    <Shell error={error} step={stepNumber(progress)}>
-      {!progress.database && (
-        <DatabasePane busy={busy} onSubmit={(url) => run(() => submitDatabaseUrl(url))} />
-      )}
-      <ProvidersPane
-        busy={busy}
-        progress={progress}
-        onSubmit={(values) =>
-          run(async () => {
-            const result = await submitProviderKeys(values);
-            if (result.webhook_secret !== null) setWebhookSecret(result.webhook_secret);
-          })
-        }
-      />
-      {webhookSecret !== null && <WebhookSecret value={webhookSecret} />}
-      {progress.config_source === null ? (
-        <ConfigPane busy={busy} onSubmit={(url) => run(() => submitPlexUrl(url))} />
-      ) : (
-        // Amendment 6: a document that already resolves (an env-set path, a
-        // mounted ConfigMap, compose's bind-mounted example) is never offered
-        // this step again -- writing beside it would produce a file the next
-        // boot does not read, with the operator's Plex URL landing in it.
-        // This is the configuration step's own status, so it is reported in
-        // that step's header rather than as a loose line under the
-        // credentials.
-        <section className="setup-pane">
-          <div className="setup-pane-head">
-            <h2 className="setup-pane-title">Configuration</h2>
-            <span className="setup-pill ok" data-testid="config-satisfied">
-              Already provided ({progress.config_source})
-            </span>
-          </div>
-          <p className="setup-lead">
-            The document the next boot reads already resolves, so there is nothing to write here.
-            Everything in it stays editable in Settings.
-          </p>
-        </section>
-      )}
-      {readyToFinish && (
-        <FinishPane
-          busy={busy}
-          onSubmit={() =>
-            run(async () => {
-              await finishSetup();
-              setRestarting(true);
-            })
+          onSubmit={(value) =>
+            run(() => submitMasterPassword(value), stepAfter("password"))
           }
         />
+      )}
+      {pane === "url" && (
+        <PublicUrlPane
+          busy={busy}
+          onSubmit={(value) => run(() => submitPublicUrl(value), stepAfter("url"))}
+        />
+      )}
+      {pane === "database" && (
+        <DatabasePane
+          busy={busy}
+          onSubmit={(url) => run(() => submitDatabaseUrl(url), stepAfter("database"))}
+        />
+      )}
+      {pane === "systems" && progress !== null && (
+        <div data-testid="systems-step">
+          <ProvidersPane
+            busy={busy}
+            progress={progress}
+            onSubmit={(values) =>
+              run(async () => {
+                const result = await submitProviderKeys(values);
+                if (result.webhook_secret !== null) setWebhookSecret(result.webhook_secret);
+              })
+            }
+          />
+          {progress.config_source === null && (
+            <ConfigPane busy={busy} onSubmit={(url) => run(() => submitPlexUrl(url))} />
+          )}
+          <button
+            className="primary"
+            type="button"
+            disabled={busy || farthestStep(progress) !== "finish"}
+            onClick={() => setCurrent("finish")}
+          >
+            Continue
+          </button>
+        </div>
+      )}
+      {pane === "finish" && (
+        <>
+          {webhookSecret !== null && <WebhookSecret value={webhookSecret} />}
+          <FinishPane
+            busy={busy}
+            onSubmit={() =>
+              run(async () => {
+                await finishSetup();
+                setRestarting(true);
+              })
+            }
+          />
+        </>
       )}
     </Shell>
   );
 }
 
+function PublicUrlPane({
+  busy,
+  onSubmit,
+}: {
+  busy: boolean;
+  onSubmit: (v: string) => Promise<boolean>;
+}) {
+  return (
+    <OneFieldPane
+      id="setup-public-url"
+      title="This deployment's address"
+      label="Autoposter's own URL"
+      type="text"
+      hint="https://autoposter.example.com — the address Radarr and Sonarr will send their webhooks to. Autoposter never fetches it."
+      action="Continue"
+      busy={busy}
+      autoComplete="off"
+      onSubmit={onSubmit}
+    />
+  );
+}
+
 function Shell({
   error,
-  step,
+  steps,
+  current,
+  onBack,
   children,
 }: {
   error: string | null;
-  step: number;
+  steps: StepId[];
+  current: StepId;
+  /** Absent on the first step, which is what makes "no Back on step 1" a
+   * property of the tree rather than a disabled button somebody can enable. */
+  onBack?: () => void;
   children: React.ReactNode;
 }) {
   return (
     <div className="setup-screen">
       <div className="setup-box">
         <h1 className="setup-title">Set up Autoposter</h1>
-        <Steps current={step} />
+        <Steps steps={steps} current={current} />
         {children}
+        {onBack !== undefined && (
+          <button className="setup-back" type="button" onClick={onBack}>
+            Back
+          </button>
+        )}
         {error !== null && (
           <p className="page-error" role="alert">
             {error}
@@ -245,25 +282,22 @@ function Shell({
   );
 }
 
-function Steps({ current }: { current: number }) {
+function Steps({ steps, current }: { steps: StepId[]; current: StepId }) {
+  const position = steps.indexOf(current);
   return (
     <ol className="setup-steps">
-      {STEPS.map((label, index) => {
-        const number = index + 1;
-        const state = number < current ? "done" : number === current ? "current" : "todo";
+      {steps.map((id, index) => {
+        const state = index < position ? "done" : index === position ? "current" : "todo";
         return (
           <li
             className={`setup-step ${state}`}
-            key={label}
+            key={id}
             aria-current={state === "current" ? "step" : undefined}
           >
-            {/* A finished step is marked by what is in its disc as well as by
-                the disc's colour, so the distinction survives a colour-blind
-                reading. */}
             <span aria-hidden="true" className="setup-step-number">
-              {state === "done" ? "✓" : number}
+              {state === "done" ? "✓" : index + 1}
             </span>
-            {label}
+            {STEP_LABELS[id]}
           </li>
         );
       })}

@@ -255,3 +255,14 @@
     margin-left: 0;
   }
 }
+
+.setup-back {
+  align-self: flex-start;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0.35rem 0.9rem;
+}

@@ -37,6 +37,10 @@ export interface SetupProgress {
    * step, so asking for a Plex URL a second time would write a file the next
    * boot never reads. */
   config_source: "configured" | "state" | null;
+  /** Whether the wizard holds this deployment's own externally reachable
+   * address (v2 step 2). Presence, never the value: /progress is a presence
+   * surface for every line it serves. */
+  public_url: boolean;
 }
 
 let setupToken: string | null = null;
@@ -89,6 +93,13 @@ export function fetchSetupProgress(): Promise<SetupProgress> {
 
 export function submitDatabaseUrl(url: string): Promise<{ ok: boolean }> {
   return setupFetch("/api/setup/database", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+}
+
+export function submitPublicUrl(url: string): Promise<{ ok: boolean }> {
+  return setupFetch("/api/setup/public-url", {
     method: "POST",
     body: JSON.stringify({ url }),
   });
