@@ -317,3 +317,10 @@
   display: flex;
   gap: 0.5rem;
 }
+
+/* The finish page's two report blocks. `.setup-group`'s 18px is the gap between
+   a label and the input it names; a list of one-line result rows reads as a
+   list at a third of that. */
+.setup-report {
+  gap: 6px;
+}

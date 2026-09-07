@@ -240,6 +240,29 @@ export function submitPlexSelection(
   });
 }
 
+export interface ArrRegistration {
+  ok: boolean;
+  /** `"created"` or `"updated"` on success -- facts C2a asks the finish page to
+   * tell those two apart -- and `null` otherwise. */
+  action: string | null;
+  /** A fixed sentence, rendered verbatim like every other `detail` here. */
+  detail: string;
+}
+
+/** Point one *arr's Webhook connection at this deployment, idempotently.
+ *
+ * Answers `200` whether or not the registration worked: a failure is a RESULT
+ * this step reports rather than an error in the request that asked for it, and
+ * it must never block the finish (facts C3). So `ok` is read from the body and
+ * not from the status, and this call does not reject on a failed registration.
+ */
+export function registerArrWebhook(service: string): Promise<ArrRegistration> {
+  return setupFetch("/api/setup/arr/webhook", {
+    method: "POST",
+    body: JSON.stringify({ service }),
+  });
+}
+
 export function finishSetup(): Promise<{ restarting: boolean }> {
   return setupFetch("/api/setup/finish", { method: "POST" });
 }

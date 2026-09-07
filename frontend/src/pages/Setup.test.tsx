@@ -799,4 +799,65 @@ describe("Setup", () => {
       excluded_libraries: ["Photos"],
     });
   });
+
+  it("registers the *arr webhook from its own panel and reports it on the finish page", async () => {
+    // Task 4, through the real entry point rather than through the pane alone:
+    // the control lives in the SONARR accordion's children slot, the result is
+    // held by `Setup` and it is the FINISH pane that renders it, so the three
+    // pieces only meet here. A pane test would pass with the button wired to
+    // nothing and the finish pane rendering a registration nothing ever put in.
+    const fetchMock = progressMock(
+      {
+        ...PROGRESS,
+        database: true,
+        database_source: "resolved",
+        providers: {
+          AUTOPOSTER_PLEX_TOKEN: "***REDACTED***",
+          AUTOPOSTER_SONARR_APIKEY: "***REDACTED***",
+        },
+        required: [],
+        config: true,
+        config_source: "staged",
+      },
+      (path, init) => {
+        if (path === "/api/setup/arr/webhook" && init?.method === "POST") {
+          return respond({
+            ok: true,
+            action: "created",
+            detail: "Sonarr accepted the webhook registration (created).",
+          });
+        }
+        return undefined;
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await goToUrlStep();
+    await submitPublicUrlStep();
+    await waitFor(() => screen.getByTestId("systems-step"));
+    fireEvent.click(screen.getByRole("button", { name: /Sonarr API key/ }));
+    await waitFor(() => expect(screen.getByTestId("accordion-body-sonarr")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Register the webhook for me" }));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([path]) => path === "/api/setup/arr/webhook"),
+      ).toBe(true),
+    );
+    const asked = fetchMock.mock.calls.find(([path]) => path === "/api/setup/arr/webhook");
+    expect(JSON.parse(String(asked?.[1]?.body))).toEqual({ service: "sonarr" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    // The address the finish page shows is the one the URL step submitted: the
+    // server never serves it back, so the page holds it from its own submit.
+    await waitFor(() =>
+      expect(screen.getByTestId("registration-sonarr")).toHaveTextContent(
+        "https://autoposter.example.test/webhook/sonarr",
+      ),
+    );
+    expect(screen.getByTestId("registration-radarr")).toHaveTextContent("Not attempted");
+  });
 });

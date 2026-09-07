@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import { ApiError } from "../api/client";
 import {
@@ -6,14 +6,17 @@ import {
   fetchSetupState,
   fetchWebhookSecret,
   finishSetup,
+  registerArrWebhook,
   submitDatabaseUrl,
   submitMasterPassword,
   submitPlexSelection,
   submitProviderKeys,
   submitPublicUrl,
+  type ArrRegistration,
   type SetupProgress,
 } from "../api/setup";
 import { SetupAccordion } from "./SetupAccordion";
+import { SetupFinishPane } from "./SetupFinishPane";
 import { SetupPlexPane } from "./SetupPlexPane";
 import {
   canNavigate,
@@ -62,7 +65,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   AUTOPOSTER_TRACEARR_APIKEY: "Tracearr API key",
 };
 
-function providerLabel(name: string): string {
+/** Exported for the finish pane's "left for later" list, which files every
+ * unset credential by the same human name the systems step gave it. */
+export function providerLabel(name: string): string {
   return PROVIDER_LABELS[name] ?? name;
 }
 
@@ -116,6 +121,16 @@ export function Setup() {
   const [busy, setBusy] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [webhookSecret, setWebhookSecret] = useState<string | null>(null);
+  // What each *arr answered, keyed by service. Page state and deliberately not
+  // a server surface: a registration is an EVENT, the server keeps no record of
+  // one, and the finish page reports what happened during THIS wizard.
+  const [registrations, setRegistrations] = useState<Record<string, ArrRegistration>>({});
+  // The address the URL step submitted. Held here because /progress reports
+  // `public_url` as PRESENCE and never as a value -- it is a presence surface
+  // for every line it serves -- and the finish page has to show the operator
+  // the callback URL that was registered so they can check it against what
+  // their reverse proxy actually serves.
+  const [publicUrl, setPublicUrl] = useState<string | null>(null);
   // Which pane the operator is on. Page state, deliberately: the server owns
   // how far forward this may go (`farthestStep`) and nothing else about it.
   // Back is a `setCurrent` and no request at all -- see setupSteps.ts.
@@ -208,7 +223,16 @@ export function Setup() {
         <PublicUrlPane
           busy={busy}
           stored={progress?.public_url ?? false}
-          onSubmit={(value) => run(() => submitPublicUrl(value), "url")}
+          onSubmit={async (value) => {
+            const accepted = await run(() => submitPublicUrl(value), "url");
+            // Only what the server took: the finish page shows this address as
+            // the base of the registered callback, and a refused one is not
+            // what any *arr was given. An empty submit -- the "keep what you
+            // have" case -- leaves whatever was held, since re-typing a staged
+            // value is not something the wizard can ask for.
+            if (accepted && value !== "") setPublicUrl(value.trim().replace(/\/+$/, ""));
+            return accepted;
+          }}
         />
       )}
       {pane === "database" && (
@@ -227,6 +251,20 @@ export function Setup() {
             onSelectPlex={(plexUrl, excluded) =>
               run(() => submitPlexSelection(plexUrl, excluded))
             }
+            onRegister={async (service) => {
+              // Not through `run`: that advances the step and reports a
+              // failure as the page's own error, and a registration is neither
+              // -- it never blocks the finish (facts C3), and its result is
+              // reported per service on the last pane. The route answers 200
+              // with `ok: false` for every failure it has, so the only reject
+              // reachable here is the fetch itself.
+              try {
+                const result = await registerArrWebhook(service);
+                setRegistrations((previous) => ({ ...previous, [service]: result }));
+              } catch (caught) {
+                setError(setupErrorMessage(caught));
+              }
+            }}
           />
           <button
             className="primary"
@@ -238,19 +276,20 @@ export function Setup() {
           </button>
         </>
       )}
-      {pane === "finish" && (
-        <>
-          {webhookSecret !== null && <WebhookSecret value={webhookSecret} />}
-          <FinishPane
-            busy={busy}
-            onSubmit={() =>
-              run(async () => {
-                await finishSetup();
-                setRestarting(true);
-              })
-            }
-          />
-        </>
+      {pane === "finish" && progress !== null && (
+        <SetupFinishPane
+          busy={busy}
+          progress={progress}
+          publicUrl={publicUrl}
+          webhookSecret={webhookSecret}
+          registrations={registrations}
+          onSubmit={() =>
+            run(async () => {
+              await finishSetup();
+              setRestarting(true);
+            })
+          }
+        />
       )}
     </Shell>
   );
@@ -550,6 +589,52 @@ function FieldHead({
   );
 }
 
+/** The systems the registration route accepts -- `setup_arr.NAMES` rendered.
+ * A system not here gets no button, which is the honest rendering for one this
+ * wizard has no webhook to register with. */
+const SYSTEMS_WITH_A_WEBHOOK = new Set(["radarr", "sonarr"]);
+
+/** What goes inside one accordion's body, beneath its two fields, or nothing.
+ *
+ * A function rather than a ternary chain inline, because there are now two
+ * kinds of extra body and a third would have made the JSX unreadable. Every
+ * control it returns is `type="button"`: this renders inside the accordion's
+ * credential `<form>`, and an unmarked button would submit that form instead of
+ * doing its own job.
+ */
+function accordionBody(
+  system: string,
+  progress: SetupProgress,
+  onSelectPlex: (plexUrl: string, excludedLibraries: string[]) => Promise<boolean>,
+  onRegister: (service: string) => Promise<void>,
+) {
+  if (system === "plex") {
+    return (fields: { address: string; credential: string; setAddress: (v: string) => void }) => (
+      <SetupPlexPane
+        address={fields.address}
+        configSource={progress.config_source}
+        credentialValue={fields.credential}
+        onAddress={fields.setAddress}
+        onSelect={onSelectPlex}
+      />
+    );
+  }
+  if (SYSTEMS_WITH_A_WEBHOOK.has(system)) {
+    return () => (
+      <div className="setup-field">
+        <p className="setup-hint">
+          Save the API key and run Check connection first: the registration uses the address that
+          check proved, and the secret this wizard generated.
+        </p>
+        <button type="button" onClick={() => onRegister(system)}>
+          Register the webhook for me
+        </button>
+      </div>
+    );
+  }
+  return undefined;
+}
+
 /** The systems step: one collapsible per credential.
  *
  * The flat form this replaces rendered eleven inputs and two headings in one
@@ -567,10 +652,16 @@ function SystemsPane({
   progress,
   onSave,
   onSelectPlex,
+  onRegister,
 }: {
   busy: boolean;
   progress: SetupProgress;
   onSave: (values: Record<string, string>) => Promise<boolean>;
+  /** "Register the webhook for me", for the two systems that HAVE a webhook to
+   * register. It reads nothing from this form: everything the route needs was
+   * staged by an earlier step, which is why the refusals it can answer with are
+   * step names. */
+  onRegister: (service: string) => Promise<void>;
   /** The configuration step, which v2 stages from inside the Plex accordion
    * rather than from a bare "Plex server URL" box beside it: the address is
    * the one the operator just PICKED from their own account, or the one they
@@ -612,99 +703,16 @@ function SystemsPane({
             system={SYSTEM_FOR_CREDENTIAL[name] ?? name}
             onSave={(credential, value) => onSave({ [credential]: value })}
           >
-            {SYSTEM_FOR_CREDENTIAL[name] === "plex"
-              ? (fields) => (
-                  <SetupPlexPane
-                    address={fields.address}
-                    configSource={progress.config_source}
-                    credentialValue={fields.credential}
-                    onAddress={fields.setAddress}
-                    onSelect={onSelectPlex}
-                  />
-                )
-              : undefined}
+            {accordionBody(
+              SYSTEM_FOR_CREDENTIAL[name] ?? name,
+              progress,
+              onSelectPlex,
+              onRegister,
+            )}
           </SetupAccordion>
         ),
       )}
       {busy && <p className="setup-hint">Working…</p>}
-    </section>
-  );
-}
-
-function WebhookSecret({ value }: { value: string }) {
-  const codeRef = useRef<HTMLElement | null>(null);
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "manual">("idle");
-
-  function selectCodeText() {
-    const node = codeRef.current;
-    const selection = node !== null ? window.getSelection() : null;
-    if (node === null || selection === null) return;
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-
-  async function copy() {
-    // `navigator.clipboard` is undefined outside a secure context -- exactly
-    // the shape a plain-HTTP compose deployment runs in, which is what this
-    // wizard is for -- so a missing API is one of the failure branches, never
-    // a silent no-op: this value is shown exactly once, and a click that does
-    // nothing reads as success to an operator who then moves on without it.
-    if (navigator.clipboard === undefined) {
-      selectCodeText();
-      setCopyStatus("manual");
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopyStatus("copied");
-    } catch {
-      selectCodeText();
-      setCopyStatus("manual");
-    }
-  }
-
-  return (
-    <div className="setup-secret" data-testid="webhook-secret">
-      <p className="setup-lead">
-        Webhook secret — paste this into Sonarr and Radarr&apos;s webhook settings now:
-      </p>
-      <code className="mono setup-secret-value" ref={codeRef} data-testid="webhook-secret-value">
-        {value}
-      </code>
-      <div className="setup-field-head">
-        <button type="button" onClick={copy}>
-          Copy
-        </button>
-        {copyStatus === "copied" && (
-          <span className="setup-hint" data-testid="webhook-copy-status">
-            Copied
-          </span>
-        )}
-        {copyStatus === "manual" && (
-          <span className="setup-hint" data-testid="webhook-copy-status">
-            Select and copy the value above.
-          </span>
-        )}
-      </div>
-      <p className="setup-hint">This will not be shown again.</p>
-    </div>
-  );
-}
-
-function FinishPane({ busy, onSubmit }: { busy: boolean; onSubmit: () => void }) {
-  return (
-    <section className="setup-pane">
-      <div className="setup-pane-head">
-        <h2 className="setup-pane-title">Ready</h2>
-      </div>
-      <p className="setup-lead">
-        Everything Autoposter needs is set. Starting it restarts this service once.
-      </p>
-      <button className="primary" type="button" disabled={busy} onClick={onSubmit}>
-        Start autoposter
-      </button>
     </section>
   );
 }
