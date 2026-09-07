@@ -380,22 +380,38 @@ async def test_a_refused_registration_is_a_200_with_the_secret_still_rotated(
 
 
 async def test_a_registration_that_raises_is_reported_not_propagated(
-    app, client, auth, monkeypatch
+    app, client, auth, monkeypatch, session
 ):
     """`setup_arr.register` never raises by contract, but a route that assumed
-    so would turn one bad deployment into a 500 that says nothing. The class
-    name is what reaches the operator, never the exception's own text -- httpx
-    embeds the request URL in its messages."""
+    so would turn one bad deployment into a 500 that says nothing -- AFTER the
+    state file write and the rebind, so the deployment would have silently
+    adopted a secret that was never served and no audit row would record it.
+    The class name is what reaches the operator, never the exception's own
+    text -- httpx embeds the request URL in its messages."""
 
     async def exploding(service, base_url, api_key, public_url, secret, transport=None):
-        return None, "ConnectError"
+        raise ConnectionError("x")
 
     monkeypatch.setattr(setup_arr, "register", exploding)
 
-    body = (await _rotate(client, auth)).json()
+    response = await _rotate(client, auth)
 
+    assert response.status_code == 200
+    body = response.json()
+    assert body["webhook_secret"]
     assert body["registrations"]["sonarr"]["ok"] is False
-    assert "ConnectError" in body["registrations"]["sonarr"]["detail"]
+    assert "ConnectionError" in body["registrations"]["sonarr"]["detail"]
+
+    row = (
+        (
+            await session.execute(
+                select(EventLog).where(EventLog.event_type == "webhook_secret_rotated")
+            )
+        )
+        .scalars()
+        .one()
+    )
+    assert row.outcome == "rotated"
 
 
 # --- the file, the audit row, and the guards --------------------------------

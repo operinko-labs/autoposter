@@ -239,8 +239,19 @@ async def _reregister(app, secret: str) -> dict[str, dict]:
         # `register` never raises and answers a marker or a class name, never
         # the *arr's own text -- a 400 from Sonarr echoes the submitted fields,
         # secret included. httpx's URL-bearing INFO line is filtered for the
-        # length of the call, inherited from `register` itself.
-        action, failure = await setup_arr.register(service, base_url, api_key, public_url, secret)
+        # length of the call, inherited from `register` itself. This call site
+        # does not trust that contract, though: the state file is already
+        # written and `app.state.secrets` already rebound by the time this
+        # runs, so a genuine raise here must still land as this service's
+        # fixed refusal -- never a 500 that undoes none of that and reports
+        # neither the new value nor an audit row.
+        try:
+            action, failure = await setup_arr.register(
+                service, base_url, api_key, public_url, secret
+            )
+        except Exception as exc:
+            action, failure = None, type(exc).__name__
+
         if action is not None:
             results[service] = {
                 "ok": True,
