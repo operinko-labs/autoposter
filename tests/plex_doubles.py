@@ -45,7 +45,7 @@ class FakeSection:
     recording it lets ``section.created == []`` say what is actually being
     asserted.
 
-    Subclasses set ``collection_factory`` (required -- the suite's 26
+    Subclasses set ``collection_factory`` (required -- the suite's 24
     ``FakeCollection`` shapes stay where they are, deliberately) and, if the
     file's created collections carry an ownership label, ``created_labels``.
     """
