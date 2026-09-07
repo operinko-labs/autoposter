@@ -107,10 +107,6 @@ export function submitPublicUrl(url: string): Promise<{ ok: boolean }> {
 
 export interface ProviderKeysResult {
   providers: Record<string, string | null>;
-  /** The one value this API ever serves, and only on the call that generated
-   * it (facts Amendment 5): the wizard-chosen webhook secret, once, never
-   * again -- `null` on every later call, including the plain GET. */
-  webhook_secret: string | null;
 }
 
 export function submitProviderKeys(
@@ -120,6 +116,19 @@ export function submitProviderKeys(
     method: "POST",
     body: JSON.stringify({ values }),
   });
+}
+
+export interface WebhookSecretResult {
+  /** The one value this API ever serves, and only on the first call that asks
+   * for it: the wizard-chosen webhook secret, once -- `null` afterwards, and
+   * `null` before the provider step has minted one. The providers save mints
+   * it and does not answer with it, so a page reloaded between that save and
+   * the last pane loses nothing. */
+  webhook_secret: string | null;
+}
+
+export function fetchWebhookSecret(): Promise<WebhookSecretResult> {
+  return setupFetch("/api/setup/webhook-secret");
 }
 
 export function submitPlexUrl(plexUrl: string): Promise<{ path: string }> {

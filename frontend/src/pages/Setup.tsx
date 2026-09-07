@@ -4,6 +4,7 @@ import { ApiError } from "../api/client";
 import {
   fetchSetupProgress,
   fetchSetupState,
+  fetchWebhookSecret,
   finishSetup,
   submitDatabaseUrl,
   submitMasterPassword,
@@ -12,7 +13,14 @@ import {
   submitPublicUrl,
   type SetupProgress,
 } from "../api/setup";
-import { canNavigate, farthestStep, STEP_LABELS, visibleSteps, type StepId } from "./setupSteps";
+import {
+  canNavigate,
+  farthestStep,
+  STEP_LABELS,
+  stepAfter,
+  visibleSteps,
+  type StepId,
+} from "./setupSteps";
 import "./setup.css";
 
 /** The message shown for a failed wizard call.
@@ -101,33 +109,32 @@ export function Setup() {
   }, []);
 
   useEffect(() => {
-    refresh().catch(() => setProgress(null));
+    // A failed probe leaves `progress` at the null it starts as, which is the
+    // password pane. Setting it back to null here instead would let this
+    // fetch -- issued at mount, before any token exists, so it 401s on every
+    // real deployment -- throw away a progress the server DID answer if it
+    // settles after a submit has already succeeded: the wizard would bounce
+    // back to step 1 mid-flow.
+    refresh().catch(() => undefined);
   }, [refresh]);
 
-  // Once authenticated -- the first successful /progress fetch after mount --
-  // land one step past the password pane. "url" is always index 1 of
-  // visibleSteps(): the wizard walks one step at a time from here on, and this
-  // initial hop is the only step this page ever takes on its own, because it
-  // is the one that just produced the token rather than one the operator
-  // chose to skip.
-  const bootstrapped = useRef(false);
-  useEffect(() => {
-    if (progress !== null && !bootstrapped.current) {
-      bootstrapped.current = true;
-      setCurrent(visibleSteps(progress)[1]);
-    }
-  }, [progress]);
-
-  /** Run a step's submit, and advance only if the server accepted it. */
+  /** Run a step's submit, and advance only if the server accepted it.
+   *
+   * `from` is the step being submitted, never the step to land on: where to
+   * land is read from the progress this call just fetched, because that is
+   * the only thing that knows what the submit changed. The password step is
+   * the case that proves it -- before it, the wizard's whole order is
+   * `["password"]`.
+   */
   const run = useCallback(
-    async (action: () => Promise<unknown>, advanceTo?: StepId): Promise<boolean> => {
+    async (action: () => Promise<unknown>, from?: StepId): Promise<boolean> => {
       setBusy(true);
       setError(null);
       try {
         await action();
         const next = await fetchSetupProgress();
         setProgress(next);
-        if (advanceTo !== undefined) setCurrent(advanceTo);
+        if (from !== undefined) setCurrent(stepAfter(from, next));
         return true;
       } catch (caught) {
         setError(setupErrorMessage(caught));
@@ -139,8 +146,6 @@ export function Setup() {
     [],
   );
 
-  if (restarting) return <Restarting />;
-
   const order = visibleSteps(progress);
   // A pane the server has since said is unreachable (a reload dropped the
   // token, so progress went back to null) must not stay on screen.
@@ -149,9 +154,18 @@ export function Setup() {
     : "password";
   const back = order[order.indexOf(pane) - 1];
 
-  function stepAfter(step: StepId): StepId {
-    return order[Math.min(order.indexOf(step) + 1, order.length - 1)];
-  }
+  // The one value this API serves, asked for on the one pane that shows it and
+  // only while the page does not already hold it: the server answers it ONCE
+  // and `null` thereafter, so stepping back from here and forward again
+  // re-renders what was already served rather than spending a second serve.
+  useEffect(() => {
+    if (pane !== "finish" || webhookSecret !== null) return;
+    fetchWebhookSecret()
+      .then((body) => setWebhookSecret((held) => held ?? body.webhook_secret))
+      .catch(() => undefined);
+  }, [pane, webhookSecret]);
+
+  if (restarting) return <Restarting />;
 
   return (
     <Shell
@@ -164,21 +178,21 @@ export function Setup() {
         <PasswordPane
           busy={busy}
           passwordSet={passwordSet}
-          onSubmit={(value) =>
-            run(() => submitMasterPassword(value), stepAfter("password"))
-          }
+          onSubmit={(value) => run(() => submitMasterPassword(value), "password")}
         />
       )}
       {pane === "url" && (
         <PublicUrlPane
           busy={busy}
-          onSubmit={(value) => run(() => submitPublicUrl(value), stepAfter("url"))}
+          stored={progress?.public_url ?? false}
+          onSubmit={(value) => run(() => submitPublicUrl(value), "url")}
         />
       )}
       {pane === "database" && (
         <DatabasePane
           busy={busy}
-          onSubmit={(url) => run(() => submitDatabaseUrl(url), stepAfter("database"))}
+          stored={progress?.database ?? false}
+          onSubmit={(url) => run(() => submitDatabaseUrl(url), "database")}
         />
       )}
       {pane === "systems" && progress !== null && (
@@ -186,12 +200,7 @@ export function Setup() {
           <ProvidersPane
             busy={busy}
             progress={progress}
-            onSubmit={(values) =>
-              run(async () => {
-                const result = await submitProviderKeys(values);
-                if (result.webhook_secret !== null) setWebhookSecret(result.webhook_secret);
-              })
-            }
+            onSubmit={(values) => run(() => submitProviderKeys(values))}
           />
           {progress.config_source === null && (
             <ConfigPane busy={busy} onSubmit={(url) => run(() => submitPlexUrl(url))} />
@@ -226,9 +235,11 @@ export function Setup() {
 
 function PublicUrlPane({
   busy,
+  stored,
   onSubmit,
 }: {
   busy: boolean;
+  stored: boolean;
   onSubmit: (v: string) => Promise<boolean>;
 }) {
   return (
@@ -241,6 +252,7 @@ function PublicUrlPane({
       action="Continue"
       busy={busy}
       autoComplete="off"
+      stored={stored}
       onSubmit={onSubmit}
     />
   );
@@ -340,6 +352,7 @@ function OneFieldPane({
   busy,
   autoComplete,
   clearAlways,
+  stored,
   onSubmit,
 }: {
   id: string;
@@ -357,6 +370,14 @@ function OneFieldPane({
   // refusal clearing the field is correct, and it is not a paste the operator
   // has to reconstruct.
   clearAlways?: boolean;
+  /** Whether the SERVER already holds a value for this step -- presence, which
+   * is all `/progress` reports and all this needs. Absent for the password
+   * pane, whose own label says which of set/prove it is asking for. It drives
+   * both halves of facts C7: the pill that says the step is answered, and an
+   * empty submit staying live, which the endpoints read as "keep what you
+   * have". The value itself is never sent back to the page, so a step
+   * navigated back into always shows an empty field. */
+  stored?: boolean;
   onSubmit: (value: string) => Promise<boolean>;
 }) {
   const [value, setValue] = useState("");
@@ -383,6 +404,11 @@ function OneFieldPane({
           <label className="setup-field-label" htmlFor={id}>
             {label}
           </label>
+          {stored !== undefined && (
+            <span className={`setup-pill${stored ? " ok" : ""}`} data-testid={`stored-${id}`}>
+              {stored ? "Stored" : "Not set"}
+            </span>
+          )}
         </div>
         <input
           className="setup-input"
@@ -395,7 +421,11 @@ function OneFieldPane({
         />
       </div>
       {hint !== "" && <p className="setup-hint">{hint}</p>}
-      <button className="primary" type="submit" disabled={busy || value === ""}>
+      {/* Empty stays submittable once the server holds a value, which is what
+          "empty means keep" needs to be reachable: the step is answered, and
+          re-typing what the wizard already staged is not a requirement it can
+          impose on an operator who cannot see it. */}
+      <button className="primary" type="submit" disabled={busy || (value === "" && stored !== true)}>
         {action}
       </button>
     </form>
@@ -437,9 +467,11 @@ function PasswordPane({
 
 function DatabasePane({
   busy,
+  stored,
   onSubmit,
 }: {
   busy: boolean;
+  stored: boolean;
   onSubmit: (v: string) => Promise<boolean>;
 }) {
   return (
@@ -452,6 +484,7 @@ function DatabasePane({
       action="Test and continue"
       busy={busy}
       autoComplete="off"
+      stored={stored}
       onSubmit={onSubmit}
     />
   );
@@ -556,7 +589,7 @@ function ProvidersPane({
       <div className="setup-field" key={name}>
         <FieldHead held={held} name={name} required={isRequired(name)} />
         <p className="setup-hint">
-          Generated for you when you save this form, and shown once, immediately after. There is
+          Generated for you when you save this form, and shown once, on the last step. There is
           nothing to paste here.
         </p>
       </div>

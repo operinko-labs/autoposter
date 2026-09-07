@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/client";
@@ -37,7 +37,19 @@ function respond(body: unknown, status = 200): Response {
 // in the "asks for this deployment's own address"/"goes back"/"never offers
 // Back"/"skips the database step"/"keeps the typed address" cases below), so a
 // test whose subject is a LATER pane must walk the earlier ones first, the
-// same way an operator would.
+// same way an operator would -- starting at the password, which is what mints
+// the token every later call carries.
+async function submitPasswordStep(value = "row-121-master-passphrase") {
+  await waitFor(() => screen.getByLabelText("Set the master password"));
+  fireEvent.change(screen.getByLabelText("Set the master password"), { target: { value } });
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+}
+
+async function goToUrlStep() {
+  await submitPasswordStep();
+  await waitFor(() => screen.getByLabelText("Autoposter's own URL"));
+}
+
 async function submitPublicUrlStep(value = "https://autoposter.example.test") {
   await waitFor(() => screen.getByLabelText("Autoposter's own URL"));
   fireEvent.change(screen.getByLabelText("Autoposter's own URL"), { target: { value } });
@@ -51,9 +63,71 @@ async function submitDatabaseStep(value = "postgresql+asyncpg://u:p@db:5432/auto
 }
 
 async function goToSystemsStep() {
+  await goToUrlStep();
   await submitPublicUrlStep();
   await submitDatabaseStep();
   await waitFor(() => screen.getByTestId("systems-step"));
+}
+
+/** The wizard walked to its last pane, with a secret waiting on the server's
+ * once-only route.
+ *
+ * The providers save answers with the presence map ALONE -- the value it
+ * minted is staged server-side -- and `/api/setup/webhook-secret` serves it
+ * the first time it is asked for and `null` afterwards, which is the route's
+ * own contract mirrored here: a page that asked twice would show nothing the
+ * second time and fail these tests. */
+function secretMock() {
+  let authenticated = false;
+  let providersSubmitted = false;
+  let served = false;
+  return vi.fn(async (path: unknown, init?: RequestInit) => {
+    if (path === "/api/setup/state") return respond({ setup: true, password_set: false });
+    if (path === "/api/setup/password" && init?.method === "POST") {
+      authenticated = true;
+      return respond({ token: "row-121-setup-token" });
+    }
+    if (path === "/api/setup/public-url" && init?.method === "POST") {
+      return respond({ ok: true });
+    }
+    if (path === "/api/setup/providers" && init?.method === "POST") {
+      providersSubmitted = true;
+      return respond({
+        providers: { ...PROGRESS.providers, AUTOPOSTER_TMDB_TOKEN: "***REDACTED***" },
+      });
+    }
+    if (path === "/api/setup/webhook-secret") {
+      if (served) return respond({ webhook_secret: null });
+      served = true;
+      return respond({ webhook_secret: "row-121-generated-secret" });
+    }
+    if (!authenticated) return respond({ detail: "not authenticated" }, 401);
+    if (providersSubmitted) {
+      return respond({
+        ...PROGRESS,
+        database: true,
+        required: [],
+        config: true,
+        config_source: "state",
+        public_url: true,
+      });
+    }
+    return respond({ ...PROGRESS, database: true, public_url: true });
+  });
+}
+
+async function goToFinishStepThroughProviders() {
+  await goToUrlStep();
+  await submitPublicUrlStep();
+  await waitFor(() => screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"));
+  fireEvent.change(screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"), {
+    target: { value: "pasted-value" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Continue" })).not.toBeDisabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 }
 
 /** A stateful fetch mock for `/api/setup/progress`.
@@ -61,21 +135,31 @@ async function goToSystemsStep() {
  * `canNavigate` (setupSteps.ts) gates a pane on what the SERVER reports, not
  * on what a form merely submitted, so a mock that always answers the same
  * static `base` never lets the wizard past the address or database steps
- * (`farthestStep` would keep reporting them unmet). This tracks the two POSTs
- * that matter and reflects them the same way the real server would, which is
- * what lets `goToSystemsStep`/`submitPublicUrlStep`/`submitDatabaseStep` work
- * against any test's fixture. `extra` handles a test's own path, ahead of the
- * tracking, for the one or two routes a test needs to answer differently
- * (a refusal from providers or database, say). */
+ * (`farthestStep` would keep reporting them unmet). This tracks the three
+ * POSTs that matter and reflects them the same way the real server would,
+ * which is what lets `goToSystemsStep`/`submitPublicUrlStep`/
+ * `submitDatabaseStep` work against any test's fixture. `extra` handles a
+ * test's own path, ahead of the tracking, for the one or two routes a test
+ * needs to answer differently (a refusal from providers or database, say).
+ *
+ * `/progress` answers 401 until the password has been posted, because that is
+ * when the server mints the token -- a mock that answers it unauthenticated
+ * would let a page skip step 1 in a way no deployment does. */
 function progressMock(
   base: SetupProgress = PROGRESS,
   extra?: (path: string, init: RequestInit | undefined) => Response | undefined,
 ) {
+  let authenticated = false;
   let publicUrlSet = base.public_url;
   let databaseSet = base.database;
   return vi.fn(async (path: unknown, init?: RequestInit) => {
     const custom = extra?.(path as string, init);
     if (custom !== undefined) return custom;
+    if (path === "/api/setup/state") return respond({ setup: true, password_set: false });
+    if (path === "/api/setup/password" && init?.method === "POST") {
+      authenticated = true;
+      return respond({ token: "row-121-setup-token" });
+    }
     if (path === "/api/setup/public-url" && init?.method === "POST") {
       publicUrlSet = true;
       return respond({ ok: true });
@@ -84,6 +168,8 @@ function progressMock(
       databaseSet = true;
       return respond({ ok: true });
     }
+    if (path === "/api/setup/webhook-secret") return respond({ webhook_secret: null });
+    if (!authenticated) return respond({ detail: "not authenticated" }, 401);
     return respond({ ...base, public_url: publicUrlSet, database: databaseSet });
   });
 }
@@ -135,34 +221,44 @@ describe("Setup", () => {
 
   it("offers the database step once the address is set, while it is the unfinished one", async () => {
     render(<Setup />);
+    await goToUrlStep();
     await submitPublicUrlStep();
 
     await waitFor(() => expect(screen.getByLabelText("Database URL")).toBeInTheDocument());
   });
 
   it("does not offer to finish while a required credential is missing", async () => {
+    // The live gate, not a button that lives on another pane: Continue is what
+    // leaves the systems pane, and it stays disabled until the server says
+    // every step is done (`farthestStep(progress) === "finish"`). Asserting
+    // instead that "Start autoposter" is absent passes merely by being on a
+    // different pane -- the helper-green/wired-path-different shape that has
+    // produced two same-branch defects already.
     render(<Setup />);
     await goToSystemsStep();
 
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled(),
+    );
+    expect(PROGRESS.required.length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Start autoposter" })).toBeNull();
   });
 
   it("offers to finish once every step reports done", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        respond({
-          ...PROGRESS,
-          database: true,
-          required: [],
-          config: true,
-          config_source: "state",
-          public_url: true,
-        }),
-      ),
+      progressMock({
+        ...PROGRESS,
+        database: true,
+        required: [],
+        config: true,
+        config_source: "state",
+        public_url: true,
+      }),
     );
 
     render(<Setup />);
+    await goToUrlStep();
     await submitPublicUrlStep();
     await waitFor(() => screen.getByTestId("systems-step"));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -190,44 +286,16 @@ describe("Setup", () => {
 
   it("shows a generated webhook secret once, with a copy control and a warning it will not return", async () => {
     // v2 moves the reveal to the finish pane (facts: "finish: the generated
-    // secret shown once, registration results, what was skipped"), so this
-    // mock reports everything else satisfied once the provider step is
-    // submitted, and the test walks to finish to see it -- same secret,
-    // same one-time guarantee, later pane.
-    let providersSubmitted = false;
-    const fetchMock = vi.fn(async (path: unknown, init?: RequestInit) => {
-      if (path === "/api/setup/providers" && init?.method === "POST") {
-        providersSubmitted = true;
-        return respond({
-          providers: { ...PROGRESS.providers, AUTOPOSTER_TMDB_TOKEN: "***REDACTED***" },
-          webhook_secret: "row-121-generated-secret",
-        });
-      }
-      if (providersSubmitted) {
-        return respond({
-          ...PROGRESS,
-          database: true,
-          required: [],
-          config: true,
-          config_source: "state",
-          public_url: true,
-        });
-      }
-      return respond({ ...PROGRESS, database: true, public_url: true });
-    });
+    // secret shown once, registration results, what was skipped") and off the
+    // providers response with it: the save MINTS the secret and answers with
+    // the presence map alone, and the pane that shows it asks the server's
+    // once-only route for it when it mounts. A reload between the two
+    // therefore costs nothing.
+    const fetchMock = secretMock();
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Setup />);
-    await submitPublicUrlStep();
-    await waitFor(() => screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"));
-
-    fireEvent.change(screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"), {
-      target: { value: "pasted-value" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
-
-    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).not.toBeDisabled());
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await goToFinishStepThroughProviders();
 
     await waitFor(() =>
       expect(screen.getByTestId("webhook-secret-value")).toHaveTextContent(
@@ -236,6 +304,25 @@ describe("Setup", () => {
     );
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
     expect(screen.getByText(/will not be shown again/i)).toBeInTheDocument();
+    // The value never came from the save that minted it.
+    const saved = fetchMock.mock.calls.filter(([path]) => path === "/api/setup/providers");
+    expect(saved.length).toBe(1);
+  });
+
+  it("asks the once-only route for the secret only on the pane that shows it", async () => {
+    const fetchMock = secretMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await goToUrlStep();
+    await submitPublicUrlStep();
+    await waitFor(() => screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"));
+
+    // Still on the systems pane: nothing has asked for the value yet, so a
+    // wizard abandoned here has not spent the one serve.
+    expect(
+      fetchMock.mock.calls.filter(([path]) => path === "/api/setup/webhook-secret").length,
+    ).toBe(0);
   });
 
   it("asks to set the master password, with length guidance, on a genuinely first visit", async () => {
@@ -337,6 +424,7 @@ describe("Setup", () => {
     );
 
     render(<Setup />);
+    await goToUrlStep();
     await submitPublicUrlStep();
     await waitFor(() => screen.getByLabelText("Database URL"));
 
@@ -377,40 +465,11 @@ describe("Setup", () => {
   describe("the webhook secret's Copy control", () => {
     async function renderWithSecret() {
       // Same v2 finish-pane reveal as the standalone webhook-secret test
-      // above: everything else reports satisfied once providers are
-      // submitted, and the test walks to finish to see the secret.
-      let providersSubmitted = false;
-      const fetchMock = vi.fn(async (path: unknown, init?: RequestInit) => {
-        if (path === "/api/setup/providers" && init?.method === "POST") {
-          providersSubmitted = true;
-          return respond({
-            providers: { ...PROGRESS.providers, AUTOPOSTER_TMDB_TOKEN: "***REDACTED***" },
-            webhook_secret: "row-121-generated-secret",
-          });
-        }
-        if (providersSubmitted) {
-          return respond({
-            ...PROGRESS,
-            database: true,
-            required: [],
-            config: true,
-            config_source: "state",
-            public_url: true,
-          });
-        }
-        return respond({ ...PROGRESS, database: true, public_url: true });
-      });
-      vi.stubGlobal("fetch", fetchMock);
+      // above: the save mints, the finish pane asks the once-only route.
+      vi.stubGlobal("fetch", secretMock());
 
       render(<Setup />);
-      await submitPublicUrlStep();
-      await waitFor(() => screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"));
-      fireEvent.change(screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"), {
-        target: { value: "pasted-value" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
-      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).not.toBeDisabled());
-      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await goToFinishStepThroughProviders();
       await waitFor(() => screen.getByTestId("webhook-secret-value"));
     }
 
@@ -441,6 +500,7 @@ describe("Setup", () => {
 
   it("asks for this deployment's own address before the database", async () => {
     render(<Setup />);
+    await goToUrlStep();
 
     await waitFor(() => expect(screen.getByLabelText("Autoposter's own URL")).toBeInTheDocument());
     expect(screen.queryByLabelText("Database URL")).toBeNull();
@@ -450,18 +510,12 @@ describe("Setup", () => {
     // Recon section 6.2: forward is gated by the server, back is free and
     // purely client-side -- there is no unstage endpoint, so there is nothing
     // to get wrong.
-    const fetchMock = vi.fn(async (path: unknown) => {
-      if (path === "/api/setup/public-url") return respond({ ok: true });
-      return respond({ ...PROGRESS, public_url: true });
-    });
+    const fetchMock = progressMock();
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Setup />);
-    await waitFor(() => screen.getByLabelText("Autoposter's own URL"));
-    fireEvent.change(screen.getByLabelText("Autoposter's own URL"), {
-      target: { value: "https://autoposter.example.test" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await goToUrlStep();
+    await submitPublicUrlStep();
     await waitFor(() => screen.getByLabelText("Database URL"));
 
     const before = fetchMock.mock.calls.length;
@@ -469,6 +523,77 @@ describe("Setup", () => {
 
     await waitFor(() => screen.getByLabelText("Autoposter's own URL"));
     expect(fetchMock.mock.calls.length).toBe(before);
+  });
+
+  it("shows the address the server holds as Stored, and takes an empty submit as keeping it", async () => {
+    // Facts C7 for the panes this task owns: the value is never sent back to
+    // the page, so a step navigated back into shows an empty field -- and
+    // without a pill and an enabled Continue, the only way forward from it is
+    // to re-type an address the server already has.
+    vi.stubGlobal("fetch", progressMock());
+
+    render(<Setup />);
+    await goToUrlStep();
+    expect(screen.getByTestId("stored-setup-public-url")).toHaveTextContent("Not set");
+
+    await submitPublicUrlStep();
+    await waitFor(() => screen.getByLabelText("Database URL"));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    await waitFor(() => screen.getByLabelText("Autoposter's own URL"));
+    expect(screen.getByTestId("stored-setup-public-url")).toHaveTextContent("Stored");
+    expect(screen.getByLabelText<HTMLInputElement>("Autoposter's own URL").value).toBe("");
+    expect(screen.getByRole("button", { name: "Continue" })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(screen.getByLabelText("Database URL")).toBeInTheDocument());
+  });
+
+  it("does not fall back to step 1 when the mount probe answers after the password did", async () => {
+    // The mount /progress fetch carries no token -- it is issued before the
+    // password mints one -- so it 401s. If its rejection cleared the progress
+    // the accepted submit had just fetched, the wizard would bounce back to
+    // the password pane; with the advance keyed on a one-shot ref it would
+    // then never advance again for the life of the tab.
+    let releaseMountProbe: () => void = () => undefined;
+    const mountProbe = new Promise<void>((resolve) => {
+      releaseMountProbe = resolve;
+    });
+    let progressCalls = 0;
+    let publicUrlSet = false;
+    const fetchMock = vi.fn(async (path: unknown, init?: RequestInit) => {
+      if (path === "/api/setup/state") return respond({ setup: true, password_set: false });
+      if (path === "/api/setup/password" && init?.method === "POST") {
+        return respond({ token: "row-121-setup-token" });
+      }
+      if (path === "/api/setup/public-url" && init?.method === "POST") {
+        publicUrlSet = true;
+        return respond({ ok: true });
+      }
+      if (path === "/api/setup/progress") {
+        progressCalls += 1;
+        if (progressCalls === 1) {
+          await mountProbe;
+          return respond({ detail: "not authenticated" }, 401);
+        }
+        return respond({ ...PROGRESS, public_url: publicUrlSet });
+      }
+      return respond({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await goToUrlStep();
+
+    await act(async () => {
+      releaseMountProbe();
+    });
+
+    expect(screen.queryByLabelText("Set the master password")).toBeNull();
+    expect(screen.getByLabelText("Autoposter's own URL")).toBeInTheDocument();
+    // ...and the wizard still moves: nothing was burned by the late answer.
+    await submitPublicUrlStep();
+    await waitFor(() => expect(screen.getByLabelText("Database URL")).toBeInTheDocument());
   });
 
   it("never offers Back on the first step", async () => {
@@ -485,20 +610,11 @@ describe("Setup", () => {
   });
 
   it("skips the database step when the environment already resolved one", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (path: unknown) => {
-        if (path === "/api/setup/public-url") return respond({ ok: true });
-        return respond({ ...PROGRESS, database: true, public_url: true });
-      }),
-    );
+    vi.stubGlobal("fetch", progressMock({ ...PROGRESS, database: true }));
 
     render(<Setup />);
-    await waitFor(() => screen.getByLabelText("Autoposter's own URL"));
-    fireEvent.change(screen.getByLabelText("Autoposter's own URL"), {
-      target: { value: "https://autoposter.example.test" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await goToUrlStep();
+    await submitPublicUrlStep();
 
     await waitFor(() => expect(screen.getByTestId("systems-step")).toBeInTheDocument());
     expect(screen.queryByLabelText("Database URL")).toBeNull();
@@ -506,19 +622,19 @@ describe("Setup", () => {
 
   it("keeps the typed address when the server refuses it, and shows the fixed sentence", async () => {
     const detail =
-      "this must be an http:// or https:// address with a host, and with no username or password in it";
+      "this must be an http:// or https:// address with a host, with no username or password " +
+      "in it, and with no query string or fragment";
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (path: unknown, init?: RequestInit) => {
-        if (path === "/api/setup/public-url" && init?.method === "POST") {
-          return respond({ detail }, 400);
-        }
-        return respond(PROGRESS);
-      }),
+      progressMock(PROGRESS, (path, init) =>
+        path === "/api/setup/public-url" && init?.method === "POST"
+          ? respond({ detail }, 400)
+          : undefined,
+      ),
     );
 
     render(<Setup />);
-    await waitFor(() => screen.getByLabelText("Autoposter's own URL"));
+    await goToUrlStep();
     fireEvent.change(screen.getByLabelText("Autoposter's own URL"), {
       target: { value: "autoposter.example.test" },
     });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { farthestStep, visibleSteps, type StepId } from "./setupSteps";
+import { farthestStep, stepAfter, visibleSteps, type StepId } from "./setupSteps";
 import type { SetupProgress } from "../api/setup";
 
 const BASE: SetupProgress = {
@@ -27,6 +27,44 @@ describe("visibleSteps", () => {
     // Facts C1: the address is asked for on every deployment shape -- the
     // registration needs it even where it cannot be persisted.
     expect(visibleSteps({ ...BASE, config_source: "configured" })).toContain<StepId>("url");
+  });
+});
+
+describe("stepAfter", () => {
+  it("is read from the progress the submit produced, not the one before it", () => {
+    // The password pane's own case, and why this takes a progress at all: before
+    // the submit the wizard knows only ["password"], so a next step computed
+    // from THAT order can only clamp to the pane it is already on.
+    expect(stepAfter("password", null)).toBe<StepId>("password");
+    expect(stepAfter("password", BASE)).toBe<StepId>("url");
+  });
+
+  it("skips a step this deployment does not have", () => {
+    expect(stepAfter("url", { ...BASE, public_url: true })).toBe<StepId>("database");
+    expect(stepAfter("url", { ...BASE, public_url: true, database: true })).toBe<StepId>(
+      "systems",
+    );
+  });
+
+  it("advances past a step that left the order by being completed", () => {
+    // The database step is dropped the moment a URL resolves -- which is what
+    // its own submit makes true -- so the step just finished is not in the
+    // post-submit order at all, and looking for it there finds nothing.
+    expect(stepAfter("database", { ...BASE, public_url: true, database: true })).toBe<StepId>(
+      "systems",
+    );
+  });
+
+  it("stops at the last step", () => {
+    expect(
+      stepAfter("finish", {
+        ...BASE,
+        public_url: true,
+        database: true,
+        required: [],
+        config_source: "state",
+      }),
+    ).toBe<StepId>("finish");
   });
 });
 

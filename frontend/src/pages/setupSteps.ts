@@ -22,6 +22,10 @@ export const STEP_LABELS: Record<StepId, string> = {
   finish: "Finish",
 };
 
+/** Every step the wizard has, in order; `visibleSteps` is this list less the
+ * ones a given deployment does not need. */
+const ALL_STEPS: StepId[] = ["password", "url", "database", "systems", "finish"];
+
 /** Which steps this deployment has at all.
  *
  * The database step is the only conditional one, and the condition is the
@@ -36,10 +40,28 @@ export const STEP_LABELS: Record<StepId, string> = {
  */
 export function visibleSteps(progress: SetupProgress | null): StepId[] {
   if (progress === null) return ["password"];
-  const steps: StepId[] = ["password", "url"];
-  if (!progress.database) steps.push("database");
-  steps.push("systems", "finish");
-  return steps;
+  return ALL_STEPS.filter((step) => step !== "database" || !progress.database);
+}
+
+/** The step to land on once `step` has been accepted, given the progress the
+ * server answered AFTER that submit.
+ *
+ * The progress matters, and it must be the post-submit one. Before the
+ * password is accepted the wizard knows only `["password"]`, so a next step
+ * read from that order can only clamp to the pane it is already on -- which is
+ * what made the first advance need an effect of its own to supply it.
+ *
+ * `step` may no longer be in the order at all: the database step leaves it the
+ * moment a URL resolves, which is exactly what its own submit makes true. So
+ * the search runs over the full list and returns the first step that is still
+ * visible, rather than indexing into the order and walking one place forward.
+ */
+export function stepAfter(step: StepId, progress: SetupProgress | null): StepId {
+  const order = visibleSteps(progress);
+  for (const candidate of ALL_STEPS.slice(ALL_STEPS.indexOf(step) + 1)) {
+    if (order.includes(candidate)) return candidate;
+  }
+  return order[order.length - 1];
 }
 
 /** The furthest step the server says is reachable.
