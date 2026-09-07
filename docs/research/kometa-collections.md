@@ -413,8 +413,13 @@ the entire TV Shows library.** See Open Questions.
 Kometa fetches `https://raw.githubusercontent.com/Kometa-Team/Translations/master/defaults/en.yml`
 **once per run** (`config.py`/`meta.py` `self.config.GitHub.translation_yaml("en")`,
 cached in-memory for the process), and uses its `collections.<translation_key>`
-entries for `name`/`summary` unless a local override is configured. Exact
-entries relevant here (fetched live, verbatim):
+entries for `name`/`summary` unless a local override is configured. Which
+`translation_key` a collection carries is set by the defaults file that defines
+it — `defaults/chart/tmdb.yml:22-87` for the five TMDb chart rows below — and
+that same file's `image: chart/<<style>>/<<mapping_name_encoded>>`, resolved
+through `defaults/templates.yml:95`, is where the hosted poster key comes from,
+which is why the Name column is also the poster key. Exact entries relevant here
+(fetched live, verbatim):
 
 | `translation_key` | Name | Summary |
 |---|---|---|
@@ -424,6 +429,11 @@ entries relevant here (fetched live, verbatim):
 | `imdb_popular` | IMDb Popular | List of IMDb Popular `<<library_translation>>`s. |
 | `imdb_top` | IMDb Top 250 | List of IMDb Top 250 `<<library_translation>>`s. |
 | `imdb_lowest` | IMDb Lowest Rated | List of IMDb Lowest Rated `<<library_translation>>`s. |
+| `tmdb_popular` | TMDb Popular | A collection of the most watched `<<library_translation>>`s according to TMDb. |
+| `tmdb_top` | TMDb Top Rated | A collection of the top rated `<<library_translation>>`s according to TMDb. |
+| `tmdb_trending` | TMDb Trending | A collection of `<<library_translation>>`s trending on TMDb. |
+| `tmdb_airing` | TMDb Airing Today | A collection of shows with episodes airing today. |
+| `tmdb_air` | TMDb On The Air | A collection of shows that are still actively airing episodes. |
 | `content_rating_cs` | Age `<<key_name>>`+ `<<library_translationU>>`s | `<<library_translationU>>`s that are rated `<<key_name>>` according to the Common Sense Rating System. |
 | `content_rating_other` | Not Rated `<<library_translationU>>`s | `<<library_translationU>>`s that are Unrated, Not Rated or any other uncommon Ratings. |
 | `separator` | `<<key_name>>` Collections | Section separator for `<<key_name>>` Collections. |
