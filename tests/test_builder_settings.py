@@ -22,7 +22,6 @@ Three properties hold the file together:
   rather than the library its pass.
 """
 from types import SimpleNamespace
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -31,6 +30,7 @@ from autoposter.collections.engine import run_definitions
 from autoposter.collections.lists import _members_hash
 from autoposter.collections.reconcile import _apply_labels
 from autoposter.config.schema import CollectionDefinition
+from plex_doubles import FakeSection as PlexSection
 
 LABEL = "autoposter"
 PROTECTED = "Collection managed by Maintainerr"
@@ -178,66 +178,33 @@ class NoPlexPassCollection(FakeCollection):
         raise RuntimeError("https://plex.local/hubs?token=SECRET returned 403")
 
 
-class FakeSection:
-    def __init__(self, items=(), existing=(), hubs=(), ratings=()):
-        self._items = [FakeItem(key, guids) for key, guids in items]
-        self._existing = {c.title: c for c in existing}
-        self.type = "movie"
-        self._hubs = list(hubs)
-        self._ratings = list(ratings)
+class FakeSection(PlexSection):
+    """The shared Plex double plus this file's own bookkeeping.
+
+    ``created`` here is the list of TITLES built through either route -- the
+    raw create POST or plexapi's ``createCollection`` -- not the shared
+    double's argument tuple, because that is what this file asserts on.
+
+    ``listFilterChoices`` is empty unless a test asked for content ratings:
+    with none present the Common Sense family derives no buckets, which is
+    what keeps it out of the way of the list-collection tests here.
+    """
+
+    collection_factory = FakeCollection
+
+    def __init__(self, *, items=(), **kw):
+        super().__init__(items=[FakeItem(key, guids) for key, guids in items], **kw)
         self.created: list[str] = []
-        # The Common Sense family writes through the raw POST/PUT routes since
-        # phase 10a-2, so this fake stands in for ``section._server`` too.
-        self.key = "42"
-        self._server = self
-        self._session = type("Sess", (), {
-            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
-        })()
 
-    def all(self):
-        return list(self._items)
+    def _new_collection(self, title):
+        return self.collection_factory(title)
 
-    def item_for(self, key):
-        return next(i for i in self._items if i.ratingKey == key)
+    def _record_post(self, collection, args, key, method):
+        self.created.append(args["title"][0])
 
-    def _uriRoot(self):
-        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
-
-    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """The create POST (which carries a ``title``) and the filter-replacing
-        PUT (which carries only a ``uri``)."""
-        args = parse_qs(urlsplit(key).query)
-        if "title" not in args:
-            return None
-        title = args["title"][0]
-        self.created.append(title)
-        self._existing[title] = FakeCollection(title)
-        return None
-
-    def collection(self, title):
-        return self._existing[title]
-
-    def listFilterChoices(self, field, libtype=None):
-        """Empty unless a test asked for content ratings: with none present the
-        Common Sense family derives no buckets, which is what keeps it out of
-        the way of the list-collection tests here.
-
-        ``key`` matches ``title``: Plex answers contentRating's two the same
-        way, so the resolver the family builds its query through is the
-        identity here."""
-        return [SimpleNamespace(title=rating, key=rating) for rating in self._ratings]
-
-    def collections(self, **kw):
-        return list(self._existing.values())
-
-    def managedHubs(self):
-        return list(self._hubs)
-
-    def createCollection(self, title, items=None, smart=False, **kw):
-        self.created.append(title)
-        collection = FakeCollection(title, items or [])
-        self._existing[title] = collection
-        return collection
+    def _created_collection(self, title, items=None, **kw):
+        self.created[-1] = title
+        return self.collection_factory(title, items or [])
 
 
 def _config(**overrides):
@@ -285,7 +252,7 @@ async def _run(session, section, definitions, config=None, **kwargs):
 
 
 def _one_item_section(existing=(), **kwargs):
-    return FakeSection([("m1", ["imdb://tt1"])], existing=existing, **kwargs)
+    return FakeSection(items=[("m1", ["imdb://tt1"])], existing=existing, **kwargs)
 
 
 # --- row 29: labels on the collection object -------------------------------
@@ -749,7 +716,7 @@ async def test_item_labels_are_applied_to_every_resolved_member(
     session, registry_entry
 ):
     registry_entry(_Listing("settings_items", [("imdb", "tt1"), ("imdb", "tt2")]))
-    section = FakeSection([("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])])
+    section = FakeSection(items=[("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])])
 
     actions = await _run(session, section, [CollectionDefinition(
         title="Fresh", builder="settings_items", item_label=["Hand Picked"],
@@ -767,7 +734,7 @@ async def test_a_member_that_leaves_the_collection_keeps_its_item_label(
     definition no longer describes -- and the label may be one the operator
     applies from elsewhere too."""
     registry_entry(_Listing("settings_items_leave", [("imdb", "tt1")]))
-    section = FakeSection([("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])])
+    section = FakeSection(items=[("m1", ["imdb://tt1"]), ("m2", ["imdb://tt2"])])
     departing = section.item_for("m2")
     live = FakeCollection("Shrinking", [departing], labels=[LABEL])
     section._existing[live.title] = live
