@@ -44,6 +44,7 @@ from autoposter.collections.filters import (
     RelativeWindow,
     batched_attributes,
     evaluate,
+    facts_attributes,
     parse_filters,
     predicates,
     resolve_search_values,
@@ -350,6 +351,54 @@ def test_batched_attributes_sees_through_a_nested_group():
     parsed = parse_filters({"any": [{"genre": "Horror"}, {"year.gte": 2000}]})
 
     assert batched_attributes(parsed) == ("genre",)
+
+
+# --- fix round 1 (review I-2): `facts_attributes` pinned on `batched_attributes`'s
+# own three tests, one tier along -----------------------------------------------
+
+
+def test_facts_attributes_reports_only_the_coined_facts_predicates():
+    """``test_batched_attributes_reports_only_tier2_batched_predicates`` one
+    tier along. ``tmdb_status`` sits on the same ``source == 'facts'`` tier as
+    the three coined rows but is NOT one of them -- ``facts_attributes`` is
+    keyed on ``FACTS_FILTER_ROWS``, not on the tier (Task 2 needs exactly the
+    rows it will ask ``ensure_facts`` for, and a Kometa-named facts row is
+    refused at config load before a definition can ever reach the engine with
+    one). A filter naming neither must produce an empty tuple -- the "make no
+    facts query at all" signal."""
+    parsed = parse_filters(
+        {"common_sense_rating": "13", "year.gte": 1990, "tmdb_status": "ended"}
+    )
+
+    assert facts_attributes(parsed) == ("common_sense_rating",)
+    assert facts_attributes(parse_filters({"year": 1990})) == ()
+    assert facts_attributes(parse_filters({"tmdb_status": "ended"})) == ()
+
+
+def test_facts_attributes_are_distinct_and_in_first_appearance_order():
+    """``test_batched_attributes_are_distinct_and_in_first_appearance_order``
+    one tier along: two predicates on ``imdb_rating`` are still one query, and
+    the order is the filter's own so a refusal naming these back to the
+    operator reads the way the block was written."""
+    parsed = parse_filters(
+        {"imdb_rating.gte": 7.0, "common_sense_rating": "13",
+         "imdb_rating.lte": 9.0, "tmdb_rating.not": 5.0}
+    )
+
+    assert facts_attributes(parsed) == (
+        "imdb_rating", "common_sense_rating", "tmdb_rating",
+    )
+
+
+def test_facts_attributes_sees_through_a_nested_group():
+    """``test_batched_attributes_sees_through_a_nested_group`` one tier along:
+    a traversal that only looked at the top level would leave the engine
+    reading no facts at all for an ``any:`` block naming a coined row."""
+    parsed = parse_filters(
+        {"any": [{"common_sense_rating": "13"}, {"year.gte": 2000}]}
+    )
+
+    assert facts_attributes(parsed) == ("common_sense_rating",)
 
 
 def test_item_kinds_are_movie_show_or_both():
@@ -2770,3 +2819,34 @@ def test_a_coined_facts_row_is_refused_in_an_overlay_condition():
         with pytest.raises(ValueError) as caught:
             parse_condition({name: "13"})
         assert name in str(caught.value), name
+
+
+# --- fix round 1 (review I-1): a PRESENT facts value is a positive control ----
+
+
+def test_a_present_facts_value_matches_or_fails_the_predicate_normally():
+    """The C3 branch at ``filters.py``'s ``_matches`` (`have = view.get(...)`
+    then `if attribute.name in FACTS_FILTER_ROWS and _is_missing(...)`) is
+    guarded by ``_is_missing`` for a reason: it must answer for the MISSING
+    case only and let a PRESENT value fall through to the ordinary type-split
+    evaluation below it. Nothing before this test asserted that -- the 19-case
+    missing-value matrix asserts ``False`` in every one of its cases, the shape
+    test reads cells without evaluating, and the fence test only checks that a
+    definition loads. Deleting ``_is_missing(have, attribute.type)`` from the
+    branch condition -- so every facts predicate returns ``False``
+    unconditionally, i.e. every facts-backed collection is permanently empty
+    regardless of what ``item_facts`` holds -- or inverting the condition --
+    so a PRESENT value is excluded and a missing one evaluated -- would leave
+    every other test in this file green. Only a present-value positive control
+    catches either mutation, for all three rows."""
+    gate = parse_filters({"common_sense_rating": "13"})
+    assert evaluate(gate, _view("common_sense_rating", "13")) is True
+    assert evaluate(gate, _view("common_sense_rating", "16")) is False
+
+    gate = parse_filters({"imdb_rating.gte": 7.0})
+    assert evaluate(gate, _view("imdb_rating", 7.5)) is True
+    assert evaluate(gate, _view("imdb_rating", 6.9)) is False
+
+    gate = parse_filters({"tmdb_rating.gte": 7.0})
+    assert evaluate(gate, _view("tmdb_rating", 7.5)) is True
+    assert evaluate(gate, _view("tmdb_rating", 6.9)) is False
