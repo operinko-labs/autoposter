@@ -269,14 +269,26 @@ def _references(config, kind: str) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
 
     def note(value: str | None, where: str) -> None:
-        # A configured value that is not a bare basename points at something
-        # this listing does not serve, so it can never be the file being
-        # deleted and must not be reported against a same-named one.
-        if value and Path(value).name == value:
+        # The BASENAME, unconditionally, rather than only a value that already
+        # IS one. Nothing constrains these fields to a bare name
+        # (`config/schema.py:329`, `:428`: plain `str`, no validator), and
+        # every reader joins the value onto the root with pathlib's `/`, which
+        # returns an ABSOLUTE right-hand side whole and drops a leading `./`.
+        # So `/app/assets/overlays/brand.png` and `./brand.png` both resolve to
+        # exactly the file this listing serves as `brand.png`, and reading
+        # either as naming nothing would put a Delete button in front of an
+        # input every poster fingerprint hashes.
+        #
+        # One-sided on purpose. A value naming a same-named file OUTSIDE the
+        # root now earns a false REFUSAL, which is one config edit to undo; the
+        # other way round is a false permit, and the deleted file then hashes
+        # as `""` (`config/impact.py:117-123`) and re-renders the whole library.
+        name = Path(value).name if value else ""
+        if name:
             # One sentence per naming path: a family expands into many
             # definitions naming one face, and `referenced_by` repeating the
             # same family a dozen times says nothing the first one did not.
-            where_names = found.setdefault(value, [])
+            where_names = found.setdefault(name, [])
             if where not in where_names:
                 where_names.append(where)
 

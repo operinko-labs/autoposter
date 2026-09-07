@@ -527,6 +527,81 @@ async def test_a_badge_definitions_own_overlay_and_font_report_who_names_them(
     assert _named(fonts, "Badge-Face.ttf")["referenced_by"] == ["badges.definitions.labelled.font"]
 
 
+# Nothing constrains these fields to a bare basename: `config/schema.py:329`
+# (`TextStyle.font`) and `:428` (`overlay_file`) are plain `str` with a
+# description that SAYS "found under fonts_root" and no validator that enforces
+# it. Both spellings below render correctly today, so nothing ever tells an
+# operator who writes one that it is unusual.
+@pytest.mark.parametrize("spelling", ["absolute", "dot-relative"])
+async def test_an_overlay_a_config_value_names_by_path_is_reported_and_refused(
+    client, auth_headers, app, config, overlays_root, spelling
+):
+    """`config/impact.py:161-166` joins the configured value onto the root with
+    pathlib's `/`, which returns an ABSOLUTE right-hand side whole and drops a
+    leading `./` -- so both spellings resolve to exactly the file this listing
+    serves as `brand.png`, and its bytes are hashed into every poster
+    fingerprint.
+
+    Reported as naming nothing, this file lists with an empty "Named by" column
+    and a Delete button, over a confirm control that says in the page's own
+    words that nothing names it. The delete goes through, `_cached_sha` on the
+    now-missing path returns `""` (`config/impact.py:117-123`), and the poster
+    fingerprint moves for every item in the library.
+    """
+    (overlays_root / "brand.png").write_bytes(b"x")
+    value = str(overlays_root / "brand.png") if spelling == "absolute" else "./brand.png"
+    app.state.config = config.model_copy(
+        update={
+            "artwork": config.artwork.model_copy(
+                update={"poster": config.artwork.poster.model_copy(update={"overlay_file": value})}
+            )
+        }
+    )
+
+    row = _named(
+        (await client.get("/api/files/overlays", headers=auth_headers)).json(), "brand.png"
+    )
+    response = await client.delete("/api/files/overlays/brand.png", headers=auth_headers)
+
+    assert row["referenced_by"] == ["artwork.poster.overlay_file"]
+    assert response.status_code == 409
+    assert response.json()["detail"] == "the running configuration still names that file"
+    assert (overlays_root / "brand.png").exists()
+
+
+@pytest.mark.parametrize("spelling", ["absolute", "dot-relative"])
+async def test_a_font_a_config_value_names_by_path_is_reported_and_refused(
+    client, auth_headers, app, config, fonts_root, spelling
+):
+    """The font half of the same join (`config/impact.py:168`), because the two
+    roots are read by different readers and a fix that closed only the overlay
+    one would still hand the operator a face the artwork stage hashes."""
+    (fonts_root / "Brand-Face.ttf").write_bytes(b"x")
+    value = str(fonts_root / "Brand-Face.ttf") if spelling == "absolute" else "./Brand-Face.ttf"
+    poster = config.artwork.poster
+    app.state.config = config.model_copy(
+        update={
+            "artwork": config.artwork.model_copy(
+                update={
+                    "poster": poster.model_copy(
+                        update={"text": poster.text.model_copy(update={"font": value})}
+                    )
+                }
+            )
+        }
+    )
+
+    row = _named(
+        (await client.get("/api/files/fonts", headers=auth_headers)).json(), "Brand-Face.ttf"
+    )
+    response = await client.delete("/api/files/fonts/Brand-Face.ttf", headers=auth_headers)
+
+    assert row["referenced_by"] == ["artwork.poster.text.font"]
+    assert response.status_code == 409
+    assert response.json()["detail"] == "the running configuration still names that file"
+    assert (fonts_root / "Brand-Face.ttf").exists()
+
+
 @pytest.mark.parametrize(
     ("kind", "name"),
     [
