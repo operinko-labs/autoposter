@@ -26,6 +26,7 @@ from autoposter.api.candidates import router as candidates_router
 from autoposter.api.collections_builders import router as collections_builders_router
 from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.facts_backfill import router as facts_backfill_router
+from autoposter.api.files import router as files_router
 from autoposter.api.item_overrides import router as item_overrides_router
 from autoposter.api.jobs import _number, _text
 from autoposter.api.jobs import router as jobs_router
@@ -261,6 +262,13 @@ router.include_router(item_overrides_router)
 # it safe -- refuse unless `boot` said the secret came from the state file --
 # is the substance of it.
 router.include_router(secret_rotation_router)
+
+# The operator's own overlay images and font faces, as files (roadmap row 55).
+# Its own module because these are the only handlers here that WRITE a
+# request-named filesystem path, and the four refusals that make that safe --
+# the name rule, the protected set, the double-realpath containment and the
+# `referenced_by` check -- are the substance of it.
+router.include_router(files_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.

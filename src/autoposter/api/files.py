@@ -1,0 +1,365 @@
+"""The operator's own overlay images and font faces, as files (roadmap row 55).
+
+Its own module for the reason `api/artwork.py` and `api/manual.py` are theirs:
+these are the only handlers in this service that WRITE a request-named path,
+and the four rules that make that safe are the substance of it.
+
+**The roots never move.** `fonts_root` and `overlays_root` are hashed as
+STRINGS into `config/loader.py::_shared_render_inputs`, a literal member of all
+four art kinds' `render_version` payloads, so repointing either one would move
+every stored fingerprint in the library. This module reads them; it never
+suggests a different one.
+
+**Containment is `api/artwork.py`'s idiom, not `overlays/sources.py::_confined`.**
+`_confined` calls `Path.resolve()` and then checks parentage, which accepts a
+symlink whose target is outside the root; and it is owned by two branches in
+flight. Here both sides go through `os.path.realpath` and the result must be a
+regular file whose parent IS the root -- so `..`, an absolute path, a
+subdirectory and a planted symlink are each refused on their target rather than
+on their spelling.
+
+**Overwrite is refused (409), and that is a deliberate design decision rather
+than caution.** The two stages disagree about what replacing a file in place
+means. The artwork stage hashes the BYTES of the overlay and the fonts into
+every render fingerprint (`config/impact.py:163,170,174,181`;
+`render/pipeline.py::compute_fingerprint`), so an in-place replacement
+re-renders and re-uploads every item drawn with it -- a storm. The badge stage
+does not: `badges/compose.py::badge_fingerprint` hashes the shipped badge
+MANIFEST and the definitions' FIELDS, never a file under `overlays_root`, so an
+in-place replacement leaves every already-badged item on the old artwork while
+new items get the new one -- a freeze, with no signal anywhere. Neither
+behaviour is right for the other, so this module refuses to pick: an upload
+under a NEW name moves nothing until a config value names it, and
+delete-then-upload is how an operator says which of the two they meant.
+
+**Row 213.** A refusal body never carries a path, a size, a part count, a
+content type, a `str(exc)` or the submitted file name. A name refusal states
+the RULE. The listing serves basenames and never a root.
+"""
+
+import asyncio
+import logging
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from autoposter.api.auth import require_session
+from autoposter.config.loader import RENDER_ART_KINDS
+from autoposter.db.models import EventLog
+from autoposter.db.models import Session as SessionModel
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+FileKind = Literal["overlays", "fonts"]
+
+# What each directory is FOR, and therefore what it lists, accepts and deletes.
+# No woff/woff2 -- nothing in this tree renders one and ImageMagick may not
+# either. No JPEG overlays -- nothing writes one, and an overlay needs alpha.
+SUFFIXES: dict[str, frozenset[str]] = {
+    "overlays": frozenset({".png"}),
+    "fonts": frozenset({".ttf", ".otf"}),
+}
+
+# Named for a runtime dependency, not for being bundled. `fonts_root` is TWO
+# things at once: the operator's font directory and the image's own
+# `assets/fonts`, which `collections/separator_art.py:86` reads directly --
+# `FONT = asset_path("fonts") / "Comfortaa-Medium.ttf"`, passed to magick's
+# `-font` at `:168`/`:174`, bypassing `fonts_root` entirely. Deleting it breaks
+# separator-collection art with a magick font error. `OFL.txt` and
+# `PROVENANCE.md` are the licence and the provenance the OFL Reserved Font Name
+# clause hangs on; they are also outside the suffix allowlist, so this set is
+# what gives them a refusal that says why rather than one about file names.
+PROTECTED: dict[str, frozenset[str]] = {
+    "overlays": frozenset(),
+    "fonts": frozenset({"Comfortaa-Medium.ttf", "OFL.txt", "PROVENANCE.md"}),
+}
+
+# Long enough for any real face or overlay name, short enough that a name is
+# never a payload. Checked before the character set so a megabyte of legal
+# characters is refused on length.
+NAME_MAX = 64
+
+_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+
+# The served refusals. Fixed sentences, every one of them, for the reason
+# `api/manual.py:65-73` gives: these bodies are read out of a browser console
+# and pasted into tickets, and a size, a path or an echoed name in one is a
+# reflector. The name rule names the RULE and never the name.
+FILE_NAME_REFUSED = (
+    "the file name must be ASCII letters, digits, dashes and underscores plus "
+    "one extension this directory accepts, and at most 64 characters"
+)
+FILE_NOT_FOUND = "there is no such file in that directory"
+FILE_PROTECTED = "that file ships with this service and cannot be replaced or removed"
+FILE_REFERENCED = "the running configuration still names that file"
+FILE_EXISTS = "a file of that name is already there; delete it first"
+FILE_UNREADABLE = "the uploaded file is not one this service can use"
+
+
+class OutsideRoot(Exception):
+    """A name that does not resolve to a regular file directly under the root."""
+
+
+def root_for(config, kind: str) -> Path:
+    """The directory this kind lives in.
+
+    Read off `Config` every call rather than captured: the config editor swaps
+    `app.state.config` wholesale, and a captured root would keep serving the
+    previous deployment's directory after a save.
+    """
+    return Path(config.overlays_root if kind == "overlays" else config.fonts_root)
+
+
+def normalised_name(kind: str, submitted: str) -> str:
+    """`submitted` as a name this directory can hold, or the 422 it earns.
+
+    Row 123 sidestepped this entirely -- its stored name comes from
+    `manual_override_target`, so the browser's string was read for nothing.
+    Row 55 cannot: the operator's chosen name IS the handle a config value
+    later writes, and it has to survive being typed into `artwork.poster.
+    overlay_file` afterwards. So the rule is deliberately narrower than the
+    filesystem's: one basename, ASCII, one extension, and that extension on
+    this kind's allowlist.
+
+    `Path(submitted).name != submitted` is the first check and it is the one
+    that matters: it refuses `../x.png`, `/etc/x.png` and `a/b.png` on their
+    SHAPE, before any of them reaches a filesystem call.
+    """
+    if (
+        not submitted
+        or len(submitted) > NAME_MAX
+        or Path(submitted).name != submitted
+        or submitted.startswith(".")
+        or submitted.count(".") != 1
+        or set(submitted) - _NAME_CHARS
+        or Path(submitted).suffix.lower() not in SUFFIXES[kind]
+    ):
+        # The name is not repeated, here or in the log line: it is attacker
+        # input on the way to a body an operator pastes into a ticket.
+        logger.warning("refused a file name for %s: outside the name rule", kind)
+        raise HTTPException(status_code=422, detail=FILE_NAME_REFUSED)
+    return submitted
+
+
+def contained(root: Path, name: str) -> Path:
+    """`name` as a regular file directly under `root`, or `OutsideRoot`.
+
+    `api/artwork.py:74-99`'s idiom: both sides through `os.path.realpath`
+    before being compared, so a symlink planted under the root and pointing at
+    `/etc/shadow` is refused on its target. A lexical check -- `normpath`, or a
+    `startswith` on the strings -- would let that through.
+
+    Stricter than that idiom in one way, and it is the difference between a
+    served file and a deleted one: the resolved parent must BE the root, not
+    merely contain it, so a subdirectory is refused rather than descended.
+
+    Synchronous and called from a thread: these roots can be any mount, so the
+    realpath walk and the stat stay off the event loop that also carries the
+    workers, the scheduler and the liveness probe.
+    """
+    real_root = Path(os.path.realpath(root))
+    candidate = root / name
+    if candidate.is_symlink():
+        raise OutsideRoot("the name is a symbolic link")
+    resolved = Path(os.path.realpath(candidate))
+    if resolved.parent != real_root or resolved.name != name:
+        raise OutsideRoot("the name does not resolve to a file in that directory")
+    if not resolved.is_file():
+        raise OutsideRoot("there is no regular file at that name")
+    return resolved
+
+
+def _references(config, kind: str) -> dict[str, list[str]]:
+    """{file name: the config paths that name it}, from the LIVE config.
+
+    Enumerated from the readers rather than guessed, and the enumeration is
+    the whole value of this function -- a file this misses is a file an
+    operator can delete out from under a render.
+
+    Overlays, two readers:
+      * `artwork.<kind>.overlay_file` -- `config/impact.py:163` hashes the
+        file's bytes into that kind's fingerprint;
+      * a badge/overlay definition's `file:` -- `overlays/sources.py:187` --
+        and, for a definition naming no `file`/`builtin`/`url` at all, the
+        name-keyed last rung at `:212`, which looks for `<name>.png` here.
+
+    Fonts, four readers:
+      * each art kind's `text.font` (`impact.py:170`), the title card's
+        `episode_text.font` (`:174`) and the season poster's
+        `show_title.font` (`:181`);
+      * both collection poster-title blocks
+        (`collections/poster_title.py:457` -> `_font` -> `resolve_font_path`);
+      * a definition's `font:` (`overlays/sources.py:128`).
+
+    `all_definitions()` rather than `definitions`, because a FAMILY expands
+    into definitions that can name files too (`config/schema.py:1398`). Keyed
+    by the definition's NAME rather than its index for the same reason: the
+    expansion means an index into `all_definitions()` is not an index into the
+    `badges.definitions` an operator edits.
+
+    `getattr(config.artwork, art_kind)` rather than
+    `render/pipeline.py::art_config_for`, which is that one getattr: importing
+    `render.pipeline` here would pull httpx, the provider ladder and the badge
+    stack into a module that renders nothing.
+    """
+    found: dict[str, list[str]] = {}
+
+    def note(value: str | None, where: str) -> None:
+        # A configured value that is not a bare basename points at something
+        # this listing does not serve, so it can never be the file being
+        # deleted and must not be reported against a same-named one.
+        if value and Path(value).name == value:
+            found.setdefault(value, []).append(where)
+
+    definitions = config.badges.all_definitions()
+    if kind == "overlays":
+        for art_kind in RENDER_ART_KINDS:
+            settings = getattr(config.artwork, art_kind)
+            note(settings.overlay_file, f"artwork.{art_kind}.overlay_file")
+        for definition in definitions:
+            if definition.file:
+                note(definition.file, f"badges.definitions.{definition.name}.file")
+            elif not definition.builtin and not definition.url:
+                note(f"{definition.name}.png", f"badges.definitions.{definition.name}.name")
+    else:
+        for art_kind in RENDER_ART_KINDS:
+            settings = getattr(config.artwork, art_kind)
+            for field in ("text", "episode_text", "show_title"):
+                style = getattr(settings, field, None)
+                if style is not None:
+                    note(style.font, f"artwork.{art_kind}.{field}.font")
+        title = config.collections.poster_title
+        note(title.title.font, "collections.poster_title.title.font")
+        note(title.collection_line.font, "collections.poster_title.collection_line.font")
+        for definition in definitions:
+            note(definition.font, f"badges.definitions.{definition.name}.font")
+    return found
+
+
+def _listing(root: Path, kind: str, references: dict[str, list[str]]) -> list[dict]:
+    """The directory as rows. Synchronous, called from a thread.
+
+    `iterdir` rather than `rglob`: a subdirectory is not descended, because
+    nothing under these roots reads one -- `overlays_root/.cache/` is this
+    service's own download cache (`overlays/sources.py:239`), not an operator
+    asset. A dotfile is skipped for the same reason, and it is also what keeps
+    an interrupted upload's staging file invisible.
+    """
+    rows = []
+    protected = PROTECTED[kind]
+    for entry in sorted(root.iterdir(), key=lambda path: path.name):
+        if entry.name.startswith(".") or entry.is_symlink() or not entry.is_file():
+            continue
+        if entry.suffix.lower() not in SUFFIXES[kind]:
+            continue
+        stat = entry.stat()
+        rows.append(
+            {
+                "name": entry.name,
+                "size": stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+                "protected": entry.name in protected,
+                "referenced_by": references.get(entry.name, []),
+            }
+        )
+    return rows
+
+
+@router.get("/files/{kind}")
+async def list_files(
+    kind: FileKind, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """What is in this directory, by NAME.
+
+    Session auth, the config editor's (`api/routes.py:1541`). Deliberately NOT
+    on `api/auth.py`'s `ALLOWLIST`: a read-only API key is for a Homepage
+    widget, and the shape of an operator's brand directory is not widget
+    material. Row 51's structural keyed sweep pins exactly that allowlist, so
+    this stays refused without any change there.
+
+    A root that does not exist is an empty listing rather than a 500: on a
+    deployment whose volume has not been seeded yet, "there is nothing here" is
+    the honest answer and the upload route will create the directory.
+    """
+    config = request.app.state.config
+    root = root_for(config, kind)
+    references = _references(config, kind)
+    if not await asyncio.to_thread(root.is_dir):
+        return {"files": []}
+    return {"files": await asyncio.to_thread(_listing, root, kind, references)}
+
+
+@router.delete("/files/{kind}/{name}")
+async def delete_file(
+    kind: FileKind,
+    name: str,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Remove one file the operator put here.
+
+    Four refusals, in this order, and the order is the point: each one is
+    cheaper and less trusting than the next, so a request that will be refused
+    never reaches a filesystem call it did not have to make.
+
+    1. the protected set -- `Comfortaa-Medium.ttf` because
+       `collections/separator_art.py:86` reads it directly and separator art
+       breaks without it, `OFL.txt` and `PROVENANCE.md` because the OFL
+       Reserved Font Name clause hangs on them. It is a literal membership
+       test on a frozenset, so it is cheaper than the name rule as well as
+       ahead of it -- and ahead of it deliberately, because two of its three
+       members carry a suffix this directory does not otherwise manage. Behind
+       the name rule they would earn a refusal about file names, which is true
+       and useless; in front of it they earn the one that says why;
+    2. the name rule -- shape only, no I/O;
+    3. containment -- the double-`realpath` check that this is a regular file
+       directly under the root;
+    4. `referenced_by` -- the running configuration still names it, so deleting
+       it would leave the next render with a missing input (which
+       `config/impact.py:117-123` hashes as `""`, silently changing the
+       fingerprint rather than failing).
+
+    404 for absent, for a directory, for a symlink and for anything that
+    resolves outside -- one status for every "there is nothing here you may
+    delete", so the response cannot be used to probe what exists outside the
+    root.
+    """
+    config = request.app.state.config
+    if name in PROTECTED[kind]:
+        raise HTTPException(status_code=409, detail=FILE_PROTECTED)
+    normalised = normalised_name(kind, name)
+    root = root_for(config, kind)
+    try:
+        target = await asyncio.to_thread(contained, root, normalised)
+    except OutsideRoot:
+        logger.warning("refused a %s delete: the name is not a file in that directory", kind)
+        raise HTTPException(status_code=404, detail=FILE_NOT_FOUND) from None
+    if _references(config, kind).get(normalised):
+        raise HTTPException(status_code=409, detail=FILE_REFERENCED)
+
+    await asyncio.to_thread(target.unlink)
+
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        session.add(
+            EventLog(
+                source="files",
+                event_type="asset_file_deleted",
+                # The NAME is recorded, unlike an upload's own file name in
+                # `api/manual.py:430`. There it is a browser's string this
+                # service has no use for; here it is a name this service
+                # normalised to its own character set and already serves in
+                # its own listing, and an audit row that cannot say WHICH file
+                # went is not an audit row.
+                payload={"kind": kind, "name": normalised},
+                outcome=f"deleted {kind}/{normalised}",
+            )
+        )
+        await session.commit()
+
+    return {"status": "deleted", "name": normalised}

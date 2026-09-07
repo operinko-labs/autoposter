@@ -81,6 +81,21 @@ async def test_the_api_docs_can_be_switched_on_deliberately(secrets):
         assert (await _get(app, path)).status_code == 200, path
 
 
+def test_the_files_routes_are_registered(secrets):
+    """Row 55's routes reach the application.
+
+    `app.openapi()` rather than a walk over `app.routes`: FastAPI 0.141 stopped
+    flattening included routers onto `app.routes` (see
+    tests/test_api_login.py:191-201).
+    """
+    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+
+    paths = app.openapi()["paths"]
+
+    assert "get" in paths["/api/files/{kind}"]
+    assert "delete" in paths["/api/files/{kind}/{name}"]
+
+
 @pytest.fixture
 def stubbed_background_services(monkeypatch):
     """Everything the lifespan's ``run_background`` branch starts, replaced.
