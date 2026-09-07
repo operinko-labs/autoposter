@@ -126,12 +126,13 @@ Practical consequences:
     backgrounds and title cards were untouched. `config.version` (the
     wholesale hash the Settings page shows as "version A to B") also moved.
     Since row 111 that value is not a component of any per-kind fingerprint,
-    so nothing re-composites because of it — but it IS what row 111's dual
-    read computes a pre-111 row's legacy candidate from, so any artifact that
-    had not yet migrated off its pre-111 fingerprint took the grandfather's
-    `unchanged` arm on its next pass: the per-kind fingerprint was re-stamped
-    and nothing else happened. No composite, no provider request, no upload,
-    once per row. Adoption is not a mitigation for any of it — the adoption
+    so nothing re-composites because of it. Row 111 shipped a one-release arm
+    that ALSO accepted a pre-111 fingerprint, but that arm computed its
+    candidate from the CURRENT `config.version` — so moving the wholesale hash
+    is precisely what stopped it matching, and any artifact still carrying a
+    pre-111 fingerprint re-rendered once on its next pass rather than being
+    grandfathered. Roadmap row 247 has since removed the arm. Adoption is not
+    a mitigation for any of it — the adoption
     walk refuses to clobber a real fingerprint, so a re-adopt after the move
     re-fingerprints nothing.
   - Turning the gate on stacks the show's title one fitted line of the
@@ -2151,23 +2152,6 @@ Run the cutover in this order:
    will re-render — though since roadmap row 111 only the art kinds the edit
    actually reaches (see the editor note above). Make those changes *before*
    adopting, not after.
-
-   **Upgrading across row 111.** That release changed which version string
-   goes into element 0, so every fingerprint already stored was computed a
-   different way. Nothing has to be done about it: both compare sites accept
-   the old value as well as the new one and rewrite the row to the new one on
-   a match, with **no composite, no asset write and no Plex upload**. Rows
-   migrate forward on the passes that would have run anyway, and the config
-   editor's preview grandfathers identically so it does not report a whole
-   library for a change that re-renders nothing.
-
-   **One thing to know about the window.** The old value is only recognised
-   while the render settings themselves have not moved since those rows were
-   written. So on the release that lands row 111, **hold every edit under
-   `artwork:` and every root repoint until the pod has completed one full
-   pass** — an artwork edit made first re-renders whatever has not yet
-   migrated, once. The backwards-compatible arm is removed a release later
-   (the roadmap's follow-up row), once every deployment has had that pass.
 3. **Repoint the Radarr and Sonarr webhooks** at this service (see below) and
    **stop the old tools** (Posterizarr, Kometa) so they stop writing to the
    same asset tree and Plex fields this service now owns.

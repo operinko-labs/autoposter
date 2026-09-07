@@ -24,10 +24,10 @@ def render_version(config: Config) -> str:
     others alone. This value is retained, and is load-bearing in two places:
     it is ``api/routes._render_affecting``'s cheap short-circuit (its payload
     is a strict SUPERSET of every per-kind payload, so an edit that leaves it
-    alone cannot have moved a single kind), and it is the legacy candidate the
-    dual-read grandfather accepts from rows fingerprinted before row 111
-    landed. It also remains what the config editor displays as "version A to
-    B", which is honest as "the render settings as a whole moved".
+    alone cannot have moved a single kind), and it remains what the config
+    editor displays as "version A to B", which is honest as "the render
+    settings as a whole moved". Roadmap row 247 removed the third reader,
+    row 111's dual-read grandfather; this value did NOT become dead with it.
 
     Hashing the raw config bytes -- which is what this used to do --
     made that true of every edit to the file, including ones that cannot
@@ -145,18 +145,19 @@ def render_version_for(art_kind: str, config: Config) -> str:
     **``config.version`` deliberately STAYS the wholesale hash.** It is the
     correct cheap short-circuit for "could this edit possibly matter to any
     render" (``api/routes.py``'s ``_render_affecting``), it keeps six existing
-    test files meaningful without rewriting them, it keeps the Settings page's
-    one-line "version A to B" honest as "the render settings as a whole
-    moved", and it is the value the dual-read grandfather accepts from rows
-    written before this function existed. The per-kind values are DERIVED,
-    never a replacement, and are never stored on the config.
+    test files meaningful without rewriting them, and it keeps the Settings
+    page's one-line "version A to B" honest as "the render settings as a whole
+    moved". Roadmap row 247 removed the fourth reason -- row 111's dual-read
+    grandfather -- and the three above are why this value is still here. The
+    per-kind values are DERIVED, never a replacement, and are never stored on
+    the config.
 
     **The partition, and why each half of it is where it is.**
 
     * the shared block -- see ``_shared_render_inputs``;
     * ``artwork.<art_kind>`` -- that kind's whole ``ArtKindConfig`` (or
       ``TitleCardConfig``), dumped. Every field on those models is cleanly
-      confined to its own kind by ``art_config_for`` (``pipeline.py:118``);
+      confined to its own kind by ``art_config_for`` (``pipeline.py:149``);
     * ``artwork.library_language_overrides`` PROJECTED to this kind, not
       included wholesale: the mapping is already keyed by art kind
       (``pipeline.py:160``, validator ``config/schema.py:689-695``), so an

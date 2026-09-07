@@ -1,49 +1,44 @@
-"""The one-release dual-read that migrates ~16,000 fingerprints for free.
+"""Row 111's dual-read is gone: a pre-111 fingerprint is now a stale one.
 
-Roadmap row 111 moves the first component of every render fingerprint from one
-wholesale hash to four per-kind ones. Four distinct payloads cannot all produce
-the one 16-hex value the rows already carry except by collision, so the first
-deploy would strand every stored fingerprint -- ~16k ImageMagick composites,
-~16k asset writes and ~16k Plex uploads for artwork nobody asked to change.
+Roadmap row 111 moved the first component of every render fingerprint from one
+wholesale hash to four per-kind ones, and shipped a one-release arm that
+accepted EITHER value and wrote the new one back -- which is what made that
+deploy cost zero composites and zero Plex uploads for ~16,000 rows. Roadmap
+row 247 removes it.
 
-So both compare sites accept EITHER value and, on a legacy match, write the new
-one back. Both already hold `text_inputs`/`asset_hashes` and have already paid
-their file I/O, so the legacy candidate is one extra sha256 over a joined
-string and NO extra I/O. Rows migrate forward lazily on the passes that would
-have run anyway.
+WHY THE REMOVAL IS FREE, and it is the claim these tests exist to hold the
+line under. The legacy candidate was computed from the CURRENT
+`config.version`, so the arm only ever recognised rows written under the value
+the pod was running with. Row 78 moved that value (`tests/
+test_season_show_title.py:48` pins the pre-78 wholesale hash and `:192` the
+post one) and deployed AFTER the 2026-09-05 migration pass drained, so the arm
+has been inert in production since. Any row that missed that pass was already
+condemned to one re-render on its next visit; removing the arm does not cause
+those re-renders, it stops paying a second sha256 per compare and per
+previewed row to pretend otherwise.
 
-WHAT THESE TESTS PROVE, AND WHAT THEY DO NOT. `_forbid_compositing` makes
-`compositor.run`, `fit_point_size` and `_publish` raise, so **no composite and
-no asset write** is proven by the tests not blowing up rather than by an
-assertion somebody could forget to check. **No Plex upload** is true too, but
-by CONSTRUCTION rather than by assertion: the grandfather returns from
-`render_artifact` before any upload stage is reached, and every test here calls
-`render_artifact` directly -- the upload stage is not inside it, and the
-example config uploads nothing anyway (`tests/test_pipeline_e2e.py:120` pins
-`upload_status == "skipped"` under it). Said plainly here rather than left as
-an over-claim, because the difference between "proven" and "true by
-construction" is exactly the distinction this row is otherwise careful about.
+WHAT THESE TESTS NOW PROVE. The inverse of what they used to: a row carrying
+the pre-111 wholesale element 0 falls through both compare sites, re-renders,
+and comes out with the per-kind value; and the impact preview counts it. The
+composite stub RECORDS rather than raises, because the assertions here are
+positive ones about re-rendering.
 
-THE LIMITATION, and it is why the legacy arm is removed in a follow-up rather
-than left standing: the legacy candidate is computed from the CURRENT
-`config.version`, so the grandfather only holds while that value has not moved
-since those rows were written. An artwork edit made before the pod has
-completed one full pass re-storms whatever has not yet migrated. That is a
-bounded, disclosed cost -- not a correctness hole -- and it is stated in the
-roadmap cell, in deploy/README.md and in the pull request.
+`config.version` is NOT dead after this row: it is still
+`api/routes._render_affecting`'s cheap superset short-circuit, still the
+Settings page's "version A to B" line, and still what six test files read.
+`config/loader.py`'s two docstrings say so.
 
-No `@pytest.mark.imagemagick` here either: `compositor.run` is monkeypatched to
-RAISE, which is how "no composite happened" is proven rather than asserted.
+No `@pytest.mark.imagemagick`: `compositor.run` and `fit_point_size` are
+stubbed, never spawned.
 """
 import hashlib
 from pathlib import Path
 
 import httpx
 from conftest import decodable_png
-from sqlalchemy import select
 
 from autoposter.config.impact import count_affected
-from autoposter.config.loader import load_config, render_version, render_version_for
+from autoposter.config.loader import load_config, render_version_for
 from autoposter.db.models import Render
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
@@ -122,31 +117,22 @@ def _http(png):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-def _forbid_compositing(monkeypatch):
-    """Every ImageMagick entry point on this path, made loud.
+def _allow_compositing(monkeypatch) -> list:
+    """Every ImageMagick entry point on this path, stubbed and RECORDING.
 
-    A stub that merely recorded would let a silent composite pass as a pass;
-    raising means the grandfather's whole promise -- no composite, no asset
-    write, no upload -- is proven by the test not blowing up rather than by an
-    assertion about a list somebody could forget to check.
+    Before row 247 these stubs RAISED, because the claim was "no composite
+    happened" and a landmine proves that better than a list somebody could
+    forget to check. The claim is now the opposite one -- the row re-renders
+    -- so the stub has to be observable instead. The returned list is the
+    argvs `compositor.run` was called with.
     """
-    def refuse(*args, **kwargs):
-        raise AssertionError(
-            "the grandfather composited: a legacy fingerprint must be accepted "
-            "and rewritten, never re-rendered"
-        )
-
-    monkeypatch.setattr(pipeline_module.compositor, "run", refuse)
-    monkeypatch.setattr(pipeline_module, "fit_point_size", refuse)
-    monkeypatch.setattr(pipeline_module, "_publish", refuse)
-
-
-def _allow_compositing(monkeypatch):
-    monkeypatch.setattr(pipeline_module.compositor, "run", lambda argv: None)
+    composites: list = []
+    monkeypatch.setattr(pipeline_module.compositor, "run", lambda argv: composites.append(argv))
     monkeypatch.setattr(
         pipeline_module, "fit_point_size",
         lambda *a, **k: FitResult(point_size=120, truncated=False),
     )
+    return composites
 
 
 async def _seed_legacy_live_row(
@@ -180,20 +166,18 @@ async def _seed_legacy_live_row(
     return render, legacy
 
 
-async def test_a_legacy_fingerprint_is_accepted_and_rewritten_without_a_composite(
-    session, tmp_path, monkeypatch
-):
-    """The whole migration, in one pass.
+async def test_a_legacy_fingerprint_now_re_renders(session, tmp_path, monkeypatch):
+    """Site B, the live compare. The pre-111 value is no longer a match, so
+    the row goes through the ladder and the compositor like any other stale
+    row and comes out carrying its per-kind fingerprint.
 
-    `compositor.run`, `fit_point_size` and `_publish` all RAISE here, so
-    reaching any of them fails the test outright -- which is what "zero
-    composites, zero asset writes, zero Plex uploads" has to mean to be worth
-    claiming. The row comes out carrying the NEW per-kind value, so the next
-    pass matches outright and the legacy arm is never consulted again.
+    This is also what `test_a_genuinely_stale_row_still_re_renders` used to
+    say one test along -- after the removal the "legacy" case and the
+    "genuinely stale" case ARE one case, which is why there is now one test.
     """
     config = _config(tmp_path)
     png = decodable_png()
-    _forbid_compositing(monkeypatch)
+    composites = _allow_compositing(monkeypatch)
     _row, legacy = await _seed_legacy_live_row(session, config, png)
 
     async with _http(png) as http:
@@ -202,7 +186,8 @@ async def test_a_legacy_fingerprint_is_accepted_and_rewritten_without_a_composit
         )
 
     assert result.status == "rendered"
-    assert result.detail == "unchanged"
+    assert result.detail != "unchanged"
+    assert composites, "a pre-111 fingerprint must now re-render"
     assert result.fingerprint != legacy
     text_inputs, asset_hashes = await gather_fingerprint_inputs(config, ITEM, "poster")
     assert result.fingerprint == compute_fingerprint(
@@ -211,37 +196,17 @@ async def test_a_legacy_fingerprint_is_accepted_and_rewritten_without_a_composit
     )
 
 
-async def test_a_second_pass_over_a_rewritten_row_matches_outright(
+async def test_an_adopted_rows_legacy_fingerprint_no_longer_short_circuits(
     session, tmp_path, monkeypatch
 ):
-    """Idempotence. If the write-back did not persist, this second pass would
-    take the legacy arm again for ever and the migration would never end."""
+    """Site A, the adopted short-circuit, and the expensive one to get wrong:
+    it sits ABOVE the provider ladder, so an adopted row that no longer
+    matches pays the whole ladder before it re-renders. That is the cost row
+    247 accepts, and it is already sunk -- these rows stopped matching when
+    row 78 moved `config.version`."""
     config = _config(tmp_path)
     png = decodable_png()
-    _forbid_compositing(monkeypatch)
-    await _seed_legacy_live_row(session, config, png)
-
-    async with _http(png) as http:
-        await render_artifact(session, config, http, ITEM, "poster", [_Provider()])
-        second = await render_artifact(session, config, http, ITEM, "poster", [_Provider()])
-
-    assert second.detail == "unchanged"
-    stored = (await session.execute(select(Render))).scalars().all()
-    assert len(stored) == 1
-    assert stored[0].fingerprint == second.fingerprint
-
-
-async def test_an_adopted_rows_legacy_fingerprint_is_accepted_and_rewritten(
-    session, tmp_path, monkeypatch
-):
-    """The other compare site, and the expensive one to get wrong: the adopted
-    short-circuit sits ABOVE the provider ladder, so an adopted row whose
-    version moved pays the whole ladder before it discovers nothing changed.
-    Its detail stays 'adopted' -- no new served string is invented to make the
-    migration visible (the pod log is the sink for that)."""
-    config = _config(tmp_path)
-    png = decodable_png()
-    _forbid_compositing(monkeypatch)
+    composites = _allow_compositing(monkeypatch)
 
     media_item = await _upsert_media_item(session, ITEM)
     target = naming.asset_path(config, ITEM.library, ITEM.root_folder, "poster", None, None)
@@ -265,88 +230,43 @@ async def test_an_adopted_rows_legacy_fingerprint_is_accepted_and_rewritten(
         )
 
     assert result.status == "rendered"
-    assert result.detail == "adopted"
-    assert result.fingerprint != legacy
-    assert result.fingerprint == compute_fingerprint(
-        render_version_for("poster", config), "poster", None, base_sha,
-        text_inputs, asset_hashes,
-    )
-
-
-async def test_a_genuinely_stale_row_still_re_renders(session, tmp_path, monkeypatch):
-    """The grandfather must not swallow a real change.
-
-    The stored value is a legacy fingerprint taken under DIFFERENT settings,
-    so neither the new candidate nor the legacy one matches and the row
-    re-renders exactly as it should. Compositing is allowed here, and this is
-    the only test in the file where it is.
-    """
-    config = _config(tmp_path)
-    png = decodable_png()
-    _allow_compositing(monkeypatch)
-    _row, legacy = await _seed_legacy_live_row(session, config, png)
-
-    config.artwork.poster.border_width = 31
-    config.version = render_version(config)
-
-    async with _http(png) as http:
-        result = await render_artifact(
-            session, config, http, ITEM, "poster", [_Provider()]
-        )
-
-    assert result.detail != "unchanged"
+    assert result.detail != "adopted", "the short-circuit must not have fired"
+    assert composites, "an adopted pre-111 row must now re-render"
     assert result.fingerprint != legacy
 
 
-async def test_the_preview_does_not_count_a_legacy_row_as_affected(
-    session, tmp_path, monkeypatch
-):
-    """The preview must grandfather too, or the first `skip_tba` edit after
-    the deploy reports '~16,000 affected' for a change that re-renders
-    nothing -- and an operator who is shown that number once stops trusting
-    every number the panel gives them."""
+async def test_the_preview_now_counts_a_legacy_row_as_affected(session, tmp_path, monkeypatch):
+    """Site C, and the reason the walk had to move in the same commit as the
+    pipeline: a preview that still grandfathered would report 0 for an edit
+    that now re-renders the row, which is the same lie in the other
+    direction."""
     config = _config(tmp_path)
     png = decodable_png()
-    _forbid_compositing(monkeypatch)
     await _seed_legacy_live_row(session, config, png)
 
-    assert (await count_affected(session, config)).affected == 0
+    assert (await count_affected(session, config)).affected == 1
 
 
-async def test_a_whole_item_migrates_through_process_item_with_no_composite_and_no_upload(
-    session, tmp_path, monkeypatch
-):
-    """C3's binding claim, at the entry point, with SPIES rather than landmines.
+async def test_a_whole_item_re_renders_through_process_item(session, tmp_path, monkeypatch):
+    """The claim at the real entry point rather than at `render_artifact`.
 
-    The tests above prove "no composite, no asset write" by making
-    `compositor.run`, `fit_point_size` and `_publish` RAISE -- a strong proof,
-    but every one of them calls `render_artifact`, and the Plex upload stage
-    is not inside it. So "and no Plex upload" was true by construction and
-    asserted nowhere. This closes that: it drives the real `process_item`,
-    which is where the badge-and-upload stage lives, records every call to
-    `compositor.run` and to `upload_artwork`, and asserts BOTH lists are empty
-    while both of the movie's rows come out carrying their new per-kind
-    fingerprints and their Plex state exactly where the migration found it.
+    `process_item` is where the badge-and-upload stage lives, so this is the
+    only test in the file that can say anything about uploads at all. Both of
+    the movie's pre-111 rows now composite and come out with their per-kind
+    fingerprints.
 
-    Badges are off in this file, so the uploader spy is a STANDING guard
-    rather than a defeated one, and it is worth saying so rather than letting
-    an empty list read as more than it is: its job is to go red if the
-    grandfather ever grows an upload of its own, or if anyone moves an upload
-    above the fingerprint compare. Spies rather than raisers here because the
-    claim is a positive one about two call lists, and because a raiser inside
-    `process_item` would be swallowed by its per-kind `except SourceRefused`.
+    The upload spy STAYS, and it is worth saying what it is now worth: with
+    the short-circuit gone it no longer proves "the grandfather did not
+    upload", it proves that this example config -- which uploads nothing
+    (`tests/test_pipeline_e2e.py:120` pins `upload_status == "skipped"`) --
+    still uploads nothing on a re-render. It goes red if anyone makes
+    `process_item` upload unconditionally, which is the standing guard the
+    row-111 branch put it there to be.
     """
     config = _config(tmp_path)
     png = decodable_png()
-    composites: list = []
     uploads: list = []
-    monkeypatch.setattr(
-        pipeline_module.compositor, "run", lambda argv: composites.append(argv)
-    )
-    monkeypatch.setattr(
-        pipeline_module, "fit_point_size",
-        lambda *a, **k: FitResult(point_size=120, truncated=False),
-    )
+    composites = _allow_compositing(monkeypatch)
     monkeypatch.setattr(
         pipeline_module, "upload_artwork", lambda *a, **k: uploads.append(a)
     )
@@ -365,9 +285,8 @@ async def test_a_whole_item_migrates_through_process_item_with_no_composite_and_
         )
 
     assert {r.art_kind for r in renders} == {"poster", "background"}
-    assert composites == [], "the grandfather composited"
-    assert uploads == [], "the grandfather uploaded to Plex"
+    assert len(composites) >= 2, "both kinds must have re-rendered"
+    assert uploads == [], "process_item uploaded under a config that uploads nothing"
     for render in renders:
-        assert render.detail == "unchanged"
+        assert render.detail != "unchanged"
         assert render.fingerprint != legacy[render.art_kind]
-        assert render.upload_status == "skipped"
