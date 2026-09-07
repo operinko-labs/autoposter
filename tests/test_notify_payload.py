@@ -12,7 +12,11 @@ import pytest
 
 from autoposter.config.loader import load_config
 from autoposter.notify import payload as payload_module
-from autoposter.notify.payload import build_payload
+from autoposter.notify.payload import (
+    DISCORD_FIELD_NAME_LIMIT,
+    DISCORD_FIELD_VALUE_LIMIT,
+    build_payload,
+)
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -256,6 +260,68 @@ def test_discord_suppresses_every_mention(frozen_clock):
         detail={"library": "Movies", "collection": "@everyone", "added": 1, "removed": 0},
     )
     assert built["allowed_mentions"] == {"parse": []}
+
+
+def test_discord_empty_detail_value_renders_as_a_placeholder_not_empty(frozen_clock):
+    """scheduler/core.py:251 -- ``detail = await job.run(session) or ""`` --
+    puts an empty string in the detail dict on the success path of any job
+    whose run() returns nothing. An empty embed field value is a Discord 400
+    that dispatch.py will not retry, so this must never reach the wire."""
+    built = build_payload(
+        "discord",
+        event="scheduled_run_completed",
+        summary="scheduled run collections finished: ok",
+        detail={"job": "collections", "status": "ok", "detail": ""},
+    )
+    for field in built["embeds"][0]["fields"]:
+        assert field["name"] != ""
+        assert field["value"] != ""
+    detail_field = built["embeds"][0]["fields"][2]
+    assert detail_field == {"name": "detail", "value": "(empty)", "inline": True}
+
+
+def test_discord_empty_rating_key_renders_as_a_placeholder(frozen_clock):
+    """collections/engine.py:1605 -- ``"rating_key": str(getattr(collection,
+    "ratingKey", "") or "")`` -- is empty on every collection_deleted where
+    the Plex object carries no ratingKey."""
+    built = build_payload(
+        "discord",
+        event="collection_deleted",
+        summary="deleted collection 'Old Stuff' in Movies",
+        detail={
+            "library": "Movies",
+            "collection": "Old Stuff",
+            "rating_key": "",
+            "reason": "stale",
+        },
+    )
+    for field in built["embeds"][0]["fields"]:
+        assert field["value"] != ""
+    rating_key_field = built["embeds"][0]["fields"][2]
+    assert rating_key_field == {"name": "rating_key", "value": "(empty)", "inline": True}
+
+
+def test_discord_none_detail_value_renders_as_a_placeholder_not_the_string_none(frozen_clock):
+    built = build_payload(
+        "discord",
+        event="e",
+        summary="s",
+        detail={"job": "collections", "status": "ok", "detail": None},
+    )
+    detail_field = built["embeds"][0]["fields"][2]
+    assert detail_field == {"name": "detail", "value": "(empty)", "inline": True}
+
+
+def test_discord_empty_field_placeholder_is_inside_every_limit(frozen_clock):
+    """The placeholder itself must never be the thing that blows a limit."""
+    built = build_payload("discord", event="e", summary="s", detail={"": ""})
+    field = built["embeds"][0]["fields"][0]
+    assert field["name"] == "(empty)"
+    assert field["value"] == "(empty)"
+    assert len(field["name"]) <= DISCORD_FIELD_NAME_LIMIT
+    assert len(field["value"]) <= DISCORD_FIELD_VALUE_LIMIT
+    assert field["name"] != ""
+    assert field["value"] != ""
 
 
 def test_mode_discord_loads_from_config(tmp_path):

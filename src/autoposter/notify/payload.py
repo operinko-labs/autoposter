@@ -85,6 +85,14 @@ TRUNCATION_MARKER = "...[truncated]"
 # marker field, so appending it can never push the embed over the limit.
 _OMISSION_RESERVE = 64
 
+# Discord rejects an embed field whose name or value is empty with a 400,
+# and dispatch.py does not retry a 4xx -- so a detail dict carrying "", None,
+# or a whitespace-only string for some key or value (scheduler/core.py's
+# success-path ``detail = ... or ""``; collections/engine.py's ``rating_key``
+# when the Plex object carries none) would otherwise drop the notification
+# silently. Every flattened key and value renders as this instead of nothing.
+EMPTY_FIELD_PLACEHOLDER = "(empty)"
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -95,6 +103,20 @@ def _clipped(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+
+
+def _field_text(value: object) -> str:
+    """``value`` stringified for an embed field -- never empty or blank.
+
+    ``None`` and a blank/whitespace-only string both stringify to something
+    Discord's ``BASE_TYPE_REQUIRED`` (or, for ``None``, the literal and
+    unreadable ``"None"``) would otherwise let through; both render as the
+    placeholder instead.
+    """
+    if value is None:
+        return EMPTY_FIELD_PLACEHOLDER
+    text = str(value)
+    return text if text.strip() else EMPTY_FIELD_PLACEHOLDER
 
 
 def _discord_fields(detail: dict, budget: int) -> list[dict]:
@@ -109,8 +131,8 @@ def _discord_fields(detail: dict, budget: int) -> list[dict]:
     omitted = 0
     items = list(detail.items())
     for index, (key, value) in enumerate(items):
-        name = _clipped(str(key), DISCORD_FIELD_NAME_LIMIT)
-        text = _clipped(str(value), DISCORD_FIELD_VALUE_LIMIT)
+        name = _clipped(_field_text(key), DISCORD_FIELD_NAME_LIMIT)
+        text = _clipped(_field_text(value), DISCORD_FIELD_VALUE_LIMIT)
         if len(fields) >= DISCORD_FIELD_LIMIT - 1 or len(name) + len(text) > budget:
             omitted = len(items) - index
             break
