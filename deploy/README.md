@@ -251,8 +251,25 @@ collected — `AUTOPOSTER_MDBLIST_APIKEY`, `AUTOPOSTER_RADARR_APIKEY`,
 silently dropped. A hand-added `AUTOPOSTER_API_KEY` in `secrets.env` is
 subject to the same rule, though the wizard never writes it: that key is
 minted after setup, not collected during it. To rotate a credential the
-wizard wrote, set it in the environment (preferred) or edit `secrets.env` and
-restart.
+wizard wrote, set it in the environment (preferred)
+or edit `secrets.env` and restart — with one exception, and it is the one this
+paragraph opened with. **The webhook secret has its own action on the Settings
+page**, and on a deployment that still reads it from `secrets.env` that action
+is the right way to change it: it writes the file, makes the new value live in
+the running process without a restart, and re-registers Radarr and Sonarr with
+it wherever both a `base_url` and an API key are configured — which is the step
+the "copy the line into the Secret" advice above leaves the operator to do by
+hand in two other applications. It shows the new value once and never again, so
+have somewhere to paste it before pressing the button. Afterwards each *arr's
+own **Test** button succeeds, which is a confirmation the wizard could not give.
+
+On a deployment whose environment carries `AUTOPOSTER_WEBHOOK_SECRET` — every
+shape this section's ExternalSecrets migration produces, and every
+`envFrom: secretRef` Kubernetes deployment — **that action refuses**, naming
+the variable. It is not being cautious: the environment is read before the
+state file at every boot, so a write to `secrets.env` there would be undone by
+the next restart while both *arrs held the new value. Set the new value in the
+environment and roll the deployment, exactly as for every other credential.
 
 ### Kubernetes
 
