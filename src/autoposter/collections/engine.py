@@ -52,11 +52,13 @@ from autoposter.collections.builders.plex_search import (
     PlexSearchUnavailable,
 )
 from autoposter.collections.enrichment import ensure_tags
+from autoposter.collections.facts_read import ensure_facts
 from autoposter.collections.filter_values import PlexItemView
 from autoposter.collections.filters import (
     FilterPredicate,
     batched_attributes,
     evaluate,
+    facts_attributes,
     parse_filters,
     tag_predicates,
     without_values,
@@ -776,7 +778,9 @@ async def _run_one(
         # config edit anywhere, and a filter naming only listing rows pays
         # nothing.
         tags = None
+        facts = None
         needed: tuple[str, ...] = ()
+        facts_needed: tuple[str, ...] = ()
         # Parsed ONCE for this stage now (roadmap row 158 needs the tree too,
         # and re-parsing for each consumer would compile the same regexes
         # three times). ``_passing`` still parses for itself when this hands
@@ -785,11 +789,13 @@ async def _run_one(
         try:
             parsed = parse_filters(definition.filters)
             needed = batched_attributes(parsed)
+            facts_needed = facts_attributes(parsed)
         except Exception:
             # A filter that does not parse is _passing's own report; the
             # enrichment pre-step stays out of its way.
             parsed = None
             needed = ()
+            facts_needed = ()
         if needed:
             # ``ratingKey`` off a resolved item is reload-safe: it is never
             # None/[] on a real item, and ``resolve.build_owned_index`` already
@@ -826,6 +832,54 @@ async def _run_one(
                 )
             else:
                 tags = fetched
+        # The facts pre-step (roadmap row 156), phase 2's sibling and
+        # deliberately after it: the tier-2 refusal is a HARD failure, and
+        # querying our own database for a definition that is not going to
+        # evaluate is work nobody reads.
+        #
+        # It is NOT the same law as phase 2 above. That one refuses the
+        # definition when the batch did not answer for every item, because a
+        # key Plex skipped is UNKNOWN and evaluating it as "has no tags" would
+        # build a full, plausible, wrong collection. Here the database is
+        # authoritative about its own rows: an item with no facts row is an
+        # ANSWER, excluded by ruling C3's missing rule, and refusing the whole
+        # definition over it would refuse every definition on a cold library
+        # -- roughly thirty-two weeks of them at the drift sweep's defaults.
+        # Only a failed READ refuses.
+        #
+        # Sitting before row 158's pruning below is free, not incidental: a
+        # facts row carries ``search_kinds=()``, so ``_known_tag_values``
+        # skips it, and pruning never edits ``items`` -- so nothing 158 does
+        # can change which keys this read needs.
+        if facts_needed and not filter_failed:
+            facts_keys = [str(getattr(item, "ratingKey", "")) for item in items]
+            try:
+                # ``ctx.run_cache`` -- the PASS's dict, as phase 2 uses it, so
+                # two definitions over overlapping sets cost one query for the
+                # union rather than two for the parts.
+                facts = await ensure_facts(
+                    ctx.session, ctx.run_cache, library, facts_keys
+                )
+            except Exception as error:
+                # Class name only. A SQLAlchemy error's message can carry the
+                # statement and the DSN (roadmap row 213); the traceback goes
+                # to the log and nothing derived from it reaches Plex.
+                logger.exception(
+                    "%s: could not read %s from this service's own database "
+                    "for %r; nothing was applied to it this pass",
+                    library, ", ".join(facts_needed), definition.title,
+                )
+                outcome.failed = True
+                filter_failed = True
+                items = []
+                facts = None
+                outcome.actions.append(
+                    "%r: could not read %s from this service's own database "
+                    "(%s), so the filter was not evaluated and nothing was "
+                    "changed this pass"
+                    % (definition.title, ", ".join(facts_needed),
+                       type(error).__name__)
+                )
         # Roadmap row 158, after the enrichment and before the evaluation. In
         # that order deliberately: the enrichment's own refusal is a HARD
         # failure (a definition whose batched read skipped items must not
@@ -838,7 +892,9 @@ async def _run_one(
             )
             outcome.actions += vocabulary_actions
         if not filter_failed:
-            kept = _passing(definition, items, library, tags=tags, parsed=parsed)
+            kept = _passing(
+                definition, items, library, tags=tags, parsed=parsed, facts=facts
+            )
             if kept is None:
                 outcome.failed = True
                 filter_failed = True
@@ -1197,6 +1253,7 @@ def _passing(
     library: str,
     tags: dict | None = None,
     parsed=None,
+    facts: dict | None = None,
 ) -> list | None:
     """The items this definition's ``filters:`` keeps, or None if it could not
     be evaluated at all.
@@ -1242,6 +1299,12 @@ def _passing(
     yourself", which is what every caller outside ``_run_one`` does and what
     ``_run_one`` itself falls back to when the filter did not parse (so the
     report below is still this function's).
+
+    ``facts`` is ``{rating_key: facts_read.ItemFactsValues}`` or None for a
+    filter naming no facts row. Unlike ``tags``, a key MISSING from a non-None
+    ``facts`` cannot happen: ``ensure_facts`` answers for every key it was
+    asked about, because this service's own database is authoritative about
+    its own rows.
     """
     try:
         if parsed is None:
@@ -1272,6 +1335,8 @@ def _passing(
                     item,
                     tags=None if tags is None
                     else tags.get(str(getattr(item, "ratingKey", ""))),
+                    facts=None if facts is None
+                    else facts.get(str(getattr(item, "ratingKey", ""))),
                 ),
                 now=now,
             )

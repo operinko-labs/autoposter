@@ -44,6 +44,7 @@ from autoposter.collections.filters import (
     RelativeWindow,
     batched_attributes,
     evaluate,
+    facts_attributes,
     parse_filters,
     predicates,
     resolve_search_values,
@@ -108,6 +109,10 @@ def test_the_table_holds_exactly_the_tier_one_rows():
     Search tail H appended ONE the same way: ``folder_location`` (roadmap row
     176), search-only and both-kinds, and the only row in the list whose Plex
     field is a run-time discovery rather than a string.
+
+    Roadmap row 156 appended three more, last of all: ``common_sense_rating``,
+    ``imdb_rating`` and ``tmdb_rating``, the first rows in the table whose
+    names Kometa does not have at all.
     """
     assert [row.name for row in FILTER_ATTRIBUTES] == [
         "genre",
@@ -168,6 +173,9 @@ def test_the_table_holds_exactly_the_tier_one_rows():
         "show_unmatched",
         "unplayed_episodes",
         "folder_location",
+        "common_sense_rating",
+        "imdb_rating",
+        "tmdb_rating",
     ]
 
 
@@ -216,10 +224,10 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     # ``search-only`` and none of them a filter, so no SOURCE tier below other
     # than ``search-only`` moved with them.
     assert {k: len(v) for k, v in by_type.items()} == {
-        "tag": 20,
+        "tag": 21,
         "str": 4,
         "int": 6,
-        "float": 7,
+        "float": 9,
         "date": 7,
         "duration": 1,
         "bool": 13,
@@ -297,7 +305,13 @@ def test_the_column_totals_are_the_transcriptions_checksum():
     # value is in this service's own `item_facts` row. REFUSAL-ONLY on the
     # collections side (`config/schema.py`'s filters gate names row 156);
     # the overlay view supplies both through a separate mechanism.
-    assert by_source["facts"] == ["tmdb_status", "last_episode_aired"]
+    #
+    # Row 156 appended THREE, all `facts`, all both-kinds, all unsearchable: the
+    # first rows in this table whose names Kometa does not have.
+    assert by_source["facts"] == [
+        "tmdb_status", "last_episode_aired",
+        "common_sense_rating", "imdb_rating", "tmdb_rating",
+    ]
 
 
 def test_batched_attributes_reports_only_tier2_batched_predicates():
@@ -339,6 +353,54 @@ def test_batched_attributes_sees_through_a_nested_group():
     assert batched_attributes(parsed) == ("genre",)
 
 
+# --- fix round 1 (review I-2): `facts_attributes` pinned on `batched_attributes`'s
+# own three tests, one tier along -----------------------------------------------
+
+
+def test_facts_attributes_reports_only_the_coined_facts_predicates():
+    """``test_batched_attributes_reports_only_tier2_batched_predicates`` one
+    tier along. ``tmdb_status`` sits on the same ``source == 'facts'`` tier as
+    the three coined rows but is NOT one of them -- ``facts_attributes`` is
+    keyed on ``FACTS_FILTER_ROWS``, not on the tier (Task 2 needs exactly the
+    rows it will ask ``ensure_facts`` for, and a Kometa-named facts row is
+    refused at config load before a definition can ever reach the engine with
+    one). A filter naming neither must produce an empty tuple -- the "make no
+    facts query at all" signal."""
+    parsed = parse_filters(
+        {"common_sense_rating": "13", "year.gte": 1990, "tmdb_status": "ended"}
+    )
+
+    assert facts_attributes(parsed) == ("common_sense_rating",)
+    assert facts_attributes(parse_filters({"year": 1990})) == ()
+    assert facts_attributes(parse_filters({"tmdb_status": "ended"})) == ()
+
+
+def test_facts_attributes_are_distinct_and_in_first_appearance_order():
+    """``test_batched_attributes_are_distinct_and_in_first_appearance_order``
+    one tier along: two predicates on ``imdb_rating`` are still one query, and
+    the order is the filter's own so a refusal naming these back to the
+    operator reads the way the block was written."""
+    parsed = parse_filters(
+        {"imdb_rating.gte": 7.0, "common_sense_rating": "13",
+         "imdb_rating.lte": 9.0, "tmdb_rating.not": 5.0}
+    )
+
+    assert facts_attributes(parsed) == (
+        "imdb_rating", "common_sense_rating", "tmdb_rating",
+    )
+
+
+def test_facts_attributes_sees_through_a_nested_group():
+    """``test_batched_attributes_sees_through_a_nested_group`` one tier along:
+    a traversal that only looked at the top level would leave the engine
+    reading no facts at all for an ``any:`` block naming a coined row."""
+    parsed = parse_filters(
+        {"any": [{"common_sense_rating": "13"}, {"year.gte": 2000}]}
+    )
+
+    assert facts_attributes(parsed) == ("common_sense_rating",)
+
+
 def test_item_kinds_are_movie_show_or_both():
     movie_only = sorted(r.name for r in FILTER_ATTRIBUTES if r.kinds == ("movie",))
     show_only = sorted(r.name for r in FILTER_ATTRIBUTES if r.kinds == ("show",))
@@ -363,8 +425,9 @@ def test_item_kinds_are_movie_show_or_both():
         "season_label", "show_unmatched", "tmdb_status", "unplayed_episodes",
     ]
     # 22 -> 23 with search tail H's ``folder_location``: neither of Kometa's
-    # kind lists names it, so it is both-kinds in this column too.
-    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 23
+    # kind lists names it, so it is both-kinds in this column too. 23 -> 26
+    # with row 156's three coined facts rows, each both-kinds by ruling C1.
+    assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 26
 
 
 def test_versions_is_filterable_with_the_int_operators():
@@ -511,9 +574,11 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
 
     from autoposter.collections.filters import BY_NAME, FILTER_ATTRIBUTES
 
-    # ``("show",)`` was ``network`` alone until search-tail E-1's twenty.
+    # ``("show",)`` was ``network`` alone until search-tail E-1's twenty. The
+    # ``()`` bucket moves 4 -> 7 with row 156's three coined facts rows, none
+    # of which Plex has ever seen.
     assert Counter(row.search_kinds for row in FILTER_ATTRIBUTES) == {
-        ("movie", "show"): 25, ("movie",): 8, ("show",): 21, (): 4,
+        ("movie", "show"): 25, ("movie",): 8, ("show",): 21, (): 7,
     }
     assert BY_NAME["resolution"].kinds == ("movie",)
     assert BY_NAME["resolution"].search_kinds == ("movie", "show")
@@ -521,12 +586,14 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
     assert BY_NAME["duration"].search_kinds == ("movie",)
 
 
-def test_four_rows_are_unsearchable_and_twentynine_are_filterable():
+def test_seven_rows_are_unsearchable_and_thirtytwo_are_filterable():
     """`versions` (C2a, A14) was the table's first filterable-but-not-
     searchable row; `aspect` (C2b, A11) is the second, and for the same
     reason -- Kometa's own `aspect` filter is a client-side `float_attributes`
     comparison (`builder.py:474`) and `plex.searches` spells no search field
-    for it. Every other row remains both, unchanged."""
+    for it. Row 156's three coined rows join the same bucket for a different
+    reason: Plex has never seen the value at all. Every other row remains
+    both, unchanged."""
     from autoposter.collections.filters import (
         FILTERABLE_ATTRIBUTES,
         FILTER_ATTRIBUTES,
@@ -535,18 +602,26 @@ def test_four_rows_are_unsearchable_and_twentynine_are_filterable():
 
     assert all(
         row.searchable for row in FILTER_ATTRIBUTES
-        if row.name not in ("versions", "aspect", "tmdb_status", "last_episode_aired")
+        if row.name not in (
+            "versions", "aspect", "tmdb_status", "last_episode_aired",
+            "common_sense_rating", "imdb_rating", "tmdb_rating",
+        )
     )
     assert BY_NAME["versions"].searchable is False
     assert BY_NAME["aspect"].searchable is False
     assert BY_NAME["tmdb_status"].searchable is False
     assert BY_NAME["last_episode_aired"].searchable is False
+    assert BY_NAME["common_sense_rating"].searchable is False
+    assert BY_NAME["imdb_rating"].searchable is False
+    assert BY_NAME["tmdb_rating"].searchable is False
     # 33 -> 53 with search-tail E-1, then 54 with search tail H: Kometa's 55
     # non-music search names minus ``audio_codec`` (row 177) alone. The
     # filterable count does not move -- neither family E nor ``folder_location``
-    # is a Kometa filter.
+    # is a Kometa filter. Row 156's three coined rows move FILTERABLE alone,
+    # by three, and the searchable count does not move -- none of the three
+    # is a Kometa search name either.
     assert len(SEARCHABLE_ATTRIBUTES) == 54
-    assert len(FILTERABLE_ATTRIBUTES) == 29
+    assert len(FILTERABLE_ATTRIBUTES) == 32
     assert set(SEARCHABLE_ATTRIBUTES) - set(FILTERABLE_ATTRIBUTES) == {
         "unplayed", "progress", "decade",
         "hdr", "dovi", "trash", "duplicate", "unmatched",
@@ -560,7 +635,8 @@ def test_four_rows_are_unsearchable_and_twentynine_are_filterable():
         "folder_location",
     }
     assert set(FILTERABLE_ATTRIBUTES) - set(SEARCHABLE_ATTRIBUTES) == {
-        "versions", "aspect", "tmdb_status", "last_episode_aired"
+        "versions", "aspect", "tmdb_status", "last_episode_aired",
+        "common_sense_rating", "imdb_rating", "tmdb_rating",
     }
 
 
@@ -2414,15 +2490,15 @@ def test_neither_status_row_is_searchable_and_the_refusal_says_where_it_lives():
         assert name in str(caught.value), name
 
 
-def test_a_collection_filtering_on_a_facts_row_is_refused_naming_row_156():
-    """ADJUDICATION A-2, the refusal-only half. The `facts` tier exists so
-    the OVERLAY side can read `item_facts`; it does NOT make a collection
-    filterable on it, and the refusal has to say that in a way an operator
-    can act on -- where the value is, that an overlay condition CAN use it,
-    and which roadmap row owns the question. Deliberately not the `unprobed`
-    sentence, which claims a missing PROBE verdict: there is no Plex listing
-    that could ever carry a TMDb field, so 'nobody probed the listing' would
-    be false rather than cautious."""
+def test_a_collection_filtering_on_a_facts_row_is_refused_only_for_kometa_named_rows():
+    """ADJUDICATION A-2, as roadmap row 156 leaves it. The fence this test
+    used to pin -- "no collection may filter on a `facts` row" -- is the fence
+    row 156 opened, and it opened it for exactly the rows whose names this
+    service COINED, each of which carries its own sparsity note. The two C2c
+    rows carry KOMETA'S own names and were never re-adjudicated for
+    collections, so they stay refused, and the refusal still has to say where
+    the value is, that an overlay condition CAN use it, and which row owns the
+    question."""
     from autoposter.config.schema import CollectionDefinition
 
     for name, value in (("tmdb_status", "ended"), ("last_episode_aired", 14)):
@@ -2435,6 +2511,19 @@ def test_a_collection_filtering_on_a_facts_row_is_refused_naming_row_156():
         assert "'facts'" in message, name
         assert "row 156" in message, name
         assert "condition:" in message, name
+
+    # ...and the three coined rows LOAD. This is the fence being open, and it
+    # is the one assertion in this file that would have been the bug report
+    # before this row.
+    for name, value in (
+        ("common_sense_rating", "13"),
+        ("imdb_rating", 7.0),
+        ("tmdb_rating", 7.0),
+    ):
+        definition = CollectionDefinition(
+            title="Gentle", builder="plex_all", filters={name: value},
+        )
+        assert definition.filters == {name: value}
 
 
 # --- search tail E-1: the twenty show-only rows (roadmap row 173) -------------
@@ -2579,3 +2668,185 @@ def test_field_for_refuses_a_discovered_row_by_naming_the_resolver():
     for libtype in ("movie", "show"):
         with pytest.raises(ValueError, match="discovered at run time"):
             BY_NAME["folder_location"].field_for(libtype)
+
+
+# --- roadmap row 156: the three coined facts rows ----------------------------
+#
+# These rows are NOT a Kometa transcription and no oracle entry can exist for
+# them: Kometa has no attribute of any of these three names in
+# `builder.filters_by_type`, so `check_filter` would raise on the config
+# rather than produce a member list. What stands in for a golden is C2c's own
+# substitute -- a cited note per row, a per-operator missing-value matrix, a
+# value-space pin (tests/test_item_facts.py) and one engine-level test through
+# the real `run_library` (tests/test_collection_facts_filter.py). Deliberately
+# no `tests/oracle/9b/kometa_build_filter.py` citation anywhere in the three
+# notes: there is nothing upstream to cite.
+
+
+def test_the_three_coined_facts_rows_are_shaped_as_the_ruling_says():
+    """C1's shape, cell by cell. `filterable=True` because an operator writes
+    these in a `filters:` block; `search_field=None` and `search_kinds=()`
+    because Plex has never seen the value -- it is in this service's own
+    `item_facts` row -- so no `plex_search.py` or `search_url.py` edit is owed
+    and none was made."""
+    from autoposter.collections.filters import FACTS_FILTER_ROWS
+
+    assert FACTS_FILTER_ROWS == ("common_sense_rating", "imdb_rating", "tmdb_rating")
+    for name, value_type in (
+        ("common_sense_rating", "tag"),
+        ("imdb_rating", "float"),
+        ("tmdb_rating", "float"),
+    ):
+        row = BY_NAME[name]
+        assert row.type == value_type, name
+        assert row.source == "facts", name
+        assert row.kinds == ("movie", "show"), name
+        assert row.filterable is True, name
+        assert row.searchable is False, name
+        assert row.search_field is None, name
+        assert row.show_search_field is None, name
+        assert row.search_kinds == (), name
+        assert "no Kometa attribute of this name" in row.note, name
+
+
+def test_the_coined_rows_are_outside_the_kometa_filter_denominator():
+    """The arithmetic the module docstring states. `FILTERABLE_ATTRIBUTES` is a
+    DERIVED tuple -- every row an operator may write in `filters:` -- and it is
+    no longer the same number as "how many of Kometa's 70 filter names this
+    table covers", because three of its entries are names Kometa does not have.
+    Subtracting them is what makes the docstring's figure checkable."""
+    from autoposter.collections.filters import (
+        FACTS_FILTER_ROWS,
+        FILTERABLE_ATTRIBUTES,
+    )
+
+    assert set(FACTS_FILTER_ROWS) <= set(FILTERABLE_ATTRIBUTES)
+    assert len(set(FILTERABLE_ATTRIBUTES) - set(FACTS_FILTER_ROWS)) == 29
+
+
+def test_a_plex_search_naming_a_coined_facts_row_is_refused_saying_where_it_lives():
+    """The `_split_key` branch. The generic unsearchable refusal ("a
+    client-side filter attribute but Plex has no search field for it") is true
+    of `versions` and `aspect`, whose values Plex DOES hold; it would send an
+    operator looking for a Plex field that has never existed. The facts
+    sentence says where the value actually is."""
+    for name, value in (
+        ("common_sense_rating", "13"),
+        ("imdb_rating", 7.5),
+        ("tmdb_rating", 7.5),
+    ):
+        with pytest.raises(ValueError) as caught:
+            parse_filters({name: value}, searching=True)
+        message = str(caught.value)
+        assert name in message, name
+        assert "item_facts" in message, name
+        assert "`filters:` block" in message, name
+
+
+def test_the_two_c2c_rows_still_refuse_a_plex_search_the_same_way():
+    """Regression guard on the branch above: it fires for the whole `facts`
+    tier, so the C2c pair's existing refusal must still name `filters:`."""
+    for name in ("tmdb_status", "last_episode_aired"):
+        with pytest.raises(ValueError) as caught:
+            parse_filters({name: "ended"}, searching=True)
+        assert "filters:" in str(caught.value), name
+        assert name in str(caught.value), name
+
+
+@pytest.mark.parametrize("key, written", [
+    ("common_sense_rating", "13"),
+    ("common_sense_rating.not", "13"),
+    ("common_sense_rating.regex", "1."),
+    ("common_sense_rating.count_gt", 0),
+    ("common_sense_rating.count_gte", 1),
+    ("common_sense_rating.count_lt", 5),
+    ("common_sense_rating.count_lte", 5),
+    ("imdb_rating", 7.5),
+    ("imdb_rating.not", 7.5),
+    ("imdb_rating.gt", 1.0),
+    ("imdb_rating.gte", 1.0),
+    ("imdb_rating.lt", 9.9),
+    ("imdb_rating.lte", 9.9),
+    ("tmdb_rating", 7.5),
+    ("tmdb_rating.not", 7.5),
+    ("tmdb_rating.gt", 1.0),
+    ("tmdb_rating.gte", 1.0),
+    ("tmdb_rating.lt", 9.9),
+    ("tmdb_rating.lte", 9.9),
+])
+def test_a_missing_facts_value_is_excluded_under_every_operator(key, written):
+    """RULING C3, pinned per operator, and the two halves are different claims.
+
+    A `float` row would already exclude under every operator through
+    `_MISSING_ALWAYS_EXCLUDES` -- those nine cases are a regression guard. The
+    `tag` row is where the rule is NEW: every other tag row in this table
+    NEGATES on a missing value (`genre.not: Horror` keeps an item with no
+    genres), and `.count_lt: 5` counts a missing family as ZERO and keeps the
+    item. Both would be wrong here, and wrong in the direction that hurts: an
+    `item_facts` column is NULL for "the provider has nothing" AND for "nobody
+    has gathered this item yet", so negating would widen a cold-library
+    collection to the entire library, and counting a NULL as zero would assert
+    a fact about an item nothing has looked at. The rule is: a coined facts
+    row's missing value EXCLUDES, under every operator, always."""
+    group = parse_filters({key: written})
+    name = key.partition(".")[0]
+    assert evaluate(group, _view(name, None), now=NOW) is False, "null column"
+    assert evaluate(group, {}, now=NOW) is False, "no facts row at all"
+
+
+def test_the_c2c_rows_keep_their_declared_missing_value_gap():
+    """The rule above is keyed on the three COINED names, not on the `facts`
+    tier, and that is deliberate rather than an oversight. `tmdb_status` is a
+    Kometa-named row whose `.not` widening is a DECLARED gap in its own note
+    and whose collections use is still refused at load; changing its rule here
+    would silently move overlay `condition:` membership -- a badge change --
+    for a row this row was not asked to re-adjudicate."""
+    group = parse_filters({"tmdb_status.not": "ended"})
+    assert evaluate(group, _view("tmdb_status", None), now=NOW) is True
+
+
+def test_a_coined_facts_row_is_refused_in_an_overlay_condition():
+    """C7's storm guard, pinned rather than asserted in prose. The three names
+    are NOT in `overlays/selection.py::OVERLAY_ATTRIBUTES`, so
+    `parse_condition`'s narrowing refuses them at config load and no badge
+    definition can name one -- which is why `badges/compose.py::
+    _definitions_digest` cannot move and nothing re-badges on this upgrade."""
+    from autoposter.overlays.selection import OVERLAY_ATTRIBUTES, parse_condition
+    from autoposter.collections.filters import FACTS_FILTER_ROWS
+
+    for name in FACTS_FILTER_ROWS:
+        assert name not in OVERLAY_ATTRIBUTES, name
+        with pytest.raises(ValueError) as caught:
+            parse_condition({name: "13"})
+        assert name in str(caught.value), name
+
+
+# --- fix round 1 (review I-1): a PRESENT facts value is a positive control ----
+
+
+def test_a_present_facts_value_matches_or_fails_the_predicate_normally():
+    """The C3 branch at ``filters.py``'s ``_matches`` (`have = view.get(...)`
+    then `if attribute.name in FACTS_FILTER_ROWS and _is_missing(...)`) is
+    guarded by ``_is_missing`` for a reason: it must answer for the MISSING
+    case only and let a PRESENT value fall through to the ordinary type-split
+    evaluation below it. Nothing before this test asserted that -- the 19-case
+    missing-value matrix asserts ``False`` in every one of its cases, the shape
+    test reads cells without evaluating, and the fence test only checks that a
+    definition loads. Deleting ``_is_missing(have, attribute.type)`` from the
+    branch condition -- so every facts predicate returns ``False``
+    unconditionally, i.e. every facts-backed collection is permanently empty
+    regardless of what ``item_facts`` holds -- or inverting the condition --
+    so a PRESENT value is excluded and a missing one evaluated -- would leave
+    every other test in this file green. Only a present-value positive control
+    catches either mutation, for all three rows."""
+    gate = parse_filters({"common_sense_rating": "13"})
+    assert evaluate(gate, _view("common_sense_rating", "13")) is True
+    assert evaluate(gate, _view("common_sense_rating", "16")) is False
+
+    gate = parse_filters({"imdb_rating.gte": 7.0})
+    assert evaluate(gate, _view("imdb_rating", 7.5)) is True
+    assert evaluate(gate, _view("imdb_rating", 6.9)) is False
+
+    gate = parse_filters({"tmdb_rating.gte": 7.0})
+    assert evaluate(gate, _view("tmdb_rating", 7.5)) is True
+    assert evaluate(gate, _view("tmdb_rating", 6.9)) is False
