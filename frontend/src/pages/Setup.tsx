@@ -573,8 +573,11 @@ function SystemsPane({
   onSave: (values: Record<string, string>) => Promise<boolean>;
   /** The configuration step, which v2 stages from inside the Plex accordion
    * rather than from a bare "Plex server URL" box beside it: the address is
-   * the one the operator just PICKED from their own account, and the tick-list
-   * that comes with it is the same submit's `excluded_libraries`. */
+   * the one the operator just PICKED from their own account, or the one they
+   * typed into the accordion when no plex.tv sign-in is possible, and the
+   * tick-list that comes with it is the same submit's `excluded_libraries`.
+   * ONE submit, two ways to arrive at it -- and it is the only writer of the
+   * configuration document, which is what the wizard cannot finish without. */
   onSelectPlex: (plexUrl: string, excludedLibraries: string[]) => Promise<boolean>;
 }) {
   const isRequired = (name: string) =>
@@ -610,8 +613,14 @@ function SystemsPane({
             onSave={(credential, value) => onSave({ [credential]: value })}
           >
             {SYSTEM_FOR_CREDENTIAL[name] === "plex"
-              ? (setAddress) => (
-                  <SetupPlexPane onAddress={setAddress} onSelect={onSelectPlex} />
+              ? (fields) => (
+                  <SetupPlexPane
+                    address={fields.address}
+                    configSource={progress.config_source}
+                    credentialValue={fields.credential}
+                    onAddress={fields.setAddress}
+                    onSelect={onSelectPlex}
+                  />
                 )
               : undefined}
           </SetupAccordion>

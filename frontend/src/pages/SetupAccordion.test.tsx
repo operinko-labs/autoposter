@@ -152,6 +152,37 @@ describe("SetupAccordion", () => {
     expect(sentBody(fetchMock).credential_value).toBe("row-121-typed-key");
   });
 
+  it("hands its extra body both fields, which is what the Plex pane's manual path reads", async () => {
+    // The render prop carried `setAddress` alone, because a picked server has
+    // to land in the state Check reads. The manual arrival needs the other
+    // direction as well: a typed address and a typed token are the two inputs
+    // the libraries read takes when there is no plex.tv sign-in to take them
+    // from, and they live HERE -- growing a second pair inside the pane would
+    // be two places for one answer.
+    const seen: { address: string; credential: string }[] = [];
+    render(
+      <SetupAccordion system="plex" label="Plex token" credential="AUTOPOSTER_PLEX_TOKEN"
+        required held={null} needsAddress onSave={SAVED}>
+        {(fields) => {
+          seen.push({ address: fields.address, credential: fields.credential });
+          return <span data-testid="plex-extra-body" />;
+        }}
+      </SetupAccordion>,
+    );
+
+    fireEvent.change(screen.getByLabelText("Plex token address"), {
+      target: { value: "http://plex.invalid:32400" },
+    });
+    fireEvent.change(screen.getByLabelText("AUTOPOSTER_PLEX_TOKEN"), {
+      target: { value: "row-121-typed-token" },
+    });
+
+    expect(seen.at(-1)).toEqual({
+      address: "http://plex.invalid:32400",
+      credential: "row-121-typed-token",
+    });
+  });
+
   it("sends no credential when the field is empty, so the held one is checked", async () => {
     const fetchMock = checkFetch();
     vi.stubGlobal("fetch", fetchMock);

@@ -704,4 +704,31 @@ describe("Setup", () => {
     expect(screen.getByRole("button", { name: "Sign in with Plex" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Plex server URL")).toBeNull();
   });
+
+  it("offers no Plex submit on a deployment that provides its own document, and says why", async () => {
+    // `POST /api/setup/config` is REFUSED while a document already resolves
+    // (facts Amendment 6), so on a `configured` deployment the control that
+    // would post to it is a button whose only outcome is a fixed refusal. It
+    // is replaced by the sentence that explains it. The public URL's
+    // stage-but-do-not-persist consolation does not apply here: the Plex
+    // address and the excluded libraries live IN the document, and the
+    // document is the deployment's. The sign-in is still offered, because it
+    // still stages the account token.
+    vi.stubGlobal(
+      "fetch",
+      progressMock({ ...PROGRESS, config: true, config_source: "configured" }),
+    );
+
+    render(<Setup />);
+    await goToSystemsStep();
+    fireEvent.click(screen.getByRole("button", { name: /Plex token/ }));
+
+    await waitFor(() => expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument());
+    expect(screen.getByTestId("plex-configured")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Plex token address"), {
+      target: { value: "http://plex.invalid:32400" },
+    });
+    expect(screen.queryByRole("button", { name: "Use this address" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign in with Plex" })).toBeInTheDocument();
+  });
 });

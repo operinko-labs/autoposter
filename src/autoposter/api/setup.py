@@ -948,18 +948,34 @@ async def list_plex_servers(request: Request) -> dict:
 
 class PlexLibrariesRequest(BaseModel):
     base_url: str
+    #: The Plex token typed beside the address, when one was -- ``CheckRequest``'s
+    #: field and its semantics exactly: used for THIS read and staged nowhere,
+    #: absent or empty meaning "keep", so an untouched field reads with the token
+    #: the deployment already holds.
+    credential_value: str | None = None
 
 
 @router.post("/plex/libraries", dependencies=[RequireSetupToken])
 async def list_plex_libraries(body: PlexLibrariesRequest, request: Request) -> dict:
-    """The chosen server's libraries, for the tick-list.
+    """The chosen server's libraries, for the tick-list -- from EITHER arrival.
+
+    The pick-list is one way in and a typed address is the other, and both are
+    needed: the configuration document has one writer, and behind a completed
+    plex.tv sign-in alone it is unreachable for a deployment whose server is
+    linked to no plex.tv account, whose pod cannot reach plex.tv, or whose
+    picked connection the pod cannot route to -- and a wizard that cannot stage
+    a document cannot be finished. So the address is read from the body and the
+    token the way ``/check`` reads its two inputs, and both arrivals end at the
+    same tick-list and the same ``POST /config``.
 
     The address goes through the same guard the check endpoint and the URL step
-    use -- it is operator-supplied even though it came from a pick-list, since
-    a pick-list is a request body like any other.
+    use -- it is operator-supplied whether it was typed or picked, since a
+    pick-list is a request body like any other.
     """
     base_url = _require_http_url(body.base_url, PUBLIC_URL_NOT_AN_ADDRESS)
-    token = _effective(request).get("AUTOPOSTER_PLEX_TOKEN", "")
+    # `_effective` returns a fresh mapping per call, so nothing here outlives
+    # this read: staging a credential stays with Save.
+    token = body.credential_value or _effective(request).get("AUTOPOSTER_PLEX_TOKEN", "")
     if not token:
         raise HTTPException(status_code=400, detail=NO_PLEX_ACCOUNT_TOKEN)
     try:

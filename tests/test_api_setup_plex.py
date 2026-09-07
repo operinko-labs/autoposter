@@ -33,13 +33,21 @@ from autoposter import boot
 from autoposter.api import setup as setup_api
 from autoposter.api import setup_plex
 
-# The autouse env isolation, the hard-name tuple and the two token helpers are
-# the wizard suite's, imported rather than copied. The three FIXTURES below are
-# declared here instead of imported, following `test_api_setup_check.py`: a
-# fixture imported into this namespace and then named as a test parameter is an
-# F811 redefinition, and this repository imports constants across test modules
-# and not fixtures.
-from tests.test_api_setup import HARD, _authenticate, _headers, isolated_state  # noqa: F401
+# The autouse env isolation, the hard-name tuple, the two token helpers and the
+# three the finish test below needs are the wizard suite's, imported rather than
+# copied. The three FIXTURES below are declared here instead of imported,
+# following `test_api_setup_check.py`: a fixture imported into this namespace
+# and then named as a test parameter is an F811 redefinition, and this
+# repository imports constants across test modules and not fixtures.
+from tests.test_api_setup import (  # noqa: F401
+    FAKE_DB_URL,
+    HARD,
+    _answering,
+    _authenticate,
+    _headers,
+    _NOT_PASTED,
+    isolated_state,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -677,3 +685,91 @@ async def test_a_dripping_answer_is_cut_off_by_the_total_time_bound(monkeypatch)
         )
 
     assert offered < chunks, "the whole call must be bounded, not merely each read"
+
+
+async def test_the_libraries_route_reads_with_the_token_typed_beside_the_address(
+    setup_client, setup_state, monkeypatch
+):
+    """The MANUAL arrival at the tick-list, and why it exists.
+
+    The pick-list is not the only way a real deployment gets here: plex.tv can
+    be unreachable from the pod, the server can be unlinked from any plex.tv
+    account, the picked connection can be one the pod cannot route to, and the
+    operator can simply already hold the token. All four leave the accordion's
+    typed address and a pasted token as the only inputs there are, and the
+    wizard cannot be finished without a configuration document -- so this route
+    reads the token the same way ``/check`` does.
+
+    ``credential_value``'s semantics are that endpoint's exactly: used for THIS
+    read and staged nowhere, absent or empty meaning "keep", so an untouched
+    field reads with the token the deployment holds.
+    """
+    _install(monkeypatch, authorised=True)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/plex/libraries",
+        json={"base_url": PLEX_BASE, "credential_value": ACCOUNT_TOKEN},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert [library["title"] for library in response.json()["libraries"]] == [
+        "Movies",
+        "TV",
+        "Photos",
+    ]
+    assert ACCOUNT_TOKEN not in response.text
+    # Staged nowhere: what the deployment WILL hold is Save's answer, never a
+    # question's -- the rule `/check` states for the same field.
+    assert "AUTOPOSTER_PLEX_TOKEN" not in setup_state.staged
+
+
+async def test_the_manual_path_reaches_the_document_and_then_finish(
+    setup_client, setup_state, monkeypatch
+):
+    """The other half: arriving manually reaches the SAME configuration submit,
+    and the wizard can then be finished.
+
+    Before this, the document had exactly one writer and it sat behind a
+    COMPLETED plex.tv sign-in, so a deployment that could not complete one was
+    stopped forever: ``config_source`` stayed null, which is what
+    ``_unmet_step`` answers ``STEP_CONFIG`` for and what the page disables
+    Continue on. Nothing about the submit itself is new -- one submit path, two
+    ways to arrive at it.
+    """
+    _install(monkeypatch, authorised=True)
+    monkeypatch.setattr(setup_api, "database_answers", _answering(True))
+    monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
+    token = await _authenticate(setup_client)
+
+    # No PIN minted and nothing staged: the sign-in never happened.
+    libraries = await setup_client.post(
+        "/api/setup/plex/libraries",
+        json={"base_url": PLEX_BASE, "credential_value": ACCOUNT_TOKEN},
+        headers=_headers(token),
+    )
+    assert libraries.status_code == 200, libraries.text
+    assert setup_state.plex_pin_id is None
+
+    await setup_client.post(
+        "/api/setup/config",
+        json={"plex_url": PLEX_BASE, "excluded_libraries": ["Photos"]},
+        headers=_headers(token),
+    )
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["config_source"] == "staged"
+
+    await setup_client.post(
+        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+    )
+    await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {name: "value" for name in HARD if name not in _NOT_PASTED}},
+        headers=_headers(token),
+    )
+
+    response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"restarting": True}

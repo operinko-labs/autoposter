@@ -209,10 +209,20 @@ export function fetchPlexServers(): Promise<{ servers: PlexServer[] }> {
   return setupFetch("/api/setup/plex/servers");
 }
 
-export function fetchPlexLibraries(baseUrl: string): Promise<{ libraries: PlexLibrary[] }> {
+/** `credentialValue` is `checkSystem`'s field and its semantics: the Plex
+ * token typed beside the address, or `null` to read with the one the deployment
+ * already holds. It is what lets the MANUAL arrival -- a typed address and a
+ * pasted token, on a deployment that cannot complete a plex.tv sign-in -- reach
+ * the same tick-list, and the same `submitPlexSelection` below, that the
+ * pick-list reaches. The server uses it for that one read and stages it
+ * nowhere. */
+export function fetchPlexLibraries(
+  baseUrl: string,
+  credentialValue: string | null = null,
+): Promise<{ libraries: PlexLibrary[] }> {
   return setupFetch("/api/setup/plex/libraries", {
     method: "POST",
-    body: JSON.stringify({ base_url: baseUrl }),
+    body: JSON.stringify({ base_url: baseUrl, credential_value: credentialValue }),
   });
 }
 

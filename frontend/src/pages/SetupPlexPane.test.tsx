@@ -177,6 +177,90 @@ describe("SetupPlexPane", () => {
     expect(document.body.textContent).not.toContain("authToken");
   });
 
+  it("reads the libraries at the typed address, with no plex.tv sign-in at all", async () => {
+    // The Critical this round closes: with `ConfigPane` gone the configuration
+    // document had ONE writer and it sat behind a completed plex.tv sign-in, so
+    // a deployment whose server is linked to no plex.tv account, whose pod
+    // cannot reach plex.tv, or whose picked connection the pod cannot route to
+    // could never finish the wizard. The accordion's own two fields are the
+    // other way in, and the libraries route reads the typed token the way
+    // `/check` reads its own -- for this read, staged nowhere.
+    const fetchMock = transport(0);
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <SetupPlexPane
+        address="http://plex.invalid:32400"
+        credentialValue="row-121-typed-token"
+        onSelect={async () => true}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use this address" }));
+
+    await waitFor(() => expect(screen.getByLabelText("Movies")).toBeChecked());
+    const call = fetchMock.mock.calls.find(([path]) => path === "/api/setup/plex/libraries");
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      base_url: "http://plex.invalid:32400",
+      credential_value: "row-121-typed-token",
+    });
+    // Nothing minted and nothing polled: this arrival does not touch plex.tv.
+    expect(fetchMock.mock.calls.some(([path]) => path === "/api/setup/plex/pin")).toBe(false);
+  });
+
+  it("posts the SAME configuration submit from the typed address", async () => {
+    // One submit path, two ways to arrive at it. A second submit would be a
+    // second place for the exclusion complement to be computed wrongly.
+    const onSelect = vi.fn(async () => true);
+    vi.stubGlobal("fetch", transport(0));
+    render(
+      <SetupPlexPane
+        address="http://plex.invalid:32400"
+        credentialValue=""
+        onSelect={onSelect}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Use this address" }));
+    await waitFor(() => screen.getByLabelText("Photos"));
+
+    fireEvent.click(screen.getByLabelText("Photos"));
+    fireEvent.click(screen.getByRole("button", { name: "Use this server" }));
+
+    await waitFor(() =>
+      expect(onSelect).toHaveBeenCalledWith("http://plex.invalid:32400", ["Photos"]),
+    );
+  });
+
+  it("still submits, with no exclusions, when the library list could not be read", async () => {
+    // An address the pod can reach for the config document but not for a
+    // library read is still an address worth recording, and the alternative is
+    // the dead end this round exists to remove. The empty list is the honest
+    // answer -- every library managed -- and it is a different answer from
+    // absent, which would leave the example's own two exclusions in place.
+    const onSelect = vi.fn(async () => true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: unknown) =>
+        path === "/api/setup/plex/libraries"
+          ? respond({ detail: "Plex could not be reached (ConnectError)." }, 502)
+          : respond({ ok: true }),
+      ),
+    );
+    render(
+      <SetupPlexPane
+        address="http://plex.invalid:32400"
+        credentialValue=""
+        onSelect={onSelect}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use this address" }));
+
+    await waitFor(() => expect(screen.getByTestId("plex-libraries-unread")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Use this server" }));
+
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith("http://plex.invalid:32400", []));
+  });
+
   it("shows the server's fixed sentence when minting fails", async () => {
     const detail = "the Plex account could not be reached (ConnectError).";
     vi.stubGlobal("fetch", vi.fn(async () => respond({ detail }, 502)));

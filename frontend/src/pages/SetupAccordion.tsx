@@ -37,11 +37,20 @@ export function SetupAccordion({
   needsAddress: boolean;
   /** The Plex accordion's extra body (Task 3); absent elsewhere.
    *
-   * A render prop rather than a plain node, and for one reason: the Plex pane
-   * picks the server address from plex.tv, and `address` below is the only
-   * thing the Check button reads. A pane that could not write into it would
-   * leave a picked server checked against an empty string. */
-  children?: (setAddress: (value: string) => void) => ReactNode;
+   * A render prop over this form's own two fields rather than a plain node,
+   * and both directions are needed. `setAddress`, because the Plex pane picks
+   * the server address from plex.tv and `address` below is the only thing the
+   * Check button reads: a pane that could not write into it would leave a
+   * picked server checked against an empty string. `address` and `credential`,
+   * because the pane's MANUAL arrival -- a typed address and a pasted token,
+   * for a deployment that cannot complete a plex.tv sign-in -- reads exactly
+   * these two fields. A second pair inside the pane would be two places for
+   * one answer, and the Check button would read the wrong one. */
+  children?: (fields: {
+    address: string;
+    credential: string;
+    setAddress: (value: string) => void;
+  }) => ReactNode;
   onSave: (credential: string, value: string) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(required && held === null);
@@ -135,7 +144,7 @@ export function SetupAccordion({
               onChange={(event) => setValue(event.target.value)}
             />
           </div>
-          {children?.(setAddress)}
+          {children?.({ address, credential: value, setAddress })}
           <div className="setup-field-head">
             <button type="submit" disabled={busy}>
               Save
