@@ -1172,3 +1172,20 @@ export interface WebhookRotationResponse {
   /** Keyed by service name: `radarr`, `sonarr`. */
   registrations: Record<string, WebhookRotationResult>;
 }
+
+/** One file under `overlays_root` or `fonts_root` (roadmap row 55). A NAME,
+ * never a path: the server serves basenames and the page never asks for more. */
+export interface AssetFile {
+  readonly name: string;
+  readonly size: number;
+  readonly modified: string;
+  /** Ships with the service; the page offers no delete for it. */
+  readonly protected: boolean;
+  /** The config paths that currently name this file. Non-empty means the
+   * server will refuse a delete, so the page says so before the click. */
+  readonly referenced_by: readonly string[];
+}
+
+export interface AssetFilesResponse {
+  readonly files: readonly AssetFile[];
+}
