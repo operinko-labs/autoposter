@@ -554,6 +554,21 @@ def create_app(
     # Per process, so every worker pod limits its own callers -- see
     # LoginRateLimiter.
     app.state.login_rate_limiter = LoginRateLimiter()
+    # One rotation at a time in this process. `merge_secrets_file` is a
+    # read-modify-write over one file, and two concurrent rotations would
+    # additionally mint two secrets, leave the *arrs holding one and this
+    # application the other, and show both to the operator as if each had
+    # worked. Created here for the reason `mode_lock` above is: every
+    # application must have one for the route to reach.
+    app.state.secret_rotation_lock = asyncio.Lock()
+    # Its own limiter rather than the login table, so a rotation cannot spend
+    # an operator's login budget and a login flood cannot lock the rotation
+    # out. Five a minute: the action writes a file and makes two 10-second
+    # outbound calls, and an operator performs it a handful of times in a
+    # deployment's life.
+    app.state.rotation_rate_limiter = LoginRateLimiter(
+        max_attempts=5, window_seconds=60.0
+    )
     # Created here so the /api/logs endpoints always have one to read, but
     # attached to the root logger only by the lifespan above (run_background
     # deployments) -- see the comment there.
