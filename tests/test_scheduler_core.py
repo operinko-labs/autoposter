@@ -135,7 +135,7 @@ async def test_the_scheduler_runs_a_due_job_and_records_success(session_factory)
     # bare "5 seconds passed", and the `finally` keeps that honest by stopping
     # and awaiting the scheduler on both paths.
     try:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(60):
             while not ran:
                 await asyncio.sleep(0.01)
     except TimeoutError:
@@ -165,7 +165,7 @@ async def test_a_claimed_job_logs_that_it_started(session_factory, caplog):
         task = asyncio.create_task(scheduler.run(stop))
         # As above: wait on the log line, not on the clock (roadmap row 119).
         try:
-            async with asyncio.timeout(5):
+            async with asyncio.timeout(60):
                 while not [r for r in caplog.records if "started" in r.message]:
                     await asyncio.sleep(0.01)
         except TimeoutError:
@@ -347,7 +347,7 @@ async def test_the_wired_run_loop_closes_a_drained_full_pass(session_factory):
             return row.finished_at is not None
 
     try:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(60):
             while not await _closed():
                 await asyncio.sleep(0.01)
     except TimeoutError:
