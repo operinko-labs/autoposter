@@ -96,6 +96,15 @@ async def setup_client(setup_app):
         yield client
 
 
+@pytest.fixture
+def setup_state(setup_app):
+    """The in-memory ``SetupState`` behind ``setup_client``, for the handful of
+    tests that need to look at what was staged rather than only what a route
+    answered. Not a route: staged values -- an address, a document -- are
+    never served back."""
+    return setup_app.state.setup
+
+
 def _secrets() -> Secrets:
     return Secrets(
         database_url="postgresql+asyncpg://unused",
@@ -506,6 +515,7 @@ async def test_progress_reports_presence_and_never_a_value(setup_client):
     assert response.status_code == 200, response.text
     assert set(body) == {
         "password", "database", "providers", "required", "config", "config_source",
+        "public_url",
     }
     assert body["password"] is True
     assert body["database"] is False
@@ -1083,6 +1093,180 @@ def test_the_example_document_path_follows_the_environment(monkeypatch, tmp_path
 
     monkeypatch.setenv("AUTOPOSTER_EXAMPLE_CONFIG", str(tmp_path / "elsewhere.yaml"))
     assert state_module.example_config_path() == tmp_path / "elsewhere.yaml"
+
+
+# --- the deployment's own URL (wizard v2 step 2) -----------------------------
+
+PUBLIC_URL = "https://autoposter.example.test"
+
+
+async def test_the_deployment_url_step_stages_an_address(setup_client):
+    """Step 2 of the v2 flow. Staged, never persisted here: it lands in the
+    config document at the finish step, or nowhere at all on a deployment whose
+    document already resolves (facts C1)."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/public-url", json={"url": PUBLIC_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True}
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["public_url"] is True
+
+
+async def test_the_progress_surface_reports_the_url_as_presence_and_never_as_a_value(setup_client):
+    """Row 213 holds for a non-credential too: /progress is a presence surface,
+    so the address the operator typed is reported as a boolean."""
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/public-url", json={"url": PUBLIC_URL}, headers=_headers(token)
+    )
+
+    response = await setup_client.get("/api/setup/progress", headers=_headers(token))
+
+    assert set(response.json()) == {
+        "password", "database", "providers", "required",
+        "config", "config_source", "public_url",
+    }
+    assert PUBLIC_URL not in response.text
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "file:///etc/passwd",
+        "gopher://autoposter.example.test",
+        "autoposter.example.test",
+        "https://",
+        "",
+    ],
+)
+async def test_the_deployment_url_step_refuses_a_scheme_that_is_not_http(setup_client, value):
+    """The shared guard's first half. `http`/`https` and a host, or nothing."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/public-url", json={"url": value}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.PUBLIC_URL_NOT_AN_ADDRESS
+
+
+async def test_the_deployment_url_step_refuses_userinfo_in_the_authority(setup_client):
+    """The guard's second half, and the one that matters for the check endpoint
+    Task 2 reuses it in: `http://user:pass@host` puts a credential in a string
+    that ends up in an *arr's database, its UI and its logs."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/public-url",
+        json={"url": "https://operator:row-121-secret@autoposter.example.test"},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.PUBLIC_URL_NOT_AN_ADDRESS
+
+
+async def test_the_deployment_url_refusal_never_echoes_the_address(setup_client):
+    """The refusal names the requirement, never the value that failed it --
+    the module's rule for every refusal it makes."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/public-url",
+        json={"url": "gopher://row-121-typo-host.invalid"},
+        headers=_headers(token),
+    )
+
+    assert "row-121-typo-host" not in response.text
+
+
+async def test_the_deployment_url_is_written_into_the_document_the_wizard_stages(
+    setup_client, setup_state
+):
+    """On a deployment with no document, the URL is a config value and lands in
+    the document the finish step writes."""
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/public-url", json={"url": PUBLIC_URL}, headers=_headers(token)
+    )
+
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert setup_state.config_document["public_url"] == PUBLIC_URL
+
+
+async def test_the_staged_document_is_restamped_with_a_url_staged_after_the_config_step(
+    setup_client, setup_state
+):
+    """The ordering hazard, closed by construction: the operator may complete
+    the Plex accordion (which stages the document) before or after the URL
+    step, and BACK makes both orders reachable. The document is re-stamped
+    immediately before it is written, so neither order loses the value."""
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+    await setup_client.post(
+        "/api/setup/public-url", json={"url": PUBLIC_URL}, headers=_headers(token)
+    )
+
+    stamped = setup_api._apply_staged_urls(dict(setup_state.config_document), setup_state)
+
+    assert stamped["public_url"] == PUBLIC_URL
+
+
+async def test_a_document_that_already_resolves_never_receives_the_deployment_url(
+    setup_client, setup_state, monkeypatch, tmp_path
+):
+    """Facts C1: on a deployment whose document is supplied (a mounted
+    ConfigMap), the wizard stages the URL and USES it for registration but
+    persists nothing -- POST /api/setup/config still refuses outright
+    (Amendment 6), and that refusal is unchanged by v2."""
+    mounted = tmp_path / "mounted.yaml"
+    mounted.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(mounted))
+    token = await _authenticate(setup_client)
+
+    staged = await setup_client.post(
+        "/api/setup/public-url", json={"url": PUBLIC_URL}, headers=_headers(token)
+    )
+    refused = await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+    assert staged.status_code == 200, staged.text
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == setup_api.CONFIG_ALREADY_PROVIDED
+    assert setup_state.config_document is None
+
+
+async def test_an_unreadable_example_document_is_a_503_and_not_a_500(setup_client, monkeypatch):
+    """Row 121 residue (b), closed here because v2 makes it load-bearing: the
+    config document is now composed from more than one step, so an image whose
+    example document is missing fails with less to say than v1's single step
+    had. A 503 naming the class, never a bare 500."""
+    def _unreadable(_path):
+        raise FileNotFoundError("the example document")
+
+    monkeypatch.setattr(setup_api, "read_config_document", _unreadable)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"].startswith(setup_api.EXAMPLE_CONFIG_UNREADABLE)
+    assert "FileNotFoundError" in response.json()["detail"]
+    assert "the example document" not in response.json()["detail"]
 
 
 # --- step 5: the handover ---------------------------------------------------

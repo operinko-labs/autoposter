@@ -110,6 +110,19 @@ PASSWORD_TOO_LONG = (
 PLEX_URL_NOT_AN_ADDRESS = (
     "the Plex server URL must be an http:// or https:// address"
 )
+# The shared address guard's refusal, and the one Task 2's check endpoint
+# reuses. Two requirements in one sentence because they are one decision: an
+# address this service will connect to on a caller's say-so must be a web
+# address, and must not smuggle a credential into a string that ends up in an
+# *arr's database, its UI and its log lines.
+PUBLIC_URL_NOT_AN_ADDRESS = (
+    "this must be an http:// or https:// address with a host, and with no "
+    "username or password in it"
+)
+# Row 121 residue (b). The example document is baked into the image; an image
+# missing it cannot compose a config document at all, and the operator needs to
+# know that rather than reading a bare 500.
+EXAMPLE_CONFIG_UNREADABLE = "the shipped example configuration document could not be read"
 # The other side of _config_source/_config_ready: a deployment that already
 # resolves a document -- a mounted ConfigMap, compose's bind-mounted example --
 # is not offered this step at all (Amendment 6), and this is what enforces
@@ -258,6 +271,18 @@ class SetupState:
         # The validated config document the finish step will write, or None
         # while the config step has not been completed.
         self.config_document: dict | None = None
+        # This deployment's own externally reachable address (wizard v2 step
+        # 2). Staged like a credential and for the same reason -- the finish
+        # step is the only writer -- but it is NOT a credential: it lands in
+        # the config document, not the secrets file. On a deployment whose
+        # document already resolves it is used for the *arr registration and
+        # persisted nowhere, which the finish page says by name (facts C1).
+        self.public_url: str | None = None
+        # System key -> the base address the operator typed for it, for the
+        # three systems whose address a caller supplies (Task 2 writes it).
+        # Same lifecycle as public_url: staged, stamped onto the document, or
+        # used-and-not-persisted when a document already resolves.
+        self.base_urls: dict[str, str] = {}
         # One persisting step at a time: merge_secrets_file is a
         # read-modify-write over a single file, and two concurrent steps would
         # otherwise drop one of the two writes. The app.state.mode_lock
@@ -319,6 +344,34 @@ def _persist(write, *args) -> None:
 
 def _persisted_admin_hash() -> str:
     return resolve_secret_values().get("AUTOPOSTER_ADMIN_PASSWORD_HASH", "")
+
+
+def _require_http_url(value: str, refusal: str) -> str:
+    """An operator-typed address, or a fixed refusal that never names it.
+
+    Lifted out of the config step's own check (which was the first place this
+    was needed) because v2 has four more: the deployment's own URL, and the
+    three systems whose base address a caller supplies to the check and
+    registration endpoints. One spelling, so the four cannot disagree.
+
+    Schemes are case-insensitive (RFC 3986) and browsers normalise them, so a
+    pasted HTTP://plex.lan refused by a sentence asking for http:// reads as
+    the wizard being wrong.
+
+    Userinfo is refused rather than stripped: an operator who pasted
+    `http://user:pass@sonarr` meant the credential to be used, and silently
+    dropping it would produce a check that fails for a reason the sentence does
+    not give. The returned value has its trailing slash removed so that the
+    fixed paths this module appends never double one.
+    """
+    cleaned = value.strip()
+    scheme, separator, rest = cleaned.partition("://")
+    if scheme.lower() not in {"http", "https"} or not separator or not rest:
+        raise HTTPException(status_code=400, detail=refusal)
+    authority = rest.partition("/")[0]
+    if "@" in authority or authority == "":
+        raise HTTPException(status_code=400, detail=refusal)
+    return cleaned.rstrip("/")
 
 
 def _presence_map(resolved: dict[str, str]) -> dict[str, str | None]:
@@ -489,6 +542,9 @@ async def setup_progress(request: Request) -> dict:
         "required": missing_hard_secret_names(resolved),
         "config": source is not None,
         "config_source": source,
+        # v2 step 2. Presence, like every other line here: the address is not
+        # a credential, but /progress is a presence surface and stays one.
+        "public_url": request.app.state.setup.public_url is not None,
     }
 
 
@@ -529,6 +585,36 @@ async def set_database_url(body: DatabaseRequest, request: Request) -> dict:
     async with request.app.state.setup.lock:
         request.app.state.setup.staged["AUTOPOSTER_DATABASE_URL"] = body.url
     logger.info("first-start setup: the database step completed")
+    return {"ok": True}
+
+
+class PublicUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/public-url", dependencies=[RequireSetupToken])
+async def set_public_url(body: PublicUrlRequest, request: Request) -> dict:
+    """Step 2: the address other services will reach this deployment at.
+
+    Asked before the database and the systems because it is what the *arr
+    registration builds its callback from, and because an operator who does not
+    know it yet should find that out at the top of the wizard rather than at
+    the bottom.
+
+    Not persisted here. On a fresh deployment it lands in the config document
+    the finish step writes; on one whose document already resolves it is used
+    for the registration and written nowhere, because
+    ``POST /api/setup/config`` refuses to write beside a resolving document
+    (Amendment 6) and reversing that would produce a second file the next boot
+    never opens. The finish page names that omission and the key it would have
+    been (facts C1).
+    """
+    url = _require_http_url(body.url, PUBLIC_URL_NOT_AN_ADDRESS)
+    if not is_storable(url):
+        raise HTTPException(status_code=400, detail=PUBLIC_URL_NOT_AN_ADDRESS)
+    async with request.app.state.setup.lock:
+        request.app.state.setup.public_url = url
+    logger.info("first-start setup: the deployment address step completed")
     return {"ok": True}
 
 
@@ -634,15 +720,21 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     if config_document_path() is not None:
         raise HTTPException(status_code=400, detail=CONFIG_ALREADY_PROVIDED)
 
-    scheme, separator, rest = body.plex_url.strip().partition("://")
-    # Schemes are case-insensitive (RFC 3986) and browsers normalise them, so a
-    # pasted HTTP://plex.lan refused by a sentence that asks for http:// reads
-    # as the wizard being wrong.
-    if scheme.lower() not in {"http", "https"} or not separator or not rest:
-        raise HTTPException(status_code=400, detail=PLEX_URL_NOT_AN_ADDRESS)
+    body_plex_url = _require_http_url(body.plex_url, PLEX_URL_NOT_AN_ADDRESS)
 
-    document = read_config_document(example_config_path())
-    document.setdefault("plex", {})["url"] = body.plex_url.strip()
+    try:
+        document = read_config_document(example_config_path())
+    except Exception as exc:
+        # Row 121 residue (b). The class name only, boot.py's rule at the same
+        # decision: an OSError's own text carries a file name.
+        logger.error("first-start setup: the example configuration document could not be read")
+        raise HTTPException(
+            status_code=503,
+            detail=f"{EXAMPLE_CONFIG_UNREADABLE} ({type(exc).__name__})",
+        ) from None
+
+    document.setdefault("plex", {})["url"] = body_plex_url
+    _apply_staged_urls(document, request.app.state.setup)
     try:
         build_config(document)
     except Exception as exc:
@@ -657,6 +749,24 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
         request.app.state.setup.config_document = document
     logger.info("first-start setup: the configuration step completed")
     return {"path": str(state_config_path())}
+
+
+def _apply_staged_urls(document: dict, state: SetupState) -> dict:
+    """Stamp the addresses the wizard staged onto the document about to land.
+
+    Called twice on purpose: once at the config step, so what `build_config`
+    validates is what will be written, and once immediately before the write at
+    finish, so an address staged AFTER the config step is not lost. Back
+    navigation makes both orders reachable -- the operator can complete the
+    Plex accordion, step back to the URL pane, and correct it -- so "the last
+    staged value wins" has to be a property of the write rather than of the
+    order the panes happened to be visited in.
+
+    Mutates and returns the mapping it was given; the callers own the copy.
+    """
+    if state.public_url is not None:
+        document["public_url"] = state.public_url
+    return document
 
 
 def _unmet_step(resolved: dict[str, str], config_ready: bool) -> str | None:
@@ -717,7 +827,11 @@ async def finish(request: Request) -> JSONResponse:
             _persist(
                 write_state_file,
                 state_config_path(),
-                yaml.safe_dump(state.config_document, sort_keys=False, allow_unicode=True),
+                yaml.safe_dump(
+                    _apply_staged_urls(dict(state.config_document), state),
+                    sort_keys=False,
+                    allow_unicode=True,
+                ),
             )
         # An OSError here, after the document landed, is the same 503: the
         # document stays and the hard secrets stay ABSENT, which is the next
