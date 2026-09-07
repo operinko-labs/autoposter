@@ -61,7 +61,7 @@ export function WebhookSecretPanel() {
   return (
     <section className="panel">
       <h2>Webhook secret</h2>
-      <p className="config-note" data-testid="rotate-lead">
+      <p className="muted config-note" data-testid="rotate-lead">
         Rotating mints a new secret, stores it, makes it live for this service
         immediately, and re-registers Radarr and Sonarr with it where both an
         address and an API key are configured. If a re-registration fails, that
@@ -79,7 +79,7 @@ export function WebhookSecretPanel() {
       {revealed && result !== null && (
         <>
           <WebhookSecret value={result.webhook_secret} />
-          <p className="config-note" data-testid="rotate-test-hint">
+          <p className="muted config-note" data-testid="rotate-test-hint">
             Each service&apos;s own Test button will now succeed. That proves
             the address and the header, and nothing about whether a real event
             produces artwork.
@@ -99,7 +99,7 @@ export function WebhookSecretPanel() {
       )}
 
       {!revealed && result !== null && (
-        <p className="config-note" data-testid="rotate-rotated-at">
+        <p className="muted config-note" data-testid="rotate-rotated-at">
           {`Rotated at ${result.rotated_at}. The value is not shown again.`}
         </p>
       )}
@@ -112,11 +112,11 @@ export function WebhookSecretPanel() {
 
       {!revealed && confirming && (
         <div data-testid="rotate-confirm">
-          <p className="config-note">
+          <p className="muted config-note">
             The current secret stops working the moment this completes. Have
             somewhere ready to paste the new value — it is shown once.
           </p>
-          <button type="button" disabled={busy} onClick={rotate}>
+          <button type="button" className="primary" disabled={busy} onClick={rotate}>
             Rotate now
           </button>
           <button type="button" disabled={busy} onClick={() => setConfirming(false)}>
