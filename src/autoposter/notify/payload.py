@@ -52,6 +52,28 @@ enforces every limit rather than hoping; an over-length embed is a 400, and
 flattening of ``detail``, so every event the taxonomy has or gains is
 covered with no per-event table. Success is 204 with an empty body, which
 ``httpx.Response.is_success`` already accepts.
+
+The ``apprise-api`` shape is the Apprise API SERVER's request body -- the
+opposite direction from ``apprise-json``, which impersonates Apprise as a
+sender. Read 2026-09-07 from the project's own sources:
+
+    https://github.com/caronc/apprise-api
+        -- the README's "API Details" section, POST /notify/{KEY}
+    https://raw.githubusercontent.com/caronc/apprise-api/master/apprise_api/api/forms.py
+        -- NotifyForm's field definitions
+
+Accepted fields: ``body`` (the only required one), ``title``, ``type``,
+``tag``, ``format``, ``attachment``; the stateless POST /notify route adds
+``urls``. ``type`` takes the same NotifyType vocabulary apprise-json cites
+above -- ``info`` | ``success`` | ``warning`` | ``failure``, defaulting to
+``info`` -- and ``format`` takes ``text`` | ``markdown`` | ``html``,
+defaulting to ``text``. We send ``title``, ``body`` and ``type`` only:
+``tag`` and ``format`` both have server-side defaults that are already right
+(``text``, for plain-text summaries), and a config field for an unconfigured
+target would be speculative. ``body`` vs apprise-json's ``message`` is the
+whole difference between the two, and it is load-bearing: an Apprise API
+server answers a body-less payload with a 400, which dispatch.py then
+correctly refuses to retry.
 """
 
 from datetime import datetime, timezone
@@ -191,5 +213,11 @@ def build_payload(mode: str, event: str, summary: str, detail: dict) -> dict:
             # Titles and library names reach summary and detail straight from
             # Plex, so this is categorical rather than a sanitiser.
             "allowed_mentions": {"parse": []},
+        }
+    if mode == "apprise-api":
+        return {
+            "title": f"autoposter: {event}",
+            "body": summary,
+            "type": "failure" if detail.get("status") == "failed" else "success",
         }
     raise ValueError(f"unknown notification mode {mode!r}")

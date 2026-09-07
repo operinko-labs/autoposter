@@ -661,6 +661,10 @@ notifications:
   #      "timestamp": ..., "fields": [...]}], "allowed_mentions": {"parse": []}}
   #     -- detail becomes embed fields, and mentions are suppressed so a
   #     collection titled @everyone cannot ping a server.
+  #   apprise-api: the body an Apprise API server accepts at /notify/{key} --
+  #     {"title": ..., "body": ..., "type": "success" | "failure"} -- the
+  #     opposite direction from apprise-json, which impersonates Apprise as a
+  #     sender. tag and format are left to the server's defaults.
   mode: apprise-json
   timeout_seconds: 10 # per-attempt HTTP timeout
   retry_count: 3 # attempts before giving up; notification failure never fails the run it reports on

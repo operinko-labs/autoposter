@@ -329,6 +329,55 @@ def test_mode_discord_loads_from_config(tmp_path):
     assert loaded.notifications.mode == "discord"
 
 
+# --- apprise-api mode --------------------------------------------------------
+#
+# The Apprise API SERVER, not the json:// sender apprise-json impersonates:
+# opposite directions of the same integration. The difference that matters is
+# `body` vs `message`, and it is load-bearing -- an Apprise API server 400s on
+# a body-less payload, which dispatch.py then correctly refuses to retry.
+
+
+def test_apprise_api_success_shape_exactly():
+    built = build_payload(
+        "apprise-api",
+        event="full_pass_enqueued",
+        summary="full pass enqueued: 12 queued, 3 skipped, 15 total",
+        detail={"total": 15, "queued": 12, "skipped": 3},
+    )
+    assert built == {
+        "title": "autoposter: full_pass_enqueued",
+        "body": "full pass enqueued: 12 queued, 3 skipped, 15 total",
+        "type": "success",
+    }
+
+
+def test_apprise_api_failed_status_shape_exactly():
+    built = build_payload(
+        "apprise-api",
+        event="scheduled_run_failed",
+        summary="scheduled run collections failed: PlexApiError",
+        detail={"job": "collections", "status": "failed", "detail": "PlexApiError"},
+    )
+    assert built == {
+        "title": "autoposter: scheduled_run_failed",
+        "body": "scheduled run collections failed: PlexApiError",
+        "type": "failure",
+    }
+
+
+def test_apprise_api_omits_tag_and_format():
+    """Both are optional with server-side defaults (`all` routing and `text`),
+    and our summaries are plain text. Shipping config for an unconfigured
+    target would be speculative."""
+    built = build_payload("apprise-api", event="e", summary="s", detail={})
+    assert set(built) == {"title", "body", "type"}
+
+
+def test_mode_apprise_api_loads_from_config(tmp_path):
+    loaded = load_config(_variant(tmp_path, "mode: apprise-json", "mode: apprise-api"))
+    assert loaded.notifications.mode == "apprise-api"
+
+
 # --- the mode gate -----------------------------------------------------------
 
 
