@@ -1130,6 +1130,104 @@ def test_the_collision_test_can_actually_fail():
     assert _assert_no_two_formats_collide(shared_format, phantom_allowlist) != phantom_allowlist
 
 
+# --- a family's real titles vs the STATIC title table ------------------------
+#
+# rows 135/162: a `builder: dynamic`/`facts_family` family declares no
+# `titles()` (9c decision C6), so `_managed_titles` above -- like the real
+# `_titles_must_not_collide` it mirrors -- sees only the family's PLACEHOLDER,
+# never the titles it actually builds. `test_no_two_families_...` above
+# catches two FORMATS that collide; it cannot catch a family's rendered value
+# landing on a title some other, non-family preset already owns outright as a
+# fixed string. That is this row's one shipped, offline-detectable instance:
+# `production_network`'s static `include` carries the literal value "DC
+# Universe" (`packs.py:1210`, a defunct 2018-2021 streaming service, Kometa's
+# own list), rendered bare by its `<<key_name>>` format (`packs.py:1345-1351`)
+# into exactly `content_dc`'s static title (`catalog.py:1032`, the DC Studios
+# DCU TMDb list) on a Show library.
+#
+# Declared, not fixed -- the allowlist below, read together with the test that
+# checks it. Renaming `content_dc`'s title is a live-data migration
+# (`catalog.py`'s own description promises an operator who already has the
+# collection gets it back "under the same title"); renaming
+# `production_network`'s include list would stop it being a transcription of
+# Kometa's own `defaults/show/network.yml`. Neither is this row's fix (recon
+# `.superpowers/sdd/p-row-135-recon.md` §7, §12.2) -- at run time the two
+# definitions build different SHAPES (smart vs list), so
+# `reconcile.shape_conflict` refuses the loser LOUDLY every pass rather than
+# flapping membership: this costs a refused pass, never data loss. A pair NOT
+# in this allowlist still fails here.
+_ALLOWED_STATIC_TITLE_COLLISIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        # Show libraries only. See the module comment above for the full account.
+        ("production_network", "DC Universe"),
+    }
+)
+
+
+def _rendered_static_titles(rows) -> list[tuple[str, str, str]]:
+    """Every ``(preset key, library type, rendered title)`` a dynamic/facts
+    pack's own STATIC ``include`` values would actually build, offline, with
+    no Plex call -- plus its ``addons`` PARENT keys, which ``derive_keys``
+    promotes to synthetic buckets exactly like a real ``include`` value
+    (``dynamic_keys.py:141-150``).
+
+    A superset of what any one library holds, which is correct here: the
+    question this asks is what an operator CAN co-enable, not what a
+    particular library does today (recon §8.2/§12.1).
+    """
+    rendered: list[tuple[str, str, str]] = []
+    for preset, _collection, params in rows:
+        include = params.get("include")
+        if not include:
+            continue
+        addons = params.get("addons") or {}
+        candidates = dict.fromkeys(include) | dict.fromkeys(addons)
+        for key_name in candidates:
+            for library_type, title in _rendered_formats(preset, params, key_name=key_name):
+                rendered.append((preset.key, library_type, title))
+    return rendered
+
+
+def test_every_packs_static_titles_are_checked_against_the_managed_titles():
+    """rows 135/162's own named test shape: the one collision this catalog
+    ships that offline enumeration CAN catch.
+
+    ``_managed_titles`` is fed every READY preset at once, charts/awards/
+    separators included -- the same worst-case config
+    ``test_every_ready_preset_at_once_never_builds_one_title_twice`` builds --
+    so it holds every static title this table can name. A dynamic/facts
+    family's own real titles are invisible to it (that test's docstring), so
+    this renders each family's static values through its OWN format instead
+    and checks the result against that same static set: the one direction
+    offline enumeration can actually answer.
+
+    Must go red on the shipped ``production_network``/``content_dc`` pair if
+    it is real; ``_ALLOWED_STATIC_TITLE_COLLISIONS`` is read TOGETHER with
+    this test, not as a silent exemption -- a NEW pair still fails here, and a
+    stale allowlist entry (one no row exercises any more) fails too.
+    """
+    rows = _dynamic_rows() + _facts_family_rows()
+    keys = [preset.key for preset in READY_PRESETS]
+    document = _document(keys)
+    document["collections"].update({"charts": True, "awards": True, "separators": True})
+    config = build_config(document)
+    managed = {
+        library_type: set(_managed_titles(config, library_type)) for library_type in LIBRARY_TYPES
+    }
+
+    exercised: set[tuple[str, str]] = set()
+    for preset_key, library_type, title in _rendered_static_titles(rows):
+        if title not in managed[library_type]:
+            continue
+        pair = (preset_key, title)
+        assert pair in _ALLOWED_STATIC_TITLE_COLLISIONS, (preset_key, library_type, title)
+        exercised.add(pair)
+
+    assert exercised == _ALLOWED_STATIC_TITLE_COLLISIONS, sorted(
+        _ALLOWED_STATIC_TITLE_COLLISIONS - exercised
+    )
+
+
 # Every pack's `title_format`, as the literal `packs.py` pins. The second site
 # of a deliberate two-site edit: the test above proves the seven formats do not
 # COLLIDE, which a coordinated edit of two of them could keep true while
