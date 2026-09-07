@@ -1253,6 +1253,7 @@ async def test_an_unreadable_example_document_is_a_503_and_not_a_500(setup_clien
     config document is now composed from more than one step, so an image whose
     example document is missing fails with less to say than v1's single step
     had. A 503 naming the class, never a bare 500."""
+
     def _unreadable(_path):
         raise FileNotFoundError("the example document")
 
