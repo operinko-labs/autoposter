@@ -70,6 +70,7 @@ DEEP_SUITES = frozenset(
         "test_api_playlists.py",
         "test_api_scheduled_runs.py",
         "test_api_setup.py",
+        "test_api_setup_check.py",
         "test_api_stats_runs.py",
         "test_api_stats_storage.py",
         "test_api_testing.py",

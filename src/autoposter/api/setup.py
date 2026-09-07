@@ -21,6 +21,15 @@ sentence or an exception's class name -- never ``str(exc)``, which on a
 connection error carries the DSN. What it reports about what it holds is a
 presence map, ``***REDACTED***`` per set name, the same idiom
 ``GET /api/config`` uses at api/routes.py:1609.
+
+One thing this module does that v1 did not: it makes outbound requests, to
+addresses a caller partly supplies. ``api/setup_checks.py`` holds that surface
+and its bound -- an allowlisted system key, a fixed path and method per system,
+a scheme/userinfo guard on the four typed addresses, and a five-second ceiling.
+No private-IP denylist, because every correct target on every shipped
+deployment IS a private address. What remains, said plainly rather than papered
+over: a holder of the setup token can learn whether an arbitrary host answers
+on an arbitrary port, as a boolean.
 """
 
 import asyncio
@@ -44,6 +53,7 @@ from starlette.responses import JSONResponse
 from autoposter import boot
 from autoposter.api.auth import LoginRateLimiter, hash_password, verify_password
 from autoposter.api.errors import validation_error_without_input
+from autoposter.api import setup_checks
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.config.loader import (
     build_config,
@@ -179,6 +189,22 @@ VALUE_IS_NOT_STORABLE = (
 # string carries a file name and merge_secrets_file's own message carries a
 # variable name.
 STATE_DIR_NOT_WRITABLE = "the state directory could not be written"
+
+# The check endpoint's vocabulary. A system key is caller text -- exactly like
+# a provider NAME at step 3 -- so the refusal names the surface and never the
+# key it was given.
+NOT_A_SYSTEM_THIS_WIZARD_CHECKS = (
+    "one of the submitted names is not a system this wizard checks; the list "
+    "this step answers with is the whole of what it accepts"
+)
+CHECK_NEEDS_AN_ADDRESS = "this system needs its own address before it can be checked"
+CHECK_TAKES_NO_ADDRESS = "this system's address is built in and cannot be supplied"
+# The three outcomes, spelled once (facts C4). `system` is always one of
+# setup_checks.CHECK_SYSTEMS' own labels -- never the caller's key -- and the
+# third carries an exception class name, the database_answers precedent.
+CHECK_ANSWERED = "{system} answered."
+CHECK_REFUSED = "{system} refused the credential."
+CHECK_UNREACHABLE = "{system} could not be reached ({failure})."
 
 # Which wizard step an unmet requirement belongs to, and the whole of what the
 # finish step is allowed to say about it. Fixed strings: the check that
@@ -711,6 +737,55 @@ async def set_public_url(body: PublicUrlRequest, request: Request) -> dict:
     return {"ok": True}
 
 
+class CheckRequest(BaseModel):
+    system: str
+    base_url: str | None = None
+
+
+@router.post("/check", dependencies=[RequireSetupToken])
+async def check_connection(body: CheckRequest, request: Request) -> dict:
+    """"Does this credential work" for one system, as one of three sentences.
+
+    ONE route rather than ten. Ten would be ten places to get the redaction
+    rule wrong and ten entries to argue into the route sweep; one is a table
+    (api/setup_checks.py) whose whole bound is readable at once.
+
+    The address a successful check proved is STAGED, because this is the only
+    moment the wizard knows it works: the *arr registration reads it from
+    there, and ``_apply_staged_urls`` stamps it onto the config document a
+    fresh deployment writes. A failed check stages nothing -- an address that
+    did not answer is not a fact about this deployment.
+
+    Never the provider's own body: an *arr's 400 echoes the fields it was sent,
+    and a provider's error text can carry a key out of a query string.
+    """
+    check = setup_checks.CHECK_SYSTEMS.get(body.system)
+    if check is None:
+        raise HTTPException(status_code=400, detail=NOT_A_SYSTEM_THIS_WIZARD_CHECKS)
+
+    base_url: str | None = None
+    if check.host is None:
+        if not body.base_url:
+            raise HTTPException(status_code=400, detail=CHECK_NEEDS_AN_ADDRESS)
+        base_url = _require_http_url(body.base_url, PUBLIC_URL_NOT_AN_ADDRESS)
+    elif body.base_url:
+        raise HTTPException(status_code=400, detail=CHECK_TAKES_NO_ADDRESS)
+
+    outcome = await setup_checks.run_check(body.system, base_url, _effective(request))
+
+    if outcome.ok:
+        if base_url is not None:
+            async with request.app.state.setup.lock:
+                request.app.state.setup.base_urls[body.system] = base_url
+        return {"ok": True, "detail": CHECK_ANSWERED.format(system=check.label)}
+    if outcome.refused:
+        return {"ok": False, "detail": CHECK_REFUSED.format(system=check.label)}
+    return {
+        "ok": False,
+        "detail": CHECK_UNREACHABLE.format(system=check.label, failure=outcome.failure),
+    }
+
+
 class ProvidersRequest(BaseModel):
     """Keyed by environment variable NAME -- the same vocabulary the presence
     map the page renders is keyed by, so there is no mapping table that can
@@ -891,6 +966,15 @@ def _apply_staged_urls(document: dict, state: SetupState) -> dict:
     """
     if state.public_url is not None:
         document["public_url"] = state.public_url
+    for system, base_url in state.base_urls.items():
+        # `plex` is the one whose config key is `url` rather than `base_url` --
+        # PlexConfig predates the three *arr-shaped sections. `plex_account`
+        # and the six built-in hosts never reach here: only the four typed
+        # systems are ever staged, and the account has no address of its own.
+        if system == "plex":
+            document.setdefault("plex", {})["url"] = base_url
+        elif system in ("radarr", "sonarr", "tracearr"):
+            document.setdefault(system, {})["base_url"] = base_url
     return document
 
 

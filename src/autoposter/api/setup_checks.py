@@ -1,0 +1,320 @@
+"""Ten "does this credential work" probes, and the bound on all of them.
+
+This is the wizard's only outbound surface, and the one place where an
+authenticated caller names a target this service then connects to. That is an
+SSRF shape, and it is bounded by being a TABLE rather than a fetcher:
+
+* the caller names a SYSTEM KEY from an allowlist, never a URL on its own;
+* the PATH, the METHOD, the HEADER NAMES and which credential authenticates are
+  compiled in, per system;
+* six of the ten have a compiled-in HOST as well; the four that do not (Plex,
+  Radarr, Sonarr, Tracearr) take a base address that must pass
+  ``api/setup._require_http_url`` -- http/https, a host, no userinfo;
+* the whole probe is bounded by ``asyncio.wait_for`` at five seconds, the value
+  and the idiom ``db/base.database_answers`` chose for the same reason.
+
+**What is deliberately NOT here: a private-IP denylist.** Every correct answer
+on every shipped deployment IS a private address -- ``http://sonarr``,
+``http://plex:32400`` -- so a denylist would refuse exactly the addresses that
+work and nothing else. The honest statement of what remains is therefore: a
+caller who already holds the setup token (minted only by the master password,
+rate-limited) can learn whether an arbitrary host answers on an arbitrary port,
+as a boolean, five seconds at a time. That is a boolean port scan of the
+network this pod sits in, it is not closed by anything in this module, and it
+is written here rather than papered over.
+
+Row 213 holds throughout: the outcome is two booleans plus, on a failure, an
+exception CLASS NAME. The third party's own response body is never read into
+anything returned or logged -- an *arr's 400 echoes the fields it was sent, and
+a provider's error text can carry the key out of a query string. The url does
+not reach a log record either: httpx logs one INFO line per request with the
+whole of it, and two of these ten carry their credential in the query string,
+so the probe runs with that logger filtered here as well as clamped at boot.
+"""
+
+import asyncio
+import contextlib
+import logging
+import os
+from dataclasses import dataclass
+
+import httpx
+
+from autoposter.config.image_ref import parse_image_ref
+
+logger = logging.getLogger(__name__)
+
+# The whole probe, not a per-library connect option: only asyncpg bounds a
+# connect implicitly and nothing bounds a response, so a host that accepts and
+# then stops answering is precisely the case this covers. db/base.py's value.
+CHECK_TIMEOUT_SECONDS = 5.0
+
+
+class _DropEveryRecord(logging.Filter):
+    """Attached to the ``httpx`` logger for the length of one probe."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return False
+
+
+@contextlib.contextmanager
+def _no_httpx_request_log():
+    """httpx logs one INFO line per request carrying the FULL url.
+
+    ``boot.main`` already clamps that logger to WARNING for the whole process,
+    and this is the same clamp held locally, because this is the module that
+    puts a credential IN a url: Fanart's and MDBList's keys ride the query
+    string (``providers/fanart.py``, ``providers/mdblist.py``), and the four
+    typed addresses are operator URLs. A property row 213 depends on is not
+    left to a setting made in another file.
+
+    A FILTER rather than a level, because two operators can check two systems
+    at once: filters compose, so an overlapping probe removing its own still
+    leaves the other's in place, where restoring a saved level would re-enable
+    the log line under the second probe.
+    """
+    httpx_logger = logging.getLogger("httpx")
+    silence = _DropEveryRecord()
+    httpx_logger.addFilter(silence)
+    try:
+        yield
+    finally:
+        httpx_logger.removeFilter(silence)
+
+
+class TracearrDidNotAnswer(Exception):
+    """A 200 with no ``x-ratelimit-limit`` header: Tracearr's SPA answered, not
+    its API (providers/tracearr.py:175), so the key was never tested."""
+
+
+class ImageReferenceUnset(Exception):
+    """Harbor's coordinates come from ``AUTOPOSTER_IMAGE_REF`` and this
+    deployment has none, so there is no registry to ask."""
+
+
+@dataclass(frozen=True)
+class Check:
+    """One system's probe, entirely compiled in except ``host`` for four.
+
+    ``label`` is the word every sentence about this system uses: one of this
+    module's own strings, never the caller's key, which is what keeps a
+    caller-chosen string out of the response body.
+    """
+
+    label: str
+    #: ``None`` for the four systems whose base address the operator supplies.
+    host: str | None
+    #: Fixed. A caller can never name a path.
+    path: str
+    #: The environment NAME whose value authenticates, or ``None``.
+    credential: str | None
+    #: How that value is carried: one of the six spellings ``_probe`` knows.
+    auth: str
+    method: str = "GET"
+    #: TVDB's login is the one probe with a body, and the body is the key.
+    json_credential_key: str | None = None
+    #: MDBList answers 200 with this key set when the daily budget is spent.
+    error_key: str | None = None
+    #: Tracearr's proof that the API and not the SPA answered.
+    require_header: str | None = None
+
+
+CHECK_SYSTEMS: dict[str, Check] = {
+    # /library/sections rather than /identity: identity is unauthenticated
+    # (plex/health.py:58) and proves reachability only, while sections proves
+    # the URL AND the token -- and is the same read the library tick-list
+    # needs, so the wizard makes it once.
+    "plex": Check(
+        label="Plex",
+        host=None,
+        path="/library/sections",
+        credential="AUTOPOSTER_PLEX_TOKEN",
+        auth="x-plex-token",
+    ),
+    "plex_account": Check(
+        label="the Plex account",
+        host="https://plex.tv",
+        path="/api/v2/resources?includeHttps=1&includeRelay=0",
+        credential="AUTOPOSTER_PLEX_ACCOUNT_TOKEN",
+        auth="x-plex-token",
+    ),
+    # providers/tmdb.py:131 -- the configured token is a v4 read access token,
+    # carried as a bearer. /3/configuration is the cheapest authenticated read.
+    "tmdb": Check(
+        label="TMDb",
+        host="https://api.themoviedb.org",
+        path="/3/configuration",
+        credential="AUTOPOSTER_TMDB_TOKEN",
+        auth="bearer",
+    ),
+    # A POST, and TVDB's only way to validate a key (providers/tvdb.py's
+    # _login). It creates nothing: the response is a session token this module
+    # reads for nothing and discards.
+    "tvdb": Check(
+        label="TVDB",
+        host="https://api4.thetvdb.com",
+        path="/v4/login",
+        credential="AUTOPOSTER_TVDB_APIKEY",
+        auth="json",
+        method="POST",
+        json_credential_key="apikey",
+    ),
+    # providers/fanart.py:112 -- the key rides the query string. 550 is a
+    # long-standing TMDb id, used here as a known-present subject.
+    "fanart": Check(
+        label="Fanart",
+        host="https://webservice.fanart.tv",
+        path="/v3.2/movies/550",
+        credential="AUTOPOSTER_FANART_APIKEY",
+        auth="query-api_key",
+    ),
+    "mdblist": Check(
+        label="MDBList",
+        host="https://api.mdblist.com",
+        path="/tmdb/movie/550/",
+        credential="AUTOPOSTER_MDBLIST_APIKEY",
+        auth="query-apikey",
+        error_key="error",
+    ),
+    "radarr": Check(
+        label="Radarr",
+        host=None,
+        path="/api/v3/system/status",
+        credential="AUTOPOSTER_RADARR_APIKEY",
+        auth="x-api-key",
+    ),
+    "sonarr": Check(
+        label="Sonarr",
+        host=None,
+        path="/api/v3/system/status",
+        credential="AUTOPOSTER_SONARR_APIKEY",
+        auth="x-api-key",
+    ),
+    # The one subject with no SSRF surface whatever: the host is DERIVED from
+    # AUTOPOSTER_IMAGE_REF (config/image_ref.py), so nothing about it is typed.
+    # `host` and `path` are filled in by `_harbor_target` at call time.
+    "harbor": Check(
+        label="Harbor",
+        host="",
+        path="",
+        credential="AUTOPOSTER_HARBOR_TOKEN",
+        auth="basic",
+    ),
+    "tracearr": Check(
+        label="Tracearr",
+        host=None,
+        path="/api/v2/public/history?limit=1",
+        credential="AUTOPOSTER_TRACEARR_APIKEY",
+        auth="bearer",
+        require_header="x-ratelimit-limit",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class CheckOutcome:
+    ok: bool
+    #: True when the service answered and rejected the credential (401/403, or
+    #: MDBList's 200-with-an-error-body). False for everything else.
+    refused: bool
+    #: An exception class name or a status marker, never a message.
+    failure: str | None
+
+
+def _harbor_target(check: Check) -> Check:
+    parsed = parse_image_ref(os.environ.get("AUTOPOSTER_IMAGE_REF", ""))
+    if parsed is None:
+        raise ImageReferenceUnset()
+    registry, project, repository = parsed
+    # api/version.py:98 builds exactly this, and https always: an image
+    # reference carries no scheme to derive one from.
+    return Check(
+        label=check.label,
+        host=f"https://{registry}",
+        path=f"/api/v2.0/projects/{project}/repositories/{repository}/artifacts?page_size=1",
+        credential=check.credential,
+        auth=check.auth,
+    )
+
+
+async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) -> CheckOutcome:
+    """One request, and the reading of its answer. Never its body's text."""
+    headers: dict[str, str] = {"accept": "application/json"}
+    params: dict[str, str] = {}
+    json_body: dict[str, str] | None = None
+
+    if check.auth == "x-plex-token":
+        headers["X-Plex-Token"] = value
+    elif check.auth == "x-api-key":
+        headers["X-Api-Key"] = value
+    elif check.auth == "bearer":
+        headers["Authorization"] = f"Bearer {value}"
+    elif check.auth == "basic":
+        # api/version.py:93 -- a Harbor robot credential arrives already
+        # base64-encoded as `robot$name:secret`. An empty one sends no header
+        # at all, which is not the same as an empty Authorization.
+        if value:
+            headers["Authorization"] = f"Basic {value}"
+    elif check.auth == "query-api_key":
+        params["api_key"] = value
+    elif check.auth == "query-apikey":
+        params["apikey"] = value
+    elif check.auth == "json":
+        json_body = {check.json_credential_key or "apikey": value}
+
+    response = await client.request(
+        check.method, url, headers=headers, params=params, json=json_body
+    )
+
+    if response.status_code in (401, 403):
+        return CheckOutcome(ok=False, refused=True, failure=None)
+    if not response.is_success:
+        # A status is a number, not the service's text.
+        return CheckOutcome(ok=False, refused=False, failure=f"HTTPStatus{response.status_code}")
+    if check.require_header is not None and check.require_header not in response.headers:
+        raise TracearrDidNotAnswer()
+    if check.error_key is not None:
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get(check.error_key):
+            # MDBList's spent-budget shape. "Refused" is the honest reading:
+            # the question this endpoint answers is whether the credential can
+            # do work now, and a spent key cannot.
+            return CheckOutcome(ok=False, refused=True, failure=None)
+    return CheckOutcome(ok=True, refused=False, failure=None)
+
+
+async def run_check(
+    system: str,
+    base_url: str | None,
+    credentials: dict[str, str],
+    transport: httpx.BaseTransport | None = None,
+) -> CheckOutcome:
+    """Probe one system. Never raises for a network reason.
+
+    A short-lived client per call rather than a lifespan: the setup application
+    starts nothing, which is half its security argument, and a check is
+    operator-paced -- a few dozen per wizard at most.
+
+    ``transport`` is the test seam and nothing else; production passes ``None``.
+    """
+    check = CHECK_SYSTEMS[system]
+    value = credentials.get(check.credential or "", "")
+
+    try:
+        if system == "harbor":
+            check = _harbor_target(check)
+        host = check.host if check.host is not None else base_url
+        url = f"{host}{check.path}"
+
+        async def attempt() -> CheckOutcome:
+            async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
+                with _no_httpx_request_log():
+                    return await _probe(client, check, url, value)
+
+        return await asyncio.wait_for(attempt(), timeout=CHECK_TIMEOUT_SECONDS)
+    except Exception as exc:
+        # The CLASS NAME and nothing else, on every arm. httpx embeds the full
+        # URL in its own messages, and a URL here can carry a query-string key.
+        # The log line names the SYSTEM only -- api/setup.py's C9 rule.
+        logger.info("first-start setup: a connection check did not succeed (%s)", system)
+        return CheckOutcome(ok=False, refused=False, failure=type(exc).__name__)
