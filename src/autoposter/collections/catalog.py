@@ -379,6 +379,11 @@ class Preset:
     # each. Empty for an award preset (which derives its own from EVENTS) and
     # for every GATED row -- a gated row knows what it WOULD build and has no
     # way to build it, which is the whole point of the readiness column.
+    #
+    # A setting-backed row (``setting`` set) is the one place this field means
+    # something else: its table is a DISPLAY list for the picker, not a
+    # producer -- ``definitions()``'s ``setting`` branch below returns [] for
+    # every such row before this field is ever read.
     collections: tuple[PresetCollection, ...] = ()
 
     def definitions(self, library_type: str) -> list[CollectionDefinition]:
@@ -678,11 +683,14 @@ SETTING_PRESETS: tuple[Preset, ...] = (
             "IMDb Popular, IMDb Top 250, and IMDb Lowest Rated (Movie "
             "libraries only) -- the chart family collections.charts already "
             "builds, refreshed from IMDb on every pass. The switch is the "
-            "FAMILY's: collections.charts builds all three or none. To build "
-            "a subset, turn it off and write the ones you want as definitions "
-            "with builder: imdb_chart -- one per title and library type, "
-            "because IMDb Popular and IMDb Top 250 are separate charts for "
-            "Movie and for Show libraries."
+            "FAMILY's: collections.charts builds all three or none, and it "
+            "must be false before you write any of them yourself, or the "
+            "title collides with the built-in one. To build a subset, write "
+            "definitions with builder: imdb_chart and params: {chart: <key>} "
+            "-- popular_movies, top_movies, or lowest_rated, each narrowed "
+            "with libraries: to a Movie library; popular_shows or "
+            "top_shows, each narrowed with libraries: to a Show library -- "
+            "one definition per title and library type."
         ),
         kometa_source="defaults/chart/imdb.yml",
         library_types=("Movie", "Show"),
