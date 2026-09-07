@@ -73,7 +73,7 @@ endpoints + two UI pages; phases 2 and 3: the largest shipped units, multi-week 
 | 11b | Action Center review queue and bulk actions | large | Action Center, part 2 |
 | 12a | Overlay families | large | |
 | 12b | Custom overlay mechanics | large | |
-| 13 | Playlists | medium–large | Reuses 8a builders |
+| 13 | Playlists — **delivered** (row 98; `PlaylistsPanel` and the playlist definitions) | medium–large | Reuses 8a builders |
 | 14a | Metadata operations completion | medium | |
 | 14b | Per-item metadata overrides and per-library config | large | |
 | 15 | Operations and observability polish | medium | |
