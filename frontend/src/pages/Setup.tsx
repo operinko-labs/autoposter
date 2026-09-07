@@ -13,6 +13,7 @@ import {
   submitPublicUrl,
   type SetupProgress,
 } from "../api/setup";
+import { SetupAccordion } from "./SetupAccordion";
 import {
   canNavigate,
   farthestStep,
@@ -85,6 +86,27 @@ const REQUIRED_PROVIDER_NAMES = [
   "AUTOPOSTER_FANART_APIKEY",
   "AUTOPOSTER_WEBHOOK_SECRET",
 ];
+
+/** Environment NAME -> the check endpoint's allowlist key. A credential with
+ * no entry here gets no check button, which is the honest rendering for one
+ * the wizard cannot probe -- the generated webhook secret is the only such
+ * name, and it stays a status rather than a field. */
+const SYSTEM_FOR_CREDENTIAL: Record<string, string> = {
+  AUTOPOSTER_PLEX_TOKEN: "plex",
+  AUTOPOSTER_PLEX_ACCOUNT_TOKEN: "plex_account",
+  AUTOPOSTER_TMDB_TOKEN: "tmdb",
+  AUTOPOSTER_TVDB_APIKEY: "tvdb",
+  AUTOPOSTER_FANART_APIKEY: "fanart",
+  AUTOPOSTER_MDBLIST_APIKEY: "mdblist",
+  AUTOPOSTER_RADARR_APIKEY: "radarr",
+  AUTOPOSTER_SONARR_APIKEY: "sonarr",
+  AUTOPOSTER_HARBOR_TOKEN: "harbor",
+  AUTOPOSTER_TRACEARR_APIKEY: "tracearr",
+};
+
+/** The four whose address the operator supplies -- the check endpoint's own
+ * split, and the only four with an SSRF surface at all. */
+const SYSTEMS_WITH_AN_ADDRESS = new Set(["plex", "radarr", "sonarr", "tracearr"]);
 
 export function Setup() {
   const [progress, setProgress] = useState<SetupProgress | null>(null);
@@ -196,11 +218,11 @@ export function Setup() {
         />
       )}
       {pane === "systems" && progress !== null && (
-        <div data-testid="systems-step">
-          <ProvidersPane
+        <>
+          <SystemsPane
             busy={busy}
             progress={progress}
-            onSubmit={(values) => run(() => submitProviderKeys(values))}
+            onSave={(values) => run(() => submitProviderKeys(values))}
           />
           {/* Offered while no document RESOLVES -- `null`, or one this wizard
               is merely holding. A staged one is answered, not settled: this
@@ -222,7 +244,7 @@ export function Setup() {
           >
             Continue
           </button>
-        </div>
+        </>
       )}
       {pane === "finish" && (
         <>
@@ -534,33 +556,26 @@ function ConfigPane({
 // credential to paste, it is a status to read.
 const GENERATED_SECRET_NAME = "AUTOPOSTER_WEBHOOK_SECRET";
 
-/** One credential's header row: its human name, whether the server calls it
- * required, whether the deployment already holds it -- and, under those, the
- * environment name operators know it by. */
+/** The generated secret's header row: its human name, whether the server calls
+ * it required, whether the deployment already holds it -- and, under those, the
+ * environment name operators know it by.
+ *
+ * A `<span>` and never a `<label>`: this is the one credential with no input to
+ * name, and it must not look as though it has one. Every other credential's
+ * header is its accordion's own (SetupAccordion.tsx). */
 function FieldHead({
   name,
   required,
   held,
-  labelFor,
 }: {
   name: string;
   required: boolean;
   held: string | null;
-  /** The input this names, or `undefined` for the generated secret, which has
-   * no input to name -- and must not look as though it has one. */
-  labelFor?: string;
 }) {
-  const text = providerLabel(name);
   return (
     <>
       <div className="setup-field-head">
-        {labelFor === undefined ? (
-          <span className="setup-field-label">{text}</span>
-        ) : (
-          <label className="setup-field-label" htmlFor={labelFor}>
-            {text}
-          </label>
-        )}
+        <span className="setup-field-label">{providerLabel(name)}</span>
         {required && <span className="setup-badge">Required</span>}
         <span className={`setup-pill${held === null ? "" : " ok"}`} data-testid={`held-${name}`}>
           {held === null ? "Not set" : "Stored"}
@@ -571,90 +586,62 @@ function FieldHead({
   );
 }
 
-function ProvidersPane({
+/** The systems step: one collapsible per credential.
+ *
+ * The flat form this replaces rendered eleven inputs and two headings in one
+ * column, which was already the longest pane in the wizard before Task 3 adds
+ * a Plex sign-in flow and a library tick-list to it. Facts C8: required open,
+ * optional collapsed, and the header carries both pills -- what the deployment
+ * holds, and what the last check answered.
+ *
+ * The server owns the list and its order; the accordions keep the order they
+ * were served in, and the Required/Optional headings go with the flat form --
+ * the badge on each header says the same thing without splitting the list.
+ */
+function SystemsPane({
   busy,
   progress,
-  onSubmit,
+  onSave,
 }: {
   busy: boolean;
   progress: SetupProgress;
-  onSubmit: (values: Record<string, string>) => Promise<boolean>;
+  onSave: (values: Record<string, string>) => Promise<boolean>;
 }) {
-  const [values, setValues] = useState<Record<string, string>>({});
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    // Cleared only once the server has accepted them: a refusal -- an unknown
-    // name, a one-line-value violation, the generated secret rejected above,
-    // a 429 from the limiter, a 503 from a state directory that will not take
-    // the write -- must not force every other pasted credential in this
-    // submit to be retyped.
-    if (await onSubmit(values)) setValues({});
-  }
-
-  // The server owns the list and its order; each group keeps the order it was
-  // served in.
   const isRequired = (name: string) =>
     REQUIRED_PROVIDER_NAMES.includes(name) || progress.required.includes(name);
-  const entries = Object.entries(progress.providers);
-  const required = entries.filter(([name]) => isRequired(name));
-  const optional = entries.filter(([name]) => !isRequired(name));
-
-  function field([name, held]: [string, string | null]) {
-    return name === GENERATED_SECRET_NAME ? (
-      <div className="setup-field" key={name}>
-        <FieldHead held={held} name={name} required={isRequired(name)} />
-        <p className="setup-hint">
-          Generated for you when you save this form, and shown once, on the last step. There is
-          nothing to paste here.
-        </p>
-      </div>
-    ) : (
-      <div className="setup-field" key={name}>
-        <FieldHead held={held} labelFor={name} name={name} required={isRequired(name)} />
-        <input
-          className="setup-input"
-          id={name}
-          aria-label={name}
-          type="password"
-          value={values[name] ?? ""}
-          onChange={(event) =>
-            setValues((previous) => ({ ...previous, [name]: event.target.value }))
-          }
-        />
-      </div>
-    );
-  }
 
   return (
-    <form className="setup-pane setup-form" onSubmit={submit}>
+    <section className="setup-pane" data-testid="systems-step">
       <div className="setup-pane-head">
-        <h2 className="setup-pane-title">Provider credentials</h2>
+        <h2 className="setup-pane-title">Systems</h2>
       </div>
       <p className="setup-lead">
-        A stored credential is shown as stored and never displayed; leave a field blank to keep
-        what is already there.
+        A stored credential is shown as stored and never displayed; leave one blank to keep what is
+        already there. Required systems are open; the rest are folded away until you need them.
       </p>
-      {required.length > 0 && (
-        <section className="setup-group">
-          <h3 className="setup-group-title">Required</h3>
-          <p className="setup-hint">Autoposter does not leave setup until these are held.</p>
-          {required.map(field)}
-        </section>
+      {Object.entries(progress.providers).map(([name, held]) =>
+        name === GENERATED_SECRET_NAME ? (
+          <div className="setup-field" key={name}>
+            <FieldHead held={held} name={name} required={isRequired(name)} />
+            <p className="setup-hint">
+              Generated for you and shown once on the last step. There is nothing to paste here.
+            </p>
+          </div>
+        ) : (
+          <SetupAccordion
+            key={name}
+            credential={name}
+            held={held}
+            label={providerLabel(name)}
+            needsAddress={SYSTEMS_WITH_AN_ADDRESS.has(SYSTEM_FOR_CREDENTIAL[name] ?? "")}
+            required={isRequired(name)}
+            system={SYSTEM_FOR_CREDENTIAL[name] ?? name}
+            onSave={(credential, value) => onSave({ [credential]: value })}
+          />
+        ),
       )}
-      {optional.length > 0 && (
-        <section className="setup-group">
-          <h3 className="setup-group-title">Optional</h3>
-          <p className="setup-hint">
-            Leave blank whatever this deployment does not use. Each one can be added later.
-          </p>
-          {optional.map(field)}
-        </section>
-      )}
-      <button className="primary" type="submit" disabled={busy}>
-        Save and continue
-      </button>
-    </form>
+      {busy && <p className="setup-hint">Working…</p>}
+    </section>
   );
 }
 

@@ -128,7 +128,7 @@ async function goToFinishStepThroughProviders() {
   fireEvent.change(screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"), {
     target: { value: "pasted-value" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Continue" })).not.toBeDisabled(),
   );
@@ -215,6 +215,9 @@ describe("setupErrorMessage", () => {
 
 describe("Setup", () => {
   it("renders the credential the deployment holds as a state, never as a value", async () => {
+    // Through the real page and not the accordion alone: the pills are the
+    // component's, the split between held and missing is the server's, and
+    // this is the one test that walks the wiring between them.
     render(<Setup />);
     await goToSystemsStep();
 
@@ -223,14 +226,10 @@ describe("Setup", () => {
     );
     expect(screen.getByTestId("held-AUTOPOSTER_TMDB_TOKEN")).toHaveTextContent("Not set");
     expect(document.body.textContent).not.toContain("***REDACTED***");
-  });
-
-  it("starts every credential input empty, whatever is already stored", async () => {
-    render(<Setup />);
-    await goToSystemsStep();
-
-    await waitFor(() => screen.getByLabelText("AUTOPOSTER_PLEX_TOKEN"));
-    expect(screen.getByLabelText<HTMLInputElement>("AUTOPOSTER_PLEX_TOKEN").value).toBe("");
+    // Facts C8: the held one is folded away, the required-and-missing one is
+    // open, and neither state was asked of or sent to the server.
+    expect(screen.queryByTestId("accordion-body-plex")).toBeNull();
+    expect(screen.getByTestId("accordion-body-tmdb")).toBeInTheDocument();
   });
 
   it("offers the database step once the address is set, while it is the unfinished one", async () => {
@@ -391,7 +390,7 @@ describe("Setup", () => {
     await waitFor(() => screen.getByTestId("held-AUTOPOSTER_WEBHOOK_SECRET"));
     expect(screen.getByTestId("held-AUTOPOSTER_WEBHOOK_SECRET")).toHaveTextContent("Not set");
     expect(screen.queryByLabelText("AUTOPOSTER_WEBHOOK_SECRET")).toBeNull();
-    expect(screen.getByText(/generated for you when you save/i)).toBeInTheDocument();
+    expect(screen.getByText(/generated for you and shown once/i)).toBeInTheDocument();
   });
 
   it.each([
@@ -416,7 +415,7 @@ describe("Setup", () => {
       fireEvent.change(screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"), {
         target: { value: "pasted-value" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
       await waitFor(() => screen.getByText(detail));
       expect(screen.getByLabelText<HTMLInputElement>("AUTOPOSTER_TMDB_TOKEN").value).toBe(

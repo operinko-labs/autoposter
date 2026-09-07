@@ -142,6 +142,20 @@ export function fetchWebhookSecret(): Promise<WebhookSecretResult> {
   return setupFetch("/api/setup/webhook-secret");
 }
 
+export interface CheckResult {
+  ok: boolean;
+  /** One of three fixed sentences, the third carrying an exception class name.
+   * Rendered verbatim -- that it is fixed is what makes that safe. */
+  detail: string;
+}
+
+export function checkSystem(system: string, baseUrl: string | null): Promise<CheckResult> {
+  return setupFetch("/api/setup/check", {
+    method: "POST",
+    body: JSON.stringify({ system, base_url: baseUrl }),
+  });
+}
+
 export function submitPlexUrl(plexUrl: string): Promise<{ path: string }> {
   return setupFetch("/api/setup/config", {
     method: "POST",
