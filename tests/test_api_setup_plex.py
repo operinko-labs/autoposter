@@ -22,6 +22,7 @@ the page may honestly say about it, and `PIN_CODE` here is long for that
 reason.
 """
 
+import asyncio
 import logging
 
 import httpx
@@ -636,3 +637,43 @@ async def test_no_route_logs_the_token_the_code_or_the_identifier(
     assert PIN_CODE not in text
     assert identifier not in text
     assert str(PIN_ID) not in text
+
+
+async def test_a_dripping_answer_is_cut_off_by_the_total_time_bound(monkeypatch):
+    """The size cap is not a bound on TIME, as the timeout is not a bound on size.
+
+    ``timeout=`` is httpx's PER-OPERATION timeout: a server emitting one byte
+    inside every window gets a fresh ten seconds for each, so it holds the
+    handler and the connection until the megabyte cap is reached -- hours rather
+    than seconds -- and the reachable case is a library read against the address
+    the operator supplied. ``setup_checks.run_check`` wraps its whole probe in
+    ``asyncio.wait_for`` and lists that bound separately from its cap; this is
+    the same bound, here.
+
+    The drip is finite on purpose, for the body cap test's reason: a test that
+    proves a bound by hanging forever once the bound regresses is not a test
+    that reports.
+    """
+    offered = 0
+    chunks = 200
+    monkeypatch.setattr(setup_plex, "PLEX_TIMEOUT_SECONDS", 0.1)
+
+    async def dripping():
+        nonlocal offered
+        for _ in range(chunks):
+            offered += 1
+            await asyncio.sleep(0.02)
+            yield b"x"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=dripping())
+
+    # Two hundred bytes over four seconds: far under the megabyte cap, and every
+    # single read far under one timeout window. Only a bound on the WHOLE call
+    # can stop this one.
+    with pytest.raises(TimeoutError):
+        await setup_plex.library_sections(
+            PLEX_BASE, ACCOUNT_TOKEN, transport=httpx.MockTransport(handler)
+        )
+
+    assert offered < chunks, "the whole call must be bounded, not merely each read"

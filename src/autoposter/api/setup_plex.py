@@ -33,6 +33,7 @@ stays the second line of defence, not the first: C6 is a property of this
 module and should not depend on another file's level.
 """
 
+import asyncio
 import json
 
 import httpx
@@ -64,22 +65,35 @@ async def _request_json(
     """Every outbound call in this module, and every bound on it, in one place.
 
     No redirect is followed (a redirect off plex.tv or off the picked server is
-    not a place this token should go), the whole call is capped at ten seconds,
-    at most ``PLEX_BODY_LIMIT_BYTES`` of the answer is read, and httpx's own
-    request log is filtered for the length of it.
+    not a place this token should go), the WHOLE call is bounded by
+    ``asyncio.wait_for`` at ``PLEX_TIMEOUT_SECONDS``, at most
+    ``PLEX_BODY_LIMIT_BYTES`` of the answer is read, and httpx's own request log
+    is filtered for the length of it.
+
+    ``asyncio.wait_for`` and not httpx's ``timeout=`` alone, which is
+    ``setup_checks.run_check``'s idiom for the reason that module gives: httpx's
+    timeout is PER OPERATION, so a server that emits one byte inside every
+    window gets a fresh ten seconds for each and holds this handler until the
+    size cap is reached -- hours rather than seconds. The cap is not a bound on
+    time any more than the timeout is a bound on size; both are needed, and the
+    reachable case is a library read against the address the operator supplied.
     """
-    with no_httpx_request_log():
-        async with httpx.AsyncClient(
-            transport=transport, timeout=PLEX_TIMEOUT_SECONDS, follow_redirects=False
-        ) as client:
-            async with client.stream(method, url, headers=headers) as response:
-                response.raise_for_status()
-                head = bytearray()
-                async for chunk in response.aiter_bytes():
-                    head += chunk
-                    if len(head) >= PLEX_BODY_LIMIT_BYTES:
-                        break
-    return json.loads(bytes(head[:PLEX_BODY_LIMIT_BYTES]))
+
+    async def read() -> bytes:
+        with no_httpx_request_log():
+            async with httpx.AsyncClient(
+                transport=transport, timeout=PLEX_TIMEOUT_SECONDS, follow_redirects=False
+            ) as client:
+                async with client.stream(method, url, headers=headers) as response:
+                    response.raise_for_status()
+                    head = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        head += chunk
+                        if len(head) >= PLEX_BODY_LIMIT_BYTES:
+                            break
+        return bytes(head[:PLEX_BODY_LIMIT_BYTES])
+
+    return json.loads(await asyncio.wait_for(read(), timeout=PLEX_TIMEOUT_SECONDS))
 
 
 def _headers(client_identifier: str) -> dict[str, str]:
