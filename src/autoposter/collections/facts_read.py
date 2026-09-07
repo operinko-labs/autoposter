@@ -35,6 +35,7 @@ one translation between the two lives here, in ``_COLUMNS``, so no other module
 has to know that our ``common_sense_rating`` is stored in a column carrying
 Kometa's word for a different thing.
 """
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -43,6 +44,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autoposter.db.models import ItemFacts, MediaItem
 
 __all__ = ["FactsUnavailable", "ItemFactsValues", "ensure_facts"]
+
+logger = logging.getLogger(__name__)
 
 _VALUES_KEY = "facts_read:values"
 _FAILED_KEY = "facts_read:failed"
@@ -97,7 +100,8 @@ async def ensure_facts(
     was already cached -- an answer in hand, withheld because some other
     definition's query failed earlier in the same pass.
     """
-    cached: dict[str, ItemFactsValues] = run_cache.setdefault(_VALUES_KEY, {})
+    by_library: dict[str, dict[str, ItemFactsValues]] = run_cache.setdefault(_VALUES_KEY, {})
+    cached = by_library.setdefault(library, {})
     wanted = [str(key) for key in rating_keys]
     to_fetch = [key for key in wanted if key not in cached]
     if not to_fetch:
@@ -124,6 +128,10 @@ async def ensure_facts(
     # all of them. The savepoint has already rolled back by the time this is
     # reached, so the session is usable for whatever the pass runs next.
     except Exception as error:
+        # CLASS NAME only on the served surface (roadmap row 213); the full
+        # detail, with traceback, goes to the pod log where a SQLAlchemy
+        # error's statement and DSN are already expected to appear.
+        logger.exception("%s: the facts read failed", library)
         failure = FactsUnavailable(
             "the facts read failed (%s); every definition filtering on a "
             "facts-backed attribute is refused this pass" % type(error).__name__

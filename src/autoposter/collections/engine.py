@@ -846,6 +846,11 @@ async def _run_one(
         # definition over it would refuse every definition on a cold library
         # -- roughly thirty-two weeks of them at the drift sweep's defaults.
         # Only a failed READ refuses.
+        #
+        # Sitting before row 158's pruning below is free, not incidental: a
+        # facts row carries ``search_kinds=()``, so ``_known_tag_values``
+        # skips it, and pruning never edits ``items`` -- so nothing 158 does
+        # can change which keys this read needs.
         if facts_needed and not filter_failed:
             facts_keys = [str(getattr(item, "ratingKey", "")) for item in items]
             try:

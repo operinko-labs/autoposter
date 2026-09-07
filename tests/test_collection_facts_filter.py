@@ -16,9 +16,11 @@ attribute of these three names, so its `check_filter` would raise on the config
 rather than produce a member list. `tests/test_collection_filter_oracle.py` is
 untouched by this row.
 """
+import logging
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import event
 
 from autoposter.collections.engine import run_library
 from autoposter.collections.facts_read import (
@@ -180,17 +182,53 @@ async def test_the_read_is_memoised_on_the_run_cache_for_the_whole_pass(session)
     """`ensure_tags`'s law one tier along: two definitions over overlapping
     sets cost one query for the union, not two for the parts. The second call
     asks for a key the first already fetched plus one it did not, and only the
-    new key reaches the database."""
+    new key reaches the database -- observed here via the ``media_items``
+    statements the second call actually issues (``tests/test_api_auth.py``'s
+    ``before_cursor_execute`` idiom, over a different table), rather than
+    trusting the returned values alone to notice a ``to_fetch`` computation
+    that re-fetched key "1"."""
     await _seed(session, "1", facts={"content_rating": "13"})
     await _seed(session, "2", facts={"content_rating": "16"})
     run_cache: dict = {}
 
     first = await ensure_facts(session, run_cache, "Movies", ["1"])
-    second = await ensure_facts(session, run_cache, "Movies", ["1", "2"])
+
+    statements: list[tuple] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "media_items" in statement:
+            statements.append(parameters)
+
+    engine = session.bind.sync_engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        second = await ensure_facts(session, run_cache, "Movies", ["1", "2"])
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
 
     assert first is second, "the same dict, mutated in place"
     assert second["1"].common_sense_rating == "13"
     assert second["2"].common_sense_rating == "16"
+    assert len(statements) == 1, "one query for the union, not one per key"
+    assert "2" in statements[0], "the new key must reach the database"
+    assert "1" not in statements[0], "the already-cached key must not"
+
+
+async def test_two_libraries_sharing_a_run_cache_get_independent_reads(session):
+    """Task-2 review, Minor 2: the memo key folds in the library, so a key
+    answered `ItemFactsValues()` for one library's ask is never served,
+    unchanged, to a different library's ask over the same shared run_cache.
+    Item "999" exists only in Shows; a Movies ask for it must see no row, and
+    a Shows ask straight after, over the SAME run_cache, must still see its
+    real value rather than the Movies memo's all-None answer."""
+    await _seed(session, "999", library="Shows", facts={"content_rating": "13"})
+    run_cache: dict = {}
+
+    movies = await ensure_facts(session, run_cache, "Movies", ["999"])
+    shows = await ensure_facts(session, run_cache, "Shows", ["999"])
+
+    assert movies["999"] == ItemFactsValues()
+    assert shows["999"].common_sense_rating == "13"
 
 
 async def test_the_read_scopes_on_the_library(session):
@@ -230,6 +268,30 @@ async def test_a_failed_read_is_memoised_and_carries_no_query_text(session):
     assert second.value is first.value, "the memo, not a second attempt"
     assert "SELECT" not in str(first.value)
     assert "postgresql" not in str(first.value)
+
+
+async def test_a_failed_read_logs_the_root_cause_once_though_the_served_message_stays_fixed(
+    session,
+    caplog,
+):
+    """Task-2 review, Important 1. Row 213 forbids the root cause from
+    reaching the served, class-name-only message -- it says nothing about the
+    log. Without a local `logger.exception`, a `TypeError` or an
+    `AttributeError` here (the shape `broken` drives, by having neither
+    `execute` nor `begin_nested`) is written off for the whole pass as "the
+    database did not answer", with its own traceback discarded."""
+    run_cache: dict = {}
+    broken = SimpleNamespace()  # no `execute`, no `begin_nested`
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(FactsUnavailable) as excinfo:
+            await ensure_facts(broken, run_cache, "Movies", ["1"])
+
+    assert "AttributeError" in caplog.text
+    assert str(excinfo.value) == (
+        "the facts read failed (AttributeError); every definition filtering "
+        "on a facts-backed attribute is refused this pass"
+    )
 
 
 # --- the view ----------------------------------------------------------------
@@ -314,6 +376,7 @@ async def test_a_negated_facts_filter_still_excludes_the_ungathered(session):
     )
 
     [result] = run.definitions
+    assert result.failed is False
     assert [i.ratingKey for i in section._existing["Not Thirteen"]._live] == ["201"]
 
 
