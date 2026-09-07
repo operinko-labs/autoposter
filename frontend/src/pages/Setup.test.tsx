@@ -614,6 +614,26 @@ describe("Setup", () => {
     await waitFor(() => expect(screen.getByLabelText("Database URL")).toBeInTheDocument());
   });
 
+  it("asks for the password to be proved, not set, after Back to the first pane", async () => {
+    // `/state` is fetched once at mount -- before any password exists, and
+    // there is no token-free route to re-ask -- so `password_set` stayed false
+    // for the life of the tab and the first Back an operator pressed landed on
+    // a pane labelled "Set". The server VERIFIES at that point: anything other
+    // than the original answers 401 and spends one of ten rate-limiter slots
+    // per sixty seconds, on the first Back of a hand-test session.
+    vi.stubGlobal("fetch", progressMock());
+
+    render(<Setup />);
+    await goToUrlStep();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    await waitFor(() => screen.getByLabelText("Prove the master password"));
+    expect(screen.queryByLabelText("Set the master password")).toBeNull();
+    // And the pane's own note, which says why re-proving is what this asks.
+    expect(screen.getByTestId("password-reload-note")).toBeInTheDocument();
+  });
+
   it("never offers Back on the first step", async () => {
     const fetchMock = vi.fn(async (path: unknown) => {
       if (path === "/api/setup/state") return respond({ setup: true, password_set: false });

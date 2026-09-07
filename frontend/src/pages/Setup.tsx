@@ -222,7 +222,18 @@ export function Setup() {
         <PasswordPane
           busy={busy}
           passwordSet={passwordSet}
-          onSubmit={(value) => run(() => submitMasterPassword(value), "password")}
+          onSubmit={async (value) => {
+            const accepted = await run(() => submitMasterPassword(value), "password");
+            // An accepted submit means this deployment HAS a master password
+            // now, whatever `/state` said at mount -- and that fetch is the
+            // only one there is, since the route is the sole open one and is
+            // never re-asked. Without this, the first Back an operator pressed
+            // landed on a pane labelled "Set the master password" while the
+            // server was about to VERIFY: anything but the original answers
+            // 401 and spends one of ten rate-limiter slots per sixty seconds.
+            if (accepted) setPasswordSet(true);
+            return accepted;
+          }}
         />
       )}
       {pane === "url" && (
