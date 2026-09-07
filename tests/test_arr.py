@@ -1,9 +1,18 @@
 import json
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
-from autoposter.intake.arr import RenderIntent, parse_radarr, parse_sonarr
+from autoposter.intake.arr import (
+    RADARR_EVENTS,
+    SONARR_EVENTS,
+    RadarrPayload,
+    RenderIntent,
+    SonarrPayload,
+    parse_radarr,
+    parse_sonarr,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "webhooks"
 
@@ -144,3 +153,11 @@ def test_intent_is_hashable_for_set_deduplication():
     a = RenderIntent(kind="show", title="X", tvdb_id=1)
     b = RenderIntent(kind="show", title="X", tvdb_id=1)
     assert len({a, b}) == 1
+
+
+def test_the_accepted_event_literals_are_the_event_sets():
+    """Defined once, read twice. The Literal is what the intake gate validates
+    against; the set is what the parsers match on. If the two ever drift, a body
+    validates and then fans out to nothing -- or, worse, the reverse."""
+    assert set(get_args(RadarrPayload.model_fields["eventType"].annotation)) == RADARR_EVENTS
+    assert set(get_args(SonarrPayload.model_fields["eventType"].annotation)) == SONARR_EVENTS

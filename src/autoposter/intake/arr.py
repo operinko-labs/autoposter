@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 # ``movieadded``/``seriesadd`` fire when the item is added to Radarr/Sonarr,
 # which for an unreleased title is months before Plex can see anything. Those
@@ -9,6 +12,102 @@ from dataclasses import dataclass
 # one; dropping it here would instead break the operator who turns it back on.
 RADARR_EVENTS = {"download", "rename", "movieadded"}
 SONARR_EVENTS = {"download", "rename", "seriesadd"}
+
+
+# ``events_log.event_type`` is String(64) (db/models.py:285) and the value is
+# served verbatim by GET /api/events (api/snapshots.py:143,:152) and by the
+# dashboard stream. Before this cap an over-long or non-string ``eventType``
+# reached that column unchecked and the delivery died on the insert, so
+# bounding it here is as much of the fix as the shape check is.
+EVENT_TYPE_MAX_CHARS = 64
+
+
+class ArrEnvelope(BaseModel):
+    """What every Radarr/Sonarr delivery carries, whatever the trigger fired.
+
+    ``extra="ignore"`` rather than ``forbid``: Radarr 6 and Sonarr 4 add
+    top-level keys across releases (``applicationUrl``, ``downloadClient``,
+    ``customFormatInfo``), and a ``forbid`` here would turn the next point
+    release of either into a 400 on every delivery. Only ``eventType`` is
+    required, because only ``eventType`` is read before we know whether this
+    delivery is work at all.
+
+    ``extra="ignore"`` is also what makes the refusal log safe: with unknown
+    keys dropped rather than reported, a ValidationError's ``loc`` can only
+    ever name a field declared in this module -- never a key the sender chose.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    eventType: Annotated[str, Field(min_length=1, max_length=EVENT_TYPE_MAX_CHARS)]
+
+
+def _lower_event_type(value: object) -> object:
+    """Match ``eventType`` case-insensitively, exactly as the parsers below do.
+
+    Non-strings pass through untouched so the ``Literal`` reports the type
+    error itself rather than this helper raising AttributeError.
+    """
+    return value.lower() if isinstance(value, str) else value
+
+
+class _Movie(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: Annotated[str, Field(min_length=1)]
+    # StrictInt rather than int: pydantic's lax mode coerces "693134" to an
+    # int, and a quoted id is precisely the shape a scanner produces and
+    # Radarr never does. Optional, and 0 is legal -- the Test body sends
+    # ``tmdbId: 0``, and ``_int_or_none`` below already reads a zero as absent.
+    tmdbId: StrictInt | None = None
+    imdbId: str | None = None
+    year: StrictInt | None = None
+
+
+class RadarrPayload(ArrEnvelope):
+    """A Radarr delivery this service will do work for.
+
+    Applied only to an event in ``RADARR_EVENTS``: a Health or Grab body
+    carries no ``movie`` key at all and has to stay a 200.
+    """
+
+    eventType: Literal["download", "rename", "movieadded"]
+    movie: _Movie
+
+    _casefold_event_type = field_validator("eventType", mode="before")(_lower_event_type)
+
+
+class _Episode(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    seasonNumber: StrictInt
+    episodeNumber: StrictInt
+    title: str | None = None
+
+
+class _Series(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: Annotated[str, Field(min_length=1)]
+    tvdbId: StrictInt | None = None
+    tmdbId: StrictInt | None = None
+    imdbId: str | None = None
+    year: StrictInt | None = None
+
+
+class SonarrPayload(ArrEnvelope):
+    """A Sonarr delivery this service will do work for."""
+
+    eventType: Literal["download", "rename", "seriesadd"]
+    series: _Series
+    # Absent on Rename and SeriesAdd, where the parser yields the show alone.
+    # A plain default rather than ``| None``: the Arr serialiser omits null
+    # fields rather than emitting them (which is why series.imdbId is simply
+    # missing from the rename fixture), so "absent" is the only shape either
+    # service sends for an empty array.
+    episodes: list[_Episode] = Field(default_factory=list)
+
+    _casefold_event_type = field_validator("eventType", mode="before")(_lower_event_type)
 
 
 def _int_or_none(value: object) -> int | None:

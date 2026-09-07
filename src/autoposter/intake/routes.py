@@ -1,18 +1,57 @@
 import json
+import logging
 import secrets as secrets_module
 from dataclasses import asdict
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from pydantic import ValidationError
 
 from autoposter.db.models import EventLog
-from autoposter.intake.arr import RenderIntent, parse_radarr, parse_sonarr
+from autoposter.intake.arr import (
+    RADARR_EVENTS,
+    SONARR_EVENTS,
+    ArrEnvelope,
+    RadarrPayload,
+    RenderIntent,
+    SonarrPayload,
+    parse_radarr,
+    parse_sonarr,
+)
 from autoposter.queue.jobs import enqueue
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 # Cap on the raw body text stored on an unparseable delivery, so a huge
 # malformed payload cannot bloat the events_log row.
 _MAX_RAW_BODY_CHARS = 2000
+
+# Fixed, and fixed on purpose: this string is the 400 body returned to
+# whatever posted to the port AND it is EventLog.outcome, which /api/events
+# and the dashboard stream serve. Row 213's 2026-09-05 amendment lets the
+# /api request-body 422 serve pydantic's type/loc/msg, because that caller is
+# the operator; this caller is a stranger, so it gets a sentence and nothing
+# else. The field names go to the pod log instead, at DEBUG.
+NOT_AN_ARR_DELIVERY = "body does not match the webhook schema for this service"
+
+
+def _log_refusal(source: str, exc: ValidationError) -> None:
+    """Say which fields failed, and nothing about what was in them.
+
+    ``loc`` holds this module's own declared field names and list indices and
+    nothing else, because every model in ``intake/arr.py`` is
+    ``extra="ignore"``: an unknown key is dropped rather than reported, so no
+    part of ``loc`` can be a string the sender chose. ``msg`` and ``input``
+    are never read -- those do quote the body.
+
+    DEBUG rather than WARNING: a refusal is the expected outcome of a port
+    scan, and a scanner must not be able to fill the pod log.
+    """
+    fields = sorted(
+        {part for error in exc.errors() for part in error["loc"] if isinstance(part, str)}
+    )
+    logger.debug("%s webhook body refused (%s): %s", source, type(exc).__name__, ", ".join(fields))
 
 
 def _authorise(request: Request, token: str | None) -> None:
@@ -25,7 +64,13 @@ def _authorise(request: Request, token: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing X-Autoposter-Token")
 
 
-async def _ingest(request: Request, source: str, parser) -> dict:
+async def _ingest(
+    request: Request,
+    source: str,
+    parser,
+    accepted_events: set[str],
+    model: type[ArrEnvelope],
+) -> dict:
     config = request.app.state.config
     session_factory = request.app.state.session_factory
 
@@ -52,26 +97,46 @@ async def _ingest(request: Request, source: str, parser) -> dict:
         payload_for_log = {"_raw": text}
     else:
         payload_for_log = payload
-        event_type = payload.get("eventType")
+        accepted = False
         try:
-            intents = parser(payload)
-        except Exception as exc:
-            # A bug in our parser, not a malformed request from the sender.
-            # Preserve the structured payload as evidence and commit it
-            # before propagating, then let the exception surface as a 500.
-            # The outcome is served by /api/events, so it carries the class
-            # name only; the traceback reaches the pod log with the 500.
-            async with session_factory() as session:
-                session.add(
-                    EventLog(
-                        source=source,
-                        event_type=event_type,
-                        payload=payload_for_log,
-                        outcome=f"parser error ({type(exc).__name__})",
+            # Stage one, for every body: is this a plausible delivery at all?
+            event_type = ArrEnvelope.model_validate(payload).eventType
+            if event_type.lower() in accepted_events:
+                # Stage two, only for an event we do work for. An unaccepted
+                # one -- Test, Grab, Health, an Arr we do not know -- falls
+                # past both branches to a 200 with zero intents and one
+                # events_log row, which is today's behaviour and deliberate:
+                # those bodies carry no movie/series key at all, and a 400
+                # would be a warning line in the operator's own Arr log on
+                # every delivery.
+                model.model_validate(payload)
+                accepted = True
+        except ValidationError as exc:
+            _log_refusal(source, exc)
+            error = NOT_AN_ARR_DELIVERY
+
+        if accepted:
+            try:
+                intents = parser(payload)
+            except Exception as exc:
+                # A bug in our parser, not a malformed request from the
+                # sender: the gate above has already refused every shape the
+                # sender could have chosen. Preserve the structured payload as
+                # evidence and commit it before propagating, then let the
+                # exception surface as a 500. The outcome is served by
+                # /api/events, so it carries the class name only; the
+                # traceback reaches the pod log with the 500.
+                async with session_factory() as session:
+                    session.add(
+                        EventLog(
+                            source=source,
+                            event_type=event_type,
+                            payload=payload_for_log,
+                            outcome=f"parser error ({type(exc).__name__})",
+                        )
                     )
-                )
-                await session.commit()
-            raise
+                    await session.commit()
+                raise
 
     queued = 0
     async with session_factory() as session:
@@ -108,7 +173,7 @@ async def radarr_webhook(
     request: Request, x_autoposter_token: str | None = Header(default=None)
 ) -> dict:
     _authorise(request, x_autoposter_token)
-    return await _ingest(request, "radarr", parse_radarr)
+    return await _ingest(request, "radarr", parse_radarr, RADARR_EVENTS, RadarrPayload)
 
 
 @router.post("/webhook/sonarr")
@@ -116,7 +181,7 @@ async def sonarr_webhook(
     request: Request, x_autoposter_token: str | None = Header(default=None)
 ) -> dict:
     _authorise(request, x_autoposter_token)
-    return await _ingest(request, "sonarr", parse_sonarr)
+    return await _ingest(request, "sonarr", parse_sonarr, SONARR_EVENTS, SonarrPayload)
 
 
 @router.get("/healthz")
