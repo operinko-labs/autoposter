@@ -59,6 +59,53 @@ to a bcrypt hash (never the plaintext) to allow logins — unset, every login
 attempt fails closed rather than skipping auth. See `deploy/README.md`'s
 "Web UI authentication" section for how to generate the hash.
 
+## First start
+
+Booting without every required credential no longer crashloops. The
+container's entrypoint (`python -m autoposter.boot`) re-derives, at every
+boot, whether every hard credential resolves (environment first, the state
+file second) and a config document is readable — never against the
+database, which stays exactly as reachable or unreachable as it always was.
+Missing a credential serves a first-start setup wizard on the same port
+instead of migrating and starting the application; credentials all present
+with no document is instead a configuration error, logged and non-zero, not
+the wizard. The wizard itself walks through the master password, the
+database URL, the provider keys and the Plex server URL, then restarts the
+service into the application.
+
+**Every GitOps/ExternalSecrets deployment supplies every hard credential and
+never sees any of this.** In this project's own Kubernetes deployment that
+means a PersistentVolumeClaim (`autoposter-state`, 1Gi, `ReadWriteOnce`)
+mounted at `/state` — the pod's existing `fsGroup: 568` already owns it — and
+one `AUTOPOSTER_STATE_DIR=/state` environment entry; nothing else changes.
+Docker Compose gets the same private volume by default: with no `.env` at
+all, `docker compose up web api` boots into the wizard, served at
+`http://localhost:5173`. `api` alone also enters setup mode, but serves no
+page on a fresh checkout — see "Docker Compose" in `deploy/README.md`.
+
+Every **credential** the wizard collects goes to `$AUTOPOSTER_STATE_DIR`
+(default `/state`) — into `secrets.env` there, never into the config document
+and never into the database — and **the process environment always wins over
+that file**. (Step 4 does write a config document, to
+`$AUTOPOSTER_STATE_DIR/autoposter.yaml`, when the deployment has none: it
+holds the Plex URL and nothing secret.) Adding an ExternalSecret later takes
+effect at the next restart, but once ALL six hard names resolve
+from the environment the state file stops being read at all, for any name —
+at that point also carry every soft name the wizard wrote into the
+environment (or the Secret) in the same change: `AUTOPOSTER_ADMIN_PASSWORD_HASH`
+and every provider key step 3 collected (`AUTOPOSTER_MDBLIST_APIKEY`,
+`AUTOPOSTER_RADARR_APIKEY`, `AUTOPOSTER_SONARR_APIKEY`,
+`AUTOPOSTER_HARBOR_TOKEN`, `AUTOPOSTER_PLEX_ACCOUNT_TOKEN`,
+`AUTOPOSTER_TRACEARR_APIKEY`), or they are silently dropped. A hand-added
+`AUTOPOSTER_API_KEY` is subject to the same rule, though the wizard never
+writes it. See "First-start setup" in `deploy/README.md` for the
+five steps, the file modes and the rotation story, and for the one bound this
+project's own deployment relies on: the wizard, unauthenticated until a
+master password exists, is reachable only over an internal gateway route,
+and — because the admin password hash there is supplied by environment
+before any other credential is — its first step is a login prompt to prove
+that password rather than an open form to set one.
+
 ## Notifications
 
 A configured URL receives a POST when a run completes — a scheduled pass
@@ -92,10 +139,12 @@ to the API container. The API is published on 8081 rather than 8080 for the
 same reason PostgreSQL is published on 5433 — a port already spoken for on the
 development machine — and binds 8080 inside the network regardless.
 
-Running the app needs credentials, as production does: copy `.env.example` to
-`.env` and fill it in, or compose refuses to start it. `docker compose up api`
-then applies migrations first, exactly as the image's `CMD` does. The suite and
-the frontend need no credentials at all.
+Running the app needs credentials, as production does — but with none supplied
+(no `.env` at all), `docker compose up api` boots into the first-start wizard
+instead of refusing to start; see "First start" above. Copy `.env.example` to
+`.env` and fill it in for the fully-configured behaviour: migrations, then the
+application, exactly as the image's `CMD` does. The suite and the frontend
+need no credentials at all.
 
 The image-parity tests require a **Q16-HDRI** ImageMagick build and carry
 `@pytest.mark.imagemagick`. The `test` service derives from the same base as

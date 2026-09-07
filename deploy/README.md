@@ -3,8 +3,328 @@
 ## Database
 
 The app needs `AUTOPOSTER_DATABASE_URL` pointing at a PostgreSQL database it owns
-(nothing else should write to it). Migrations run automatically at container
-startup (`alembic upgrade head`), so no manual migration step is needed.
+(nothing else should write to it). Migrations run once the container's
+entrypoint, `python -m autoposter.boot`, has decided this deployment is
+CONFIGURED — every hard credential resolves and a config document is
+readable — and only then: `alembic upgrade head`, followed by the
+application itself. The database is deliberately **not** part of that
+decision, so a configured deployment whose Postgres is not yet reachable
+behaves exactly as it always has: the migration fails, the container exits
+non-zero, and the orchestrator restarts it until the database answers.
+
+A deployment missing either half never reaches that migration at all. One
+missing credential is a first-start wizard's whole reason to exist — see
+"First-start setup" below. Credentials all present with no readable document
+is not a first start, though, and is refused rather than served the wizard:
+`boot` logs one line naming the two paths it looked at and exits non-zero,
+the same restart loop a missing document produced before this row existed.
+
+## First-start setup
+
+A deployment is CONFIGURED when both of two things are true: every hard
+credential resolves (the process environment first, the state file second;
+an empty environment value counts as absent on both sides) **and** a config
+document is readable (the `AUTOPOSTER_CONFIG` path when it exists, the state
+directory's `autoposter.yaml` otherwise). The database is not part of that
+decision — see "Database" above. **Every GitOps/ExternalSecrets deployment
+resolves both halves and is unaffected by anything in this section.**
+
+Short of that, there are two outcomes, and only one of them is a wizard:
+
+- **A hard credential is missing.** `python -m autoposter.boot` serves a
+  setup wizard on the same port instead of migrating and starting the
+  application — no alembic, no database session. This is the *only* door
+  into setup mode.
+- **Every credential resolves but no config document does.** Something
+  already configured this deployment, so a missing document (a renamed
+  ConfigMap key is the reachable shape) is that somebody's mistake, not a
+  first start. `boot` logs one line naming the two paths it looked at
+  (`AUTOPOSTER_CONFIG`'s value, or "unset", and the state directory's
+  `autoposter.yaml`) and exits non-zero — never the wizard.
+
+The wizard is a **second** application, mounting only `/api/setup/*` and the
+web UI; every other `/api` path answers a fixed 503. `GET /healthz` answers
+`200 {"status": "setup"}` — without it, this pod's liveness and readiness
+probes both fail (the HelmRelease points both at `httpGet /healthz` on 8080)
+and Kubernetes kills the container at roughly the failure threshold, before
+the Ingress ever routes to the wizard that could fix the deployment.
+
+### The unauthenticated-form question
+
+Until a master password exists, whoever reaches this port first sets it and
+becomes the admin — intrinsic to any first-start wizard, and the row's own
+containment is that the wizard exists only while unconfigured. Two facts
+narrow that further for this deployment specifically, read out of the
+manifests rather than assumed:
+
+- The pod is reached through the internal gateway (`route.scope: internal`),
+  never one facing the internet.
+- The admin password hash is supplied by the SOPS-held Secret, not the
+  ExternalSecret that can render empty — and so is the database URL
+  (`secret.sops.yaml`). The ExternalSecret supplies four of the six hard
+  names instead: `AUTOPOSTER_PLEX_TOKEN`, `AUTOPOSTER_TMDB_TOKEN`,
+  `AUTOPOSTER_TVDB_APIKEY` and `AUTOPOSTER_FANART_APIKEY`. The only reachable
+  way into setup mode here is that ExternalSecret blanking one of those four
+  — the admin hash and the database URL still resolve regardless. So step 1
+  on this deployment is **verify-only**: an unauthenticated caller on the
+  internal gateway meets a bcrypt-backed password prompt, rate-limited, with
+  no token issued and nothing written until it succeeds — the same bound
+  `POST /api/login` already has, not an open form.
+
+The genuinely unbounded case is a true first start, where nobody has ever set
+a password anywhere: whoever arrives first becomes admin there, which is what
+any first-start wizard accepts.
+
+### The five steps
+
+Every step past the first has a **Back** button. Back is free and entirely
+client-side: the server already holds everything a re-render needs (a stored
+credential is reported as stored and never displayed), re-submitting a step
+replaces that step's values and nothing else, and a blank field keeps what is
+already held rather than clearing it. There is no "unstage" call, so there is
+nothing about going back that can put the page and the server out of step.
+Going forward is the opposite: a step advances only once its own POST has
+returned 200.
+
+1. **Master password.** Bcrypt-hashed and written to the state file
+   immediately — it is a soft secret, unlike everything below — and every
+   later step requires the token this mints. With a hash already persisted (a
+   reload, a second tab, or an admin hash supplied by environment while other
+   credentials are still missing) this step *verifies* rather than *sets*.
+2. **This deployment's own URL.** The address other services reach Autoposter
+   at, e.g. `https://autoposter.example.com`. It is a **config** value, not a
+   credential: the new top-level `public_url` key. It must be an `http://` or
+   `https://` address with a host and with no username or password in it —
+   the same guard every other operator-typed address in the wizard passes.
+   It is asked for here, at the top, because it is what the Radarr/Sonarr
+   registration builds its callback from, and an operator who does not know it
+   yet should find that out now rather than at the bottom.
+
+   **On a deployment whose configuration document already resolves** (a
+   mounted ConfigMap, compose's bind-mounted example) the wizard stages this
+   value, uses it for the registrations, and **writes it nowhere** — writing
+   beside a document the next boot never opens is exactly the failure the
+   config step's refusal exists to prevent. The finish page names that
+   omission and the key it would have been. Add `public_url:` to that document
+   yourself if you want the Settings page to re-register for you later.
+3. **The database URL** — offered **only** when nothing resolves from the
+   environment or the state file. Validated by connecting before it is kept,
+   so a well-formed URL pointing at nothing is refused here rather than
+   passing this step and failing hours later with the wizard already gone.
+   Staged in memory, not written, until step 5.
+4. **Systems.** One collapsible panel per system: Plex, the Plex account,
+   TMDb, TVDB, Fanart, MDBList, Radarr, Sonarr, Harbor, Tracearr. A system
+   this deployment cannot boot without opens by default; one whose credential
+   is already stored collapses with a **Stored** pill on its header; the rest
+   collapse. Open or closed is never sent to the server and never persisted.
+
+   - **Check connection.** Every panel has one. It goes to a single
+     token-gated endpoint whose targets are a compiled-in table: the caller
+     names a system key from a ten-entry allowlist and, for the four whose
+     address is not built in (Plex, Radarr, Sonarr, Tracearr), a base address
+     — never a path, a method or a header. The answer is one of three fixed
+     sentences, the third carrying an exception's class name, and never the
+     other service's own response. Every probe is bounded at five seconds.
+
+     There is deliberately **no private-IP denylist**: every correct target on
+     every shipped deployment *is* a private address (`http://sonarr`,
+     `http://plex:32400`), so a denylist would refuse the only right answers.
+     What that leaves, stated rather than papered over: someone holding the
+     setup token can learn whether an arbitrary host answers on an arbitrary
+     port, as a boolean. The token is minted only by the master password, and
+     that step is rate-limited.
+
+     A boolean, and nothing more than a boolean: for those same four systems
+     the credential the probe sends must have arrived with the address — typed
+     into the field beside the button, or staged earlier by this wizard. One
+     the deployment already holds from its environment or its state file is
+     never sent to an address a request names, and pressing Check with the
+     field empty answers a fixed sentence asking for the key instead. (Setup
+     mode is entered when *any one* hard credential fails to resolve, so a pod
+     in it still holds all the others.) The six systems with a built-in
+     address are unaffected: an empty field there still means "check the key
+     you already have".
+   - **Plex signs in rather than being pasted.** The panel starts a PIN flow
+     against plex.tv (a strong PIN — plex.tv mints a long, opaque code rather
+     than the four-character one a typed sign-in uses, so there is nothing to
+     type; the link already carries it), shows the code and a sign-in link,
+     and polls every two seconds until you approve or the code expires. The
+     code and the link are shown deliberately — they are minted by plex.tv,
+     are public by design, and there is no flow without them; the account
+     token they produce is never shown, never logged, and is stored under **both**
+     `AUTOPOSTER_PLEX_TOKEN` and `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` with no
+     exchange, because on an owned server those two values are the same one.
+     Servers shared *to* the account are out of scope and the pick-list omits
+     them. You then choose the server (its local address first) and tick the
+     libraries to manage; the unticked ones become `plex.excluded_libraries`.
+   - **Register the webhook for me.** Radarr's and Sonarr's panels each carry
+     this. It creates — or updates in place, matched on name *and*
+     implementation — a `Webhook` connection named `Autoposter - Radarr` /
+     `Autoposter - Sonarr`, pointed at `<public_url>/webhook/<service>` with
+     `method: POST` and one `headers` entry keyed `X-Autoposter-Token`
+     carrying the generated secret. The secret rides a **header**, never a
+     query parameter: that URL is stored in the *arr's own database, shown in
+     its UI and written to its logs. Run **Check connection** on the panel
+     first — the address the registration uses is the one that check proved.
+
+     A failed registration **never blocks the finish step.** You can paste the
+     secret into the connection by hand, which is what an operator does today,
+     and the finish page reports what did not happen.
+
+     The generated secret is usually minted this session, but on a deployment
+     whose `AUTOPOSTER_WEBHOOK_SECRET` already resolves from its environment
+     or its state file, nothing is minted and the registration reads that
+     existing secret instead — this deployment's own, not this wizard's. On
+     that one shape the registration is bound to the address the deployment's
+     own configuration document already names for the service (`radarr.base_url`
+     / `sonarr.base_url`), never to whatever address Check connection happened
+     to prove reachable: a check only proves a host answered, never who owns
+     it, and this deployment's resolved secret must not be sendable to a host
+     an operator merely typed into the panel. A checked address that does not
+     match the document's is refused with one fixed sentence and no request is
+     made. This bound applies only to a resolved secret; one minted this
+     session is unaffected.
+
+   One credential on this step is not collected but generated: the
+   Sonarr/Radarr webhook secret, minted the first time the step completes with
+   none on record, and shown **once**, on the finish page. Submitting one
+   yourself is refused outright.
+5. **Finish.** Three blocks: the generated secret, once, with the warning that
+   it will not return; one row per *arr saying `created`, `updated`, the
+   refusal sentence, or `not attempted`, with the URL that was registered (not
+   the header value); and everything left for later — each credential left
+   empty by name, the database step if the environment already resolved one,
+   and `public_url` if a supplied document meant it could not be written.
+
+   Then the write. Steps 2–4 are staged in memory rather than persisted as
+   they are collected. This step writes the config document **first**, then
+   the secrets file, each atomically, then re-runs the same CONFIGURED check
+   the next boot will run — over what was actually just written, not over what
+   this process believes it wrote. Only if that agrees does it hand the
+   process over: an `os.execv` into a fresh `python -m autoposter.boot`, which
+   is what makes the exit atomic — the setup token, its routes and the
+   wizard's application object all cease to exist in the same instant the
+   process image is replaced. A check that disagrees names the unmet step and
+   leaves the wizard running.
+
+   **Why document-first.** Both write orders have a crash window between the
+   two files landing, and only this order's window is survivable. Interrupted
+   after the document lands but before the secrets file does, the hard secrets
+   are still absent — the next boot is the wizard again, from step 1.
+   Interrupted the other way round would leave every credential present and no
+   document: the configuration-error case above, which exits forever and is
+   never served the wizard that could fix it.
+
+### Where it writes
+
+`$AUTOPOSTER_STATE_DIR` (default `/state`), a **private** volume:
+
+| File | Mode | Contents |
+|---|---|---|
+| `secrets.env` | 0600 | `AUTOPOSTER_*=value` lines, exactly the names "Secrets" below lists |
+| `autoposter.yaml` | 0600 | the config document, read only when `AUTOPOSTER_CONFIG` does not resolve one |
+
+The directory is 0700 and must not be one of the NFS shares Kometa and
+Posterizarr also mount (see "Volumes" below) — these are credentials, and
+putting them on a shared mount is a disclosure decision rather than a storage
+one. Writes are atomic (temp file in the same directory, `fsync`,
+`os.replace`), so a reader always sees a whole file, never a partial one.
+
+**Precedence, in one line: the environment wins.** A name set in the
+environment is used even when the file also carries it, so adding an
+ExternalSecret later takes effect at the next restart with no need to edit or
+delete anything under `/state` for the six hard names themselves — with one
+exception among them: `AUTOPOSTER_WEBHOOK_SECRET` must be **carried over from
+`secrets.env`, never regenerated**. The wizard mints it, shows it exactly once
+and it is the value Sonarr and Radarr were given; a fresh one in the Secret
+wins over the file, and every webhook then fails verification silently until
+both applications are updated. Copy the existing line out of `secrets.env`
+into the Secret. It is not free for the SOFT names the wizard writes either:
+once all six hard names resolve from the environment, `resolve_secret_values`
+never opens `secrets.env` again, for any name. A deployment the wizard configured, whose
+hard names are later handed to an ExternalSecret, must carry every soft name
+the wizard wrote into the environment (or the Secret) in that same change:
+`AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, and every provider key step 3
+collected — `AUTOPOSTER_MDBLIST_APIKEY`, `AUTOPOSTER_RADARR_APIKEY`,
+`AUTOPOSTER_SONARR_APIKEY`, `AUTOPOSTER_HARBOR_TOKEN`,
+`AUTOPOSTER_PLEX_ACCOUNT_TOKEN` and `AUTOPOSTER_TRACEARR_APIKEY` — or they are
+silently dropped. A hand-added `AUTOPOSTER_API_KEY` in `secrets.env` is
+subject to the same rule, though the wizard never writes it: that key is
+minted after setup, not collected during it. To rotate a credential the
+wizard wrote, set it in the environment (preferred) or edit `secrets.env` and
+restart.
+
+### Kubernetes
+
+Add a PVC and mount it; nothing else changes, and the deployment stays
+env-configured — every hard name plus the admin hash already comes from
+`envFrom: secretRef`, so it enters setup mode only if one of those six names
+stops resolving from the environment. That is one reachable case and it is
+bounded: see "The unauthenticated-form question" above, where the four
+ExternalSecret-supplied names are the door and the SOPS-held admin hash makes
+step 1 verify-only. The two manifest changes are:
+
+```yaml
+# kubernetes/apps/media/autoposter/app/helmrelease.yaml, under values.persistence
+      state:
+        existingClaim: autoposter-state
+        globalMounts:
+          - path: /state
+```
+
+```yaml
+# a new PVC beside it: 1Gi, RWO, not shared with anything
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: autoposter-state
+  namespace: media
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+and one environment entry beside the others:
+
+```yaml
+              AUTOPOSTER_STATE_DIR: /state
+```
+
+The pod already runs as uid/gid 568 with `fsGroup: 568` and
+`fsGroupChangePolicy: OnRootMismatch`, which is what gives the mount the
+ownership the 0700 directory needs.
+
+### Docker Compose
+
+`docker-compose.yml` declares a named `state` volume and
+`AUTOPOSTER_STATE_DIR=/state`, and `.env` is no longer required: with no
+`.env` at all, `python -m autoposter.boot` inside the `api` container enters
+setup mode exactly as it would anywhere else. That is not enough to reach the
+wizard from a browser on a fresh checkout, though — the `dev` stage the `api`
+service builds from runs no frontend build, `frontend/dist` is gitignored,
+and `mount_spa` registers no catch-all without it, so `GET /` on
+`http://localhost:8081` 404s. Run `docker compose up web api` and use
+`http://localhost:5173` instead: the vite dev server proxies `/api` and
+`/healthz` to `api`, and the SPA routes to the wizard off that probe. To use
+port 8081 without the dev server, build the frontend first (`npm run build`
+in `frontend/`) so `frontend/dist` exists. That stack's `api` service also
+already sets `AUTOPOSTER_CONFIG` to the example config bind-mounted in from
+the repository (`.:/app`), so a document always resolves there — what a
+compose deployment is actually missing, when it is missing anything, is
+credentials, and the wizard's step 4 is never offered on it.
+
+### A note on TLS
+
+The master password is posted in plaintext to the server, which hashes it —
+there is no other usable shape for a first-start wizard. In Kubernetes the
+pod is fronted by an HTTPRoute and the hop is TLS-terminated (see "The
+unauthenticated-form question" above for the rest of that deployment's
+containment); on compose the operator is on `http://localhost:8081` and
+nothing leaves the host. Do not expose an unconfigured deployment on a
+plain-HTTP route reachable from elsewhere: until the master password is set,
+whoever reaches the port first becomes the admin.
 
 ## Volumes
 

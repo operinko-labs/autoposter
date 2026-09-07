@@ -164,7 +164,8 @@ FROM pybase AS runtime
 COPY pyproject.toml ./
 COPY src ./src
 # Remove pip once the package is installed. Nothing at runtime needs it --
-# the container runs `alembic upgrade head && python -m autoposter.main` --
+# the container runs `python -m autoposter.boot`, which runs the migration
+# itself once it has decided the deployment is configured --
 # and pip is where the image's only reported vulnerabilities come from. They
 # are not in anything this application imports: pip *vendors* its own
 # dependencies and declares them in pip/_vendor/vendor.txt, which scanners
@@ -182,6 +183,13 @@ COPY assets ./assets
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY --from=frontend /frontend/dist ./frontend/dist
+# The document the first-start wizard starts from. The runtime image has never
+# shipped a config, because a deployment mounts one at /config -- but a
+# deployment that has not been configured yet has nothing to mount, and
+# `Config` has eight fields with no default so nothing can be synthesised.
+# This is the wizard's template, not the deployment's config: AUTOPOSTER_CONFIG
+# still points at the mount below.
+COPY config ./config
 
 # The package is pip-installed into site-packages while assets are copied to
 # /app/assets, so the assets cannot be found relative to the module files.
@@ -192,6 +200,11 @@ ENV AUTOPOSTER_ASSETS_ROOT=/app/assets
 # passes while `/` answers 404, so the failure looks like a healthy service.
 ENV AUTOPOSTER_SPA_DIST=/app/frontend/dist
 ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml
+# And the same again for the example the wizard's config step reads: without
+# it `example_config_path()` looks four directories above the installed module
+# -- inside site-packages -- and the config step is a 500 on the one deployment
+# shape the wizard exists for.
+ENV AUTOPOSTER_EXAMPLE_CONFIG=/app/config/autoposter.example.yaml
 
 # The image's own name in the registry. .forgejo/workflows/ci.yml passes the
 # commit's short sha here and then pushes the built image as `sha-<that>`, so
@@ -209,10 +222,16 @@ ARG GIT_SHA=""
 ENV AUTOPOSTER_VERSION=sha-${GIT_SHA}
 EXPOSE 8080
 # `exec` so python replaces sh as PID 1, rather than relying on ash's
-# tail-call optimisation (which already replaces sh here in practice, verified
-# by `docker top` showing the same PID move from the `sh -c` line to
-# `python -m autoposter.main` the moment alembic exits) to make python the
-# process that receives the kubelet's SIGTERM. Defensive, not a fix: without
-# it, whether SIGTERM reaches python at all depends on shell-implementation
-# behaviour this Dockerfile does not otherwise depend on.
-CMD ["sh", "-c", "alembic upgrade head && exec python -m autoposter.main"]
+# tail-call optimisation to make python the process that receives the
+# kubelet's SIGTERM. Defensive, not a fix: without it, whether SIGTERM reaches
+# python at all depends on shell-implementation behaviour this Dockerfile does
+# not otherwise depend on.
+#
+# The migration is no longer chained here with `&&`. `autoposter.boot` runs it
+# itself, after deciding that this deployment has credentials and a config
+# document -- because `alembic upgrade head` raises outright without
+# AUTOPOSTER_DATABASE_URL, and a container that dies in the shell can never
+# serve the first-start wizard that would supply one (roadmap row 121). The
+# database is not part of that decision: a configured deployment whose
+# postgres is down still migrates, still fails, and still restarts.
+CMD ["sh", "-c", "exec python -m autoposter.boot"]

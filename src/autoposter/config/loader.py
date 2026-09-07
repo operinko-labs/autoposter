@@ -6,13 +6,66 @@ from pathlib import Path
 import yaml
 
 from autoposter.config.schema import Config, _merged_sections
+from autoposter.config.state import state_config_path
+
+
+def _default_config_path() -> Path:
+    """Where the config document is.
+
+    A PRESENT ``AUTOPOSTER_CONFIG`` file wins outright, which is what keeps
+    every existing deployment on exactly today's path: the Kubernetes one sets
+    the variable (helmrelease.yaml's env block) and so does
+    docker-compose.yml's ``api`` service, and both mount a document at the
+    path they set. That is roadmap row 121's C5.
+
+    The variable being SET is not enough, because the image itself sets it:
+    the runtime stage bakes ``ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml``,
+    so every container from this image carries it -- including the fresh
+    first-start one that has no /config mount at all. Keying on the variable
+    alone would make the fallback below unreachable in exactly the deployment
+    it exists for: the wizard would write its document, the next boot would
+    read ``/config/autoposter.yaml``, and ``read_config_document`` would raise
+    ``FileNotFoundError`` with no wizard left to fix it.
+
+    So the fallback fires when the configured path is unset OR absent. The
+    wizard writes ``$AUTOPOSTER_STATE_DIR/autoposter.yaml`` and cannot set the
+    process's own environment, so its document has to be FOUND rather than
+    pointed at. With nothing anywhere the answer is the path that was
+    configured (or ``/config/autoposter.yaml``, the mount it has always been),
+    so a reader's error names the file an operator was expecting.
+    """
+    configured = os.environ.get("AUTOPOSTER_CONFIG")
+    if configured and Path(configured).is_file():
+        return Path(configured)
+    from_state = state_config_path()
+    if from_state.is_file():
+        return from_state
+    return Path(configured) if configured else Path("/config/autoposter.yaml")
+
+
+def config_document_path() -> Path | None:
+    """The config document this process would read, or ``None`` if there is
+    none to read.
+
+    ``boot`` decides the whole boot mode on this: credentials plus a document
+    is CONFIGURED, and anything else is the first-start wizard. It asks here
+    rather than re-deriving the search order so that the boot decision and the
+    load that follows it can never look in different places.
+    """
+    path = _default_config_path()
+    return path if path.is_file() else None
+
 
 # Where the YAML lives, for the code that needs the *file* rather than the
 # loaded object: the config editor merges its overrides onto that document, so
 # it has to know which document. Defined here, next to the reader, because
 # three entry points (`main`, and both CLIs) already spell this out
 # individually and a fourth copy in the API layer would be one too many.
-DEFAULT_CONFIG_PATH = Path(os.environ.get("AUTOPOSTER_CONFIG", "/config/autoposter.yaml"))
+#
+# Evaluated at import, as it always has been. A wizard that writes the document
+# and then execs a fresh boot is re-importing this module, so the new file is
+# picked up by the process that will actually use it.
+DEFAULT_CONFIG_PATH = _default_config_path()
 
 
 def render_version(config: Config) -> str:

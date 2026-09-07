@@ -559,3 +559,17 @@ def test_the_wholesale_version_still_moves_for_every_partitioned_edit():
         mutate(after)
         after.version = render_version(after)
         assert after.version != before.version, field
+
+
+def test_public_url_defaults_to_empty_and_round_trips():
+    """This deployment's own address is a config value, not a credential, and
+    it is optional: a deployment that registers nothing needs none."""
+    from autoposter.config.loader import build_config
+    from test_example_config_matches_schema import EXAMPLE
+    import yaml
+
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    assert build_config(document).public_url == ""
+
+    document["public_url"] = "https://autoposter.example.test"
+    assert build_config(document).public_url == "https://autoposter.example.test"

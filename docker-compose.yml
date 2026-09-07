@@ -79,24 +79,35 @@ services:
     command: npm run dev -- --host 0.0.0.0
 
   # The application, with hot reload. Unlike `test` and `web`, this one needs
-  # credentials -- exactly as production does. Copy .env.example to .env and
-  # fill it in; compose refuses to start without the file, and
-  # Secrets.from_env() would refuse anyway.
+  # credentials, as production does -- but with none of them supplied (no
+  # .env at all) it boots into the first-start wizard instead of refusing to
+  # start. Copy .env.example to .env and fill it in for the fully-configured
+  # behaviour instead: migrations, then the application, exactly as the
+  # image's CMD does.
   api:
     build:
       context: .
       target: dev
     env_file:
+      # Not `required: true` any more. A stack with no .env now boots into the
+      # first-start wizard instead of refusing to start, which is the whole of
+      # roadmap row 121's audience -- and the file still wins over anything the
+      # wizard writes when it is present.
       - path: .env
-        required: true
+        required: false
     environment:
       # Compose owns the wiring, .env owns the credentials. Set here so the
       # host-oriented URL in .env cannot point the container at a database it
       # has no route to.
       AUTOPOSTER_DATABASE_URL: postgresql+asyncpg://autoposter:autoposter@postgres:5432/autoposter
       AUTOPOSTER_CONFIG: /app/config/autoposter.example.yaml
+      AUTOPOSTER_STATE_DIR: /state
     volumes:
       - .:/app
+      # A named volume, never a bind mount: this one holds credentials at 0600
+      # and a bind mount would put them in the developer's checkout, one
+      # `git add -A` away from the history.
+      - state:/state
     ports:
       # 8081 on the host, 8080 in the container. qBittorrent's WebUI holds
       # 8080 on the development machine, the same reason postgres above is
@@ -108,11 +119,15 @@ services:
       postgres:
         condition: service_healthy
     # Mirrors the image's CMD, plus --reload against the bind-mounted source.
+    # `autoposter.boot` runs the migration itself once it has decided this
+    # deployment is configured, and then execs whatever argv names -- which is
+    # how the two entrypoints stay one contract while only this one hot-reloads.
     # `--factory` because main.py builds the app through build() rather than
     # exposing a module-level `app`, and --reload needs an import string.
     command: >
-      sh -c "alembic upgrade head &&
+      sh -c "exec python -m autoposter.boot
       uvicorn autoposter.main:build --factory --reload --host 0.0.0.0 --port 8080"
 
 volumes:
   frontend_node_modules:
+  state:

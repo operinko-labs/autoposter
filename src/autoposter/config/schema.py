@@ -1,5 +1,6 @@
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -8,6 +9,7 @@ from PIL import ImageColor
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from autoposter.config.live import FROZEN_SECTIONS
+from autoposter.config.state import read_secrets_file, secrets_file_path
 from autoposter.overlays.schema import OverlayDefinition
 
 _LANG_RE = re.compile(r"^[a-z]{2}$")
@@ -20,6 +22,75 @@ _SECRET_ENV = {
     "fanart_apikey": "AUTOPOSTER_FANART_APIKEY",
     "webhook_secret": "AUTOPOSTER_WEBHOOK_SECRET",
 }
+
+# The soft names, in the same shape as the hard ones above. Written out as a
+# map rather than as eight `os.environ.get` lines inside `from_env` because
+# two other callers now iterate it: `Secrets.load` below, and `boot`, which
+# exports every name that resolved into the process environment so that
+# alembic and the exec'd application read a file-configured deployment exactly
+# as they read an env-configured one.
+_SOFT_SECRET_ENV = {
+    "mdblist_apikey": "AUTOPOSTER_MDBLIST_APIKEY",
+    "radarr_apikey": "AUTOPOSTER_RADARR_APIKEY",
+    "sonarr_apikey": "AUTOPOSTER_SONARR_APIKEY",
+    "admin_password_hash": "AUTOPOSTER_ADMIN_PASSWORD_HASH",
+    "harbor_token": "AUTOPOSTER_HARBOR_TOKEN",
+    "plex_account_token": "AUTOPOSTER_PLEX_ACCOUNT_TOKEN",
+    "tracearr_apikey": "AUTOPOSTER_TRACEARR_APIKEY",
+    "api_key": "AUTOPOSTER_API_KEY",
+}
+
+
+def resolve_secret_values() -> dict[str, str]:
+    """Every secret env NAME that resolves to a value: environment first, the
+    state file second. Names that resolve to nothing are absent from the map.
+
+    An EMPTY environment value counts as absent, here and in every other
+    reader of this map (``missing_hard_secret_names``, ``Secrets.load``, and
+    ``boot._export``, which overwrites an empty value with the resolved one).
+    ``AUTOPOSTER_DATABASE_URL=`` in a copied .env or a blanked GitOps secret
+    is a name nobody supplied, and the one rule that must not vary between
+    the reader that decides the boot mode and the writer that publishes the
+    environment alembic then reads.
+
+    Keyed by environment variable name rather than by model field because its
+    callers speak in environment variables: ``boot`` exports these, and
+    ``alembic/env.py`` reads one of them directly out of ``os.environ``.
+
+    The file is opened only when the environment does not carry every hard
+    name -- a deployment whose environment is complete never opens it at all,
+    which is what makes the GitOps/ExternalSecrets exemption true by
+    construction. Once opened, a state directory with no file in it reads as
+    an empty mapping rather than failing. The corollary is that on an
+    env-complete deployment the file is unreachable for the SOFT names too: a
+    wizard-written ``AUTOPOSTER_API_KEY`` would be ignored there. That is
+    harmless because such a deployment never runs the wizard, and it is said
+    here so no later caller assumes otherwise.
+    """
+    env_names = (*_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
+    # A deployment whose environment carries every hard name never opens the
+    # file at all -- not merely never uses its values. That is what makes the
+    # GitOps/ExternalSecrets exemption true by construction: there is no file
+    # read for that deployment to fail, race, or be denied by a mount that
+    # is not there.
+    if all(os.environ.get(name) for name in _SECRET_ENV.values()):
+        return {name: os.environ[name] for name in env_names if os.environ.get(name)}
+    from_file = read_secrets_file(secrets_file_path())
+    resolved: dict[str, str] = {}
+    for env_name in env_names:
+        value = os.environ.get(env_name) or from_file.get(env_name, "")
+        if value:
+            resolved[env_name] = value
+    return resolved
+
+
+def missing_hard_secret_names(resolved: Mapping[str, str]) -> list[str]:
+    """The hard names ``resolved`` does not carry, in ``_SECRET_ENV`` order.
+
+    Names, never values: this list is logged at boot and reported by the setup
+    wizard, and what an operator needs from it is which variable to set.
+    """
+    return [name for name in _SECRET_ENV.values() if not resolved.get(name)]
 
 
 class Secrets(BaseModel):
@@ -169,22 +240,41 @@ class Secrets(BaseModel):
     )
 
     @classmethod
-    def from_env(cls) -> "Secrets":
+    def load(cls) -> "Secrets":
+        """Every secret: the environment first, the state file second.
+
+        The ordering is the load-bearing rule of roadmap row 121. A deployment
+        whose environment carries all six hard names -- every
+        GitOps/ExternalSecrets deployment -- never takes a value from the file,
+        never enters setup mode, and behaves exactly as it did before the file
+        existed.
+
+        The refusal still names the ENVIRONMENT variable, unchanged, because
+        that is what an operator with a broken deployment should set: the state
+        file is what the wizard writes, not what an operator is asked to edit.
+        """
+        resolved = resolve_secret_values()
         values = {}
         for field, env_name in _SECRET_ENV.items():
-            value = os.environ.get(env_name)
+            value = resolved.get(env_name, "")
             if not value:
                 raise RuntimeError(f"required environment variable {env_name} is not set")
             values[field] = value
-        values["mdblist_apikey"] = os.environ.get("AUTOPOSTER_MDBLIST_APIKEY", "")
-        values["radarr_apikey"] = os.environ.get("AUTOPOSTER_RADARR_APIKEY", "")
-        values["sonarr_apikey"] = os.environ.get("AUTOPOSTER_SONARR_APIKEY", "")
-        values["admin_password_hash"] = os.environ.get("AUTOPOSTER_ADMIN_PASSWORD_HASH", "")
-        values["harbor_token"] = os.environ.get("AUTOPOSTER_HARBOR_TOKEN", "")
-        values["plex_account_token"] = os.environ.get("AUTOPOSTER_PLEX_ACCOUNT_TOKEN", "")
-        values["tracearr_apikey"] = os.environ.get("AUTOPOSTER_TRACEARR_APIKEY", "")
-        values["api_key"] = os.environ.get("AUTOPOSTER_API_KEY", "")
+        for field, env_name in _SOFT_SECRET_ENV.items():
+            values[field] = resolved.get(env_name, "")
         return cls(**values)
+
+    @classmethod
+    def from_env(cls) -> "Secrets":
+        """The name every existing caller uses -- ``main.build()``, both CLIs
+        and the suite -- kept so none of them has to change.
+
+        It now delegates to ``load`` above, which consults the state file for
+        any name the environment does not answer. For a deployment whose
+        environment is complete the two are indistinguishable, which is every
+        deployment that existed before roadmap row 121.
+        """
+        return cls.load()
 
 
 class TextStyle(BaseModel):
@@ -3813,6 +3903,24 @@ class Config(BaseModel):
     api_docs_enabled: bool = Field(
         default=False,
         description="Serve the /docs, /redoc and /openapi.json endpoints, which enumerate every endpoint to anyone who can reach the port.",
+    )
+    # This deployment's own address, and the one config value that describes
+    # where Autoposter *is* rather than what it manages. It is not
+    # `notifications.url` -- that is the outbound target run-completion events
+    # are POSTed TO -- and it is not a secret: config/overrides.py's
+    # `_reject_secrets` makes a `secrets` key a hard error, and a URL is not
+    # one. Deliberately NOT in config/live.py's FROZEN_SECTIONS: nothing built
+    # at startup reads it. The setup wizard and the Settings rotation action
+    # are its only readers.
+    public_url: str = Field(
+        default="",
+        description=(
+            "This deployment's own externally reachable base URL, for example "
+            "https://autoposter.example.com. Radarr's and Sonarr's Webhook "
+            "connections are pointed at this address plus /webhook/radarr or "
+            "/webhook/sonarr. Not a credential; empty means nothing is "
+            "registered automatically."
+        ),
     )
     plex: PlexConfig = Field(
         description=(
