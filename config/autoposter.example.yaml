@@ -648,7 +648,7 @@ arr_sync:
 notifications:
   enabled: false # POST run-completion webhooks to `url`; off until pointed somewhere
   url: "" # e.g. http://n8n.n8n-prod.svc.cluster.local:5678/webhook/autoposter -- may embed a token, never logged in full
-  # Payload shape (see src/autoposter/notify/payload.py for both contracts):
+  # Payload shape (see src/autoposter/notify/payload.py for all four modes):
   #   apprise-json (default): the body Apprise's json:// scheme POSTs --
   #     {"version": "1.0", "title": ..., "message": ..., "attachments": [],
   #      "type": "success" | "failure"} -- what an Apprise-trained consumer

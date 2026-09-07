@@ -69,7 +69,7 @@ webhook embed, or the body an Apprise API server accepts. Delivery
 is best-effort by design: bounded retries, and a failed notification never
 fails the run it reports on — it logs one warning and lands in the events
 feed instead. See `deploy/README.md`'s "Outbound notifications config" for
-the config block and both payload contracts.
+the config block and all four payload shapes.
 
 ## Development
 

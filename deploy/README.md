@@ -2597,7 +2597,7 @@ consequences worth knowing:
 The `notifications:` block in `autoposter.yaml` controls the Phase 5a
 run-completion webhook: one POST to a configured URL when a run boundary is
 crossed, replacing the notification capability Posterizarr's Apprise config
-provided. Five events exist, each hooked where the fact it reports is already
+provided. Six events exist, each hooked where the fact it reports is already
 recorded. Three are global, at the scheduler boundary:
 
 - `scheduled_run_started` -- a named scheduler job began, after its claim
