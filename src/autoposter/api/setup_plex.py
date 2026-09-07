@@ -5,9 +5,13 @@ inline requests: the ``X-Plex-Client-Identifier`` header must be the SAME
 string on the mint, on the auth link the operator opens, and on every poll --
 plex.tv 404s a poll whose identifier differs. The implementation probe measured
 that on 2026-09-07: a poll of a freshly minted PIN under a second, random
-identifier answered 404. The identifier is minted per wizard session, staged in
-``SetupState`` and never persisted: it identifies this browser's sign-in
-attempt, not this deployment.
+identifier answered 404. The identifier is minted ONCE -- a random string,
+staged in ``SetupState``, never persisted, and REUSED by every later mint --
+because it is what plex.tv shows the operator as the DEVICE on their account:
+one per sign-in attempt would leave a row of dead Autoposters there for every
+abandoned try. What must not be inherited from an abandoned attempt is its PIN,
+and that is ``plex_pin_id``'s job, not the identifier's: the pin id is what
+binds a poll to a PIN and it is overwritten on every mint.
 
 Row 213, and the documented exception (facts C6). The PIN CODE and the
 ``app.plex.tv`` auth URL ARE served -- they are minted by plex.tv, are public
