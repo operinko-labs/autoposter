@@ -85,3 +85,17 @@ def test_every_schema_section_appears_in_the_example():
         "these schema sections have no line in the example config, so an "
         "operator cannot discover them: %s" % ", ".join(sorted(missing - {"version"}))
     )
+
+
+def test_the_charts_comment_says_the_three_titles_move_together():
+    """Roadmap row 163. One boolean builds three collections, and the
+    example config listed the three without saying that the switch is the
+    family's -- the same silence the catalog row carried."""
+    line = next(
+        line
+        for line in EXAMPLE.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("charts:")
+    )
+
+    assert "all three" in line
+    assert "imdb_chart" in line
