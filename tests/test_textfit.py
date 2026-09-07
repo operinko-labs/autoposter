@@ -137,9 +137,12 @@ def test_run_attaches_stderr_and_the_command_on_failure(monkeypatch):
 
 def test_the_fit_probe_keeps_its_stdout_and_caps_its_stderr():
     """The twin of ``compositor.run``, and the reason surface 2's bound is not
-    one line copied twice: ``_run`` READS stdout (``textfit.py:131`` parses the
-    point size out of it), so its pipe stays. Only the stderr that reaches the
-    RuntimeError -- and from there ``jobs.last_error`` -- is capped.
+    one line copied twice: ``_run`` READS stdout (``textfit.py:151`` parses the
+    point size out of it), so its pipe stays. The stderr that reaches the
+    RuntimeError is capped, guarding the pod log line and the exception
+    message -- never ``jobs.last_error``: a bare ``RuntimeError`` has no
+    ``served_detail``, so ``worker.py``'s ``_served_reason`` writes only the
+    exception's class name to that column.
     """
     ok = "import sys; sys.stdout.write('  120  \\n')"
     assert _run([sys.executable, "-c", ok]) == "120"

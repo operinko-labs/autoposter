@@ -10,7 +10,7 @@ WHY THE REMOVAL IS FREE, and it is the claim these tests exist to hold the
 line under. The legacy candidate was computed from the CURRENT
 `config.version`, so the arm only ever recognised rows written under the value
 the pod was running with. Row 78 moved that value (`tests/
-test_season_show_title.py:48` pins the pre-78 wholesale hash and `:192` the
+test_season_show_title.py:48` pins the pre-78 wholesale hash and `:188` the
 post one) and deployed AFTER the 2026-09-05 migration pass drained, so the arm
 has been inert in production since. Any row that missed that pass was already
 condemned to one re-render on its next visit; removing the arm does not cause

@@ -160,7 +160,7 @@ def render_version_for(art_kind: str, config: Config) -> str:
       confined to its own kind by ``art_config_for`` (``pipeline.py:149``);
     * ``artwork.library_language_overrides`` PROJECTED to this kind, not
       included wholesale: the mapping is already keyed by art kind
-      (``pipeline.py:160``, validator ``config/schema.py:689-695``), so an
+      (``pipeline.py:190``, validator ``config/schema.py:689-695``), so an
       override naming ``title_card`` for one library has no business moving a
       poster;
     * the five logo fields, for ``poster`` only -- see ``_LOGO_FIELDS``;
