@@ -56,6 +56,12 @@ export function SetupAccordion({
   const [open, setOpen] = useState(required && held === null);
   const [value, setValue] = useState("");
   const [address, setAddress] = useState("");
+  // The credential's own label ("Plex token") names what is typed below; the
+  // address field names where it is typed AT, and "token" does not belong in
+  // an address -- "Plex token address" read as if the address itself were a
+  // token. Only a label that ends with " token" is trimmed, so every other
+  // system's label (none of which do) composes exactly as before.
+  const addressLabel = label.endsWith(" token") ? label.slice(0, -" token".length) : label;
   const [result, setResult] = useState<CheckResult | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -118,12 +124,12 @@ export function SetupAccordion({
           {needsAddress && (
             <div className="setup-field">
               <label className="setup-field-label" htmlFor={`${system}-address`}>
-                {label} address
+                {addressLabel} address
               </label>
               <input
                 className="setup-input"
                 id={`${system}-address`}
-                aria-label={`${label} address`}
+                aria-label={`${addressLabel} address`}
                 type="text"
                 autoComplete="off"
                 value={address}

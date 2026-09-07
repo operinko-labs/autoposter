@@ -115,6 +115,19 @@ describe("SetupPlexPane", () => {
     expect(screen.getByRole("radio", { name: /https:\/\/plex.invalid:32400/ })).toBeInTheDocument();
   });
 
+  it("hides the PIN code and the sign-in link once the sign-in is approved", async () => {
+    vi.stubGlobal("fetch", transport(0));
+    render(<SetupPlexPane onSelect={async () => true} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with Plex" }));
+    await waitFor(() => screen.getByTestId("plex-pin-code"));
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await waitFor(() => expect(screen.getByText("Owned")).toBeInTheDocument());
+    expect(screen.queryByTestId("plex-pin-code")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Open the Plex sign-in/ })).toBeNull();
+  });
+
   it("hands the picked address to the accordion, which is what Check reads", async () => {
     // Round-2 concern 3. The accordion owns the `address` state and the Check
     // button reads THAT and nothing else, so a server picked here that does not

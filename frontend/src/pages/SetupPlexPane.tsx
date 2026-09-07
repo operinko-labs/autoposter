@@ -197,31 +197,32 @@ export function SetupPlexPane({
           {STATE_DOCUMENT}
         </p>
       )}
-      {code === null ? (
-        <button type="button" onClick={signIn}>
-          Sign in with Plex
-        </button>
-      ) : (
-        <div className="setup-field">
-          <p className="setup-hint">
-            Open the link and approve the sign-in; this panel continues by itself. The link already
-            carries the code below — there is nothing to type.
-          </p>
-          <code className="mono setup-secret-value" data-testid="plex-pin-code">
-            {code}
-          </code>
-          {authUrl !== null && (
-            <a href={authUrl} rel="noreferrer" target="_blank">
-              Open the Plex sign-in
-            </a>
-          )}
-          {expired && (
-            <p className="setup-hint" data-testid="plex-pin-expired">
-              That code has expired. Start the sign-in again.
+      {servers === null &&
+        (code === null ? (
+          <button type="button" onClick={signIn}>
+            Sign in with Plex
+          </button>
+        ) : (
+          <div className="setup-field">
+            <p className="setup-hint">
+              Open the link and approve the sign-in; this panel continues by itself. The link
+              already carries the code below — there is nothing to type.
             </p>
-          )}
-        </div>
-      )}
+            <code className="mono setup-secret-value" data-testid="plex-pin-code">
+              {code}
+            </code>
+            {authUrl !== null && (
+              <a href={authUrl} rel="noreferrer" target="_blank">
+                Open the Plex sign-in
+              </a>
+            )}
+            {expired && (
+              <p className="setup-hint" data-testid="plex-pin-expired">
+                That code has expired. Start the sign-in again.
+              </p>
+            )}
+          </div>
+        ))}
 
       {canSubmit && servers === null && address.trim() !== "" && (
         <div className="setup-field">

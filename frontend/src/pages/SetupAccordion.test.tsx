@@ -170,7 +170,7 @@ describe("SetupAccordion", () => {
       </SetupAccordion>,
     );
 
-    fireEvent.change(screen.getByLabelText("Plex token address"), {
+    fireEvent.change(screen.getByLabelText("Plex address"), {
       target: { value: "http://plex.invalid:32400" },
     });
     fireEvent.change(screen.getByLabelText("AUTOPOSTER_PLEX_TOKEN"), {

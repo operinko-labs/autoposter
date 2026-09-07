@@ -725,7 +725,7 @@ describe("Setup", () => {
 
     await waitFor(() => expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument());
     expect(screen.getByTestId("plex-configured")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Plex token address"), {
+    fireEvent.change(screen.getByLabelText("Plex address"), {
       target: { value: "http://plex.invalid:32400" },
     });
     expect(screen.queryByRole("button", { name: "Use this address" })).toBeNull();
@@ -766,7 +766,7 @@ describe("Setup", () => {
     fireEvent.click(screen.getByRole("button", { name: /Plex token/ }));
     await waitFor(() => expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument());
 
-    fireEvent.change(screen.getByLabelText("Plex token address"), {
+    fireEvent.change(screen.getByLabelText("Plex address"), {
       target: { value: "http://plex.invalid:32400" },
     });
     fireEvent.change(screen.getByLabelText("AUTOPOSTER_PLEX_TOKEN"), {
