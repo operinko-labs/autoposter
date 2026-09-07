@@ -27,7 +27,7 @@ from autoposter.config.image_ref import parse_image_ref
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
-from autoposter.config.schema import Config, Secrets
+from autoposter.config.schema import STATE_FILE_NAMES_ENV, Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
@@ -503,6 +503,24 @@ def create_app(
     # to the fixture that made it and must not be disposed here.
     app.state.engine = engine
     app.state.secrets = secrets
+    # WHICH of this deployment's secrets came from the state file, as a
+    # per-name boolean -- read with `.get(name, False)`, so a name the marker
+    # does not carry is "not from the file". `boot` publishes the NAMES across
+    # its exec (see `state_file_secret_names`), and this is the only reader.
+    #
+    # Read from os.environ directly at this construction path, the way
+    # AUTOPOSTER_IMAGE_REF just below is and for the same reason: it is not a
+    # credential, it is a deployment fact, and routing it through Secrets
+    # would make every test app fake a value for it.
+    #
+    # FAIL CLOSED. An application that never went through `boot` -- every test
+    # app, and an operator running `python -m autoposter.main` -- has no
+    # marker and answers False for every name, which is the C5 refusal. That
+    # is deliberate: the refusal is the path a test gets for free and the
+    # permission is the one a test has to opt into.
+    app.state.secret_from_state_file = {
+        name: True for name in os.environ.get(STATE_FILE_NAMES_ENV, "").split(",") if name
+    }
     # ``(registry, project, repository)``, or None -- see api/version.py.
     # Read here, once, rather than through Secrets: it is not a credential,
     # it is a deployment fact (the image reference the pod already runs), so

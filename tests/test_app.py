@@ -16,7 +16,7 @@ from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import load_config
 from autoposter.config.overrides import OVERRIDES_ROW_ID
-from autoposter.config.schema import Secrets
+from autoposter.config.schema import STATE_FILE_NAMES_ENV, Secrets
 from autoposter.db.models import ConfigOverride
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.intake.arr import RenderIntent
@@ -946,3 +946,33 @@ async def test_the_asset_stats_job_is_registered_by_the_lifespan(
         names = {job.name for job in app.state.scheduler_jobs}
         assert "asset_stats" in names
         assert app.state.scheduler_intervals["asset_stats"] == 7 * 24 * 3600
+
+
+def test_an_app_that_never_booted_says_no_secret_came_from_the_state_file(secrets):
+    """Fail closed. Every test application, and any operator running
+    `python -m autoposter.main` directly, has no marker -- and the refusal is
+    the answer they get, which is the right default and the one a test has to
+    opt OUT of rather than into."""
+    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+
+    assert app.state.secret_from_state_file.get("AUTOPOSTER_WEBHOOK_SECRET", False) is False
+
+
+def test_the_boot_marker_becomes_a_per_name_boolean(secrets, monkeypatch):
+    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "AUTOPOSTER_WEBHOOK_SECRET,AUTOPOSTER_RADARR_APIKEY")
+
+    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+
+    assert app.state.secret_from_state_file.get("AUTOPOSTER_WEBHOOK_SECRET", False) is True
+    assert app.state.secret_from_state_file.get("AUTOPOSTER_RADARR_APIKEY", False) is True
+    assert app.state.secret_from_state_file.get("AUTOPOSTER_PLEX_TOKEN", False) is False
+
+
+def test_an_empty_marker_is_not_a_name(secrets, monkeypatch):
+    """`"".split(",")` is `[""]`, which would otherwise put an empty-string key
+    in the map -- harmless here and a trap for the next reader."""
+    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "")
+
+    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+
+    assert app.state.secret_from_state_file == {}

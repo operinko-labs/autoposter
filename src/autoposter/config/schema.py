@@ -93,6 +93,52 @@ def missing_hard_secret_names(resolved: Mapping[str, str]) -> list[str]:
     return [name for name in _SECRET_ENV.values() if not resolved.get(name)]
 
 
+# The marker `boot` publishes across its `os.execv` so the running application
+# can tell a state-file deployment from an env-configured one. A comma-joined
+# list of environment-variable NAMES and nothing else: no value, ever.
+#
+# It lives here, beside `_SECRET_ENV` and `_SOFT_SECRET_ENV`, because this
+# module owns every AUTOPOSTER_* secret name there is; `boot` sets it and
+# `app.create_app` reads it, and neither of them should be the place a third
+# reader has to go looking.
+STATE_FILE_NAMES_ENV = "AUTOPOSTER_STATE_FILE_SECRET_NAMES"
+
+
+def state_file_secret_names() -> list[str]:
+    """The secret NAMES the STATE FILE answers and the environment does not,
+    in ``_SECRET_ENV`` then ``_SOFT_SECRET_ENV`` order. Names, never values --
+    the same rule ``missing_hard_secret_names`` above follows and for the same
+    reason.
+
+    This exists because ``boot._export`` erases the distinction on purpose:
+    it publishes the file's values into ``os.environ`` before the exec, which
+    is what makes a file-configured deployment indistinguishable from an
+    env-configured one downstream. Downstream is right to be indifferent;
+    the SETTINGS-PAGE ROTATION is not, because a value written to a file that
+    the next boot's short-circuit never opens would be un-rotated by the next
+    restart.
+
+    The precedence is ``resolve_secret_values``' precedence, name by name: a
+    name the environment carries is NOT from the file even when the file also
+    holds it -- and holds the same string, which is exactly the shape
+    ``deploy/README.md``'s ExternalSecrets migration produces. Comparing the
+    file's value to the running one gets that case wrong; this does not.
+
+    The env-complete short-circuit is repeated rather than shared so the
+    GitOps exemption stays structural here too: such a deployment returns
+    ``[]`` without the file being opened at all. That costs one extra read of
+    one small file on the file-configured boot, once per process.
+    """
+    if all(os.environ.get(name) for name in _SECRET_ENV.values()):
+        return []
+    from_file = read_secrets_file(secrets_file_path())
+    return [
+        name
+        for name in (*_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
+        if not os.environ.get(name) and from_file.get(name)
+    ]
+
+
 class Secrets(BaseModel):
     """Runtime secrets. Never read from the YAML config file."""
 

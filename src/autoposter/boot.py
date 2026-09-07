@@ -60,7 +60,12 @@ import sys
 import uvicorn
 
 from autoposter.config.loader import config_document_path
-from autoposter.config.schema import missing_hard_secret_names, resolve_secret_values
+from autoposter.config.schema import (
+    STATE_FILE_NAMES_ENV,
+    missing_hard_secret_names,
+    resolve_secret_values,
+    state_file_secret_names,
+)
 from autoposter.config.state import state_config_path
 
 logger = logging.getLogger(__name__)
@@ -180,6 +185,16 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
+    # BEFORE `_export`, which is what would destroy the answer: it publishes
+    # the file's values into `os.environ`, after which nothing downstream can
+    # tell the two deployment shapes apart. `_export` iterates `resolved`
+    # only, so it leaves this name alone, and `os.execv` below carries the
+    # whole environment into the new process image.
+    #
+    # Set unconditionally, including to "": an env-configured boot publishes
+    # an explicit empty marker rather than no marker, and both read as "no
+    # name came from the file" downstream. Names, never values.
+    os.environ[STATE_FILE_NAMES_ENV] = ",".join(state_file_secret_names())
     _export(resolved)
     # The plaintext credentials leave this frame as soon as they are published:
     # any traceback renderer that prints locals (pytest --tb=long, an error
