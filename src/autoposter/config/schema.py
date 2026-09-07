@@ -3904,6 +3904,24 @@ class Config(BaseModel):
         default=False,
         description="Serve the /docs, /redoc and /openapi.json endpoints, which enumerate every endpoint to anyone who can reach the port.",
     )
+    # This deployment's own address, and the one config value that describes
+    # where Autoposter *is* rather than what it manages. It is not
+    # `notifications.url` -- that is the outbound target run-completion events
+    # are POSTed TO -- and it is not a secret: config/overrides.py's
+    # `_reject_secrets` makes a `secrets` key a hard error, and a URL is not
+    # one. Deliberately NOT in config/live.py's FROZEN_SECTIONS: nothing built
+    # at startup reads it. The setup wizard and the Settings rotation action
+    # are its only readers.
+    public_url: str = Field(
+        default="",
+        description=(
+            "This deployment's own externally reachable base URL, for example "
+            "https://autoposter.example.com. Radarr's and Sonarr's Webhook "
+            "connections are pointed at this address plus /webhook/radarr or "
+            "/webhook/sonarr. Not a credential; empty means nothing is "
+            "registered automatically."
+        ),
+    )
     plex: PlexConfig = Field(
         description=(
             "How this service reaches the Plex server: its address, which libraries "

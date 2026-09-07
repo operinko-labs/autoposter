@@ -12,6 +12,11 @@ skip_tba: true
 # enumerate every endpoint, so they stay off outside development.
 api_docs_enabled: false
 
+# This deployment's own externally reachable base URL. The setup wizard and the
+# Settings page point Radarr's and Sonarr's Webhook connections at
+# <public_url>/webhook/<service>. Empty registers nothing.
+public_url: ""
+
 plex:
   url: https://<plex-host>
   excluded_libraries: [Muskarit, Photos]

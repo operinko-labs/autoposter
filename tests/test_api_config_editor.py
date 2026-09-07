@@ -2152,3 +2152,16 @@ async def test_an_unknown_field_on_the_body_is_still_refused(client, auth_header
         json={"document": {"workers": 9}, "expected_version": "whatever"},
     )
     assert response.status_code == 422
+
+
+async def test_the_deployment_url_is_served_as_an_editable_leaf(client, auth_headers):
+    """A new top-level scalar has to reach the Settings page as a described,
+    non-frozen row -- which is the whole reason it is a config key rather than
+    an environment variable."""
+    response = await client.get("/api/config", headers=auth_headers)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "public_url" in body
+    assert body["field_descriptions"]["public_url"].strip() != ""
+    assert "public_url" not in body["frozen_paths"]

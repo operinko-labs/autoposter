@@ -251,3 +251,21 @@ def test_render_affecting_short_circuits_on_the_wholesale_version():
     # nothing moved either. If these two ever disagreed, the cheap check would
     # be swallowing re-renders rather than skipping eight hashes.
     assert moved_kinds(before, after) == set()
+
+
+def test_the_deployment_url_does_not_move_the_render_version():
+    """Storm guard leg 1, read rather than assumed: `render_version`'s payload
+    is an explicit literal, so a new top-level scalar joins it only if somebody
+    puts it there. Sixteen thousand adopted fingerprints ride on this."""
+    import yaml
+
+    from autoposter.config.loader import build_config, render_version
+    from tests.test_example_config_matches_schema import EXAMPLE
+
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    before = render_version(build_config(document))
+
+    document["public_url"] = "https://autoposter.example.test"
+    after = render_version(build_config(document))
+
+    assert before == after

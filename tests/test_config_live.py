@@ -236,3 +236,14 @@ def test_per_collection_webhooks_are_not_frozen():
     assert "notifications" in FROZEN_SECTIONS
     assert frozen_reason("notifications") is not None
     assert frozen_reason("collections.definitions") is None
+
+
+def test_the_deployment_url_is_not_frozen():
+    """`public_url` is read by the setup wizard and by the Settings rotation
+    action, never by an object built at startup -- so a restart pill on it
+    would be a promise the code does not make. Recon section 5.2."""
+    from autoposter.config.live import FROZEN_SECTIONS, frozen_reason, is_inert
+
+    assert "public_url" not in FROZEN_SECTIONS
+    assert frozen_reason("public_url") is None
+    assert is_inert("public_url") is False
