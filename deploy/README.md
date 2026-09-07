@@ -77,73 +77,118 @@ any first-start wizard accepts.
 
 ### The five steps
 
+Every step past the first has a **Back** button. Back is free and entirely
+client-side: the server already holds everything a re-render needs (a stored
+credential is reported as stored and never displayed), re-submitting a step
+replaces that step's values and nothing else, and a blank field keeps what is
+already held rather than clearing it. There is no "unstage" call, so there is
+nothing about going back that can put the page and the server out of step.
+Going forward is the opposite: a step advances only once its own POST has
+returned 200.
+
 1. **Master password.** Bcrypt-hashed and written to the state file
    immediately — it is a soft secret, unlike everything below — and every
-   later step requires the token this mints. With a hash already
-   persisted (a reload, a second tab, or an admin hash supplied by
-   environment while other credentials are still missing) this step
-   *verifies* rather than *sets*: the submitted password is checked against
-   the stored hash instead of becoming it.
-2. **The database URL**, validated by connecting before it is kept, so a
-   well-formed URL pointing at nothing is refused here rather than passing
-   this step and failing hours later with the wizard already gone. Staged in
-   memory, not written, until step 5.
-3. **Provider keys**, each optional; an already-stored one is reported as
-   stored and never displayed, and a blank field keeps what is already held
-   rather than clearing it. One name on this list, the Sonarr/Radarr webhook
-   secret, is not collected but generated: minted the first time this step
-   completes with none on record, returned **once**, in that one response
-   body, and never again — every later read, the plain `GET` included,
-   reports only whether it is stored. Submitting a value for it yourself is
-   refused outright.
-4. **The Plex server URL**, written into a config document derived from the
-   shipped example — offered only while no document already resolves. A
-   deployment whose document already resolves (a mounted ConfigMap, compose's
-   bind-mounted example) is told so and never offered this step: writing
-   beside a document that already resolves would produce a file the next
-   boot never reads, with the operator's Plex URL landing in it. The refusal
-   is a server rule (a direct `POST` is answered a fixed 400), not merely an
-   unoffered button. This step reads the shipped example document unguarded
-   (`read_config_document(example_config_path())`), so an image that does not
-   carry that document answers this step with a 500 rather than a wizard
-   error — the image build must always include it.
-5. **Finish.** Steps 2–4 are staged in memory rather than persisted as they
-   are collected. This step writes the config document **first**, then the
-   secrets file, each atomically, then re-runs the same CONFIGURED check the
-   next boot will run — over what was actually just written, not over what
+   later step requires the token this mints. With a hash already persisted (a
+   reload, a second tab, or an admin hash supplied by environment while other
+   credentials are still missing) this step *verifies* rather than *sets*.
+2. **This deployment's own URL.** The address other services reach Autoposter
+   at, e.g. `https://autoposter.example.com`. It is a **config** value, not a
+   credential: the new top-level `public_url` key. It must be an `http://` or
+   `https://` address with a host and with no username or password in it —
+   the same guard every other operator-typed address in the wizard passes.
+   It is asked for here, at the top, because it is what the Radarr/Sonarr
+   registration builds its callback from, and an operator who does not know it
+   yet should find that out now rather than at the bottom.
+
+   **On a deployment whose configuration document already resolves** (a
+   mounted ConfigMap, compose's bind-mounted example) the wizard stages this
+   value, uses it for the registrations, and **writes it nowhere** — writing
+   beside a document the next boot never opens is exactly the failure the
+   config step's refusal exists to prevent. The finish page names that
+   omission and the key it would have been. Add `public_url:` to that document
+   yourself if you want the Settings page to re-register for you later.
+3. **The database URL** — offered **only** when nothing resolves from the
+   environment or the state file. Validated by connecting before it is kept,
+   so a well-formed URL pointing at nothing is refused here rather than
+   passing this step and failing hours later with the wizard already gone.
+   Staged in memory, not written, until step 5.
+4. **Systems.** One collapsible panel per system: Plex, the Plex account,
+   TMDb, TVDB, Fanart, MDBList, Radarr, Sonarr, Harbor, Tracearr. A system
+   this deployment cannot boot without opens by default; one whose credential
+   is already stored collapses with a **Stored** pill on its header; the rest
+   collapse. Open or closed is never sent to the server and never persisted.
+
+   - **Check connection.** Every panel has one. It goes to a single
+     token-gated endpoint whose targets are a compiled-in table: the caller
+     names a system key from a ten-entry allowlist and, for the four whose
+     address is not built in (Plex, Radarr, Sonarr, Tracearr), a base address
+     — never a path, a method or a header. The answer is one of three fixed
+     sentences, the third carrying an exception's class name, and never the
+     other service's own response. Every probe is bounded at five seconds.
+
+     There is deliberately **no private-IP denylist**: every correct target on
+     every shipped deployment *is* a private address (`http://sonarr`,
+     `http://plex:32400`), so a denylist would refuse the only right answers.
+     What that leaves, stated rather than papered over: someone holding the
+     setup token can learn whether an arbitrary host answers on an arbitrary
+     port, as a boolean. The token is minted only by the master password, and
+     that step is rate-limited.
+   - **Plex signs in rather than being pasted.** The panel starts a PIN flow
+     against plex.tv (a strong PIN — plex.tv mints a long, opaque code rather
+     than the four-character one a typed sign-in uses, so there is nothing to
+     type; the link already carries it), shows the code and a sign-in link,
+     and polls every two seconds until you approve or the code expires. The
+     code and the link are shown deliberately — they are minted by plex.tv,
+     are public by design, and there is no flow without them; the account
+     token they produce is never shown, never logged, and is stored under **both**
+     `AUTOPOSTER_PLEX_TOKEN` and `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` with no
+     exchange, because on an owned server those two values are the same one.
+     Servers shared *to* the account are out of scope and the pick-list omits
+     them. You then choose the server (its local address first) and tick the
+     libraries to manage; the unticked ones become `plex.excluded_libraries`.
+   - **Register the webhook for me.** Radarr's and Sonarr's panels each carry
+     this. It creates — or updates in place, matched on name *and*
+     implementation — a `Webhook` connection named `Autoposter - Radarr` /
+     `Autoposter - Sonarr`, pointed at `<public_url>/webhook/<service>` with
+     `method: POST` and one `headers` entry keyed `X-Autoposter-Token`
+     carrying the generated secret. The secret rides a **header**, never a
+     query parameter: that URL is stored in the *arr's own database, shown in
+     its UI and written to its logs. Run **Check connection** on the panel
+     first — the address the registration uses is the one that check proved.
+
+     A failed registration **never blocks the finish step.** You can paste the
+     secret into the connection by hand, which is what an operator does today,
+     and the finish page reports what did not happen.
+
+   One credential on this step is not collected but generated: the
+   Sonarr/Radarr webhook secret, minted the first time the step completes with
+   none on record, and shown **once**, on the finish page. Submitting one
+   yourself is refused outright.
+5. **Finish.** Three blocks: the generated secret, once, with the warning that
+   it will not return; one row per *arr saying `created`, `updated`, the
+   refusal sentence, or `not attempted`, with the URL that was registered (not
+   the header value); and everything left for later — each credential left
+   empty by name, the database step if the environment already resolved one,
+   and `public_url` if a supplied document meant it could not be written.
+
+   Then the write. Steps 2–4 are staged in memory rather than persisted as
+   they are collected. This step writes the config document **first**, then
+   the secrets file, each atomically, then re-runs the same CONFIGURED check
+   the next boot will run — over what was actually just written, not over what
    this process believes it wrote. Only if that agrees does it hand the
-   process over: an `os.execv` into a fresh `python -m autoposter.boot`,
-   which is what makes the exit atomic — the setup token, its routes and the
+   process over: an `os.execv` into a fresh `python -m autoposter.boot`, which
+   is what makes the exit atomic — the setup token, its routes and the
    wizard's application object all cease to exist in the same instant the
-   process image is replaced, with nothing left to invalidate. A check that
-   disagrees names the unmet step and leaves the wizard running.
+   process image is replaced. A check that disagrees names the unmet step and
+   leaves the wizard running.
 
    **Why document-first.** Both write orders have a crash window between the
-   two files landing, and only this order's window is survivable.
-   Interrupted after the document lands but before the secrets file does, the
-   hard secrets are still absent — the next boot is the wizard again, from
-   step 1. Interrupted the other way round would leave every credential
-   present and no document: the configuration-error case above, which exits
-   forever and is never served the wizard that could fix it. The same
-   reasoning is why steps 2–4 are staged rather than written as they are
-   collected in the first place: a wizard abandoned mid-way, or a pod evicted
-   between two writes, has to land on the recoverable side.
-
-Reloading the page loses the CLIENT's token — a module-level variable,
-deliberately never in `sessionStorage` — and whatever is on screen, including
-the once-shown webhook secret if step 3 just minted it. It does **not** lose
-anything the server already accepted: `SetupState.staged` and
-`state.config_document` live on the setup application object for as long as
-that process keeps running, and nothing clears them on a reload. A reload
-therefore always returns to the password pane — because step 1's hash is
-already persisted, that pane asks to **prove** the password rather than set
-it again, the same distinction the admin-hash-supplied-by-environment case
-above makes — and re-proving it mints a new token over the same staged
-state: `/progress` still reports the database step done and the provider
-keys stored, and the database pane stays hidden, exactly as before the
-reload. What *does* discard the staged steps is a process restart, not a
-page reload — restarting the container is the one action that would send
-the wizard back to step 1.
+   two files landing, and only this order's window is survivable. Interrupted
+   after the document lands but before the secrets file does, the hard secrets
+   are still absent — the next boot is the wizard again, from step 1.
+   Interrupted the other way round would leave every credential present and no
+   document: the configuration-error case above, which exits forever and is
+   never served the wizard that could fix it.
 
 ### Where it writes
 
