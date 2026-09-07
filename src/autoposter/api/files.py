@@ -40,11 +40,15 @@ the RULE. The listing serves basenames and never a root.
 import asyncio
 import logging
 import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from PIL import Image, ImageFont
+from starlette.datastructures import UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from autoposter.api.auth import require_session
 from autoposter.config.loader import RENDER_ART_KINDS, config_for_library
@@ -442,3 +446,235 @@ async def delete_file(
         await session.commit()
 
     return {"status": "deleted", "name": normalised}
+
+
+def _verify(kind: str, path: Path) -> None:
+    """These bytes are a file this service can actually use, or `SourceRefused`.
+
+    **PNG.** Three checks, in the order that lets each one answer for itself.
+
+    The format is read first, off the header, because it is the cheap one and
+    because the two ways a `.png` can be something else are both answered
+    there: Pillow refuses to open an SVG at all, and it opens a JPEG happily
+    and says so. Both matter, because
+    `render/artwork_fetch.py::_validate_image` RETURNS EARLY for anything
+    `_looks_like_svg` recognises (`artwork_fetch.py:129-130`) and accepts any
+    format Pillow decodes, so a JPEG or a WebP renamed `.png` walks straight
+    through it. An overlay is composited by `badges/compose.py`'s Pillow
+    `_load` and needs real PNG alpha; a `.png` that is secretly a JPEG would
+    fail there, per item, in a worker thread, which is the failure this check
+    moves to the door.
+
+    Then `_validate_image` -- the same full-pixel decode added after job 40478,
+    a PNG whose header is valid and whose IDAT stream contradicts it, which
+    `magick identify` and Pillow's `verify()` both pass. Reused, never
+    re-implemented; `overlays/sources.py:136-170` reuses it for exactly the
+    same bytes arriving by a different door. It runs last because it is the
+    expensive one, and because by then the file is known to be the one kind of
+    file it is being asked about.
+
+    **Font.** No equivalent exists in this tree, and the honest check is a real
+    FreeType parse -- which is what `magick` will do anyway when
+    `render/compositor.py::build_text_argv` and
+    `collections/separator_art.py:168` hand it the `-font` argument. A font is
+    executable-adjacent input to that parser, and this endpoint is the ONLY
+    place a font's size is ever bounded: `render/artwork_fetch.py:64`'s
+    `RENDER_MAX_BYTES` guards a downloaded artwork SOURCE, and the font path is
+    a config value with no pre-check at all.
+
+    Both decoders are handed operator bytes and may raise anything they like --
+    Pillow's `UnidentifiedImageError`, an `OSError` out of zlib, a
+    `struct.error` out of FreeType -- and every one of them means the same
+    thing here, so both are caught wholesale and answered with the single fixed
+    refusal this route serves.
+
+    Neither branch reads the part's `Content-Type` or its file name --
+    `api/manual.py:274-277`'s rule. Blocking; called from a thread.
+    """
+    from autoposter.render.artwork_fetch import SourceRefused, _validate_image
+
+    if kind == "overlays":
+        try:
+            with Image.open(path) as image:
+                fmt = image.format
+        except Exception as exc:
+            raise SourceRefused("an uploaded overlay is not an image this service opens") from exc
+        if fmt != "PNG":
+            raise SourceRefused("an uploaded overlay is not a PNG")
+        _validate_image(path, "an uploaded overlay")
+        return
+    try:
+        ImageFont.truetype(str(path), 40)
+    except Exception as exc:
+        raise SourceRefused("an uploaded font is not a parseable face") from exc
+
+
+@router.post("/files/{kind}")
+async def upload_file(
+    kind: FileKind, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Put one operator-supplied file into this directory.
+
+    **Two ceilings, doing two jobs**, both lifted from `api/manual.py` rather
+    than re-derived. The budget on `receive` (`_budgeted_receive`, `:233-259`)
+    bounds the READ, so an endless body is dropped at the wire instead of being
+    spooled: Starlette's `max_part_size` bounds only parts with NO file name,
+    and a FastAPI `UploadFile`/`File()` declaration spools the WHOLE body
+    before a handler is entered. The running total in the copy loop is the
+    exact cap -- `PICK_MAX_BYTES`, one number for every upload door in this
+    service -- checked BEFORE each chunk is written, so the staged file cannot
+    hold more than the cap even for an instant.
+
+    **The protected set is checked FIRST**, on the submitted string, before the
+    name rule and before a byte of the part is read -- the same order
+    `delete_file` uses and for the same reason: `OFL.txt` and `PROVENANCE.md`
+    carry a suffix `SUFFIXES["fonts"]` does not manage, so behind the name rule
+    they would earn a refusal about file names, which is true and useless.
+
+    **The submitted name reaches `normalised_name` whole.** Not
+    `Path(submitted).name`, which would quietly REWRITE `../escape.png` into
+    something storable instead of refusing it: the name rule's first check
+    exists to refuse that shape, and taking the basename in front of it would
+    take the refusal away.
+
+    **Staged, verified, then linked.** The bytes land on a dotfile under the
+    root (`mkstemp`, so it is on the same filesystem and the publish is
+    atomic; a dotfile, so the listing never shows it and no config value can
+    name it), are verified there, and only then become the operator's name.
+    `os.link` rather than `os.replace` because `os.replace` overwrites
+    silently and this route must not: `link` is the create-if-absent primitive,
+    so the 409 is decided by the filesystem rather than by a check with a race
+    in front of it. The staging file is removed in `finally` whichever way the
+    request ends.
+
+    **Overwrite is refused (409)** for the reason this module's docstring
+    gives: the artwork stage storms on an in-place replacement and the badge
+    stage freezes, and delete-then-upload is how the operator says which of the
+    two they meant. Growing `badge_fingerprint` a file-bytes input instead is a
+    Law B change with its own whole-library invalidation, and a different row.
+
+    **The upload itself moves nothing.** No config value is written, so
+    `render_version_for` is untouched for all four kinds and no stored
+    fingerprint can move until the operator names the file in a config value --
+    at which point row 111's per-kind version confines the invalidation to the
+    kind that names it. `tests/test_api_files_upload.py`'s storm-guard tests
+    are the pin.
+    """
+    from autoposter.api.candidates import PICK_MAX_BYTES
+    from autoposter.api.manual import (
+        UPLOAD_CHUNK_BYTES,
+        UPLOAD_ENVELOPE_BYTES,
+        UPLOAD_MALFORMED,
+        UPLOAD_NO_FILE,
+        UPLOAD_TOO_LARGE,
+        _budgeted_receive,
+        _UploadTooLarge,
+    )
+    from autoposter.render.artwork_fetch import SourceRefused
+
+    # The parser's own exception, and it is imported rather than caught as the
+    # `ValueError` it happens to subclass: `python-multipart` is a declared
+    # dependency of this project under exactly this name (`pyproject.toml:37`)
+    # and the name says what is being refused.
+    from python_multipart.exceptions import MultipartParseError
+
+    config = request.app.state.config
+    root = root_for(config, kind)
+    await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+
+    bounded = Request(
+        request.scope,
+        _budgeted_receive(request.receive, PICK_MAX_BYTES + UPLOAD_ENVELOPE_BYTES),
+    )
+    try:
+        # max_files=1/max_fields=0: one part, named `file`, and nothing else.
+        form = await bounded.form(max_files=1, max_fields=0)
+    except _UploadTooLarge:
+        logger.warning("refused a %s upload: past the byte budget", kind)
+        raise HTTPException(status_code=413, detail=UPLOAD_TOO_LARGE) from None
+    except MultipartParseError:
+        # Starlette converts only its OWN `MultiPartException`
+        # (`starlette/requests.py:292`), and a body that declares a boundary
+        # and then contradicts it -- a truncated browser upload, or a proxy
+        # that rewrote the body without the header -- comes out of
+        # `python_multipart` instead and would otherwise be an unhandled 500.
+        # Its message carries offsets and byte values, so the served sentence
+        # is the same fixed one the missing-boundary case earns.
+        logger.warning("refused a %s upload: the multipart body does not parse", kind)
+        raise HTTPException(status_code=422, detail=UPLOAD_MALFORMED) from None
+    except StarletteHTTPException as exc:
+        # Starlette re-raises the parser's MultiPartException as
+        # HTTPException(400, exc.message) whenever the scope carries an "app"
+        # key -- true for every real request -- and that message carries sizes
+        # and part counts. Caught by the STARLETTE base class rather than
+        # fastapi's subclass, which never sees the instance Starlette raises.
+        if exc.status_code == 400:
+            logger.warning("refused a %s upload: malformed multipart body", kind)
+            raise HTTPException(status_code=422, detail=UPLOAD_MALFORMED) from None
+        raise
+
+    staged: Path | None = None
+    try:
+        part = form.get("file")
+        if not isinstance(part, UploadFile) or not part.filename:
+            raise HTTPException(status_code=422, detail=UPLOAD_NO_FILE)
+        if part.filename in PROTECTED[kind]:
+            raise HTTPException(status_code=409, detail=FILE_PROTECTED)
+        name = normalised_name(kind, part.filename)
+
+        handle, staged_path = await asyncio.to_thread(
+            tempfile.mkstemp, prefix=".upload-", dir=str(root)
+        )
+        staged = Path(staged_path)
+        size = 0
+        with os.fdopen(handle, "wb") as sink:
+            while chunk := await part.read(UPLOAD_CHUNK_BYTES):
+                size += len(chunk)
+                if size > PICK_MAX_BYTES:
+                    logger.warning("refused a %s upload: past the size cap", kind)
+                    raise HTTPException(status_code=413, detail=UPLOAD_TOO_LARGE)
+                sink.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=422, detail=UPLOAD_NO_FILE)
+
+        try:
+            await asyncio.to_thread(_verify, kind, staged)
+        except SourceRefused:
+            # `str(exc)` is deliberately not served: it names decoders, sizes
+            # and pixel counts. It is logged instead.
+            logger.warning("refused a %s upload: the bytes are unusable", kind, exc_info=True)
+            raise HTTPException(status_code=422, detail=FILE_UNREADABLE) from None
+
+        # 0644 rather than mkstemp's 0600: these files are read by the same uid
+        # that writes them AND are the same class of file the init container's
+        # `cp` seeds, so matching that mode is what stops the listing showing
+        # two kinds of file. Applied to the staging file, before it is linked,
+        # so the published name never exists at the wrong mode.
+        await asyncio.to_thread(os.chmod, staged, 0o644)
+        try:
+            await asyncio.to_thread(os.link, str(staged), str(root / name))
+        except FileExistsError:
+            raise HTTPException(status_code=409, detail=FILE_EXISTS) from None
+    finally:
+        await form.close()
+        if staged is not None:
+            await asyncio.to_thread(staged.unlink, True)
+
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        session.add(
+            EventLog(
+                source="files",
+                event_type="asset_file_uploaded",
+                # The NAME only, exactly as `delete_file` records it and for
+                # the same reason: it is a name this service normalised to its
+                # own character set and already serves in its own listing, and
+                # an audit row that cannot say WHICH file arrived is not an
+                # audit row. Nothing about the bytes, the part or the request.
+                payload={"kind": kind, "name": name},
+                outcome=f"stored {kind}/{name}",
+            )
+        )
+        await session.commit()
+
+    return {"status": "stored", "name": name}

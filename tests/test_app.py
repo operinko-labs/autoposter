@@ -93,6 +93,7 @@ def test_the_files_routes_are_registered(secrets):
     paths = app.openapi()["paths"]
 
     assert "get" in paths["/api/files/{kind}"]
+    assert "post" in paths["/api/files/{kind}"]
     assert "delete" in paths["/api/files/{kind}/{name}"]
 
 
