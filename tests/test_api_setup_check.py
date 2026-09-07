@@ -524,3 +524,82 @@ async def test_the_one_probe_that_reads_a_body_stops_at_the_cap():
     assert len(chunks) * 1024 <= setup_checks.CHECK_BODY_LIMIT_BYTES + 1024
     assert outcome.ok is False
     assert outcome.refused is False
+
+
+# --- the credential the operator typed, not only the one the server holds ----
+
+
+async def test_the_check_probes_the_credential_supplied_inline(setup_client, monkeypatch):
+    """The two inputs in one accordion behaved oppositely: the address was live
+    from the form and the credential was whatever was last SAVED, so a freshly
+    pasted key was answered `refused` about a key that is correct."""
+    seen: dict[str, str] = {}
+
+    async def record(system, base_url, credentials, transport=None):
+        seen.update(credentials)
+        return setup_checks.CheckOutcome(ok=True, refused=False, failure=None)
+
+    monkeypatch.setattr(setup_api.setup_checks, "run_check", record)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/check",
+        json={"system": "sonarr", "base_url": SONARR_BASE, "credential_value": FAKE_APIKEY},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen["AUTOPOSTER_SONARR_APIKEY"] == FAKE_APIKEY
+    # Row 213: the answer is the fixed sentence and nothing the caller sent.
+    assert FAKE_APIKEY not in response.text
+
+
+async def test_an_inline_credential_is_used_for_the_probe_and_staged_nowhere(
+    setup_client, monkeypatch
+):
+    """Staging stays with Save. A check is a question, and answering it must
+    not become the deployment's answer to what its Sonarr key is."""
+
+    async def answered(system, base_url, credentials, transport=None):
+        return setup_checks.CheckOutcome(ok=True, refused=False, failure=None)
+
+    monkeypatch.setattr(setup_api.setup_checks, "run_check", answered)
+    token = await _authenticate(setup_client)
+
+    await setup_client.post(
+        "/api/setup/check",
+        json={"system": "sonarr", "base_url": SONARR_BASE, "credential_value": FAKE_APIKEY},
+        headers=_headers(token),
+    )
+
+    assert setup_client._transport.app.state.setup.staged == {}
+
+
+async def test_an_empty_credential_field_probes_the_one_the_deployment_holds(
+    setup_client, monkeypatch
+):
+    """Empty means keep is the rule every one-field pane in this wizard has,
+    and the check reads the same way: an operator who saved a key and then
+    presses Check without retyping it checks the key that was saved."""
+    held = "row-121-held-apikey-4d2e"
+    seen: dict[str, str] = {}
+
+    async def record(system, base_url, credentials, transport=None):
+        seen.update(credentials)
+        return setup_checks.CheckOutcome(ok=True, refused=False, failure=None)
+
+    monkeypatch.setattr(setup_api.setup_checks, "run_check", record)
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_SONARR_APIKEY": held}},
+        headers=_headers(token),
+    )
+
+    await setup_client.post(
+        "/api/setup/check",
+        json={"system": "sonarr", "base_url": SONARR_BASE, "credential_value": None},
+        headers=_headers(token),
+    )
+
+    assert seen["AUTOPOSTER_SONARR_APIKEY"] == held

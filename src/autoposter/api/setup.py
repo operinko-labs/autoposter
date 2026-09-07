@@ -740,6 +740,11 @@ async def set_public_url(body: PublicUrlRequest, request: Request) -> dict:
 class CheckRequest(BaseModel):
     system: str
     base_url: str | None = None
+    #: The credential typed into the form beside the button, when one was. Used
+    #: for THIS probe and staged nowhere -- staging stays with Save. Absent or
+    #: empty means "keep", the rule every one-field pane in this wizard has, and
+    #: the probe then runs against the credential the deployment holds.
+    credential_value: str | None = None
 
 
 @router.post("/check", dependencies=[RequireSetupToken])
@@ -756,6 +761,14 @@ async def check_connection(body: CheckRequest, request: Request) -> dict:
     fresh deployment writes. A failed check stages nothing -- an address that
     did not answer is not a fact about this deployment.
 
+    The CREDENTIAL is read the same way the address is: the value typed beside
+    the button when there is one, and the one the deployment holds when the
+    field is empty. Sending only the address meant the two inputs in one form
+    behaved oppositely -- the address live, the credential whatever was last
+    SAVED -- so a freshly pasted key was answered "refused" about a key that is
+    correct. An inline value authenticates this probe and is staged nowhere:
+    what the deployment WILL hold is Save's answer, not a question's.
+
     Never the provider's own body: an *arr's 400 echoes the fields it was sent,
     and a provider's error text can carry a key out of a query string.
     """
@@ -768,10 +781,22 @@ async def check_connection(body: CheckRequest, request: Request) -> dict:
         if not body.base_url:
             raise HTTPException(status_code=400, detail=CHECK_NEEDS_AN_ADDRESS)
         base_url = _require_http_url(body.base_url, PUBLIC_URL_NOT_AN_ADDRESS)
+        # `set_public_url`'s pair, for the same reason: a successful check
+        # STAGES this value and the finish step writes it into the config
+        # document, so an address that cannot survive that round trip is
+        # refused where it is typed rather than at the write.
+        if not is_storable(base_url):
+            raise HTTPException(status_code=400, detail=PUBLIC_URL_NOT_AN_ADDRESS)
     elif body.base_url:
         raise HTTPException(status_code=400, detail=CHECK_TAKES_NO_ADDRESS)
 
-    outcome = await setup_checks.run_check(body.system, base_url, _effective(request))
+    # `_effective` returns a fresh mapping per call, so the inline value goes
+    # into this probe's copy and reaches nothing that outlives it.
+    credentials = _effective(request)
+    if body.credential_value and check.credential is not None:
+        credentials[check.credential] = body.credential_value
+
+    outcome = await setup_checks.run_check(body.system, base_url, credentials)
 
     if outcome.ok:
         if base_url is not None:

@@ -149,10 +149,18 @@ export interface CheckResult {
   detail: string;
 }
 
-export function checkSystem(system: string, baseUrl: string | null): Promise<CheckResult> {
+/** `credentialValue` is the credential typed beside the button, or `null` to
+ * check the one the deployment already holds -- the same "empty means keep" the
+ * Save beside it has. The server uses an inline value for that one probe and
+ * stages it nowhere. */
+export function checkSystem(
+  system: string,
+  baseUrl: string | null,
+  credentialValue: string | null,
+): Promise<CheckResult> {
   return setupFetch("/api/setup/check", {
     method: "POST",
-    body: JSON.stringify({ system, base_url: baseUrl }),
+    body: JSON.stringify({ system, base_url: baseUrl, credential_value: credentialValue }),
   });
 }
 

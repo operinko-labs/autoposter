@@ -9,6 +9,18 @@ function respond(body: unknown, status = 200): Response {
 
 const SAVED = async () => true;
 
+/** A fetch stub whose calls carry a typed `init`, so the two tests below can
+ * read the body the accordion actually posted. */
+function checkFetch() {
+  return vi.fn((_path: string, _init?: RequestInit) =>
+    Promise.resolve(respond({ ok: true, detail: "Sonarr answered." })),
+  );
+}
+
+function sentBody(fetchMock: ReturnType<typeof checkFetch>): Record<string, unknown> {
+  return JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+}
+
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async () => respond({ ok: true, detail: "Sonarr answered." })));
 });
@@ -118,5 +130,42 @@ describe("SetupAccordion", () => {
     fireEvent.click(screen.getByRole("button", { name: /TMDb/ }));
 
     expect(screen.getByLabelText<HTMLInputElement>("AUTOPOSTER_TMDB_TOKEN").value).toBe("");
+  });
+
+  it("checks the credential typed beside it, not the one the server last saved", async () => {
+    const fetchMock = checkFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <SetupAccordion system="sonarr" label="Sonarr" credential="AUTOPOSTER_SONARR_APIKEY"
+        required={false} held={null} needsAddress onSave={SAVED} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Sonarr/ }));
+    fireEvent.change(screen.getByLabelText("Sonarr address"), {
+      target: { value: "http://sonarr.invalid:8989" },
+    });
+    fireEvent.change(screen.getByLabelText("AUTOPOSTER_SONARR_APIKEY"), {
+      target: { value: "row-121-typed-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Check connection" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(sentBody(fetchMock).credential_value).toBe("row-121-typed-key");
+  });
+
+  it("sends no credential when the field is empty, so the held one is checked", async () => {
+    const fetchMock = checkFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <SetupAccordion system="sonarr" label="Sonarr" credential="AUTOPOSTER_SONARR_APIKEY"
+        required={false} held="***REDACTED***" needsAddress onSave={SAVED} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Sonarr/ }));
+    fireEvent.change(screen.getByLabelText("Sonarr address"), {
+      target: { value: "http://sonarr.invalid:8989" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Check connection" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(sentBody(fetchMock).credential_value).toBeNull();
   });
 });

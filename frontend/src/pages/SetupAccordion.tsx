@@ -48,7 +48,14 @@ export function SetupAccordion({
   async function check() {
     setBusy(true);
     try {
-      setResult(await checkSystem(system, needsAddress ? address : null));
+      // Both inputs of this form, read the same way. Sending only the address
+      // checked whatever credential was last SAVED, so an operator who pasted
+      // a fresh key and pressed Check was told the key was refused -- about a
+      // key that is correct. Empty means keep, so an untouched field checks
+      // the credential the deployment holds.
+      setResult(
+        await checkSystem(system, needsAddress ? address : null, value === "" ? null : value),
+      );
     } catch (caught) {
       setResult({ ok: false, detail: setupErrorMessage(caught) });
     } finally {
