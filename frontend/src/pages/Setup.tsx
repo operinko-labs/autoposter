@@ -624,7 +624,8 @@ function SystemsPane({
           <div className="setup-field" key={name}>
             <FieldHead held={held} name={name} required={isRequired(name)} />
             <p className="setup-hint">
-              Generated for you and shown once on the last step. There is nothing to paste here.
+              Generated for you when you save any system below, and shown once on the last step.
+              There is nothing to paste here.
             </p>
           </div>
         ) : (

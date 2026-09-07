@@ -390,7 +390,10 @@ describe("Setup", () => {
     await waitFor(() => screen.getByTestId("held-AUTOPOSTER_WEBHOOK_SECRET"));
     expect(screen.getByTestId("held-AUTOPOSTER_WEBHOOK_SECRET")).toHaveTextContent("Not set");
     expect(screen.queryByLabelText("AUTOPOSTER_WEBHOOK_SECRET")).toBeNull();
-    expect(screen.getByText(/generated for you and shown once/i)).toBeInTheDocument();
+    // It is minted by the first save of ANY system, which is the one thing an
+    // operator on a deployment whose other credentials are all already stored
+    // would otherwise have no way to guess.
+    expect(screen.getByText(/generated for you when you save any system/i)).toBeInTheDocument();
   });
 
   it.each([
