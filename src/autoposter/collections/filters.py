@@ -109,7 +109,20 @@ Kometa v2.4.8, by enumerating the tables themselves rather than the docs:
   ``decade``, ``folder_location``, the whole ``episode_*`` family, ...).
 
 This table covers **54** of the 55 search names and **29** of the 70 filter
-names. Both halves of the residue are real work, and they are different work:
+names.
+
+**Roadmap row 156 appended three rows that are OUTSIDE both denominators, and
+the arithmetic above is unmoved by them.** ``common_sense_rating``,
+``imdb_rating`` and ``tmdb_rating`` are names this service COINED for values
+it holds in its own ``item_facts`` row; Kometa has no attribute of any of the
+three, in either vocabulary, so they add nothing to the 55 search names or the
+70 filter names and neither figure above moves. ``FILTERABLE_ATTRIBUTES`` --
+which is "what an operator may write in a ``filters:`` block", a different
+question -- does move, by three. ``filters.FACTS_FILTER_ROWS`` is the set, and
+``tests/test_collection_filters.py`` subtracts it before checking the
+filter-name figure so the two numbers cannot silently merge.
+
+Both halves of the residue are real work, and they are different work:
 the 45 unfiltered names are roadmap row 96's remainder (9a left 55 of them;
 ``plays``, ``last_played``, 10a's ``country``, phase B's four people rows and
 search-tails-1's ``title``/``edition`` came in here as ``unprobed``, which is
@@ -139,6 +152,7 @@ __all__ = [
     "BY_NAME",
     "DEFAULT_OPERATOR",
     "DISCOVERED",
+    "FACTS_FILTER_ROWS",
     "FILTERABLE_ATTRIBUTES",
     "FILTER_ATTRIBUTES",
     "ITEM_KINDS",
@@ -162,6 +176,7 @@ __all__ = [
     "base_language_code",
     "batched_attributes",
     "evaluate",
+    "facts_attributes",
     "language_fold_key",
     "parse_filters",
     "predicates",
@@ -267,6 +282,20 @@ OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     # `overlays/selection.py::OverlayItemView` supplies both from the
     # `MediaInfo` the badge pass already built.
     #
+    #
+    # THE CARVE-OUT, roadmap row 156, and it does not reverse A-1: A-1 refused
+    # two DERIVED names for values Plex already answers under Kometa's own
+    # spelling -- `audio_language.count_gte: 2` says the same thing, so the
+    # coinage bought nothing and cost an operator a word Kometa refuses. Row
+    # 156's three are the opposite case: the value is in this service's own
+    # `item_facts` row, Kometa's same-named filter reads a DIFFERENT value
+    # from Plex (`ItemFacts.content_rating` is a Common Sense age band,
+    # `content_rating` is an agent certification), and shipping ours under
+    # Kometa's name would be the same-name-different-filter parity bug rather
+    # than a convenience. There was no existing spelling to prefer. The
+    # coinage is therefore fenced rather than general: `FACTS_FILTER_ROWS`
+    # below is the whole list, `config/schema.py`'s gate opens for exactly
+    # those names, and a fourth one is a roadmap row, not an edit here.
     # SEARCH-side: deliberately absent from `SEARCH_OPERATORS_BY_TYPE` below.
     # Kometa's count modifiers are a client-side filter mechanism; Plex is
     # never asked "how many audio languages", so a `plex_search` naming one
@@ -569,6 +598,23 @@ _COUNT_COMPARISONS = {
 # module docstring.
 _MISSING_ALWAYS_EXCLUDES = ("int", "float", "date", "duration")
 
+# The rows roadmap row 156 coined a name for: facts-backed values this service
+# holds in its own ``item_facts`` row, under names Kometa does not have. In
+# table order. Three consumers read this and nothing else decides membership
+# of the set: ``_matches``'s missing-value rule below, ``_split_key``'s
+# plex_search refusal, and ``config/schema.py``'s ``filters:`` gate, which
+# opens for exactly these names.
+#
+# NOT derived from ``source == "facts"``, deliberately: ``tmdb_status`` and
+# ``last_episode_aired`` are on that tier too, carry KOMETA's own names
+# (sub-phase C2c's condition -- the column holds exactly the value space
+# Kometa's filter compares in), and are still refused for collections. A
+# derivation would have swept both in and silently changed overlay
+# `condition:` membership for them.
+FACTS_FILTER_ROWS: tuple[str, ...] = (
+    "common_sense_rating", "imdb_rating", "tmdb_rating",
+)
+
 # The ``search_field`` of the ONE row whose Plex field is not a constant
 # (``folder_location``, roadmap row 176).
 #
@@ -607,11 +653,22 @@ class FilterAttribute:
     passthrough. ``note`` is required by the table's own test: a row with
     nothing to say about itself is a row nobody checked.
 
+    THE ONE EXCEPTION, and it is fenced: a ``facts``-tier row under roadmap row
+    156's naming law carries a name this service coined, because Kometa's own
+    name for the same-shaped value means a different value read from a
+    different place. Those rows are ``FACTS_FILTER_ROWS`` and nothing else;
+    each declares the divergence in its own note.
+
     **The client-side half.** ``kinds`` is which library the attribute means
     anything for as a ``filters:`` predicate; ``source`` is one of
     ``SOURCE_TIERS``; ``filterable`` is whether the attribute is in Kometa's
     FILTER vocabulary at all (modules/builder.py:278-350). The two are
     independent: ``plays`` is filterable and unprobed, ``unplayed`` is neither.
+    For a ``FACTS_FILTER_ROWS`` row ``filterable=True`` means the narrower and
+    still-true thing: an operator may write it in a ``filters:`` block on THIS
+    service. It is not a claim about Kometa's vocabulary, which has no
+    attribute of that name -- see the row-156 paragraph in the module
+    docstring for why the two counts are no longer the same number.
 
     **The search half.** ``search_field`` is the Plex query field for a MOVIE
     library, after ``search_translation`` (modules/plex.py:60-138);
@@ -696,21 +753,23 @@ _BOTH = ("movie", "show")
 
 # --- THE TABLE ---------------------------------------------------------------
 #
-# Fifty-eight rows: 9a's fifteen in the order the roadmap names them
+# Sixty-one rows: 9a's fifteen in the order the roadmap names them
 # (roadmap.md:538-551), then 9b's four, 10a's two, phase B's five and
 # search-tails-1's seven appended rather than interleaved so the first
 # fifteen still read against the roadmap line they came from, plus C2a's
 # ``versions`` (A14), C2b's ``aspect`` (A11) and C2c's ``tmdb_status`` and
 # ``last_episode_aired`` (A-1/A-2), and then search-tail E-1's twenty (roadmap
-# row 173, family E) appended last. Column totals are asserted
+# row 173, family E) appended last, and roadmap row 156's three coined facts
+# rows appended last of all. Column totals are asserted
 # in tests/test_collection_filters.py as the transcription's checksum:
-# 20 tag / 4 str / 6 int / 7 float / 7 date / 1 duration / 13 bool;
+# 21 tag / 4 str / 6 int / 9 float / 7 date / 1 duration / 13 bool;
 # 14 listing / 5 tier2-batched / 1 tier2-deferred / 7 unprobed /
-# 29 search-only / 2 facts;
-# 23 both-kinds / 12 movie-only / 23 show-only for ``kinds``, and
-# 25 / 8 / 21 / 4 for ``search_kinds`` (the fourth bucket, ``()``, is the
+# 29 search-only / 5 facts;
+# 26 both-kinds / 12 movie-only / 23 show-only for ``kinds``, and
+# 25 / 8 / 21 / 7 for ``search_kinds`` (the fourth bucket, ``()``, is the
 # filterable-but-not-searchable one: ``versions``, ``aspect``,
-# ``tmdb_status`` and ``last_episode_aired``, which land in neither kind),
+# ``tmdb_status``, ``last_episode_aired``, ``common_sense_rating``,
+# ``imdb_rating`` and ``tmdb_rating``, which land in neither kind),
 # which is a different split and that is the point of the second column.
 # NOTE, recorded rather than silently fixed: this sentence read "Thirty-four
 # rows" and "24 / 8 / 1 / 1" until C2c, both of which stopped being true when
@@ -776,6 +835,18 @@ _BOTH = ("movie", "show")
 # it is a wrong one, and a filter built on it would produce full, plausible,
 # wrong collections rather than visibly empty ones. Twenty-two listing
 # parameters were tried against the tag counts; none changed anything.
+#
+# Roadmap row 156 appended THREE, and they are the first rows here whose names
+# Kometa does not have at all: `common_sense_rating` (tag), `imdb_rating` and
+# `tmdb_rating` (float), every one on `facts`, both-kinds in `kinds`, and in
+# the `()` bucket of `search_kinds` because Plex has never seen the value. So
+# the type split moves by +1 tag / +2 float, the source split on one tier
+# alone (facts 2 -> 5), `kinds` on one bucket alone (+3 both-kinds) and
+# `search_kinds` on one bucket alone (+3 in `()`). The SEARCHABLE count does
+# not move. The filter-covered count does not move either -- none of the three
+# is a Kometa filter name -- while `FILTERABLE_ATTRIBUTES` does, by three,
+# which is the arithmetic the module docstring's row-156 paragraph explains
+# and `test_the_coined_rows_are_outside_the_kometa_filter_denominator` checks.
 FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
     FilterAttribute(
         "genre", "tag", _BOTH, "tier2-batched",
@@ -1924,6 +1995,97 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         search_field=DISCOVERED, show_search_field=DISCOVERED,
         search_kinds=_BOTH, filterable=False,
     ),
+    # --- roadmap row 156: the three coined facts rows ------------------------
+    #
+    # The first rows in this table whose names Kometa does not have, appended
+    # under the carve-out written into the ADJUDICATION A-1 block above. Each
+    # states, in its own note: where the value comes from and who writes it,
+    # which Kometa filter it is NOT, that the missing value excludes under
+    # every operator, and that a written value gets no vocabulary check.
+    FilterAttribute(
+        "common_sense_rating", "tag", _BOTH, "facts",
+        "The Common Sense Media AGE BAND for the title, as MDBList serves it: "
+        "`facts/mdblist.py::parse_content_rating` returns the payload's bare "
+        "`age_rating` STRINGIFIED, and only when `commonsense` is truthy "
+        "(`age_rating` alone is populated from other sources), gathered at "
+        "`facts/gather.py:171-188` with the source stamped `mdb_commonsense` "
+        "and stored in `ItemFacts.content_rating`. AUTOPOSTER-ONLY; no Kometa "
+        "attribute of this name -- and that is the reason the row exists "
+        "rather than an inconvenience. Kometa's `content_rating` filter, "
+        "which this table also ships one row along, reads PLEX'S OWN "
+        "certification attrib: an agent's `PG-13`, `gb/U`, `TV-Y`. The two "
+        "value spaces are DISJOINT (`overlays/selection.py:85-91` states the "
+        "same thing for the badge side), so shipping this value under "
+        "Kometa's name would be the same-name-different-filter parity bug the "
+        "`facts` tier was fenced to refuse. VALUE SPACE, and write it the way "
+        "MDBList does: bare age numbers -- `8`, `13`, `16` -- never a Plex "
+        "certification spelling and never the rendered `13+`. A `tag` and not "
+        "a `str` for `content_rating`'s own reason (a certification is an "
+        "allowed list of values, not a substring) and for `tmdb_status`'s: "
+        "`str` defaults to CONTAINS, which would make `common_sense_rating: "
+        "13` match nothing useful and `1` match everything. NO VOCABULARY "
+        "CHECK, DECLARED: roadmap row 158 resolves a written tag value "
+        "against the LIBRARY's own list, and `engine._known_tag_values` skips "
+        "a row that is not searchable before the resolver is ever built -- "
+        "structurally, not incidentally -- so a misspelled band gives an "
+        "EMPTY COLLECTION rather than a warning. That is pre-158 behaviour, "
+        "one attribute along, and it is disclosed in deploy/README.md rather "
+        "than left to be discovered. MISSING VALUE: an item with no "
+        "`item_facts` row, or with the column NULL, is EXCLUDED under every "
+        "operator INCLUDING `.not` and the four `.count_*` -- roadmap row "
+        "156's ruling C3, which is a DIVERGENCE from every other `tag` row in "
+        "this table and is enforced in `_matches` by name. The reason is "
+        "sparsity: `render/pipeline.py:1653-1656` is the only writer, the "
+        "drift sweep visits `scheduler.drift_batch_size` (default 500) items "
+        "every `scheduler.drift_days` (default 7), and negating a NULL would "
+        "widen a cold-library collection to the whole library.",
+        search_field=None, show_search_field=None,
+        search_kinds=(), filterable=True,
+    ),
+    FilterAttribute(
+        "imdb_rating", "float", _BOTH, "facts",
+        "IMDb's own rating for the title, 0-10: `ItemFacts.critic_rating`, "
+        "gathered through `facts/gather.py::_critic_rating` and stamped "
+        "`sources['critic_rating'] = 'imdb'`. AUTOPOSTER-ONLY; no Kometa "
+        "attribute of this name. Kometa's `critic_rating` filter -- this "
+        "table's `listing` row of that name -- reads PLEX'S `rating` attrib, "
+        "which is whatever the library's agent wrote there and is commonly "
+        "Rotten Tomatoes. The value spaces OVERLAP (both are numbers in the "
+        "same range), which makes this row MORE dangerous to misname than "
+        "`common_sense_rating`, not less: an operator who conflated them "
+        "would get a plausible collection rather than an empty one, and "
+        "would never find out. Hence the distinct name. Same operators as "
+        "every `float` row (`eq`/`.not`/`.gt`/`.gte`/`.lt`/`.lte`); write the "
+        "value as IMDb does, `7.5`, not as a percentage. MISSING VALUE: "
+        "excluded under every operator including `.not` -- the `float` rule "
+        "would reach that verdict anyway, and `_matches`'s row-156 branch "
+        "states it for the tier so the two `float` rows and the `tag` row "
+        "share one sentence. Sparsity, coverage and the convergence rate: see "
+        "the `common_sense_rating` row above and deploy/README.md.",
+        search_field=None, show_search_field=None,
+        search_kinds=(), filterable=True,
+    ),
+    FilterAttribute(
+        "tmdb_rating", "float", _BOTH, "facts",
+        "TMDb's own rating for the title, 0-10: `ItemFacts.audience_rating`, "
+        "parsed by `facts/tmdb_facts.py` off the same `/movie/{id}` or "
+        "`/tv/{id}` payload the facts gather already fetches (zero new HTTP). "
+        "AUTOPOSTER-ONLY; no Kometa attribute of this name. Kometa's "
+        "`audience_rating` filter -- this table's `listing` row of that name "
+        "-- reads PLEX'S `audienceRating`, which on a Plex Movie agent "
+        "library is Rotten Tomatoes' audience score and on others is whatever "
+        "the agent wrote. Same overlapping-value-space hazard as "
+        "`imdb_rating` above, same remedy. NOTE, so a reader does not assume "
+        "otherwise: for an EPISODE `gather_facts` stores TMDb's episode "
+        "rating in this column, but an episode is not a collection member at "
+        "the item level this row is filtered on, and the row's `kinds` are "
+        "the two library types, so no filter here ever compares an episode's "
+        "value. MISSING VALUE: excluded under every operator including "
+        "`.not`. Sparsity, coverage and the convergence rate: see the "
+        "`common_sense_rating` row above and deploy/README.md.",
+        search_field=None, show_search_field=None,
+        search_kinds=(), filterable=True,
+    ),
 )
 
 BY_NAME: dict[str, FilterAttribute] = {row.name: row for row in FILTER_ATTRIBUTES}
@@ -2444,6 +2606,21 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
     # KeyError. It was written and tested with a synthetic row since
     # search-tails-1, before any real row reached it; ``versions`` is now that
     # real row, and ``aspect`` (C2b, A11) has since become the second.
+    # The THIRD branch (roadmap row 156). The generic unsearchable refusal
+    # below is true of ``versions`` and ``aspect`` -- Plex holds those values
+    # and simply spells no search field for them -- and it would send an
+    # operator hunting for a Plex field that has never existed. A ``facts``
+    # value is in this service's own database; Plex has never seen it. Fires
+    # for the whole tier, the two C2c rows included: their old refusal already
+    # pointed at ``filters:`` and this one still does, more accurately.
+    if searching and attribute.source == "facts":
+        raise ValueError(
+            f"{field}: {name!r} is a value this service holds in its own "
+            "item_facts row rather than a field Plex has, so a plex_search "
+            "cannot ask for it -- Plex has never seen it. Write it as a "
+            "`filters:` block on the definition instead; the search narrows "
+            "server-side and the filter refines what comes back"
+        )
     if searching and not attribute.searchable:
         raise ValueError(
             f"{field}: {name!r} is a client-side filter attribute but Plex has "
@@ -2706,6 +2883,30 @@ def batched_attributes(group: FilterGroup) -> tuple[str, ...]:
     seen: dict[str, None] = {}
     for predicate in predicates(group):
         if predicate.attribute.source == "tier2-batched":
+            seen.setdefault(predicate.attribute.name, None)
+    return tuple(seen)
+
+
+def facts_attributes(group: FilterGroup) -> tuple[str, ...]:
+    """The distinct coined ``facts`` attribute names this parsed filter reads,
+    in first-appearance order.
+
+    ``batched_attributes`` one tier along, and for the same reason: the engine
+    decides whether a definition needs the per-pass ``item_facts`` read from
+    the TABLE ROW and never from config, so a name that moves tiers changes
+    the engine's behaviour with no config edit anywhere. Distinct because two
+    predicates on one attribute are still one query, and ordered because the
+    refusal's action string names these back to the operator, who wrote them
+    in this order.
+
+    Keyed on ``FACTS_FILTER_ROWS`` rather than on ``source == "facts"``: the
+    two C2c rows are on that tier and are refused at config load, so a parsed
+    tree can never carry one here -- and if one ever did, asking the database
+    for a column no coined row reads would be the wrong repair.
+    """
+    seen: dict[str, None] = {}
+    for predicate in predicates(group):
+        if predicate.attribute.name in FACTS_FILTER_ROWS:
             seen.setdefault(predicate.attribute.name, None)
     return tuple(seen)
 
@@ -2996,6 +3197,29 @@ def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bo
     attribute = predicate.attribute
     negative = predicate.operator in _NEGATES
     have = view.get(attribute.name)
+    if attribute.name in FACTS_FILTER_ROWS and _is_missing(have, attribute.type):
+        # RULING C3, and it is ABOVE the count branch and above the type split
+        # below on purpose -- both of those would answer this case, and both
+        # would answer it wrong.
+        #
+        # An ``item_facts`` column is NULL for two different reasons and the
+        # database cannot tell them apart: the provider has nothing for this
+        # title, and nobody has gathered this item yet. (``media_items.
+        # facts_attempted_at`` distinguishes them, but it is a property of the
+        # ITEM's visit, not of the value, and a filter compares values.) The
+        # ordinary tag rule NEGATES a missing value, so
+        # ``common_sense_rating.not: 13`` on a library the facts sweep has not
+        # reached would select every item in it -- a full, plausible, wrong
+        # collection, which is the exact failure this tier's fence existed to
+        # prevent. The count rule reads a missing family as ZERO, so
+        # ``common_sense_rating.count_lt: 1`` would assert "this film has no
+        # Common Sense rating" about an item nothing has ever looked at.
+        #
+        # So: EXCLUDE, under every operator, always. The two ``float`` rows
+        # would reach the same verdict through ``_MISSING_ALWAYS_EXCLUDES``;
+        # they are covered here anyway so the rule is one sentence about the
+        # tier rather than a coincidence of two value types.
+        return False
     if predicate.operator in _COUNT_COMPARISONS:
         # ``.count_*`` asks HOW MANY, and Kometa answers it with a NUMBER
         # derived before any missing-value test runs
