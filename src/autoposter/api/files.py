@@ -47,7 +47,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from autoposter.api.auth import require_session
-from autoposter.config.loader import RENDER_ART_KINDS
+from autoposter.config.loader import RENDER_ART_KINDS, config_for_library
 from autoposter.db.models import EventLog
 from autoposter.db.models import Session as SessionModel
 
@@ -174,6 +174,56 @@ def contained(root: Path, name: str) -> Path:
     return resolved
 
 
+def _library_family_definitions(config) -> list[tuple[str, object]]:
+    """(where, definition) for every definition a LIBRARY draws and the global
+    config does not.
+
+    `badges.families` is overridable per library (`config/schema.py:1716`;
+    `definitions` is excluded at `:1699`), so a family enabled on one library
+    only expands into definitions whose `font:` is resolved by
+    `overlays/sources.py:127-128` -- `fonts_root` FIRST, the bundled face only
+    as a fallback. Enumerating the global config alone therefore reported
+    `referenced_by: []` about a face a render reads, and the delete went
+    through: that library's badge stage then silently switched to the bundled
+    face, and `badges/compose.py::badge_fingerprint` hashes the manifest and
+    the definitions' fields rather than font bytes, so nothing re-rendered and
+    nothing was signalled.
+
+    `config/loader.py::config_for_library` is the ONE place an override is
+    applied -- the same call `render/pipeline.py:1651` makes -- so it is
+    called here rather than the merge being re-stated. A library that names no
+    override, or none that states families, gets the global object back and
+    contributes nothing.
+
+    A family the GLOBAL config already names is skipped: the global pass
+    reports it, and reporting it again per library would say the same sentence
+    once per configured library.
+
+    `where` is the family an operator EDITS rather than the bundled definition
+    it expands into, because the definition is not a line in their config.
+    `FAMILIES` is imported here rather than at module scope for
+    `BadgesConfig._check_families`' own reason (`config/schema.py:1367-1377`):
+    constructing ~40 definitions pulls `overlays.selection` and `langcodes`,
+    and an operator with no per-library family must not pay for one.
+    """
+    extras: list[tuple[str, str]] = []
+    for library in config.libraries:
+        effective = config_for_library(config, library)
+        for family in effective.badges.families:
+            if family not in config.badges.families:
+                extras.append((library, family))
+    if not extras:
+        return []
+
+    from autoposter.overlays.families import FAMILIES
+
+    return [
+        (f"libraries.{library}.badges.families.{family}", definition)
+        for library, family in extras
+        for definition in FAMILIES[family]
+    ]
+
+
 def _references(config, kind: str) -> dict[str, list[str]]:
     """{file name: the config paths that name it}, from the LIVE config.
 
@@ -202,6 +252,11 @@ def _references(config, kind: str) -> dict[str, list[str]]:
     expansion means an index into `all_definitions()` is not an index into the
     `badges.definitions` an operator edits.
 
+    And `all_definitions()` on the GLOBAL config is not the whole draw:
+    `badges.families` is overridable per library, so
+    `_library_family_definitions` adds every definition a library draws and
+    the global config does not.
+
     `getattr(config.artwork, art_kind)` rather than
     `render/pipeline.py::art_config_for`, which is that one getattr: importing
     `render.pipeline` here would pull httpx, the provider ladder and the badge
@@ -214,18 +269,27 @@ def _references(config, kind: str) -> dict[str, list[str]]:
         # this listing does not serve, so it can never be the file being
         # deleted and must not be reported against a same-named one.
         if value and Path(value).name == value:
-            found.setdefault(value, []).append(where)
+            # One sentence per naming path: a family expands into many
+            # definitions naming one face, and `referenced_by` repeating the
+            # same family a dozen times says nothing the first one did not.
+            where_names = found.setdefault(value, [])
+            if where not in where_names:
+                where_names.append(where)
 
-    definitions = config.badges.all_definitions()
+    global_definitions = [
+        (f"badges.definitions.{definition.name}", definition)
+        for definition in config.badges.all_definitions()
+    ]
+    definitions = global_definitions + _library_family_definitions(config)
     if kind == "overlays":
         for art_kind in RENDER_ART_KINDS:
             settings = getattr(config.artwork, art_kind)
             note(settings.overlay_file, f"artwork.{art_kind}.overlay_file")
-        for definition in definitions:
+        for where, definition in definitions:
             if definition.file:
-                note(definition.file, f"badges.definitions.{definition.name}.file")
+                note(definition.file, f"{where}.file")
             elif not definition.builtin and not definition.url:
-                note(f"{definition.name}.png", f"badges.definitions.{definition.name}.name")
+                note(f"{definition.name}.png", f"{where}.name")
     else:
         for art_kind in RENDER_ART_KINDS:
             settings = getattr(config.artwork, art_kind)
@@ -236,8 +300,8 @@ def _references(config, kind: str) -> dict[str, list[str]]:
         title = config.collections.poster_title
         note(title.title.font, "collections.poster_title.title.font")
         note(title.collection_line.font, "collections.poster_title.collection_line.font")
-        for definition in definitions:
-            note(definition.font, f"badges.definitions.{definition.name}.font")
+        for where, definition in definitions:
+            note(definition.font, f"{where}.font")
     return found
 
 
@@ -324,10 +388,10 @@ async def delete_file(
        `config/impact.py:117-123` hashes as `""`, silently changing the
        fingerprint rather than failing).
 
-    404 for absent, for a directory, for a symlink and for anything that
-    resolves outside -- one status for every "there is nothing here you may
-    delete", so the response cannot be used to probe what exists outside the
-    root.
+    404 for absent, for a directory, for a symlink, for anything that resolves
+    outside and for a file that stops being one between the check and the
+    `unlink` -- one status for every "there is nothing here you may delete", so
+    the response cannot be used to probe what exists outside the root.
     """
     config = request.app.state.config
     if name in PROTECTED[kind]:
@@ -342,7 +406,22 @@ async def delete_file(
     if _references(config, kind).get(normalised):
         raise HTTPException(status_code=409, detail=FILE_REFERENCED)
 
-    await asyncio.to_thread(target.unlink)
+    try:
+        await asyncio.to_thread(target.unlink)
+    except OSError:
+        # The window between the containment check and this call is benign for
+        # containment -- `Path.unlink` is `os.unlink`, which never dereferences
+        # a final symlink, so a file swapped for one removes the LINK and
+        # nothing else -- but it is not benign for the status code. A second
+        # browser tab deleting the same file first raises `FileNotFoundError`,
+        # and a swap to a directory raises `IsADirectoryError`; uncaught,
+        # either answers 500 where the same request a millisecond earlier
+        # earned 404. `OSError` covers both and the permission case, and the
+        # answer is the refusal this route already serves for "there is
+        # nothing here you may delete" -- the exception is not served, so it
+        # cannot carry the path it was raised on.
+        logger.warning("a %s delete could not be completed: the file is no longer there", kind)
+        raise HTTPException(status_code=404, detail=FILE_NOT_FOUND) from None
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:

@@ -16,18 +16,22 @@ Every test points both roots at ``tmp_path``. Nothing here reads
 ``/app/assets``.
 """
 
+import os
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from autoposter.api.auth import hash_password
+from autoposter.api.files import OutsideRoot, contained, normalised_name
 from autoposter.app import create_app
-from autoposter.config.loader import load_config
+from autoposter.config.loader import build_config, load_config, read_config_document
 from autoposter.config.schema import Secrets
 from autoposter.db.models import EventLog
+from autoposter.overlays.schema import OverlayDefinition
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -371,3 +375,378 @@ async def test_a_refusal_never_carries_a_root_path(client, auth_headers, overlay
         body = (await client.delete(url, headers=auth_headers)).text
         assert str(overlays_root) not in body
         assert str(fonts_root) not in body
+
+
+# --- the reference enumeration, reader by reader ------------------------------
+
+# `status` is the shipped family whose every definition names `Inter-Medium.ttf`
+# (`overlays/families.py:934`). Any of the eleven would do; this one is picked
+# because its four definitions make the "one sentence per naming path" dedupe
+# visible in the assertion below rather than only in the implementation.
+FAMILY = "status"
+FAMILY_FONT = "Inter-Medium.ttf"
+
+
+def _with_definitions(config):
+    """`config` carrying one badge definition per reachability rung.
+
+    Three rungs and no more, because `overlays/sources.py:175-215` has three
+    that land under these roots: an explicit `file:`, the name-keyed
+    `<name>.png` a definition naming no `file`/`builtin`/`url` falls back to,
+    and `resolve_font_path`'s `fonts_root`-first `font:` rung (`:127-128`).
+    The example config carries no definition at all, so nothing else in this
+    suite executes any of them.
+    """
+    definitions = [
+        OverlayDefinition(name="ribbon", file="ribbon-art.png"),
+        OverlayDefinition(name="sticker"),
+        OverlayDefinition(name="labelled", font="Badge-Face.ttf"),
+    ]
+    return config.model_copy(
+        update={"badges": config.badges.model_copy(update={"definitions": definitions})}
+    )
+
+
+@pytest.fixture
+def library_family_config(config):
+    """`config` with one library drawing `status` and nothing else naming its
+    face.
+
+    Built through `build_config` rather than assembled by hand, so the
+    `libraries:` block runs the load-time rules a real config runs -- the key
+    must be one of `collections.libraries`, and the merged `BadgesConfig` must
+    pass `_check_families`.
+
+    Both collection poster-title faces are repointed, and that is what makes
+    the pair of tests below discriminating: every shipped family names
+    `Inter-Medium.ttf`, which `collections.poster_title.title.font` also names
+    by default (`config/schema.py:632`), so against the stock example the
+    refusal would fire through the collections reader whatever the per-library
+    enumeration did.
+    """
+    document = read_config_document(EXAMPLE)
+    document["libraries"] = {"TV Shows": {"badges": {"families": [FAMILY]}}}
+    built = build_config(document)
+    poster_title = built.collections.poster_title
+    repointed = poster_title.model_copy(
+        update={
+            "title": poster_title.title.model_copy(update={"font": "Title-Face.ttf"}),
+            "collection_line": poster_title.collection_line.model_copy(
+                update={"font": "Line-Face.ttf"}
+            ),
+        }
+    )
+    effective = built.model_copy(
+        update={
+            "overlays_root": config.overlays_root,
+            "fonts_root": config.fonts_root,
+            "collections": built.collections.model_copy(update={"poster_title": repointed}),
+        }
+    )
+    # The fixture's own premise, stated rather than assumed: the GLOBAL config
+    # names this face nowhere.
+    assert effective.badges.families == []
+    assert FAMILY_FONT not in {
+        effective.artwork.poster.text.font,
+        effective.collections.poster_title.title.font,
+        effective.collections.poster_title.collection_line.font,
+    }
+    return effective
+
+
+async def test_a_font_named_only_by_a_library_scoped_family_reports_that_library(
+    client, auth_headers, app, library_family_config, fonts_root
+):
+    """`badges.families` is overridable per library (`config/schema.py:1716`),
+    so a family enabled on one library expands into definitions whose `font:`
+    resolves under `fonts_root` first (`overlays/sources.py:127-128`).
+
+    `app.state.config` is swapped wholesale, which is what a config-editor save
+    does and why `root_for` and `_references` read it per request.
+
+    One sentence, not four: the family has four definitions naming this one
+    face, and `referenced_by` names the family an operator edits once.
+    """
+    app.state.config = library_family_config
+    (fonts_root / FAMILY_FONT).write_bytes(b"x")
+
+    row = _named((await client.get("/api/files/fonts", headers=auth_headers)).json(), FAMILY_FONT)
+
+    assert row["referenced_by"] == [f"libraries.TV Shows.badges.families.{FAMILY}.font"]
+
+
+async def test_a_font_named_only_by_a_library_scoped_family_cannot_be_deleted(
+    client, auth_headers, app, library_family_config, fonts_root
+):
+    """Deleting it would leave that library's badge stage on the bundled face,
+    and `badges/compose.py::badge_fingerprint` hashes the manifest and the
+    definitions' fields rather than font bytes -- so nothing would re-render
+    and nothing would be signalled."""
+    app.state.config = library_family_config
+    (fonts_root / FAMILY_FONT).write_bytes(b"x")
+
+    response = await client.delete(f"/api/files/fonts/{FAMILY_FONT}", headers=auth_headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "the running configuration still names that file"
+    assert (fonts_root / FAMILY_FONT).exists()
+
+
+async def test_the_same_font_is_deletable_when_no_library_names_the_family(
+    client, auth_headers, app, library_family_config, fonts_root
+):
+    """The other half of the pair: the very same config with its `libraries:`
+    block emptied deletes the face cleanly. So the refusal above comes from the
+    per-library enumeration and from nothing else in this config."""
+    app.state.config = library_family_config.model_copy(update={"libraries": {}})
+    (fonts_root / FAMILY_FONT).write_bytes(b"x")
+
+    response = await client.delete(f"/api/files/fonts/{FAMILY_FONT}", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert not (fonts_root / FAMILY_FONT).exists()
+
+
+async def test_a_badge_definitions_own_overlay_and_font_report_who_names_them(
+    client, auth_headers, app, config, overlays_root, fonts_root
+):
+    """The three definition rungs, which the example config leaves unexecuted:
+    an explicit `file:` (`overlays/sources.py:187`), the name-keyed
+    `<name>.png` fallback a definition naming no source takes (`:212`), and
+    `font:` under `fonts_root` (`:128`)."""
+    app.state.config = _with_definitions(config)
+    (overlays_root / "ribbon-art.png").write_bytes(b"x")
+    (overlays_root / "sticker.png").write_bytes(b"x")
+    (fonts_root / "Badge-Face.ttf").write_bytes(b"x")
+
+    overlays = (await client.get("/api/files/overlays", headers=auth_headers)).json()
+    fonts = (await client.get("/api/files/fonts", headers=auth_headers)).json()
+
+    assert _named(overlays, "ribbon-art.png")["referenced_by"] == ["badges.definitions.ribbon.file"]
+    assert _named(overlays, "sticker.png")["referenced_by"] == ["badges.definitions.sticker.name"]
+    assert _named(fonts, "Badge-Face.ttf")["referenced_by"] == ["badges.definitions.labelled.font"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "name"),
+    [
+        ("overlays", "ribbon-art.png"),
+        ("overlays", "sticker.png"),
+        ("fonts", "Badge-Face.ttf"),
+    ],
+)
+async def test_a_file_a_badge_definition_names_cannot_be_deleted(
+    client, auth_headers, app, config, overlays_root, fonts_root, kind, name
+):
+    app.state.config = _with_definitions(config)
+    root = overlays_root if kind == "overlays" else fonts_root
+    (root / name).write_bytes(b"x")
+
+    response = await client.delete(f"/api/files/{kind}/{name}", headers=auth_headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "the running configuration still names that file"
+    assert (root / name).exists()
+
+
+# --- one refusal at a time ----------------------------------------------------
+#
+# Every case below is chosen so that exactly ONE check can refuse it: delete
+# that check and the test goes red. Two of the name rule's disjuncts have no
+# such case and cannot have one, which the tests that reach them say.
+
+
+async def test_a_legal_name_over_the_length_limit_is_refused_on_its_length(client, auth_headers):
+    """65 legal characters, one dot, an allowlisted suffix, a bare basename:
+    `len(submitted) > NAME_MAX` is the only check that can fire. The suite's
+    other long name, `"over.png" + "x" * 70`, carries the suffix `.pngxxx...`
+    and is refused on that instead."""
+    name = "a" * 61 + ".png"
+    assert len(name) == 65
+
+    response = await client.delete(f"/api/files/overlays/{name}", headers=auth_headers)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "the file name must be ASCII letters, digits, dashes and underscores "
+        "plus one extension this directory accepts, and at most 64 characters"
+    )
+
+
+async def test_a_legal_shaped_name_carrying_an_illegal_character_is_refused(
+    client, auth_headers, overlays_root
+):
+    """`~` is a legal filename character and an unreserved URL path character,
+    so this reaches the handler as typed; it is not in `_NAME_CHARS`, and every
+    other disjunct passes. The file is planted so the refusal cannot be the
+    absent-file one."""
+    (overlays_root / "my~file.png").write_bytes(b"x")
+
+    response = await client.delete("/api/files/overlays/my~file.png", headers=auth_headers)
+
+    assert response.status_code == 422
+    assert (overlays_root / "my~file.png").exists()
+
+
+async def test_a_suffix_this_kind_does_not_manage_is_refused_on_the_suffix(
+    client, auth_headers, overlays_root
+):
+    """A JPEG under `overlays_root`: the length, the character set, the dot
+    count and the basename shape all pass, and only the suffix allowlist
+    stands. The refusal precedes the filesystem, which the surviving file
+    shows."""
+    (overlays_root / "photo.jpg").write_bytes(b"x")
+
+    response = await client.delete("/api/files/overlays/photo.jpg", headers=auth_headers)
+
+    assert response.status_code == 422
+    assert (overlays_root / "photo.jpg").exists()
+
+
+@pytest.mark.parametrize("submitted", ["../escape.png", "/etc/passwd.png", "sub/inner.png"])
+def test_the_name_rule_refuses_a_path_through_the_helper(submitted):
+    """Exercised on the helper because the router cannot deliver one: the three
+    `%2F` cases above are unquoted by the ASGI transport into three-segment
+    paths that match no route, so they 404 before FastAPI parses a path
+    parameter and the handler never sees them.
+
+    Deleting `Path(submitted).name != submitted` on its own does NOT turn this
+    red, and that is structural rather than a gap in the case: every separator
+    POSIX has is outside `_NAME_CHARS`, so the character-set disjunct refuses
+    each of these too. The check is first because it is the one a reader should
+    see first, not because it is independently reachable.
+    """
+    with pytest.raises(HTTPException) as raised:
+        normalised_name("overlays", submitted)
+
+    assert raised.value.status_code == 422
+
+
+def test_the_symlink_check_alone_refuses_a_link_whose_target_is_a_file_in_the_root(
+    monkeypatch, overlays_root
+):
+    """`candidate.is_symlink()` is the only check that can refuse this.
+
+    On a real filesystem the two halves mask each other: a planted symlink
+    resolves either to a parent outside the root or to a DIFFERENT name inside
+    it, and the parent/name check refuses it even with the symlink check gone.
+    The one shape that check could not catch is a link resolving to
+    `<root>/<its own name>` -- which is the link itself, a loop no filesystem
+    will resolve. So the discriminating case is built on the resolver: with
+    `realpath` returning the candidate unchanged, the parent IS the root, the
+    name IS the submitted one and the target IS a regular file.
+
+    The plain file asserted first is the control: it shows the fake resolver is
+    not itself the refusal.
+    """
+    (overlays_root / "real.png").write_bytes(b"x")
+    try:
+        (overlays_root / "link.png").symlink_to(overlays_root / "real.png")
+    except OSError:
+        pytest.skip("this filesystem does not allow the test to plant a symlink")
+    monkeypatch.setattr(os.path, "realpath", str)
+
+    assert contained(overlays_root, "real.png") == overlays_root / "real.png"
+    with pytest.raises(OutsideRoot):
+        contained(overlays_root, "link.png")
+
+
+def test_the_parent_check_alone_refuses_a_name_that_resolves_outside(
+    monkeypatch, overlays_root, tmp_path
+):
+    """`resolved.parent != real_root` is the only check that can refuse this:
+    the candidate is not a symlink, the resolved target is a regular file, and
+    the resolved name matches the submitted one.
+
+    The resolver is faked because a real filesystem cannot produce this shape
+    without a symlink -- a hard link resolves to its own path, so it lands back
+    under the root and is served, correctly, as the same file under a second
+    name.
+    """
+    (overlays_root / "mine.png").write_bytes(b"x")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "mine.png").write_bytes(b"secret")
+    real = os.path.realpath
+
+    def resolves_out(path):
+        return str(elsewhere / "mine.png") if Path(path).name == "mine.png" else real(path)
+
+    monkeypatch.setattr(os.path, "realpath", resolves_out)
+
+    with pytest.raises(OutsideRoot):
+        contained(overlays_root, "mine.png")
+
+
+def test_the_name_check_alone_refuses_a_name_that_resolves_to_another_file(
+    monkeypatch, overlays_root
+):
+    """`resolved.name != name` is the only check that can refuse this: the
+    candidate is not a symlink, the resolved parent IS the root and the
+    resolved target is a regular file. Faked for the same reason as above --
+    without a symlink no real resolution renames a final component."""
+    (overlays_root / "mine.png").write_bytes(b"x")
+    (overlays_root / "other.png").write_bytes(b"x")
+    real = os.path.realpath
+
+    def resolves_renamed(path):
+        return str(overlays_root / "other.png") if Path(path).name == "mine.png" else real(path)
+
+    monkeypatch.setattr(os.path, "realpath", resolves_renamed)
+
+    with pytest.raises(OutsideRoot):
+        contained(overlays_root, "mine.png")
+
+
+async def test_the_listing_skips_a_symlink_whose_target_is_inside_the_root(
+    client, auth_headers, overlays_root
+):
+    """The listing's own symlink skip, which the outside-target delete case
+    does not reach. A link to a file in the same root is a regular file to
+    `is_file()` and carries a listed suffix, so only `entry.is_symlink()` keeps
+    the same bytes from being served twice under two names -- one of which the
+    delete route refuses, which is a listing an operator cannot act on."""
+    (overlays_root / "real.png").write_bytes(b"x")
+    try:
+        (overlays_root / "link.png").symlink_to(overlays_root / "real.png")
+    except OSError:
+        pytest.skip("this filesystem does not allow the test to plant a symlink")
+
+    payload = (await client.get("/api/files/overlays", headers=auth_headers)).json()
+
+    assert [row["name"] for row in payload["files"]] == ["real.png"]
+
+
+async def test_an_unseeded_root_lists_nothing_rather_than_failing(
+    client, auth_headers, app, config, tmp_path
+):
+    """The PVC this row mounts is seeded once by an init container. A pod whose
+    volume has not been seeded yet must get "there is nothing here" on its first
+    page load rather than a 500 out of `iterdir`."""
+    app.state.config = config.model_copy(update={"overlays_root": tmp_path / "unseeded"})
+
+    response = await client.get("/api/files/overlays", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"files": []}
+
+
+async def test_a_file_that_vanishes_before_the_unlink_answers_the_fixed_refusal(
+    client, auth_headers, overlays_root, monkeypatch
+):
+    """Two browser tabs deleting the same file. The containment check passed a
+    millisecond ago, so this 404 is not one the route computed -- it is the one
+    it must still answer, rather than a 500 carrying a traceback. `Path.unlink`
+    is `os.unlink`, so that is where the concurrent removal is planted."""
+
+    def vanishes(path, *args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", str(path))
+
+    (overlays_root / "mine.png").write_bytes(b"x")
+    monkeypatch.setattr(os, "unlink", vanishes)
+
+    response = await client.delete("/api/files/overlays/mine.png", headers=auth_headers)
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "there is no such file in that directory"
+    assert str(overlays_root) not in response.text
