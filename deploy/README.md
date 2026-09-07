@@ -2590,6 +2590,13 @@ Enable these triggers:
 - **Radarr:** On Import Complete, On Rename, On Movie Add
 - **Sonarr:** On Import Complete, On Rename, On Series Add
 
+Any other trigger is acknowledged and ignored: a `Test` press, a `Grab` or a
+health event answers 200 and queues nothing, so an extra trigger left enabled
+costs nothing and raises no error in Radarr or Sonarr. A body that is not a
+delivery from either service — no recognisable `eventType`, or one of the
+triggers above carrying the wrong shape — is refused with a 400 and a fixed
+sentence, and appears on the Events feed with that sentence as its outcome.
+
 ## Tracearr watch-history collections
 
 Two collection presets — `chart_tracearr_movies` and `chart_tracearr_shows`,
