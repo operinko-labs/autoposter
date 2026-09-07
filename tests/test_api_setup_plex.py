@@ -279,17 +279,51 @@ async def test_library_sections_are_key_title_and_type_and_nothing_else():
     ]
 
 
-async def test_no_plex_call_logs_the_token_the_pin_or_the_identifier(caplog):
-    """This module emits no log line at all, and that is the whole claim.
+async def test_a_library_read_stops_at_the_body_cap():
+    """The timeout bounds TIME and not SIZE.
 
-    `caplog.set_level(logging.DEBUG)` deliberately DEFEATS the clamp
-    `boot.main` installs, so httpx's own INFO line -- one per request, carrying
-    the FULL url, and the poll url carries the PIN id -- is visible from here.
-    Measured: that line is the only place any of these four strings could
-    appear, and only the PIN id ever reaches it. Asserting `str(PIN_ID) not in`
-    the whole capture would therefore be asserting the clamp's effect in a test
-    that has just switched the clamp off; the clamp is pinned below instead,
-    and this test asserts what this module controls -- that it logs nothing.
+    Unlike the check probes -- which read a status and abandon the body --
+    these four calls have to READ their answers, and one of them reads from the
+    address the operator picked. An endless body there would be an endless read
+    into a pod with a memory limit. `setup_checks`' idiom, with a cap sized for
+    a body that is used rather than thrown away.
+    """
+    offered = 0
+    # Four megabytes, offered a chunk at a time and COUNTED. Large but finite
+    # on purpose: an endless generator would prove the cap by hanging forever
+    # when it regressed, and a test that hangs is not a test that reports.
+    chunk_count = 1024
+
+    async def oversized():
+        nonlocal offered
+        for _ in range(chunk_count):
+            offered += 1
+            yield b"x" * 4096
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=oversized())
+
+    # A megabyte of `x` is not JSON, which is the honest answer: the route
+    # above turns it into a class name like every other failure.
+    with pytest.raises(Exception):
+        await setup_plex.library_sections(
+            PLEX_BASE, ACCOUNT_TOKEN, transport=httpx.MockTransport(handler)
+        )
+
+    within_the_cap = setup_plex.PLEX_BODY_LIMIT_BYTES // 4096 + 1
+    assert within_the_cap < chunk_count, "the fixture must be bigger than the cap to prove one"
+    assert offered <= within_the_cap
+
+
+async def test_no_plex_call_logs_the_token_the_pin_or_the_identifier(caplog):
+    """Nothing reaches a log record, and `caplog` proves it at DEBUG.
+
+    `caplog.set_level(logging.DEBUG)` deliberately DEFEATS `boot.main`'s
+    process-wide clamp, which is the point: httpx logs one INFO line per
+    request with the FULL url and the poll url carries the PIN id, so if C6
+    rested on that clamp alone the last assertion here would fail. It passes
+    because every call runs inside `setup_checks.no_httpx_request_log` -- the
+    property is this module's own, not another file's setting.
     """
     caplog.set_level(logging.DEBUG)
     transport, _seen = _plex_transport(authorised=True)
@@ -298,26 +332,20 @@ async def test_no_plex_call_logs_the_token_the_pin_or_the_identifier(caplog):
     await setup_plex.poll_pin(PIN_ID, "row-121-client-id", transport=transport)
     await setup_plex.owned_servers(ACCOUNT_TOKEN, transport=transport)
 
-    ours = [record for record in caplog.records if not record.name.startswith("httpx")]
-    assert ours == []
-    # The token, the code and the identifier reach no line at all -- httpx's
-    # included. None of the three is ever put in a url; all three travel as
-    # headers, which httpx does not log.
     text = "\n".join(record.getMessage() for record in caplog.records)
     assert ACCOUNT_TOKEN not in text
     assert PIN_CODE not in text
     assert "row-121-client-id" not in text
+    assert str(PIN_ID) not in text
 
 
 async def test_boot_clamps_httpx_before_this_flow_can_make_a_request(monkeypatch, tmp_path):
-    """The one residual this row creates, pinned where it is actually fixed.
+    """The second line of defence, pinned because nothing pinned it before.
 
-    httpx logs one INFO line per request with the FULL url, and the poll url is
-    the first url in this service to carry a value that identifies a
-    credential-bearing exchange -- the PIN id. C6's "nothing identifying the
-    PIN is logged" is kept by `boot.main`'s clamp (boot.py:151) and by nothing
-    in `setup_plex`, and until this row nothing pinned that clamp: deleting the
-    line would have left every suite green.
+    `setup_plex`'s own filter is the first, and the test above proves it. This
+    is `boot.main`'s process-wide clamp (boot.py:151), which covers every other
+    httpx caller in the process -- and which no test asserted until this row
+    put a PIN id in a url: deleting the line would have left every suite green.
     """
     logging.getLogger("httpx").setLevel(logging.INFO)
     for name in HARD:
@@ -372,8 +400,9 @@ async def test_the_mint_route_serves_the_code_and_the_link_and_never_a_token(
 async def test_the_mint_route_stages_the_identifier_and_the_pin_id(
     setup_client, setup_state, monkeypatch
 ):
-    """Staged, never persisted: the identifier names this sign-in attempt, not
-    this deployment, and the poll 404s without the same one."""
+    """Staged, never persisted: the poll 404s without the same identifier the
+    mint used, so both have to outlive the request that made them -- and
+    nothing after the wizard needs either, so neither is written down."""
     _install(monkeypatch, authorised=False)
     token = await _authenticate(setup_client)
 
@@ -383,12 +412,16 @@ async def test_the_mint_route_stages_the_identifier_and_the_pin_id(
     assert setup_state.plex_pin_id == PIN_ID
 
 
-async def test_a_second_sign_in_never_inherits_the_abandoned_identifier(
+async def test_a_second_sign_in_reuses_the_deployments_client_identifier(
     setup_client, setup_state, monkeypatch
 ):
-    """A fresh identifier per mint. Re-using one would let an abandoned PIN's
-    approval land as this attempt's, and the identifier is the only thing
-    binding a poll to the mint that made it."""
+    """One identifier per deployment, not one per attempt.
+
+    It names this deployment as a DEVICE on the operator's plex.tv account, so
+    a fresh one per attempt would leave a dead device entry behind for every
+    sign-in they restarted. What must not be inherited is the abandoned PIN,
+    and the pin id is overwritten on every mint -- which is what makes reusing
+    the identifier safe."""
     _install(monkeypatch, authorised=False)
     token = await _authenticate(setup_client)
     await setup_client.post("/api/setup/plex/pin", headers=_headers(token))
@@ -396,7 +429,8 @@ async def test_a_second_sign_in_never_inherits_the_abandoned_identifier(
 
     await setup_client.post("/api/setup/plex/pin", headers=_headers(token))
 
-    assert setup_state.plex_client_identifier != first
+    assert setup_state.plex_client_identifier == first
+    assert setup_state.plex_pin_id == PIN_ID
 
 
 async def test_the_poll_answers_a_boolean_and_the_token_is_in_no_response_body(
@@ -601,8 +635,4 @@ async def test_no_route_logs_the_token_the_code_or_the_identifier(
     assert ACCOUNT_TOKEN not in text
     assert PIN_CODE not in text
     assert identifier not in text
-    # The PIN id reaches httpx's own INFO line and nothing else; the clamp that
-    # keeps that out of a deployment's log is pinned above, and this assertion
-    # is about the four routes' own lines.
-    ours = [record for record in caplog.records if not record.name.startswith("httpx")]
-    assert str(PIN_ID) not in "\n".join(record.getMessage() for record in ours)
+    assert str(PIN_ID) not in text

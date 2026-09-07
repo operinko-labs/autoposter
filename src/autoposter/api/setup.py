@@ -334,11 +334,15 @@ class SetupState:
         # Same lifecycle as public_url: staged, stamped onto the document, or
         # used-and-not-persisted when a document already resolves.
         self.base_urls: dict[str, str] = {}
-        # This browser's Plex sign-in attempt. The identifier must be the SAME
-        # string on the mint, the auth link and every poll -- plex.tv 404s a
-        # poll whose identifier differs, which the implementation probe
-        # measured -- and it identifies the ATTEMPT, not the deployment, so it
-        # is staged and never persisted.
+        # This deployment's Plex client identifier, and the PIN currently
+        # outstanding. The identifier must be the SAME string on the mint, the
+        # auth link and every poll -- plex.tv 404s a poll whose identifier
+        # differs, which the implementation probe measured -- and it names
+        # THIS DEPLOYMENT as a device on the operator's plex.tv account, so it
+        # is minted once and reused: a fresh one per attempt would leave a
+        # dead device entry on their account for every sign-in they restarted.
+        # A random string and never a hostname; staged, never persisted,
+        # because nothing after the wizard needs it.
         self.plex_client_identifier: str | None = None
         self.plex_pin_id: int | None = None
         # Whether the generated webhook secret has already been served. The
@@ -844,11 +848,14 @@ async def mint_plex_pin(request: Request) -> dict:
     design, and the flow is impossible without showing them. The ``authToken``
     is not in that category -- the poll below answers a boolean.
 
-    A fresh client identifier per call, so a re-started sign-in never inherits
-    an abandoned attempt's PIN.
+    The client identifier is minted once per process and REUSED, because it
+    names this deployment as a device on the operator's account rather than
+    naming an attempt. What must not be inherited from an abandoned attempt is
+    its PIN, and the pin id below is overwritten on every mint: the poll asks
+    about the newest PIN whichever identifier carried it.
     """
     state = request.app.state.setup
-    identifier = str(uuid.uuid4())
+    identifier = state.plex_client_identifier or str(uuid.uuid4())
     try:
         minted = await setup_plex.mint_pin(identifier)
     except Exception as exc:

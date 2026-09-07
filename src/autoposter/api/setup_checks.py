@@ -71,7 +71,7 @@ class _DropEveryRecord(logging.Filter):
 
 
 @contextlib.contextmanager
-def _no_httpx_request_log():
+def no_httpx_request_log():
     """httpx logs one INFO line per request carrying the FULL url.
 
     ``boot.main`` already clamps that logger to WARNING for the whole process,
@@ -344,7 +344,7 @@ async def run_check(
 
         async def attempt() -> CheckOutcome:
             async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
-                with _no_httpx_request_log():
+                with no_httpx_request_log():
                     return await _probe(client, check, url, value)
 
         return await asyncio.wait_for(attempt(), timeout=CHECK_TIMEOUT_SECONDS)

@@ -24,18 +24,62 @@ client identifier, and this deployment has no use for the one thing a weak code
 buys -- typing it at plex.tv/link -- because the operator is already in the
 browser the auth link opens in.
 
-Nothing here logs. ``boot.main`` already clamps ``httpx`` to WARNING
-(boot.py:151) because httpx emits one INFO line per request carrying the full
-URL -- and the poll URL carries the PIN id.
+Nothing here logs a line of its own, and it does not leave the one line httpx
+logs to a setting made elsewhere. httpx emits one INFO line per request with
+the FULL url, and the POLL url carries the PIN id -- so every call below runs
+inside ``setup_checks.no_httpx_request_log``, the local filter that module
+wrote for exactly this shape. ``boot.main``'s process-wide clamp (boot.py:151)
+stays the second line of defence, not the first: C6 is a property of this
+module and should not depend on another file's level.
 """
 
+import json
+
 import httpx
+
+from autoposter.api.setup_checks import no_httpx_request_log
 
 PLEX_TV = "https://plex.tv"
 AUTH_APP = "https://app.plex.tv/auth#?"
 # What the operator sees named on plex.tv's authorised-devices page.
 PRODUCT = "Autoposter"
 PLEX_TIMEOUT_SECONDS = 10.0
+# The timeout bounds TIME and not SIZE, and unlike the check probes -- which
+# abandon the body unread -- these four calls have to READ theirs. So the read
+# is bounded instead of unbounded: ten seconds of a local network is gigabytes
+# into a pod with a memory limit, and the picked server's address is
+# operator-supplied. A megabyte is far above any real answer here (plex.tv's
+# resources list and a server's section list are both small objects) and far
+# below a number that matters to the pod; a body over it fails to parse and is
+# reported as a class name, like every other failure.
+PLEX_BODY_LIMIT_BYTES = 1024 * 1024
+
+
+async def _request_json(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    transport: httpx.BaseTransport | None,
+):
+    """Every outbound call in this module, and every bound on it, in one place.
+
+    No redirect is followed (a redirect off plex.tv or off the picked server is
+    not a place this token should go), the whole call is capped at ten seconds,
+    at most ``PLEX_BODY_LIMIT_BYTES`` of the answer is read, and httpx's own
+    request log is filtered for the length of it.
+    """
+    with no_httpx_request_log():
+        async with httpx.AsyncClient(
+            transport=transport, timeout=PLEX_TIMEOUT_SECONDS, follow_redirects=False
+        ) as client:
+            async with client.stream(method, url, headers=headers) as response:
+                response.raise_for_status()
+                head = bytearray()
+                async for chunk in response.aiter_bytes():
+                    head += chunk
+                    if len(head) >= PLEX_BODY_LIMIT_BYTES:
+                        break
+    return json.loads(bytes(head[:PLEX_BODY_LIMIT_BYTES]))
 
 
 def _headers(client_identifier: str) -> dict[str, str]:
@@ -66,14 +110,9 @@ async def mint_pin(client_identifier: str, transport: httpx.BaseTransport | None
     from it at the moment the route answers rather than at the moment plex.tv
     did.
     """
-    async with httpx.AsyncClient(
-        transport=transport, timeout=PLEX_TIMEOUT_SECONDS, follow_redirects=False
-    ) as client:
-        response = await client.post(
-            f"{PLEX_TV}/api/v2/pins?strong=true", headers=_headers(client_identifier)
-        )
-        response.raise_for_status()
-        body = response.json()
+    body = await _request_json(
+        "POST", f"{PLEX_TV}/api/v2/pins?strong=true", _headers(client_identifier), transport
+    )
     return {"id": body["id"], "code": body["code"], "expires_at": body["expiresAt"]}
 
 
@@ -84,14 +123,10 @@ async def poll_pin(
 
     The same ``X-Plex-Client-Identifier`` as the mint, or plex.tv answers 404.
     """
-    async with httpx.AsyncClient(
-        transport=transport, timeout=PLEX_TIMEOUT_SECONDS, follow_redirects=False
-    ) as client:
-        response = await client.get(
-            f"{PLEX_TV}/api/v2/pins/{pin_id}", headers=_headers(client_identifier)
-        )
-        response.raise_for_status()
-        return response.json().get("authToken") or None
+    body = await _request_json(
+        "GET", f"{PLEX_TV}/api/v2/pins/{pin_id}", _headers(client_identifier), transport
+    )
+    return body.get("authToken") or None
 
 
 async def owned_servers(
@@ -109,15 +144,12 @@ async def owned_servers(
     https with exactly one ``local: true`` entry on 32400, which is the address
     a pod inside the same network should be given first.
     """
-    async with httpx.AsyncClient(
-        transport=transport, timeout=PLEX_TIMEOUT_SECONDS, follow_redirects=False
-    ) as client:
-        response = await client.get(
-            f"{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=0",
-            headers={"X-Plex-Token": account_token, "Accept": "application/json"},
-        )
-        response.raise_for_status()
-        resources = response.json()
+    resources = await _request_json(
+        "GET",
+        f"{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=0",
+        {"X-Plex-Token": account_token, "Accept": "application/json"},
+        transport,
+    )
 
     servers = []
     for entry in resources:
@@ -159,15 +191,13 @@ async def library_sections(
     uses ``/library/sections`` rather than the unauthenticated ``/identity``:
     one call proves the address AND the token AND produces the tick-list.
     """
-    async with httpx.AsyncClient(
-        transport=transport, timeout=PLEX_TIMEOUT_SECONDS, follow_redirects=False
-    ) as client:
-        response = await client.get(
-            f"{base_url}/library/sections",
-            headers={"X-Plex-Token": token, "Accept": "application/json"},
-        )
-        response.raise_for_status()
-        container = response.json().get("MediaContainer") or {}
+    body = await _request_json(
+        "GET",
+        f"{base_url}/library/sections",
+        {"X-Plex-Token": token, "Accept": "application/json"},
+        transport,
+    )
+    container = body.get("MediaContainer") or {}
 
     return [
         {
