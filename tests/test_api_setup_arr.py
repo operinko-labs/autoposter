@@ -1152,3 +1152,31 @@ async def test_a_failed_registration_never_blocks_finish(setup_client, setup_sta
     unmet = setup_api._unmet_step(setup_state.staged, config_ready=True)
 
     assert unmet == setup_api.STEP_DATABASE  # the database, not the registration
+
+
+async def test_the_registration_never_sends_an_api_key_the_resolver_supplied(
+    setup_client, setup_state, monkeypatch
+):
+    """The address this posts to was staged by a check against an address the
+    caller typed, and a check proves the host answered -- never who owns it. So
+    the key must be the wizard's own too: a pod in setup mode because ONE hard
+    secret is blank still resolves ``AUTOPOSTER_SONARR_APIKEY`` from its
+    environment, and reading it here would hand the deployment's live *arr key
+    to whatever address the check staged.
+    """
+
+    async def _must_not_register(*_args, **_kwargs):
+        raise AssertionError("the registration ran with a credential the resolver supplied")
+
+    monkeypatch.setenv("AUTOPOSTER_SONARR_APIKEY", APIKEY)
+    monkeypatch.setattr(setup_arr, "register", _must_not_register)
+    token = await _authenticate(setup_client)
+    await _staged(setup_client, setup_state, token, key=False)
+
+    response = await setup_client.post(
+        "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.STEP_PROVIDERS
+    assert APIKEY not in response.text

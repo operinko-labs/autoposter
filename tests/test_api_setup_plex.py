@@ -602,7 +602,9 @@ async def test_the_libraries_route_applies_the_shared_address_guard(
 async def test_the_libraries_route_needs_a_signed_in_account(setup_client, monkeypatch):
     """The address guard runs first and this second: an operator who reached a
     pick-list has a token, so this is the direct-POST shape, and it is a step
-    to complete rather than a credential to supply."""
+    to complete rather than a credential to supply. Since review I1 the
+    sentence is the typed-address one -- neither typed nor staged is the only
+    way to arrive here with nothing to read with."""
     _install(monkeypatch, authorised=True)
     token = await _authenticate(setup_client)
 
@@ -611,7 +613,7 @@ async def test_the_libraries_route_needs_a_signed_in_account(setup_client, monke
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == setup_api.NO_PLEX_ACCOUNT_TOKEN
+    assert response.json()["detail"] == setup_api.CHECK_NEEDS_A_TYPED_CREDENTIAL
 
 
 async def test_the_plex_selection_stages_the_url_and_the_excluded_libraries(
@@ -861,3 +863,46 @@ async def test_the_client_identifier_is_one_string_across_every_route_that_calls
     assert None not in identifiers
     assert len(identifiers) == 1
 
+
+async def test_the_libraries_route_never_reads_with_a_token_the_resolver_supplied(
+    setup_client, monkeypatch
+):
+    """The address is the caller's, so the token must be the caller's too.
+
+    Setup mode is entered when ONE hard secret fails to resolve, so a pod in it
+    still resolves ``AUTOPOSTER_PLEX_TOKEN`` from its environment -- and
+    reading a caller-typed address with THAT value sends the deployment's live
+    Plex token to a host the request named. Typed or staged, or the fixed
+    sentence and no call at all.
+    """
+    monkeypatch.setenv("AUTOPOSTER_PLEX_TOKEN", ACCOUNT_TOKEN)
+    seen = _install(monkeypatch, authorised=True)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/plex/libraries", json={"base_url": PLEX_BASE}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.CHECK_NEEDS_A_TYPED_CREDENTIAL
+    assert seen == []
+    assert ACCOUNT_TOKEN not in response.text
+
+
+async def test_the_libraries_route_reads_with_the_token_the_sign_in_staged(
+    setup_client, monkeypatch
+):
+    """The pick-list arrival, which the rule above must not break: the poll
+    stages the account token under ``AUTOPOSTER_PLEX_TOKEN``, and a value this
+    wizard was handed is the caller's own."""
+    seen = _install(monkeypatch, authorised=True)
+    token = await _authenticate(setup_client)
+    await setup_client.post("/api/setup/plex/pin", headers=_headers(token))
+    await setup_client.get("/api/setup/plex/pin", headers=_headers(token))
+
+    response = await setup_client.post(
+        "/api/setup/plex/libraries", json={"base_url": PLEX_BASE}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert [request.url.path for request in seen][-1] == "/library/sections"

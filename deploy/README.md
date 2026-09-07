@@ -133,6 +133,17 @@ returned 200.
      setup token can learn whether an arbitrary host answers on an arbitrary
      port, as a boolean. The token is minted only by the master password, and
      that step is rate-limited.
+
+     A boolean, and nothing more than a boolean: for those same four systems
+     the credential the probe sends must have arrived with the address — typed
+     into the field beside the button, or staged earlier by this wizard. One
+     the deployment already holds from its environment or its state file is
+     never sent to an address a request names, and pressing Check with the
+     field empty answers a fixed sentence asking for the key instead. (Setup
+     mode is entered when *any one* hard credential fails to resolve, so a pod
+     in it still holds all the others.) The six systems with a built-in
+     address are unaffected: an empty field there still means "check the key
+     you already have".
    - **Plex signs in rather than being pasted.** The panel starts a PIN flow
      against plex.tv (a strong PIN — plex.tv mints a long, opaque code rather
      than the four-character one a typed sign-in uses, so there is nothing to

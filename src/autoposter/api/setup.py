@@ -216,6 +216,21 @@ NOT_A_SYSTEM_THIS_WIZARD_CHECKS = (
 )
 CHECK_NEEDS_AN_ADDRESS = "this system needs its own address before it can be checked"
 CHECK_TAKES_NO_ADDRESS = "this system's address is built in and cannot be supplied"
+# The typed-address rule (final review I1). Setup mode is entered when ANY ONE
+# hard secret fails to resolve, so a pod in it still holds every OTHER
+# credential from its environment or its state file -- and for the four systems
+# whose HOST the caller supplies too, "empty means keep" meant those held
+# values went to an address the caller named. A boolean port scan is the
+# residual this surface accepts; exfiltrating the deployment's own credentials
+# is not. So a check against a typed address may carry only a credential that
+# arrived with it: typed into this request, or staged by this wizard. Anything
+# the RESOLVER answered with is refused here instead, as a sentence with no
+# value and no host in it.
+CHECK_NEEDS_A_TYPED_CREDENTIAL = (
+    "a check against an address you supply must carry the key typed beside it; "
+    "a credential this deployment already holds is never sent to an address a "
+    "request names"
+)
 # The three outcomes, spelled once (facts C4). `system` is always one of
 # setup_checks.CHECK_SYSTEMS' own labels -- never the caller's key -- and the
 # third carries an exception class name, the database_answers precedent.
@@ -840,12 +855,21 @@ async def check_connection(body: CheckRequest, request: Request) -> dict:
     did not answer is not a fact about this deployment.
 
     The CREDENTIAL is read the same way the address is: the value typed beside
-    the button when there is one, and the one the deployment holds when the
+    the button when there is one, and the one the wizard already holds when the
     field is empty. Sending only the address meant the two inputs in one form
     behaved oppositely -- the address live, the credential whatever was last
     SAVED -- so a freshly pasted key was answered "refused" about a key that is
     correct. An inline value authenticates this probe and is staged nowhere:
     what the deployment WILL hold is Save's answer, not a question's.
+
+    "Already holds" means two different things for the two halves of the table,
+    and the difference is review I1 (``CHECK_NEEDS_A_TYPED_CREDENTIAL``). For
+    the six systems with a compiled-in host it means ``_effective`` -- the
+    environment, the state file and ``staged`` alike, since the caller cannot
+    move where the value goes. For the four whose host the caller supplies it
+    means ``staged`` ALONE: a credential the boot resolver answered with is
+    this deployment's own, and sending it to an address a request named is
+    exfiltration rather than a probe.
 
     Never the provider's own body: an *arr's 400 echoes the fields it was sent,
     and a provider's error text can carry a key out of a query string.
@@ -868,11 +892,27 @@ async def check_connection(body: CheckRequest, request: Request) -> dict:
     elif body.base_url:
         raise HTTPException(status_code=400, detail=CHECK_TAKES_NO_ADDRESS)
 
-    # `_effective` returns a fresh mapping per call, so the inline value goes
-    # into this probe's copy and reaches nothing that outlives it.
-    credentials = _effective(request)
-    if body.credential_value and check.credential is not None:
-        credentials[check.credential] = body.credential_value
+    if check.host is None and check.credential is not None:
+        # The typed-address rule (review I1). The caller named the host, so the
+        # value that goes to it must have come from the caller too: the field
+        # beside the button, or `staged` -- what THIS WIZARD was handed. Never
+        # `_effective`, which merges the resolver's own answers in and cannot
+        # tell them apart afterwards; `_database_source` splits the same two
+        # sources the same way, and for the same reason. A single-entry map
+        # rather than a filtered copy so this is provable by reading it: there
+        # is no other name in it for `run_check` to find.
+        supplied = body.credential_value or request.app.state.setup.staged.get(check.credential, "")
+        if not supplied:
+            raise HTTPException(status_code=400, detail=CHECK_NEEDS_A_TYPED_CREDENTIAL)
+        credentials = {check.credential: supplied}
+    else:
+        # A compiled-in host: nothing the caller sent decides where the value
+        # goes, so "empty means keep" stands. `_effective` returns a fresh
+        # mapping per call, so the inline value goes into this probe's copy and
+        # reaches nothing that outlives it.
+        credentials = _effective(request)
+        if body.credential_value and check.credential is not None:
+            credentials[check.credential] = body.credential_value
 
     outcome = await setup_checks.run_check(body.system, base_url, credentials)
 
@@ -1025,15 +1065,22 @@ async def list_plex_libraries(body: PlexLibrariesRequest, request: Request) -> d
 
     The address goes through the same guard the check endpoint and the URL step
     use -- it is operator-supplied whether it was typed or picked, since a
-    pick-list is a request body like any other.
+    pick-list is a request body like any other. And the TOKEN is read under the
+    same rule, for the same reason (review I1): typed here or staged by the
+    sign-in, never one the boot resolver supplied.
     """
     base_url = _require_http_url(body.base_url, PUBLIC_URL_NOT_AN_ADDRESS)
-    # `_effective` returns a fresh mapping per call, so nothing here outlives
-    # this read: staging a credential stays with Save.
-    token = body.credential_value or _effective(request).get("AUTOPOSTER_PLEX_TOKEN", "")
-    if not token:
-        raise HTTPException(status_code=400, detail=NO_PLEX_ACCOUNT_TOKEN)
     state = request.app.state.setup
+    # `/check`'s typed-address rule (review I1), applied here because this is
+    # the same shape: the caller names the host, so the token that goes to it
+    # must be the caller's own -- typed into this request, or staged by the
+    # sign-in above, which writes `AUTOPOSTER_PLEX_TOKEN`. Never `_effective`,
+    # whose resolver half is the live token of a deployment that is in setup
+    # mode only because some OTHER hard secret is blank. Nothing read here
+    # outlives the call either: staging a credential stays with Save.
+    token = body.credential_value or state.staged.get("AUTOPOSTER_PLEX_TOKEN", "")
+    if not token:
+        raise HTTPException(status_code=400, detail=CHECK_NEEDS_A_TYPED_CREDENTIAL)
     identifier = state.plex_client_identifier or str(uuid.uuid4())
     try:
         libraries = await setup_plex.library_sections(base_url, token, identifier)
@@ -1094,9 +1141,22 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     if not state.public_url:
         raise HTTPException(status_code=400, detail=NO_DEPLOYMENT_URL)
 
-    resolved = _effective(request)
-    api_key = resolved.get(f"AUTOPOSTER_{body.service.upper()}_APIKEY", "")
-    secret = resolved.get(_GENERATED_SECRET, "")
+    # `staged` and not `_effective` for the API KEY (review I1): the address
+    # below was staged by a check, and a check proves that a host ANSWERED --
+    # never who owns it. So the same rule the check itself now applies holds
+    # one step further on, and this cannot fall back to a key the boot resolver
+    # supplied. The operator's remedy is the one the refusal names: type the
+    # key at the provider step, which stages it.
+    api_key = state.staged.get(f"AUTOPOSTER_{body.service.upper()}_APIKEY", "")
+    # The generated secret is read the OTHER way, deliberately. On a deployment
+    # whose `AUTOPOSTER_WEBHOOK_SECRET` already resolves, the provider step
+    # mints nothing (there is nothing to mint) and staging a replacement would
+    # write a secret the environment then shadows -- an *arr signing with a
+    # value this service does not expect. So it comes from `_effective`, and
+    # the residual is stated in `setup_arr`'s docstring rather than papered
+    # over: this is the one credential the registration may still carry to a
+    # checked address that the deployment, and not this wizard, supplied.
+    secret = _effective(request).get(_GENERATED_SECRET, "")
     if not api_key or not secret:
         raise HTTPException(status_code=400, detail=STEP_PROVIDERS)
 

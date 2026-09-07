@@ -27,6 +27,22 @@ as a boolean, five seconds at a time. That is a boolean port scan of the
 network this pod sits in, it is not closed by anything in this module, and it
 is written here rather than papered over.
 
+**What is NOT in that residual, because a rule above this module closes it.**
+The probe carries a credential, and for the four systems whose address the
+caller also supplies that credential must have come from the caller: the value
+typed into the same request, or one this WIZARD staged. It is never one the
+BOOT RESOLVER answered with -- the environment or the state file -- because
+setup mode is entered when any ONE hard secret fails to resolve, so a pod in it
+still holds every OTHER credential its deployment was given. Without the rule,
+a single request naming an attacker's host and omitting the credential sent the
+live ``AUTOPOSTER_PLEX_TOKEN``, or an *arr API key, to that host.
+``api/setup.check_connection`` and ``api/setup.list_plex_libraries`` enforce it
+and answer ``CHECK_NEEDS_A_TYPED_CREDENTIAL`` otherwise -- a fixed sentence
+with no value and no host in it, and no request made at all. So the residual
+above really is a boolean. The bound is on WHICH CREDENTIAL may go to a
+caller-named host and not on which host: the denylist is still not here, and
+still cannot be.
+
 Row 213 holds throughout: the outcome is two booleans plus, on a failure, an
 exception CLASS NAME. The third party's own response body is never read into
 anything returned or logged -- an *arr's 400 echoes the fields it was sent, and

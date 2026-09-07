@@ -90,6 +90,22 @@ failure is a status marker or an exception CLASS NAME, and never raises -- a
 failed registration must not block the wizard's finish (facts C3). The operator
 can paste the secret by hand, which is what they do today, and a registration
 that gated the exit would turn a third-party outage into an unfinishable wizard.
+
+**The residual, stated whole (final review I1).** The address this writes to was
+staged by a SUCCESSFUL check, and a check proves that a host ANSWERED -- never
+who owns it. So the API key is read from the wizard's ``staged`` map alone, the
+same rule ``check_connection`` applies one step earlier: a key the boot resolver
+supplied is never sent to an address a request named. The GENERATED WEBHOOK
+SECRET is the one exception, and a deliberate one: on a deployment whose
+``AUTOPOSTER_WEBHOOK_SECRET`` already resolves, the provider step mints nothing,
+and staging a replacement would write a secret the environment then shadows --
+an *arr signing its deliveries with a value this service does not expect. So on
+that shape a token-holder who types an address, types a key, has both answered
+by a host they control and presses Register does learn this deployment's webhook
+secret. It is Autoposter's OWN secret rather than a third party's, the wizard
+cannot mint a replacement for it, and refusing would leave that shape with no
+registration at all and no way to satisfy the refusal -- so it is written down
+here rather than closed.
 """
 
 import asyncio

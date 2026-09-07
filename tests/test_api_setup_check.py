@@ -343,7 +343,7 @@ async def test_a_successful_check_stages_the_address_it_proved(setup_client, mon
 
     response = await setup_client.post(
         "/api/setup/check",
-        json={"system": "sonarr", "base_url": SONARR_BASE},
+        json={"system": "sonarr", "base_url": SONARR_BASE, "credential_value": FAKE_APIKEY},
         headers=_headers(token),
     )
 
@@ -360,7 +360,7 @@ async def test_a_failed_check_stages_nothing(setup_client, monkeypatch):
 
     response = await setup_client.post(
         "/api/setup/check",
-        json={"system": "sonarr", "base_url": SONARR_BASE},
+        json={"system": "sonarr", "base_url": SONARR_BASE, "credential_value": FAKE_APIKEY},
         headers=_headers(token),
     )
 
@@ -380,7 +380,7 @@ async def test_a_refused_credential_is_the_second_sentence(setup_client, monkeyp
 
     response = await setup_client.post(
         "/api/setup/check",
-        json={"system": "sonarr", "base_url": SONARR_BASE},
+        json={"system": "sonarr", "base_url": SONARR_BASE, "credential_value": FAKE_APIKEY},
         headers=_headers(token),
     )
 
@@ -401,7 +401,7 @@ async def test_the_checked_addresses_are_stamped_onto_the_document_the_wizard_wr
     for system in ("radarr", "sonarr", "tracearr"):
         await setup_client.post(
             "/api/setup/check",
-            json={"system": system, "base_url": SONARR_BASE},
+            json={"system": system, "base_url": SONARR_BASE, "credential_value": FAKE_APIKEY},
             headers=_headers(token),
         )
 
@@ -622,7 +622,7 @@ async def test_a_checked_plex_address_is_stamped_when_no_configuration_submit_fo
     token = await _authenticate(setup_client)
     await setup_client.post(
         "/api/setup/check",
-        json={"system": "plex", "base_url": PLEX_BASE},
+        json={"system": "plex", "base_url": PLEX_BASE, "credential_value": FAKE_TOKEN},
         headers=_headers(token),
     )
 
@@ -648,7 +648,7 @@ async def test_a_configuration_submit_wins_over_the_address_the_plex_check_stage
     token = await _authenticate(setup_client)
     await setup_client.post(
         "/api/setup/check",
-        json={"system": "plex", "base_url": PLEX_BASE},
+        json={"system": "plex", "base_url": PLEX_BASE, "credential_value": FAKE_TOKEN},
         headers=_headers(token),
     )
 
@@ -662,3 +662,119 @@ async def test_a_configuration_submit_wins_over_the_address_the_plex_check_stage
     assert state.config_document["plex"]["url"] == corrected
     # And the second application, the one `finish` makes over the same map.
     assert setup_api._apply_staged_urls(state.config_document, state)["plex"]["url"] == corrected
+
+
+# --- a typed address never carries a credential the resolver supplied --------
+
+
+def _install(monkeypatch, status: int = 200):
+    """Point the ROUTE's check at a recording transport, with the REAL
+    ``run_check`` still in the middle of it.
+
+    A route test that substitutes ``run_check`` proves what the endpoint
+    decided and never what went on the wire, and the wire is the whole of the
+    finding below: this seam makes "no outbound request was made" and "the
+    probe carried THIS value and not that one" observable in the same test.
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status, json={}, headers={"x-ratelimit-limit": "100"})
+
+    recorder = httpx.MockTransport(handler)
+    original = setup_checks.run_check
+
+    async def bound(system, base_url, credentials, transport=None):
+        return await original(system, base_url, credentials, transport=recorder)
+
+    monkeypatch.setattr(setup_api.setup_checks, "run_check", bound)
+    return seen
+
+
+@pytest.mark.parametrize("system", TYPED)
+async def test_a_resolved_credential_never_reaches_an_address_the_caller_typed(
+    setup_client, monkeypatch, system
+):
+    """Setup mode is entered when ONE hard secret fails to resolve, so a pod in
+    it still holds every OTHER credential from its environment. Before this,
+    an absent ``credential_value`` meant "probe with what the deployment
+    holds" for the four systems whose HOST the caller supplies too -- so one
+    request with the setup token sent the live Plex token, or an *arr key, to
+    a host that request named.
+    """
+    check = setup_checks.CHECK_SYSTEMS[system]
+    monkeypatch.setenv(check.credential, FAKE_APIKEY)
+    seen = _install(monkeypatch)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/check",
+        json={"system": system, "base_url": _address_for(system)},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.CHECK_NEEDS_A_TYPED_CREDENTIAL
+    # The whole of it: nothing was sent anywhere.
+    assert seen == []
+    assert FAKE_APIKEY not in response.text
+
+
+async def test_a_staged_credential_may_go_to_an_address_the_caller_typed(setup_client, monkeypatch):
+    """The other side of the rule. A value THIS WIZARD was handed came from the
+    same caller as the address, so the probe runs and carries it -- which is
+    what keeps "empty means keep" working for the operator who saved a key at
+    the provider step and then pressed Check without retyping it."""
+    seen = _install(monkeypatch)
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_SONARR_APIKEY": FAKE_APIKEY}},
+        headers=_headers(token),
+    )
+
+    response = await setup_client.post(
+        "/api/setup/check",
+        json={"system": "sonarr", "base_url": SONARR_BASE},
+        headers=_headers(token),
+    )
+
+    assert response.json() == {"ok": True, "detail": "Sonarr answered."}
+    assert [request.headers["X-Api-Key"] for request in seen] == [FAKE_APIKEY]
+
+
+async def test_a_typed_credential_wins_over_the_one_the_resolver_holds(setup_client, monkeypatch):
+    """The third arm, and the pre-existing rule this leaves intact: the value
+    in the same request authenticates the probe."""
+    monkeypatch.setenv("AUTOPOSTER_SONARR_APIKEY", "row-121-held-and-never-sent")
+    seen = _install(monkeypatch)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/check",
+        json={"system": "sonarr", "base_url": SONARR_BASE, "credential_value": FAKE_APIKEY},
+        headers=_headers(token),
+    )
+
+    assert response.json() == {"ok": True, "detail": "Sonarr answered."}
+    assert [request.headers["X-Api-Key"] for request in seen] == [FAKE_APIKEY]
+    assert "row-121-held-and-never-sent" not in str(seen[0].headers)
+
+
+async def test_a_built_in_host_still_probes_the_credential_the_deployment_holds(
+    setup_client, monkeypatch
+):
+    """The rule is about the ADDRESS and not about the credential. Six of the
+    ten have a compiled-in host, so nothing the caller sent decides where the
+    value goes, and "empty means keep" is unchanged for them."""
+    monkeypatch.setenv("AUTOPOSTER_TMDB_TOKEN", FAKE_TOKEN)
+    seen = _install(monkeypatch)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/check", json={"system": "tmdb"}, headers=_headers(token)
+    )
+
+    assert response.json()["ok"] is True
+    assert [request.url.host for request in seen] == ["api.themoviedb.org"]
