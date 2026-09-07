@@ -1210,6 +1210,65 @@ values, so it never meets the case where a correct config names a value one
 library lacks. There is no switch for this — an error-downgrade switch is a
 class of setting this project does not ship.
 
+### Attributes this service holds itself
+
+Five filter attributes read a value from this service's own database rather
+than from Plex, and they are listed here because nothing else in this document
+mentions three of them.
+
+Three of them you can use in a collection's `filters:` block:
+
+| Attribute | What it is | Written as |
+|---|---|---|
+| `common_sense_rating` | The Common Sense Media **age band**, from MDBList | a bare age number — `8`, `13`, `16` |
+| `imdb_rating` | **IMDb's** own rating, 0–10 | `imdb_rating.gte: 7.5` |
+| `tmdb_rating` | **TMDb's** own rating, 0–10 | `tmdb_rating.lt: 5` |
+
+These are not Kometa attribute names — Kometa has none of the three — and that
+is deliberate. Kometa's `content_rating` filter reads Plex's own certification
+(`PG-13`, `gb/U`, `TV-Y`), which is a completely different thing from a Common
+Sense age band, and its `critic_rating`/`audience_rating` read whatever your
+library's agent wrote into Plex, which is usually Rotten Tomatoes rather than
+IMDb or TMDb. Shipping our values under Kometa's names would mean two filters
+that agree on the spelling and disagree on the answer. So the three carry names
+of their own, and `content_rating`, `critic_rating` and `audience_rating`
+continue to mean exactly what Kometa means by them.
+
+Two more — `tmdb_status` (`returning`, `planned`, `production`, `ended`,
+`canceled`, `pilot`) and `last_episode_aired` (a window in days, so
+`last_episode_aired: 14` is "aired in the last fortnight") — are also held
+here, but they carry Kometa's own names because they mean exactly what Kometa
+means, and they are usable **only in a badge `condition:`**, not in a
+collection's `filters:`. A collection naming either is refused when the config
+loads, and the refusal says so.
+
+**Coverage — read this before you build a collection on one of these.** The
+facts these five read are gathered by the mass-operations pass, and only for
+items it has visited. A fresh install has visited nothing. The drift sweep
+visits `scheduler.drift_batch_size` items (default **500**) every
+`scheduler.drift_days` (default **7**), so a 16,000-item library converges over
+roughly **32 weeks** unless you drive the facts backfill from the Operations
+page. If `operations.enabled` is off, nothing is ever gathered and every one of
+these filters matches nothing.
+
+**An item nobody has looked at yet is EXCLUDED, under every operator,
+including `.not`.** This is the one place these attributes deliberately behave
+unlike every other tag attribute in the system, and it is the safe direction:
+`common_sense_rating.not: 13` on a library the sweep has not reached would
+otherwise select *everything*. The consequence to expect is that a collection
+built on one of these starts small and grows as the sweep catches up — an
+incomplete collection rather than a wrong one. "We looked and found nothing"
+and "nobody has looked yet" are recorded separately (`facts_attempted_at`), and
+the dynamic collection families that read the same data report their coverage
+in their own descriptions.
+
+**These three values are NOT checked against your library's vocabulary.** The
+check described above walks Plex's own list for the attribute, and Plex has
+never heard of these values — it does not hold them. So a misspelled band
+(`common_sense_rating: 13plus`) builds an **empty collection and says nothing**,
+which is exactly the behaviour that check was added to fix, one attribute
+along. Copy the value from an item you know carries it.
+
 ### Smart collections from a pasted Plex URL
 
 `builder: smart_url` takes a Plex Web address and turns the search in it into a
