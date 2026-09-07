@@ -62,6 +62,7 @@ from starlette.responses import JSONResponse
 from autoposter import boot
 from autoposter.api.auth import LoginRateLimiter, hash_password, verify_password
 from autoposter.api.errors import validation_error_without_input
+from autoposter.api import setup_arr
 from autoposter.api import setup_checks
 from autoposter.api import setup_plex
 from autoposter.api.spa import mount_spa, spa_dist
@@ -221,6 +222,27 @@ CHECK_TAKES_NO_ADDRESS = "this system's address is built in and cannot be suppli
 CHECK_ANSWERED = "{system} answered."
 CHECK_REFUSED = "{system} refused the credential."
 CHECK_UNREACHABLE = "{system} could not be reached ({failure})."
+
+# The registration's own vocabulary (facts C2/C2a/C3). Two step names for the
+# values the registration needs and does not have, one refusal for a name it
+# does not register, and two outcome sentences -- the refusal one is the check
+# endpoint's own, reused rather than reworded, because it is the same fact about
+# the same credential.
+NOT_A_SERVICE_THIS_WIZARD_REGISTERS = (
+    "one of the submitted names is not a service this wizard registers a "
+    "webhook with; Radarr and Sonarr are the whole of what it accepts"
+)
+NO_CHECKED_ADDRESS = (
+    "this service has no checked address yet; run Check connection on its panel first"
+)
+NO_DEPLOYMENT_URL = (
+    "this deployment's own URL has not been given yet; go back to the address step first"
+)
+# `action` is "created" or "updated" -- facts C2a asks for the distinction on
+# the finish page -- and `failure` is a status marker or an exception class
+# name, never the *arr's own text.
+REGISTRATION_ACCEPTED = "{system} accepted the webhook registration ({action})."
+REGISTRATION_REFUSED = "{system} would not accept the webhook registration ({failure})."
 
 # Which wizard step an unmet requirement belongs to, and the whole of what the
 # finish step is allowed to say about it. Fixed strings: the check that
@@ -986,6 +1008,75 @@ async def list_plex_libraries(body: PlexLibrariesRequest, request: Request) -> d
             detail=CHECK_UNREACHABLE.format(system="Plex", failure=type(exc).__name__),
         ) from None
     return {"libraries": libraries}
+
+
+class ArrWebhookRequest(BaseModel):
+    #: ``radarr`` or ``sonarr``. Validated against ``setup_arr.NAMES`` and never
+    #: rendered back: the refusal names the surface, not the string it was given.
+    service: str
+
+
+@router.post("/arr/webhook", dependencies=[RequireSetupToken])
+async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dict:
+    """Point one *arr's Webhook connection at this deployment, idempotently.
+
+    Everything it needs is already staged, each by the one step that knows it:
+    the address by a SUCCESSFUL check (the single moment the wizard knows that
+    address works), the API key by that system's accordion, the callback base by
+    the URL step, and the secret by the provider step that minted it. A missing
+    one is named as a STEP rather than reported as a value, which is why the
+    three refusals below are step names.
+
+    Never a 500 and never a blocker (facts C3). A registration that did not work
+    is answered with ``200`` and ``ok: false`` carrying one of two fixed
+    sentences, because "the *arr would not take it" is a RESULT this step
+    reports rather than an error in the request that asked for it -- and because
+    the finish page has to be able to list it as skipped. The operator can paste
+    the secret by hand, which is what they do today; a registration that gated
+    the exit would turn a third-party outage into an unfinishable wizard.
+
+    The *arr's own response body reaches nothing here: ``setup_arr`` answers
+    with a marker or an exception class name, and a 400 from an *arr echoes the
+    fields it was sent -- one of which is the secret.
+    """
+    if body.service not in setup_arr.NAMES:
+        raise HTTPException(status_code=400, detail=NOT_A_SERVICE_THIS_WIZARD_REGISTERS)
+
+    state = request.app.state.setup
+    label = setup_checks.CHECK_SYSTEMS[body.service].label
+    base_url = state.base_urls.get(body.service)
+    if not base_url:
+        raise HTTPException(status_code=400, detail=NO_CHECKED_ADDRESS)
+    if not state.public_url:
+        raise HTTPException(status_code=400, detail=NO_DEPLOYMENT_URL)
+
+    resolved = _effective(request)
+    api_key = resolved.get(f"AUTOPOSTER_{body.service.upper()}_APIKEY", "")
+    secret = resolved.get(_GENERATED_SECRET, "")
+    if not api_key or not secret:
+        raise HTTPException(status_code=400, detail=STEP_PROVIDERS)
+
+    action, failure = await setup_arr.register(
+        body.service, base_url, api_key, state.public_url, secret
+    )
+    # The step only -- C9/C10. Not the service's address, not which service, not
+    # the outcome: the wizard's log lines name the STEP and nothing that would
+    # let a reader of them reconstruct the deployment.
+    logger.info("first-start setup: a webhook registration was attempted")
+
+    if action is not None:
+        return {
+            "ok": True,
+            "action": action,
+            "detail": REGISTRATION_ACCEPTED.format(system=label, action=action),
+        }
+    if failure == "refused":
+        return {"ok": False, "action": None, "detail": CHECK_REFUSED.format(system=label)}
+    return {
+        "ok": False,
+        "action": None,
+        "detail": REGISTRATION_REFUSED.format(system=label, failure=failure),
+    }
 
 
 class ProvidersRequest(BaseModel):
