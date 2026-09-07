@@ -192,8 +192,11 @@ def run(argv: list[str]) -> None:
     its pipe.
 
     stderr is still captured, because it is the failure message; it is capped
-    by `cap_magick_stderr` on the way into the RuntimeError, because that
-    message becomes `job.last_error`.
+    by `cap_magick_stderr` on the way into the RuntimeError. That bounds the
+    pod log line and the exception message, never a served string: a bare
+    RuntimeError has no `served_detail`, so `worker.py`'s `_served_reason`
+    writes only the exception's class name to `job.last_error`, and the
+    stderr this caps never reaches it.
 
     No argv token changes, so `tests/test_production_parity.py`'s full-list
     equalities and `tests/test_golden.py`'s byte-exact parity are untouched.

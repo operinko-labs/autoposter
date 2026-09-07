@@ -181,9 +181,12 @@ def test_run_discards_stdout_and_caps_the_stderr_it_attaches(monkeypatch):
     ``DEVNULL``; the one magick call whose output IS read is
     ``textfit._run``, which keeps its pipe. stderr is still captured, because
     it is the failure message, and is capped on its way into the
-    ``RuntimeError``: that message becomes ``jobs.last_error``, a database row
-    whose size must not be a subprocess's choice. Same bound and same marker
-    as ``intake/routes.py``'s ``_MAX_RAW_BODY_CHARS``.
+    ``RuntimeError``: that message reaches the pod log, never
+    ``jobs.last_error`` -- a bare ``RuntimeError`` has no ``served_detail``,
+    so ``worker.py``'s ``_served_reason`` writes only the exception's class
+    name to that column. The cap guards the log line and the exception
+    message, not a served string. Same bound and same marker as
+    ``intake/routes.py``'s ``_MAX_RAW_BODY_CHARS``.
 
     Half one is the kwargs, spied without spawning anything. Half two is a
     real flooding stub -- ``sys.executable`` rather than a magick binary, so

@@ -112,10 +112,14 @@ def build_fit_argv(magick: str, font_path: str, style: TextStyle, text: str) -> 
     ]
 
 
-# Cap on the magick stderr that reaches a RuntimeError message and, through
-# `queue.jobs`, the `last_error` column. The bound `intake/routes.py`'s
-# `_MAX_RAW_BODY_CHARS` puts on an unparseable webhook body, for the same
-# reason: how big a database row gets is not a subprocess's decision.
+# Cap on the magick stderr that reaches a RuntimeError message and the pod
+# log line it is written to (`logger.warning(..., exc_info=True)`) -- never a
+# served string. A bare RuntimeError has no `served_detail`, so
+# `worker.py`'s `_served_reason` writes only the exception's class name to
+# `job.last_error`; the capped text never reaches that column. Same bound
+# `intake/routes.py`'s `_MAX_RAW_BODY_CHARS` puts on an unparseable webhook
+# body, for the same reason: how big a log line or exception message gets is
+# not a subprocess's decision.
 #
 # Here rather than in `compositor.py` because `compositor` already imports
 # from this module (`escape_caption_text`) and the reverse import would be a
