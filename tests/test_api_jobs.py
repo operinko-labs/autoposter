@@ -25,6 +25,14 @@ PASSWORD = "correct horse battery staple"
 # the text a *pending* row must not be classified by.
 WAITING_ERROR = "no Plex item for movie 'Dune' (tmdb=1, tvdb=None)"
 
+# Seven digits, deliberately. The response carries created_at (api/jobs.py:145)
+# as ISO-8601 with six fractional digits, and the sweep below is a substring
+# search over the whole body -- so a three-digit sentinel like the "999" this
+# replaces matched the microseconds of about one run in 250, load-independent
+# and green on every rerun. Six is the longest digit run the response can
+# produce, so seven cannot collide. Shortening it re-opens the flake.
+ECHO_SENTINEL = 8675309
+
 
 @pytest_asyncio.fixture
 async def app(session_factory):
@@ -154,7 +162,7 @@ async def test_the_payload_identifies_the_item_without_being_echoed(
             "title": "Andor",
             "season_number": 2,
             "episode_number": 5,
-            "tmdb_id": 999,
+            "tmdb_id": ECHO_SENTINEL,
             "source_url": "https://provider.example/secret/path.jpg",
         },
     )
@@ -170,7 +178,42 @@ async def test_the_payload_identifies_the_item_without_being_echoed(
     # Nothing else smuggles it back either -- source URLs in particular are
     # provider credentials in query strings often enough to be worth a sweep.
     assert "provider.example" not in json.dumps(body)
-    assert "999" not in json.dumps(body)
+    assert str(ECHO_SENTINEL) not in json.dumps(body)
+
+
+async def test_the_echo_sweep_survives_a_timestamp_that_contains_the_sentinel(
+    client, auth_headers, session
+):
+    """The flake above, made deterministic instead of 0.4%-per-run.
+
+    ``created_at`` is served at api/jobs.py:145 and rendered as ISO-8601 with
+    six fractional digits, so the body carries a six-digit run that a
+    three-digit sentinel lands inside roughly one run in 250 -- always alone,
+    always green on rerun, never reproducible under isolation. Freezing the
+    microseconds at .999512 turns that into a fact.
+    """
+    job_id = await _make_job(
+        session,
+        payload={
+            "kind": "episode",
+            "title": "Andor",
+            "season_number": 2,
+            "episode_number": 5,
+            "tmdb_id": ECHO_SENTINEL,
+            "source_url": "https://provider.example/secret/path.jpg",
+        },
+    )
+    await session.execute(
+        text(
+            "UPDATE jobs SET created_at = timestamptz '2026-09-07 12:34:56.999512+00'"
+            " WHERE id = :id"
+        ),
+        {"id": job_id},
+    )
+    await session.commit()
+
+    body = (await client.get("/api/jobs", headers=auth_headers)).json()
+    assert str(ECHO_SENTINEL) not in json.dumps(body)
 
 
 async def test_a_payload_without_item_fields_reports_them_as_null(
