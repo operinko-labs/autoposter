@@ -202,8 +202,17 @@ export function Setup() {
             progress={progress}
             onSubmit={(values) => run(() => submitProviderKeys(values))}
           />
-          {progress.config_source === null && (
-            <ConfigPane busy={busy} onSubmit={(url) => run(() => submitPlexUrl(url))} />
+          {/* Offered while no document RESOLVES -- `null`, or one this wizard
+              is merely holding. A staged one is answered, not settled: this
+              endpoint validates the document and never reaches the Plex server
+              the address names, so a well-formed wrong URL is accepted and has
+              to stay correctable. */}
+          {(progress.config_source === null || progress.config_source === "staged") && (
+            <ConfigPane
+              busy={busy}
+              stored={progress.config_source === "staged"}
+              onSubmit={(url) => run(() => submitPlexUrl(url))}
+            />
           )}
           <button
             className="primary"
@@ -492,9 +501,15 @@ function DatabasePane({
 
 function ConfigPane({
   busy,
+  stored,
   onSubmit,
 }: {
   busy: boolean;
+  /** Whether the wizard is already holding a document. The staged one is never
+   * served back, so this pane always renders an empty field; the pill says the
+   * step is answered and an empty submit keeps it, which is what the endpoint
+   * reads it as. */
+  stored: boolean;
   onSubmit: (v: string) => Promise<boolean>;
 }) {
   return (
@@ -506,6 +521,7 @@ function ConfigPane({
       hint="http://plex:32400 — everything else starts from the shipped defaults and is editable in Settings."
       action="Write the configuration"
       busy={busy}
+      stored={stored}
       onSubmit={onSubmit}
     />
   );

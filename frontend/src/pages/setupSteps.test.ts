@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { farthestStep, stepAfter, visibleSteps, type StepId } from "./setupSteps";
+import { canNavigate, farthestStep, stepAfter, visibleSteps, type StepId } from "./setupSteps";
 import type { SetupProgress } from "../api/setup";
 
 const BASE: SetupProgress = {
   password: true,
   database: false,
+  database_source: "missing",
   providers: { AUTOPOSTER_PLEX_TOKEN: null },
   required: ["AUTOPOSTER_PLEX_TOKEN"],
   config: false,
@@ -14,9 +15,20 @@ const BASE: SetupProgress = {
 };
 
 describe("visibleSteps", () => {
-  it("offers the database step only while nothing resolves from the environment", () => {
-    expect(visibleSteps({ ...BASE, database: false })).toContain<StepId>("database");
-    expect(visibleSteps({ ...BASE, database: true })).not.toContain<StepId>("database");
+  it("hides the database step only for a value the boot resolver already holds", () => {
+    // The boolean cannot decide this on its own: the step's OWN submit makes
+    // `database` true, so keying on it deleted the step the moment it was
+    // answered -- Back landed on the address pane and the step's Stored pill
+    // and empty-means-keep were unreachable for the life of the process.
+    expect(visibleSteps({ ...BASE, database: false, database_source: "missing" })).toContain<StepId>(
+      "database",
+    );
+    expect(
+      visibleSteps({ ...BASE, database: true, database_source: "staged" }),
+    ).toContain<StepId>("database");
+    expect(
+      visibleSteps({ ...BASE, database: true, database_source: "resolved" }),
+    ).not.toContain<StepId>("database");
   });
 
   it("is the password step alone before any token exists", () => {
@@ -41,18 +53,24 @@ describe("stepAfter", () => {
 
   it("skips a step this deployment does not have", () => {
     expect(stepAfter("url", { ...BASE, public_url: true })).toBe<StepId>("database");
-    expect(stepAfter("url", { ...BASE, public_url: true, database: true })).toBe<StepId>(
-      "systems",
-    );
+    expect(
+      stepAfter("url", { ...BASE, public_url: true, database: true, database_source: "resolved" }),
+    ).toBe<StepId>("systems");
   });
 
-  it("advances past a step that left the order by being completed", () => {
-    // The database step is dropped the moment a URL resolves -- which is what
-    // its own submit makes true -- so the step just finished is not in the
-    // post-submit order at all, and looking for it there finds nothing.
-    expect(stepAfter("database", { ...BASE, public_url: true, database: true })).toBe<StepId>(
-      "systems",
-    );
+  it("advances past a step that is not in the order at all", () => {
+    // No step leaves the order by being answered any more -- a staged one
+    // stays -- but the search-forward shape is what makes that true of a step
+    // the SERVER drops mid-flow as well, and it is cheaper than a walk that
+    // has to be right about the order twice.
+    expect(
+      stepAfter("database", {
+        ...BASE,
+        public_url: true,
+        database: true,
+        database_source: "resolved",
+      }),
+    ).toBe<StepId>("systems");
   });
 
   it("stops at the last step", () => {
@@ -61,6 +79,7 @@ describe("stepAfter", () => {
         ...BASE,
         public_url: true,
         database: true,
+        database_source: "staged",
         required: [],
         config_source: "state",
       }),
@@ -76,5 +95,33 @@ describe("farthestStep", () => {
     expect(
       farthestStep({ ...BASE, public_url: true, database: true, required: [], config_source: "state" }),
     ).toBe<StepId>("finish");
+  });
+
+  it("counts a document the wizard staged as the config step answered", () => {
+    expect(
+      farthestStep({
+        ...BASE,
+        public_url: true,
+        database: true,
+        required: [],
+        config_source: "staged",
+      }),
+    ).toBe<StepId>("finish");
+  });
+});
+
+describe("canNavigate", () => {
+  it("refuses a step this deployment does not have at all", () => {
+    // `indexOf` answers -1 for a step outside the order, and -1 is <= every
+    // index, so the untightened comparison called an absent step reachable.
+    // Only the page's own `order.includes` beside it kept that off screen.
+    const resolved: SetupProgress = {
+      ...BASE,
+      public_url: true,
+      database: true,
+      database_source: "resolved",
+    };
+    expect(canNavigate("database", resolved)).toBe(false);
+    expect(canNavigate("url", resolved)).toBe(true);
   });
 });

@@ -29,10 +29,14 @@ const ALL_STEPS: StepId[] = ["password", "url", "database", "systems", "finish"]
 /** Which steps this deployment has at all.
  *
  * The database step is the only conditional one, and the condition is the
- * server's: `progress.database` is true when a URL resolves from the
- * environment or the state file, which is the deployment shape that must never
- * be asked for one (the wizard cannot improve on a value the environment
- * already supplies, and asking implies it can).
+ * SOURCE the server reports rather than the boolean beside it. `database` is
+ * true for a URL the environment supplies AND for one this wizard staged a
+ * moment ago -- the step's own submit makes it true -- so keying on it deleted
+ * the step at the instant it was answered: Back landed on the address pane,
+ * and the step's `Stored` pill and its empty-means-keep were correct and
+ * unreachable. Only `"resolved"` hides it, which is the shape that must never
+ * be asked (the wizard cannot improve on a value the boot resolver already
+ * holds, and asking implies it can).
  *
  * The URL step is NOT conditional. A deployment whose config document already
  * resolves still needs the address for the *arr registration; it simply is not
@@ -40,7 +44,9 @@ const ALL_STEPS: StepId[] = ["password", "url", "database", "systems", "finish"]
  */
 export function visibleSteps(progress: SetupProgress | null): StepId[] {
   if (progress === null) return ["password"];
-  return ALL_STEPS.filter((step) => step !== "database" || !progress.database);
+  return ALL_STEPS.filter(
+    (step) => step !== "database" || progress.database_source !== "resolved",
+  );
 }
 
 /** The step to land on once `step` has been accepted, given the progress the
@@ -51,10 +57,12 @@ export function visibleSteps(progress: SetupProgress | null): StepId[] {
  * read from that order can only clamp to the pane it is already on -- which is
  * what made the first advance need an effect of its own to supply it.
  *
- * `step` may no longer be in the order at all: the database step leaves it the
- * moment a URL resolves, which is exactly what its own submit makes true. So
- * the search runs over the full list and returns the first step that is still
- * visible, rather than indexing into the order and walking one place forward.
+ * `step` may not be in the order at all. No step leaves it by being answered
+ * any more -- that was the defect `database_source` closed -- but the order is
+ * the server's answer, so the search runs over the full list and returns the
+ * first step that is still visible rather than indexing into the order and
+ * walking one place forward, which would have to be right about the order
+ * twice.
  */
 export function stepAfter(step: StepId, progress: SetupProgress | null): StepId {
   const order = visibleSteps(progress);
@@ -81,11 +89,17 @@ export function farthestStep(progress: SetupProgress | null): StepId {
 
 /** Whether `candidate` may be navigated to, given how far the server says the
  * wizard has got. Back is `<=`; forward past `farthest` is refused here rather
- * than by a 400 the operator would have to read. */
+ * than by a 400 the operator would have to read.
+ *
+ * A candidate this deployment does not have at all is refused first: `indexOf`
+ * answers -1 for it, and -1 is `<=` every index, so the comparison alone
+ * called an absent step reachable and only the page's own `order.includes`
+ * beside it kept that off screen. */
 export function canNavigate(
   candidate: StepId,
   progress: SetupProgress | null,
 ): boolean {
   const order = visibleSteps(progress);
-  return order.indexOf(candidate) <= order.indexOf(farthestStep(progress));
+  const index = order.indexOf(candidate);
+  return index !== -1 && index <= order.indexOf(farthestStep(progress));
 }

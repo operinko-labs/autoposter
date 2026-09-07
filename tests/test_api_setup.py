@@ -514,8 +514,8 @@ async def test_progress_reports_presence_and_never_a_value(setup_client):
 
     assert response.status_code == 200, response.text
     assert set(body) == {
-        "password", "database", "providers", "required", "config", "config_source",
-        "public_url",
+        "password", "database", "database_source", "providers", "required", "config",
+        "config_source", "public_url",
     }
     assert body["password"] is True
     assert body["database"] is False
@@ -549,6 +549,126 @@ def test_the_redaction_string_is_the_one_the_config_endpoint_serves():
     api/routes.py would pull the whole application router into the setup
     process. This is the pin that keeps the two equal."""
     assert setup_api.REDACTED == _REDACTED
+
+
+# --- which SOURCE answered a step, and what that makes reachable -------------
+
+
+async def test_a_step_the_wizard_staged_reports_a_different_source_from_a_resolved_one(
+    setup_client, monkeypatch
+):
+    """The distinction /progress could not make, and the reason a step the
+    wizard itself answered could not be stepped back into.
+
+    ``database`` is built over ``_effective`` -- persisted plus staged -- so a
+    URL the operator just typed and one ExternalSecrets supplies both read
+    ``True``, and the page hid the step for both. It must hide it only for the
+    second: the wizard cannot improve on a value the environment supplies, and
+    it must never lock the operator out of correcting one it holds itself.
+    """
+    monkeypatch.setattr(setup_api, "database_answers", _answering(True))
+    token = await _authenticate(setup_client)
+
+    before = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert before.json()["database"] is False
+    assert before.json()["database_source"] == "missing"
+
+    await setup_client.post(
+        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+    )
+
+    after = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert after.json()["database"] is True
+    assert after.json()["database_source"] == "staged"
+    assert FAKE_DB_URL not in after.text
+
+
+async def test_a_database_url_the_boot_resolver_answers_is_reported_as_resolved(
+    setup_client, monkeypatch
+):
+    """``resolved`` and not ``environment``: ``resolve_secret_values`` reads the
+    environment AND the state file, and setup mode is reachable on a deployment
+    that already persisted a database URL (it is entered when ANY hard secret is
+    missing). Both must hide the step, and one word covers both."""
+    monkeypatch.setenv("AUTOPOSTER_DATABASE_URL", FAKE_DB_URL)
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.get("/api/setup/progress", headers=_headers(token))
+
+    assert response.json()["database"] is True
+    assert response.json()["database_source"] == "resolved"
+    assert FAKE_DB_URL not in response.text
+
+
+async def test_a_staged_configuration_document_is_not_reported_as_the_state_file(
+    setup_client, setup_state
+):
+    """The same conflation, one step over. v1 answered ``state`` for a document
+    the wizard was merely holding -- ``state`` is where the finish step will
+    put it -- and the page reads that word to decide whether to offer the step
+    at all, so a well-formed but WRONG Plex URL could not be corrected for the
+    life of the process. The three words the resolver can answer with stay as
+    they were (``configured``, ``state``, ``null``); the fourth is the one the
+    wizard is allowed to change."""
+    token = await _authenticate(setup_client)
+    assert (
+        await setup_client.get("/api/setup/progress", headers=_headers(token))
+    ).json()["config_source"] is None
+
+    await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+    response = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert response.json()["config_source"] == "staged"
+    assert response.json()["config"] is True
+    assert setup_state.config_document is not None
+    assert PLEX_URL not in response.text
+
+
+async def test_a_second_configuration_submit_replaces_the_one_the_wizard_holds(
+    setup_client, setup_state
+):
+    """What the step being reachable again is FOR: the config endpoint
+    validates the document, never the address's reachability, so a well-formed
+    wrong URL is accepted and has to be correctable."""
+    token = await _authenticate(setup_client)
+    await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+
+    corrected = "http://plex.example.test:32401"
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": corrected}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert setup_state.config_document["plex"]["url"] == corrected
+
+
+async def test_an_empty_configuration_submit_keeps_the_document_the_wizard_holds(
+    setup_client, setup_state
+):
+    """Facts C7 at the third one-field pane, for the reason the other two have
+    it: the staged document is never served back, so a step navigated into
+    again shows an empty field, and an empty submit means keep. Empty with
+    nothing staged still falls through to the address refusal."""
+    token = await _authenticate(setup_client)
+    refused = await setup_client.post(
+        "/api/setup/config", json={"plex_url": ""}, headers=_headers(token)
+    )
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == setup_api.PLEX_URL_NOT_AN_ADDRESS
+
+    await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
+    )
+    kept = await setup_client.post(
+        "/api/setup/config", json={"plex_url": ""}, headers=_headers(token)
+    )
+
+    assert kept.status_code == 200, kept.text
+    assert setup_state.config_document["plex"]["url"] == PLEX_URL
 
 
 # --- step 2: the database URL ----------------------------------------------
@@ -1218,7 +1338,7 @@ async def test_the_progress_surface_reports_the_url_as_presence_and_never_as_a_v
     response = await setup_client.get("/api/setup/progress", headers=_headers(token))
 
     assert set(response.json()) == {
-        "password", "database", "providers", "required",
+        "password", "database", "database_source", "providers", "required",
         "config", "config_source", "public_url",
     }
     assert PUBLIC_URL not in response.text

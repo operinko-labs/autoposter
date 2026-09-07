@@ -426,6 +426,33 @@ def _effective(request: Request) -> dict[str, str]:
     return resolved
 
 
+def _database_source(request: Request) -> str:
+    """WHICH side answered the database step: the deployment, or this wizard.
+
+    ``_effective`` merges the persisted names with the staged ones and then
+    cannot tell them apart, which is right for "is this step met" and wrong for
+    "may the operator go back and change it". Both questions are asked of
+    /progress, so the second gets its own word.
+
+    ``resolved`` and deliberately not ``environment``: ``resolve_secret_values``
+    reads the environment AND the state file, and setup mode is entered when
+    ANY hard secret is missing -- so a deployment that already persisted a
+    database URL is a real shape and lands here too. The word means "not the
+    wizard's own", which is the whole of what the page needs: a value the boot
+    resolver already answers with is one this wizard cannot improve on, and
+    asking for it again implies it can.
+
+    ``staged`` is the case that was invisible: the step's OWN submit made
+    ``database`` true, the page dropped the step from the order, and its
+    ``Stored`` pill and its empty-means-keep became unreachable.
+    """
+    if resolve_secret_values().get("AUTOPOSTER_DATABASE_URL"):
+        return "resolved"
+    if request.app.state.setup.staged.get("AUTOPOSTER_DATABASE_URL"):
+        return "staged"
+    return "missing"
+
+
 def _config_source(request: Request) -> str | None:
     """Where the document the NEXT BOOT will read comes from, or None.
 
@@ -441,15 +468,25 @@ def _config_source(request: Request) -> str | None:
     that file's name. One resolver for the wizard and for the boot, so the two
     cannot look in different places.
 
-    Two sources because the resolver has two. A staged document is reported as
-    "state" -- that is where the finish step will put it -- so the page can
-    call the step done before anything has been written. The source is a WORD
-    and never the path: /progress is a presence surface.
+    Two sources because the resolver has two, plus the wizard's own. A document
+    this wizard is merely HOLDING answers ``staged`` -- v1 answered ``state``
+    for it, because ``state`` is where the finish step will put it, and that
+    conflated the one document the wizard may still replace with the one it may
+    not. The page reads this word to decide whether to offer the step, so under
+    the old word a well-formed but WRONG Plex URL could not be corrected for
+    the life of the process: this endpoint validates the document, it does not
+    reach the server the URL names.
+
+    ``configured`` and ``state`` keep v1's meaning exactly -- a document the
+    boot resolver answers with, which this wizard cannot replace and which the
+    finish step will not write over. ``staged`` and ``null`` are the two the
+    step stays offered for. The source is a WORD and never the path: /progress
+    is a presence surface.
     """
     path = config_document_path()
     if path is not None:
         return "state" if path == state_config_path() else "configured"
-    return "state" if request.app.state.setup.config_document is not None else None
+    return "staged" if request.app.state.setup.config_document is not None else None
 
 
 def _config_ready(request: Request) -> bool:
@@ -554,6 +591,15 @@ async def setup_progress(request: Request) -> dict:
     because the wizard cannot edit that file and writing beside it would
     discard what the operator typed. A word, never the path.
 
+    ``database_source`` and ``config_source`` are the same idiom and answer the
+    same question for two steps: ``resolved`` (``configured``/``state`` for the
+    document) is a value the BOOT RESOLVER holds, ``staged`` is one this wizard
+    holds for this session, and ``missing``/``null`` is neither. The boolean
+    beside each says whether the step is MET; the word says whether the
+    operator may still change the answer, and a step is hidden only for the
+    first. Without it a step's own submit deleted the step, and neither its
+    ``Stored`` pill nor its empty-means-keep was reachable from the page.
+
     Presence and names only, on every line: ``***REDACTED***``/``null`` per
     provider, booleans per step, and NAMES in ``required``. The generated
     webhook secret is reported here exactly like the pasted ones -- as
@@ -565,6 +611,10 @@ async def setup_progress(request: Request) -> dict:
     return {
         "password": bool(resolve_secret_values().get("AUTOPOSTER_ADMIN_PASSWORD_HASH")),
         "database": bool(resolved.get("AUTOPOSTER_DATABASE_URL")),
+        # WHICH side answered it, which the boolean above cannot say: the page
+        # hides a step only for a value the boot resolver already holds, and
+        # keeps one the wizard staged reachable so it can be corrected.
+        "database_source": _database_source(request),
         "providers": _presence_map(resolved),
         "required": missing_hard_secret_names(resolved),
         "config": source is not None,
@@ -781,10 +831,19 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     Refused outright when a document already resolves (Amendment 6): the
     progress surface stops offering this step at that point, and this is what
     makes that a server rule rather than a client courtesy a direct POST could
-    route around.
+    route around. A document this wizard merely STAGED is a different thing and
+    is simply replaced -- nothing here reaches the Plex server the URL names,
+    so a well-formed wrong address is accepted and has to stay correctable.
     """
     if config_document_path() is not None:
         raise HTTPException(status_code=400, detail=CONFIG_ALREADY_PROVIDED)
+
+    # Facts C7, the rule /public-url and /database already hold: a staged
+    # document is never served back, so a step navigated into again shows an
+    # empty field, and an empty submit there means "keep what you have".
+    # Empty with nothing staged still falls through to the refusal below.
+    if not body.plex_url and request.app.state.setup.config_document is not None:
+        return {"path": str(state_config_path())}
 
     body_plex_url = _require_http_url(body.plex_url, PLEX_URL_NOT_AN_ADDRESS)
 

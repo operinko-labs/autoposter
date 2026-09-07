@@ -5,15 +5,19 @@ import { ApiError } from "../api/client";
 import type { SetupProgress } from "../api/setup";
 import { Setup, setupErrorMessage } from "./Setup";
 
-// The six keys facts Amendment 6 ratifies -- config_source is the one the
-// brief's original fixture predates, and it is what the wizard now reads to
-// decide whether to offer step 4, never the plain `config` boolean alone.
+// The keys facts Amendment 6 ratifies -- config_source is the one the brief's
+// original fixture predates, and it is what the wizard now reads to decide
+// whether to offer step 4, never the plain `config` boolean alone. Its pair
+// `database_source` says the same thing for the database step: the boolean
+// says the step is MET, the word says whether the operator may still change
+// the answer.
 // Typed against SetupProgress, not inferred, so a test's own override (a
 // different config_source, an extra provider name) type-checks against the
 // real interface rather than against this literal's narrowed shape.
 const PROGRESS: SetupProgress = {
   password: true,
   database: false,
+  database_source: "missing",
   providers: {
     AUTOPOSTER_PLEX_TOKEN: "***REDACTED***",
     AUTOPOSTER_TMDB_TOKEN: null,
@@ -106,13 +110,14 @@ function secretMock() {
       return respond({
         ...PROGRESS,
         database: true,
+        database_source: "resolved",
         required: [],
         config: true,
         config_source: "state",
         public_url: true,
       });
     }
-    return respond({ ...PROGRESS, database: true, public_url: true });
+    return respond({ ...PROGRESS, database: true, database_source: "resolved", public_url: true });
   });
 }
 
@@ -152,6 +157,9 @@ function progressMock(
   let authenticated = false;
   let publicUrlSet = base.public_url;
   let databaseSet = base.database;
+  // The server's own derivation: a URL the wizard just staged reports
+  // `staged`, which is what keeps the step in the order and reachable by Back.
+  let databaseSource = base.database_source;
   return vi.fn(async (path: unknown, init?: RequestInit) => {
     const custom = extra?.(path as string, init);
     if (custom !== undefined) return custom;
@@ -166,11 +174,17 @@ function progressMock(
     }
     if (path === "/api/setup/database" && init?.method === "POST") {
       databaseSet = true;
+      databaseSource = "staged";
       return respond({ ok: true });
     }
     if (path === "/api/setup/webhook-secret") return respond({ webhook_secret: null });
     if (!authenticated) return respond({ detail: "not authenticated" }, 401);
-    return respond({ ...base, public_url: publicUrlSet, database: databaseSet });
+    return respond({
+      ...base,
+      public_url: publicUrlSet,
+      database: databaseSet,
+      database_source: databaseSource,
+    });
   });
 }
 
@@ -250,6 +264,7 @@ describe("Setup", () => {
       progressMock({
         ...PROGRESS,
         database: true,
+        database_source: "resolved",
         required: [],
         config: true,
         config_source: "state",
@@ -610,7 +625,10 @@ describe("Setup", () => {
   });
 
   it("skips the database step when the environment already resolved one", async () => {
-    vi.stubGlobal("fetch", progressMock({ ...PROGRESS, database: true }));
+    vi.stubGlobal(
+      "fetch",
+      progressMock({ ...PROGRESS, database: true, database_source: "resolved" }),
+    );
 
     render(<Setup />);
     await goToUrlStep();
@@ -644,5 +662,37 @@ describe("Setup", () => {
     expect(screen.getByLabelText<HTMLInputElement>("Autoposter's own URL").value).toBe(
       "autoposter.example.test",
     );
+  });
+
+  it("goes back into the database step it answered itself, with a Stored pill", async () => {
+    // The step's own submit is what made `database` true, so keying the order
+    // on the boolean deleted the step at the moment it was answered: Back from
+    // the systems pane landed on the address pane and a mistyped DSN could not
+    // be corrected for the life of the process.
+    render(<Setup />);
+    await goToSystemsStep();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    await waitFor(() => expect(screen.getByLabelText("Database URL")).toBeInTheDocument());
+    expect(screen.getByTestId("stored-setup-database")).toHaveTextContent("Stored");
+    expect(screen.getByLabelText<HTMLInputElement>("Database URL").value).toBe("");
+    expect(screen.getByRole("button", { name: "Test and continue" })).not.toBeDisabled();
+  });
+
+  it("keeps offering the configuration step while the document is only staged", async () => {
+    // A well-formed but WRONG Plex URL is accepted -- the endpoint validates
+    // the document, it does not reach the server the address names -- so the
+    // step has to stay on screen, saying it is answered rather than vanishing.
+    vi.stubGlobal(
+      "fetch",
+      progressMock({ ...PROGRESS, config: true, config_source: "staged" }),
+    );
+
+    render(<Setup />);
+    await goToSystemsStep();
+
+    await waitFor(() => expect(screen.getByLabelText("Plex server URL")).toBeInTheDocument());
+    expect(screen.getByTestId("stored-setup-plex-url")).toHaveTextContent("Stored");
   });
 });

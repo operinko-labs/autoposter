@@ -20,6 +20,13 @@ export interface SetupState {
 export interface SetupProgress {
   password: boolean;
   database: boolean;
+  /** WHICH side answered the database step. `"resolved"` is a value the boot
+   * resolver already holds -- the environment or the state file, which is why
+   * the word is not `"environment"` -- `"staged"` is one this wizard holds for
+   * this session, and `"missing"` is neither. The boolean above says the step
+   * is MET; this says whether the operator may still change the answer, and
+   * the step is hidden only for `"resolved"`. */
+  database_source: "resolved" | "staged" | "missing";
   /** Environment variable name -> `"***REDACTED***"` when stored, `null` when
    * not. Never a value. */
   providers: Record<string, string | null>;
@@ -35,8 +42,12 @@ export interface SetupProgress {
    * offers the configuration step only while this is `null` (facts
    * Amendment 6): a document that already resolves cannot be replaced by this
    * step, so asking for a Plex URL a second time would write a file the next
-   * boot never reads. */
-  config_source: "configured" | "state" | null;
+   * boot never reads. `"staged"` is `database_source`'s word on the same
+   * question: the document is this wizard's own, the step stays offered with a
+   * `Stored` pill, and a submit replaces it -- this endpoint validates the
+   * document and never reaches the server the address names, so a well-formed
+   * wrong URL has to stay correctable. */
+  config_source: "configured" | "state" | "staged" | null;
   /** Whether the wizard holds this deployment's own externally reachable
    * address (v2 step 2). Presence, never the value: /progress is a presence
    * surface for every line it serves. */
