@@ -265,6 +265,63 @@ def test_an_update_adds_a_url_field_to_an_entry_that_has_none():
     assert fields["username"] == "row-121-operator-username"
 
 
+# --- I1: the half-created entry is finished, not re-preserved disabled ------
+#
+# `find_existing` matches a leftover disabled entry by NAME, and C2a's ordinary
+# rule is to PUT every `on*` flag back exactly as found -- but an entry whose
+# ACCEPTED flags are every one `False` cannot be an operator's own choice
+# (nobody keeps a webhook that fires on nothing), so it can only be OUR OWN
+# half-create. The controller's 2026-09-07 ruling: that one shape is finished
+# with the accepted flags instead of re-preserved dead.
+
+
+def test_an_all_false_entry_is_finished_not_preserved_dead():
+    entry = _copy(EXISTING_SONARR_ENTRY)
+    for event in setup_arr._EVENTS["sonarr"]:
+        entry[event] = False
+
+    body = setup_arr.build_body("sonarr", PUBLIC_URL, SECRET, entry)
+
+    assert body["onDownload"] is True
+    assert body["onUpgrade"] is True
+    assert body["onRename"] is True
+    assert body["onImportComplete"] is True
+    assert body["onSeriesAdd"] is True
+    assert body["onGrab"] is False
+    # And it is still THAT entry: id, tags, everything else preserved.
+    assert body["id"] == 2
+    assert body["tags"] == [7]
+
+
+def test_an_all_false_entry_missing_the_header_still_gets_one():
+    """Requirement 3: the header-add path and the flag-finish path are
+    independent -- an entry that lacks BOTH still gets both fixed in one PUT."""
+    entry = _copy(EXISTING_SONARR_ENTRY)
+    for event in setup_arr._EVENTS["sonarr"]:
+        entry[event] = False
+    entry["fields"] = [field for field in entry["fields"] if field["name"] != "headers"]
+
+    body = setup_arr.build_body("sonarr", PUBLIC_URL, SECRET, entry)
+
+    assert _fields(body)["headers"] == [{"key": "X-Autoposter-Token", "value": SECRET}]
+    assert body["onDownload"] is True
+    assert body["onSeriesAdd"] is True
+
+
+def test_an_entry_with_any_flag_true_is_still_preserved_exactly():
+    """The regression this fix must not cause: `EXISTING_SONARR_ENTRY` has
+    `onDownload` etc. ticked, so it is an operator's own entry and every flag,
+    ticked or not, survives untouched -- the C2a case, unchanged."""
+    body = setup_arr.build_body("sonarr", PUBLIC_URL, SECRET, EXISTING_SONARR_ENTRY)
+
+    assert body["onDownload"] is True
+    assert body["onUpgrade"] is False
+    assert body["onRename"] is True
+    assert body["onImportComplete"] is True
+    assert body["onSeriesAdd"] is False
+    assert body["onGrab"] is False
+
+
 # --- finding the existing entry ----------------------------------------------
 
 
@@ -407,6 +464,76 @@ async def test_a_failed_enabling_write_is_the_fixed_refusal_and_no_third_write()
     assert (action, failure) == (None, "HTTPStatus400")
     assert ARR_ERROR_BODY not in str(failure)
     assert [request.method for request in seen] == ["GET", "POST", "PUT"]
+
+
+async def test_a_half_created_entry_is_finished_on_the_next_run():
+    """The two-run reproduction of I1: run one's enabling PUT fails and leaves
+    a disabled entry behind; run two's GET finds it by NAME and must send ONE
+    PUT carrying the accepted flags -- not the dead ones it was left with --
+    and report `("updated", None)`."""
+    store: list[dict] = []
+    # The first PUT ever seen (run one's enabling write) fails; any PUT after
+    # that (run two's update write) succeeds and is applied to the stored
+    # entry, the way a real *arr would persist it.
+    put_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json=store)
+        if request.method == "POST":
+            created = json.loads(request.content)
+            created["id"] = 9
+            store.append(created)
+            return httpx.Response(200, json={"id": 9})
+        put_count["n"] += 1
+        if put_count["n"] == 1:
+            return httpx.Response(400, json={"message": ARR_ERROR_BODY})
+        written = json.loads(request.content)
+        for index, stored in enumerate(store):
+            if stored["id"] == written["id"]:
+                store[index] = written
+        return httpx.Response(200, json={"id": written["id"]})
+
+    transport = httpx.MockTransport(handler)
+
+    # Run one: GET (nothing) -> POST ok -> PUT fails -> the fixed refusal.
+    action1, failure1 = await setup_arr.register(
+        "sonarr", SONARR_BASE, APIKEY, PUBLIC_URL, SECRET, transport=transport
+    )
+
+    assert (action1, failure1) == (None, "HTTPStatus400")
+    assert len(store) == 1
+    assert all(store[0][event] is False for event in setup_arr._EVENTS["sonarr"])
+
+    # Run two: GET finds the all-false leftover -- ONE PUT, the accepted
+    # flags, the header, the url, forceSave=true, and "updated".
+    seen2: list[httpx.Request] = []
+
+    def recording_handler(request: httpx.Request) -> httpx.Response:
+        seen2.append(request)
+        return handler(request)
+
+    action2, failure2 = await setup_arr.register(
+        "sonarr",
+        SONARR_BASE,
+        APIKEY,
+        PUBLIC_URL,
+        SECRET,
+        transport=httpx.MockTransport(recording_handler),
+    )
+
+    assert (action2, failure2) == ("updated", None)
+    assert [request.method for request in seen2] == ["GET", "PUT"]
+    updated = json.loads(seen2[1].content)
+    assert updated["onDownload"] is True
+    assert updated["onUpgrade"] is True
+    assert updated["onRename"] is True
+    assert updated["onImportComplete"] is True
+    assert updated["onSeriesAdd"] is True
+    assert updated["onGrab"] is False
+    assert _fields(updated)["url"] == f"{PUBLIC_URL}/webhook/sonarr"
+    assert _fields(updated)["headers"] == [{"key": "X-Autoposter-Token", "value": SECRET}]
+    assert seen2[1].url.params["forceSave"] == "true"
 
 
 async def test_an_existing_connection_is_updated_in_place():

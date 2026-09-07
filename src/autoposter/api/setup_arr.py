@@ -61,9 +61,14 @@ registered in two writes: a POST with every ``on*`` flag ``False`` (``Enable``
 is false, so CREATE never calls ``Test`` at all), then a PUT of the returned
 entry's id with the real flags -- the UPDATE path, where ``forceSave`` already
 skips the test. A failure on that second write is reported the same fixed way
-as any other failure and leaves the entry behind disabled rather than absent;
-that is harmless, because it is found by NAME on the next run of this wizard
-and turned on then.
+as any other failure and leaves the entry behind disabled rather than absent.
+That is genuinely self-healing, by the controller's 2026-09-07 ruling: the next
+run's update arm (``build_body``) finds this entry by NAME, sees every ``on*``
+flag ``False`` -- a shape no operator would leave a webhook in, since it fires
+on nothing -- reads that as our own unfinished create rather than a deliberate
+choice, and writes the accepted flags instead of preserving the dead ones.
+Every other existing entry, with any flag ticked, is still preserved exactly
+as C2a requires.
 
 Two bodies from two tables rather than one with nulls: Sonarr 400s on
 ``onMovieAdded`` and Radarr on ``onSeriesAdd``. The ticked events are exactly
@@ -255,7 +260,10 @@ def build_body(service: str, public_url: str, secret: str, existing: dict | None
     tables above. With one present it is THAT ENTRY, deep-copied, with the url
     and the token header refreshed and nothing else touched (facts C2a) -- the
     copy matters because the caller reads the fetched listing again for the id
-    it PUTs to.
+    it PUTs to. The one exception: an entry whose accepted ``on*`` flags are
+    every one ``False`` is finished with the accepted flags instead, on the
+    controller's 2026-09-07 ruling that such an entry can only be our own
+    unfinished create (see the block below and I1).
     """
     if existing is None:
         return {
@@ -293,6 +301,19 @@ def build_body(service: str, public_url: str, secret: str, existing: dict | None
         fields.append({"name": "url", "value": f"{public_url}{webhook_path(service)}"})
     if "headers" not in seen:
         fields.append({"name": "headers", "value": [{"key": TOKEN_HEADER, "value": secret}]})
+
+    # The controller's 2026-09-07 half-create ruling, the one exception to
+    # C2a's "preserve every `on*` flag as found": an entry whose ACCEPTED `on*`
+    # flags are every one `False` cannot be an operator's own choice -- nobody
+    # keeps a webhook that fires on nothing -- so by construction it can only
+    # be OUR OWN unfinished create (`_create_body` forces exactly these flags
+    # off, deliberately, so `CreateProvider`'s save-time test never runs; see
+    # `_create_body` and the module docstring). This finishes that create
+    # instead of writing the dead flags back and reporting "updated" over a
+    # hook that would never fire. Any entry with even one flag ticked is still
+    # returned untouched, C2a's rule intact.
+    if all(body.get(event) is False for event in _EVENTS[service]):
+        body.update(_EVENTS[service])
     return body
 
 
@@ -416,8 +437,12 @@ async def register(
                 # is false), then turned on with a second write through the
                 # UPDATE path, where `forceSave` already skips the test. A
                 # failure on that second write leaves the entry behind
-                # disabled rather than absent -- harmless, since it is found
-                # by NAME (`find_existing`) and turned on next run.
+                # disabled rather than absent -- and the next run's update arm
+                # (`build_body`) finishes it rather than re-preserving the
+                # dead flags: an entry whose `on*` flags are ALL `False` is
+                # read as our own half-create, not an operator's choice
+                # (the controller's 2026-09-07 ruling), so `find_existing`
+                # finding it by NAME leads to it being turned on, not kept off.
                 written = await client.post(
                     f"{origin}{NOTIFICATION_PATH}",
                     headers=headers,
