@@ -164,10 +164,69 @@ export function checkSystem(
   });
 }
 
-export function submitPlexUrl(plexUrl: string): Promise<{ path: string }> {
+export interface PlexPin {
+  /** Minted by plex.tv and public by design -- the documented row 213
+   * exception. There is no sign-in without showing it. A `strong=true` PIN's
+   * code is a long opaque string (measured: 25 characters), not four
+   * characters to type at plex.tv/link: the auth URL carries it. */
+  code: string;
+  auth_url: string;
+  expires_in: number;
+}
+
+export interface PlexConnection {
+  uri: string;
+  local: boolean;
+  protocol: string;
+  port: number;
+}
+
+export interface PlexServer {
+  client_identifier: string;
+  name: string;
+  product: string;
+  platform: string;
+  /** Local first: a pod inside the same network should be offered that one. */
+  connections: PlexConnection[];
+}
+
+export interface PlexLibrary {
+  key: string;
+  title: string;
+  type: string;
+}
+
+export function mintPlexPin(): Promise<PlexPin> {
+  return setupFetch("/api/setup/plex/pin", { method: "POST" });
+}
+
+/** A BOOLEAN. The account token is staged server-side and never sent here. */
+export function pollPlexPin(): Promise<{ authorised: boolean }> {
+  return setupFetch("/api/setup/plex/pin");
+}
+
+export function fetchPlexServers(): Promise<{ servers: PlexServer[] }> {
+  return setupFetch("/api/setup/plex/servers");
+}
+
+export function fetchPlexLibraries(baseUrl: string): Promise<{ libraries: PlexLibrary[] }> {
+  return setupFetch("/api/setup/plex/libraries", {
+    method: "POST",
+    body: JSON.stringify({ base_url: baseUrl }),
+  });
+}
+
+/** The configuration step, driven from the Plex accordion. `excludedLibraries`
+ * is the tick-list's COMPLEMENT -- the schema's field is
+ * `plex.excluded_libraries` -- and `null` means "unchanged", the same "empty
+ * means keep" every other step here has. */
+export function submitPlexSelection(
+  plexUrl: string,
+  excludedLibraries: string[] | null,
+): Promise<{ path: string }> {
   return setupFetch("/api/setup/config", {
     method: "POST",
-    body: JSON.stringify({ plex_url: plexUrl }),
+    body: JSON.stringify({ plex_url: plexUrl, excluded_libraries: excludedLibraries }),
   });
 }
 

@@ -292,3 +292,28 @@
   gap: 0.7rem;
   padding: 0.9rem;
 }
+
+/* The Plex sign-in, the server pick-list and the library ticks, inside the
+   Plex accordion's body. Its own column rather than the body's, because the
+   radios and checkboxes are inline labels that would otherwise run together
+   into one paragraph of addresses. */
+.setup-plex {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.setup-plex fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.7rem 0.9rem;
+}
+
+.setup-plex label {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}

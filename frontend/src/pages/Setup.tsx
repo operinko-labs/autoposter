@@ -8,12 +8,13 @@ import {
   finishSetup,
   submitDatabaseUrl,
   submitMasterPassword,
-  submitPlexUrl,
+  submitPlexSelection,
   submitProviderKeys,
   submitPublicUrl,
   type SetupProgress,
 } from "../api/setup";
 import { SetupAccordion } from "./SetupAccordion";
+import { SetupPlexPane } from "./SetupPlexPane";
 import {
   canNavigate,
   farthestStep,
@@ -223,19 +224,10 @@ export function Setup() {
             busy={busy}
             progress={progress}
             onSave={(values) => run(() => submitProviderKeys(values))}
+            onSelectPlex={(plexUrl, excluded) =>
+              run(() => submitPlexSelection(plexUrl, excluded))
+            }
           />
-          {/* Offered while no document RESOLVES -- `null`, or one this wizard
-              is merely holding. A staged one is answered, not settled: this
-              endpoint validates the document and never reaches the Plex server
-              the address names, so a well-formed wrong URL is accepted and has
-              to stay correctable. */}
-          {(progress.config_source === null || progress.config_source === "staged") && (
-            <ConfigPane
-              busy={busy}
-              stored={progress.config_source === "staged"}
-              onSubmit={(url) => run(() => submitPlexUrl(url))}
-            />
-          )}
           <button
             className="primary"
             type="button"
@@ -521,34 +513,6 @@ function DatabasePane({
   );
 }
 
-function ConfigPane({
-  busy,
-  stored,
-  onSubmit,
-}: {
-  busy: boolean;
-  /** Whether the wizard is already holding a document. The staged one is never
-   * served back, so this pane always renders an empty field; the pill says the
-   * step is answered and an empty submit keeps it, which is what the endpoint
-   * reads it as. */
-  stored: boolean;
-  onSubmit: (v: string) => Promise<boolean>;
-}) {
-  return (
-    <OneFieldPane
-      id="setup-plex-url"
-      title="Configuration"
-      label="Plex server URL"
-      type="text"
-      hint="http://plex:32400 — everything else starts from the shipped defaults and is editable in Settings."
-      action="Write the configuration"
-      busy={busy}
-      stored={stored}
-      onSubmit={onSubmit}
-    />
-  );
-}
-
 // The one provider credential this deployment mints itself rather than
 // collects (backend's own name for it: setup.py's `_GENERATED_SECRET`). The
 // server refuses it outright on every submit (`WEBHOOK_SECRET_IS_GENERATED`),
@@ -602,10 +566,16 @@ function SystemsPane({
   busy,
   progress,
   onSave,
+  onSelectPlex,
 }: {
   busy: boolean;
   progress: SetupProgress;
   onSave: (values: Record<string, string>) => Promise<boolean>;
+  /** The configuration step, which v2 stages from inside the Plex accordion
+   * rather than from a bare "Plex server URL" box beside it: the address is
+   * the one the operator just PICKED from their own account, and the tick-list
+   * that comes with it is the same submit's `excluded_libraries`. */
+  onSelectPlex: (plexUrl: string, excludedLibraries: string[]) => Promise<boolean>;
 }) {
   const isRequired = (name: string) =>
     REQUIRED_PROVIDER_NAMES.includes(name) || progress.required.includes(name);
@@ -638,7 +608,13 @@ function SystemsPane({
             required={isRequired(name)}
             system={SYSTEM_FOR_CREDENTIAL[name] ?? name}
             onSave={(credential, value) => onSave({ [credential]: value })}
-          />
+          >
+            {SYSTEM_FOR_CREDENTIAL[name] === "plex"
+              ? (setAddress) => (
+                  <SetupPlexPane onAddress={setAddress} onSelect={onSelectPlex} />
+                )
+              : undefined}
+          </SetupAccordion>
         ),
       )}
       {busy && <p className="setup-hint">Working…</p>}

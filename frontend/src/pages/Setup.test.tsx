@@ -682,10 +682,12 @@ describe("Setup", () => {
     expect(screen.getByRole("button", { name: "Test and continue" })).not.toBeDisabled();
   });
 
-  it("keeps offering the configuration step while the document is only staged", async () => {
-    // A well-formed but WRONG Plex URL is accepted -- the endpoint validates
-    // the document, it does not reach the server the address names -- so the
-    // step has to stay on screen, saying it is answered rather than vanishing.
+  it("stages the configuration from inside the Plex accordion, not from a box beside it", async () => {
+    // Task 3 replaces the standalone "Plex server URL" field: the address is
+    // the one the operator PICKED from their own account, and the tick-list
+    // that comes with it is the same submit's `excluded_libraries`. This is the
+    // case that field's coverage becomes -- the sign-in is offered where the
+    // Plex credential is, and it is the whole of the configuration step now.
     vi.stubGlobal(
       "fetch",
       progressMock({ ...PROGRESS, config: true, config_source: "staged" }),
@@ -693,8 +695,13 @@ describe("Setup", () => {
 
     render(<Setup />);
     await goToSystemsStep();
+    // Held, so it renders collapsed (facts C8) -- the sign-in lives inside it.
+    fireEvent.click(screen.getByRole("button", { name: /Plex token/ }));
 
-    await waitFor(() => expect(screen.getByLabelText("Plex server URL")).toBeInTheDocument());
-    expect(screen.getByTestId("stored-setup-plex-url")).toHaveTextContent("Stored");
+    await waitFor(() =>
+      expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "Sign in with Plex" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Plex server URL")).toBeNull();
   });
 });

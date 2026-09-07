@@ -35,8 +35,13 @@ export function SetupAccordion({
   /** Whether this system's address is operator-supplied (Plex, Radarr, Sonarr,
    * Tracearr) or built in. */
   needsAddress: boolean;
-  /** The Plex accordion's extra body (Task 3); absent elsewhere. */
-  children?: ReactNode;
+  /** The Plex accordion's extra body (Task 3); absent elsewhere.
+   *
+   * A render prop rather than a plain node, and for one reason: the Plex pane
+   * picks the server address from plex.tv, and `address` below is the only
+   * thing the Check button reads. A pane that could not write into it would
+   * leave a picked server checked against an empty string. */
+  children?: (setAddress: (value: string) => void) => ReactNode;
   onSave: (credential: string, value: string) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(required && held === null);
@@ -130,7 +135,7 @@ export function SetupAccordion({
               onChange={(event) => setValue(event.target.value)}
             />
           </div>
-          {children}
+          {children?.(setAddress)}
           <div className="setup-field-head">
             <button type="submit" disabled={busy}>
               Save
