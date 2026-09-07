@@ -133,6 +133,25 @@ async def test_a_500_then_200_succeeds_via_retry(make_client, sleeps):
     assert sleeps == [0.5]
 
 
+async def test_a_204_with_no_body_counts_as_delivered(make_client, sleeps):
+    """Discord's success answer. httpx's is_success is a 2xx test, so this
+    needs no transport change -- pin it so it cannot regress into a
+    status-code equality check."""
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(204)
+
+    notifier = build_notifier(_config(mode="discord"), make_client(handler), _refuse_db)
+
+    ok = await notifier.send("collection_changed", "Movies: 'X' changed: +1 -0", {})
+
+    assert ok is True
+    assert len(seen) == 1
+    assert sleeps == []
+
+
 async def test_a_4xx_is_a_misconfiguration_and_is_not_retried(
     make_client, session_factory, sleeps
 ):
@@ -389,3 +408,86 @@ async def test_a_failure_against_an_explicit_url_names_that_host_only(
 
     rows = (await session.execute(select(EventLog))).scalars().all()
     assert "tok-SECRET456" not in json.dumps(rows[0].payload)
+
+
+# --- 429: the one 4xx that asking again fixes ---------------------------------
+#
+# Discord's per-webhook budget is roughly 5 requests / 2 seconds, and
+# collection_changed fires once per changed collection per pass. A 429 says
+# "wait", not "you are misconfigured", so it retries -- and the server's own
+# Retry-After beats our computed schedule, CLAMPED to timeout_seconds so a
+# hostile or misconfigured header cannot park a background task past the
+# worst case this module documents.
+
+
+async def test_a_429_is_retried_and_its_retry_after_replaces_the_backoff(make_client, sleeps):
+    statuses = iter([429, 204])
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        status = next(statuses)
+        headers = {"Retry-After": "2"} if status == 429 else {}
+        return httpx.Response(status, headers=headers)
+
+    notifier = build_notifier(_config(mode="discord"), make_client(handler), _refuse_db)
+
+    ok = await notifier.send("collection_changed", "Movies: 'X' changed: +1 -0", {})
+
+    assert ok is True
+    assert len(seen) == 2
+    # 2.0, not the computed 0.5: the server's own number won.
+    assert sleeps == [2.0]
+
+
+async def test_a_429_without_a_header_falls_back_to_the_computed_backoff(make_client, sleeps):
+    statuses = iter([429, 204])
+
+    def handler(request):
+        return httpx.Response(next(statuses))
+
+    notifier = build_notifier(_config(mode="discord"), make_client(handler), _refuse_db)
+
+    ok = await notifier.send("collection_changed", "Movies: 'X' changed: +1 -0", {})
+
+    assert ok is True
+    assert sleeps == [0.5]
+
+
+async def test_a_429_retry_after_is_clamped_to_the_configured_timeout(make_client, sleeps):
+    """An hour-long Retry-After must not park a background task for an hour --
+    the worst-case duration this module documents is a contract."""
+    statuses = iter([429, 204])
+
+    def handler(request):
+        status = next(statuses)
+        headers = {"Retry-After": "3600"} if status == 429 else {}
+        return httpx.Response(status, headers=headers)
+
+    notifier = build_notifier(_config(mode="discord"), make_client(handler), _refuse_db)
+
+    ok = await notifier.send("collection_changed", "Movies: 'X' changed: +1 -0", {})
+
+    assert ok is True
+    assert sleeps == [float(CONFIGURED_TIMEOUT)]
+
+
+async def test_an_http_date_retry_after_falls_back_rather_than_raising(
+    make_client, session_factory, sleeps
+):
+    """Retry-After may be an HTTP-date. Discord sends seconds; anything this
+    cannot read as a number falls back to the computed backoff rather than
+    crashing a send."""
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(429, headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})
+
+    notifier = build_notifier(_config(mode="discord"), make_client(handler), session_factory)
+
+    ok = await notifier.send("collection_changed", "Movies: 'X' changed: +1 -0", {})
+
+    assert ok is False
+    assert len(seen) == 3
+    assert sleeps == [0.5, 1.0]

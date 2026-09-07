@@ -135,8 +135,10 @@ def _notify_in_background(send_coroutine) -> None:
     """Fire one ``Notifier.send`` without awaiting it.
 
     A response must never wait on the webhook -- one send's worst case is
-    ~31.5s on the default retry config (see notify/dispatch.py), against
-    endpoints that answer in seconds. ``send`` never raises and does its own
+    ~31.5s on the default retry config against an ordinary target, up to
+    ~50s against one that answers 429 with a ``Retry-After`` clamped to the
+    timeout (see notify/dispatch.py), against endpoints that answer in
+    seconds. ``send`` never raises and does its own
     outcome logging, so the task's result is deliberately dropped; in
     particular a disabled notifier's vacuous ``True`` is never reported as a
     delivery.

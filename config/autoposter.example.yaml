@@ -660,7 +660,7 @@ arr_sync:
 notifications:
   enabled: false # POST run-completion webhooks to `url`; off until pointed somewhere
   url: "" # e.g. http://n8n.n8n-prod.svc.cluster.local:5678/webhook/autoposter -- may embed a token, never logged in full
-  # Payload shape (see src/autoposter/notify/payload.py for both contracts):
+  # Payload shape (see src/autoposter/notify/payload.py for all four modes):
   #   apprise-json (default): the body Apprise's json:// scheme POSTs --
   #     {"version": "1.0", "title": ..., "message": ..., "attachments": [],
   #      "type": "success" | "failure"} -- what an Apprise-trained consumer
@@ -668,6 +668,15 @@ notifications:
   #   autoposter-v1: this service's own versioned shape --
   #     {"schema": "autoposter/v1", "event": ..., "at": <ISO 8601 UTC>,
   #      "summary": ..., "detail": {...}} -- carries the full detail dict.
+  #   discord: a Discord webhook embed --
+  #     {"embeds": [{"title": ..., "description": ..., "color": ...,
+  #      "timestamp": ..., "fields": [...]}], "allowed_mentions": {"parse": []}}
+  #     -- detail becomes embed fields, and mentions are suppressed so a
+  #     collection titled @everyone cannot ping a server.
+  #   apprise-api: the body an Apprise API server accepts at /notify/{key} --
+  #     {"title": ..., "body": ..., "type": "success" | "failure"} -- the
+  #     opposite direction from apprise-json, which impersonates Apprise as a
+  #     sender. tag and format are left to the server's defaults.
   mode: apprise-json
   timeout_seconds: 10 # per-attempt HTTP timeout
   retry_count: 3 # attempts before giving up; notification failure never fails the run it reports on
