@@ -28,6 +28,7 @@ asserted.
 
 import io
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -399,6 +400,98 @@ async def test_no_refusal_body_carries_a_root_path(client, auth_headers, overlay
     for payload, name in ((b"junk", "bad.png"), (_png(), "../x.png"), (b"", "e.png")):
         body = (await _upload(client, "overlays", auth_headers, _envelope(payload, name))).text
         assert str(overlays_root) not in body
+
+
+# --- the directory itself -----------------------------------------------------
+#
+# The whole PR is held on a homeops change the operator makes by hand, so a
+# half-applied one -- PVC absent, wrong `subPath`, wrong fsGroup -- is the
+# shape their very first verification step meets. Both ways it can be wrong
+# answer the one fixed sentence `api/setup.py::_persist` answers for the state
+# directory, minus the path row 213 will not let this module serve.
+
+
+async def test_an_upload_into_an_unwritable_root_is_a_fixed_sentence(
+    client, auth_headers, overlays_root
+):
+    """The real thing, on a filesystem, with `api/setup.py`'s own probe-and-skip
+    in front of it: the image's own `/app/assets/overlays` survives a
+    half-applied mount root-owned and read-only to uid 568, `mkstemp` raises
+    `PermissionError`, and unhandled that is a bare 500 whose body says
+    "Internal Server Error" -- from which an operator cannot tell their cluster
+    from this code."""
+    overlays_root.chmod(0o500)
+    try:
+        probe = overlays_root / ".writable"
+        try:
+            probe.touch()
+        except OSError:
+            pass
+        else:
+            probe.unlink()
+            pytest.skip("this uid writes a 0500 directory; the monkeypatched pin covers it")
+        response = await _upload(client, "overlays", auth_headers, _envelope(_png(), "denied.png"))
+    finally:
+        overlays_root.chmod(0o700)
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == "this directory is not writable on this deployment"
+    assert str(overlays_root) not in response.text
+
+
+async def test_a_staging_write_the_directory_refuses_is_the_same_fixed_sentence(
+    client, auth_headers, overlays_root, monkeypatch
+):
+    """The same refusal on every uid, because the container this suite runs in
+    writes a 0500 directory and skips the test above. `mkstemp` is where a
+    misowned mount raises, and its errno text carries a file name -- which is
+    why the served sentence carries neither it nor the root."""
+
+    def refuses(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(overlays_root / ".upload-x"))
+
+    monkeypatch.setattr(tempfile, "mkstemp", refuses)
+
+    response = await _upload(client, "overlays", auth_headers, _envelope(_png(), "denied.png"))
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == "this directory is not writable on this deployment"
+    assert "Permission denied" not in response.text
+    assert str(overlays_root) not in response.text
+    assert list(overlays_root.iterdir()) == []
+
+
+async def test_a_root_that_is_not_there_is_refused_rather_than_created(
+    client, auth_headers, app, config, tmp_path
+):
+    """The rule this repository states twice -- `deploy/README.md` and
+    `artwork_modes/backup.py:145-155`: an unmounted path is indistinguishable
+    from a mounted one, so a `mkdir` here would take the upload, list it, let a
+    config value name it, and lose it on the next pod restart. That is the same
+    storm a deleted overlay causes, reached by a different door."""
+    app.state.config = config.model_copy(update={"overlays_root": tmp_path / "unmounted"})
+
+    response = await _upload(client, "overlays", auth_headers, _envelope(_png(), "mine.png"))
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == "this directory is not writable on this deployment"
+    assert not (tmp_path / "unmounted").exists()
+
+
+@pytest.mark.parametrize("name", ["comfortaa-medium.ttf", "OFL.TXT"])
+async def test_a_protected_name_in_another_case_cannot_be_uploaded(
+    client, auth_headers, fonts_root, name
+):
+    """`PROTECTED` is compared case-insensitively; see the delete-side test in
+    `test_api_files.py` for why that trade is worth a false refusal here."""
+    response = await _upload(client, "fonts", auth_headers, _envelope(FACE_BYTES, name))
+
+    assert response.status_code == 409
+    assert (
+        response.json()["detail"]
+        == "that file ships with this service and cannot be replaced or removed"
+    )
+    assert sorted(entry.name for entry in fonts_root.iterdir()) == []
 
 
 # --- the storm guard (Law B) ------------------------------------------------

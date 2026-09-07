@@ -270,6 +270,47 @@ async def test_a_protected_font_is_refused(client, auth_headers, fonts_root):
     assert (fonts_root / "Comfortaa-Medium.ttf").exists()
 
 
+@pytest.mark.parametrize("name", ["comfortaa-medium.ttf", "COMFORTAA-MEDIUM.TTF"])
+async def test_a_protected_name_spelled_in_another_case_is_still_refused(
+    client, auth_headers, fonts_root, name
+):
+    """`PROTECTED` is compared case-insensitively, and the trade is deliberate.
+
+    On the case-sensitive Linux root production runs, a differently-cased
+    spelling is simply a second, unprotected file, so this costs a false
+    refusal an operator undoes with a rename. On a case-insensitive mount --
+    a macOS bind mount for development, an SMB-backed PVC -- `contained()`
+    resolves the lowercase spelling to the bundled face and the delete would
+    remove the exact file `collections/separator_art.py:86` reads directly,
+    breaking separator art with a magick font error.
+    """
+    (fonts_root / "Comfortaa-Medium.ttf").write_bytes(b"x")
+
+    response = await client.delete(f"/api/files/fonts/{name}", headers=auth_headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "that file ships with this service and cannot be replaced or removed"
+    )
+    assert (fonts_root / "Comfortaa-Medium.ttf").exists()
+
+
+async def test_a_file_named_like_a_protected_one_in_another_case_lists_as_protected(
+    client, auth_headers, fonts_root
+):
+    """The listing has to agree with the delete route, or the page renders a
+    Delete control for a row the server then refuses -- `Files.tsx` draws no
+    button for a protected row, and that is the whole mechanism."""
+    (fonts_root / "comfortaa-medium.ttf").write_bytes(b"x")
+
+    row = _named(
+        (await client.get("/api/files/fonts", headers=auth_headers)).json(),
+        "comfortaa-medium.ttf",
+    )
+
+    assert row["protected"] is True
+
+
 @pytest.mark.parametrize("name", ["OFL.txt", "PROVENANCE.md"])
 async def test_the_licence_and_provenance_files_are_refused(client, auth_headers, fonts_root, name):
     """Both carry a suffix `SUFFIXES["fonts"]` does not manage, so the protected

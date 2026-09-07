@@ -14,9 +14,11 @@ suggests a different one.
 `_confined` calls `Path.resolve()` and then checks parentage, which accepts a
 symlink whose target is outside the root; and it is owned by two branches in
 flight. Here both sides go through `os.path.realpath` and the result must be a
-regular file whose parent IS the root -- so `..`, an absolute path, a
-subdirectory and a planted symlink are each refused on their target rather than
-on their spelling.
+regular file whose parent IS the root -- so a planted symlink is refused on its
+TARGET rather than on its spelling, and a subdirectory is refused rather than
+descended. `..` and an absolute path never reach that check at all:
+`normalised_name` refuses those on their SPELLING first, before any filesystem
+call.
 
 **Overwrite is refused (409), and that is a deliberate design decision rather
 than caution.** The two stages disagree about what replacing a file in place
@@ -83,6 +85,19 @@ PROTECTED: dict[str, frozenset[str]] = {
     "fonts": frozenset({"Comfortaa-Medium.ttf", "OFL.txt", "PROVENANCE.md"}),
 }
 
+# Compared case-insensitively, and the trade is deliberate. On the
+# case-sensitive Linux root production runs, a differently-cased spelling is a
+# second, unprotected file, so this costs a false refusal an operator undoes
+# with a rename. On a case-insensitive mount -- a macOS bind mount for
+# development, an SMB-backed PVC -- `contained()` resolves `comfortaa-medium.
+# ttf` to the bundled face, `resolved.name` matches the submitted spelling, and
+# the delete removes the exact file `collections/separator_art.py:86` reads
+# directly. The set above stays in its real spelling: it is what a reader
+# checks against the directory.
+_PROTECTED_FOLDED: dict[str, frozenset[str]] = {
+    kind: frozenset(name.casefold() for name in names) for kind, names in PROTECTED.items()
+}
+
 # Long enough for any real face or overlay name, short enough that a name is
 # never a payload. Checked before the character set so a megabyte of legal
 # characters is refused on length.
@@ -103,6 +118,11 @@ FILE_PROTECTED = "that file ships with this service and cannot be replaced or re
 FILE_REFERENCED = "the running configuration still names that file"
 FILE_EXISTS = "a file of that name is already there; delete it first"
 FILE_UNREADABLE = "the uploaded file is not one this service can use"
+# `api/setup.py::_persist`'s 503 for the state directory, in this module's
+# vocabulary and WITHOUT the directory it names: row 213 keeps a root out of
+# every body this module serves, and `test_no_refusal_body_carries_a_root_path`
+# is the pin. The route token already says which of the two directories it was.
+DIRECTORY_NOT_WRITABLE = "this directory is not writable on this deployment"
 
 
 class OutsideRoot(Exception):
@@ -117,6 +137,18 @@ def root_for(config, kind: str) -> Path:
     previous deployment's directory after a save.
     """
     return Path(config.overlays_root if kind == "overlays" else config.fonts_root)
+
+
+def is_protected(kind: str, submitted: str) -> bool:
+    """`submitted` names a file that ships with this service.
+
+    One spelling for all three doors -- the listing's `protected` flag, the
+    delete and the upload -- because a listing that disagreed with the delete
+    route would draw a Delete control for a row the server then refuses, and
+    `Files.tsx` draws no button for a protected row precisely so the operator
+    never meets that.
+    """
+    return submitted.casefold() in _PROTECTED_FOLDED[kind]
 
 
 def normalised_name(kind: str, submitted: str) -> str:
@@ -331,7 +363,6 @@ def _listing(root: Path, kind: str, references: dict[str, list[str]]) -> list[di
     an interrupted upload's staging file invisible.
     """
     rows = []
-    protected = PROTECTED[kind]
     for entry in sorted(root.iterdir(), key=lambda path: path.name):
         if entry.name.startswith(".") or entry.is_symlink() or not entry.is_file():
             continue
@@ -343,7 +374,7 @@ def _listing(root: Path, kind: str, references: dict[str, list[str]]) -> list[di
                 "name": entry.name,
                 "size": stat.st_size,
                 "modified": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
-                "protected": entry.name in protected,
+                "protected": is_protected(kind, entry.name),
                 "referenced_by": references.get(entry.name, []),
             }
         )
@@ -364,7 +395,9 @@ async def list_files(
 
     A root that does not exist is an empty listing rather than a 500: on a
     deployment whose volume has not been seeded yet, "there is nothing here" is
-    the honest answer and the upload route will create the directory.
+    the honest answer. It is NOT an invitation to create it -- an upload into a
+    missing root earns `DIRECTORY_NOT_WRITABLE`, for the reason `upload_file`
+    gives.
     """
     config = request.app.state.config
     root = root_for(config, kind)
@@ -410,7 +443,7 @@ async def delete_file(
     the response cannot be used to probe what exists outside the root.
     """
     config = request.app.state.config
-    if name in PROTECTED[kind]:
+    if is_protected(kind, name):
         raise HTTPException(status_code=409, detail=FILE_PROTECTED)
     normalised = normalised_name(kind, name)
     root = root_for(config, kind)
@@ -549,6 +582,17 @@ async def upload_file(
     exists to refuse that shape, and taking the basename in front of it would
     take the refusal away.
 
+    **The root is a MOUNT this route does not create.**
+    `artwork_modes/backup.py:145-155` states the rule and `deploy/README.md`
+    repeats it: an unmounted path is indistinguishable from a mounted one, so a
+    `mkdir` here would take the upload, list it, let a config value name it --
+    and lose it on the next pod restart, which is the same whole-library storm
+    a deleted overlay causes. A missing root and an unwritable one therefore
+    earn one fixed 503, `api/setup.py::_persist`'s answer for the state
+    directory: this row is held on a homeops change made by hand, and a
+    half-applied one has to tell the operator which half is wrong rather than
+    answering "Internal Server Error".
+
     **Staged, verified, then linked.** The bytes land on a dotfile under the
     root (`mkstemp`, so it is on the same filesystem and the publish is
     atomic; a dotfile, so the listing never shows it and no config value can
@@ -592,7 +636,6 @@ async def upload_file(
 
     config = request.app.state.config
     root = root_for(config, kind)
-    await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
 
     bounded = Request(
         request.scope,
@@ -630,13 +673,23 @@ async def upload_file(
         part = form.get("file")
         if not isinstance(part, UploadFile) or not part.filename:
             raise HTTPException(status_code=422, detail=UPLOAD_NO_FILE)
-        if part.filename in PROTECTED[kind]:
+        if is_protected(kind, part.filename):
             raise HTTPException(status_code=409, detail=FILE_PROTECTED)
         name = normalised_name(kind, part.filename)
 
-        handle, staged_path = await asyncio.to_thread(
-            tempfile.mkstemp, prefix=".upload-", dir=str(root)
-        )
+        try:
+            handle, staged_path = await asyncio.to_thread(
+                tempfile.mkstemp, prefix=".upload-", dir=str(root)
+            )
+        except OSError:
+            # The two shapes a half-applied mount takes, answered as one: a
+            # root that is not there (`FileNotFoundError`) and one that is
+            # there and not writable (`PermissionError`). The errno text names
+            # the staging file and the directory, so it is logged and not
+            # served -- `api/setup.py::_persist`'s rule for the same class of
+            # failure.
+            logger.error("a %s upload could not be staged: the directory refused a write", kind)
+            raise HTTPException(status_code=503, detail=DIRECTORY_NOT_WRITABLE) from None
         staged = Path(staged_path)
         size = 0
         with os.fdopen(handle, "wb") as sink:
