@@ -1329,6 +1329,43 @@ type.
   `condition:`.** Kometa has no client-side filter of any of these names, and
   the refusal says which block they belong in.
 
+## Searching by folder
+
+`plex_search` accepts `folder_location` — the library folder an item lives in —
+and it is the one attribute in this vocabulary whose Plex field this service
+does not know in advance.
+
+- **The field is read from your library, once per pass.** Plex does not have a
+  fixed name for this filter, so the search asks your server which filter it
+  has (one extra read per pass per library, memoised — ten definitions naming
+  the attribute pay for it once) and uses whatever it answers. Kometa does the
+  same thing for the same reason.
+- **Write the folder the way your library lists it.** The value is resolved
+  against your library's own folder list, exactly like `genre` or `label`: a
+  spelling the library does not have is refused by name rather than producing
+  an empty collection. `folder_location.regex: "^/mnt/media"` matches against
+  those same listed folders.
+- **On a Show library it matches by EPISODE folder.** Plex exposes no folder
+  filter above the episode, so a show search asks the episode level and selects
+  shows having an episode in that folder. That is Kometa's behaviour too. With
+  `builder_level: episode` the members are those episodes themselves.
+- **If your server has no folder filter, the definition is refused by name.**
+  The pass reports which attribute could not be built and for which kind of
+  item, and writes nothing. `builder_level: season` is the case most likely to
+  hit this: current Plex servers do not expose a folder filter at the season
+  level, and the refusal says so rather than quietly matching nothing.
+- **It cannot be used with `smart_filter`, deliberately.** A smart collection
+  stores its query on the server and Plex evaluates it forever, so this service
+  keeps a hash of that stored query to know when a definition changed. Because
+  the folder field is read from the server rather than written in your config, a
+  Plex-side rename of the filter would look like a config change and rewrite
+  every smart collection naming it. `plex_search` asks the question on every
+  pass instead, so it has no stored query to go stale — the refusal points you
+  there.
+- **It cannot be written in a `filters:` block or an overlay `condition:`.**
+  Kometa has no client-side filter of this name; the refusal says which block it
+  belongs in.
+
 ## Collection posters
 
 The same `collections:` block also controls whether the collections this

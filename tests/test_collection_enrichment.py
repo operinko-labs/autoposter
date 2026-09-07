@@ -99,7 +99,21 @@ def test_the_two_stream_read_catch_tuples_cannot_drift_apart():
     classes identically (bare ``PlexApiException``, ``requests.``- and
     ``ElementTree.``-qualified), which is what makes the unparsed names
     directly comparable; a future module that imports one of them under
-    another name would fail here and should be spelled to match."""
+    another name would fail here and should be spelled to match.
+
+    A module may now hold MORE than one such handler -- search tail H (roadmap
+    row 176) gave ``plex_search.py`` a second stream read, ``listFilters`` for
+    the discovered ``folder_location`` field, beside ``listFilterChoices``'s --
+    so the helper below asserts every stream-read catch in a module names the
+    SAME set and returns that one set. That is a LOOSENING of the one-per-
+    module rule it replaces, not a strengthening (Task 2 review, Minor 1): the
+    old rule forbade a module having a second handler at all, and every
+    program it accepted this one accepts too (one handler is trivially "all
+    equal"), so the accepted set only grows. What is traded is a COUNT
+    constraint for an AGREEMENT constraint -- intra-module agreement, which was
+    vacuous before because the old rule forbade the only case where it could
+    bite, and is real now that this task gives a module its second handler.
+    The cross-module drift row 205 filed is still caught, unchanged."""
     root = Path(__file__).parent.parent / "src" / "autoposter" / "collections"
 
     def stream_read_catch(path):
@@ -110,7 +124,10 @@ def test_the_two_stream_read_catch_tuples_cannot_drift_apart():
             if isinstance(node, ast.ExceptHandler) and isinstance(node.type, ast.Tuple)
             and "PlexApiException" in {ast.unparse(e) for e in node.type.elts}
         ]
-        assert len(handlers) == 1, f"{path.name}: expected one stream-read catch, saw {handlers}"
+        assert handlers, f"{path.name}: expected a stream-read catch, saw none"
+        assert all(one == handlers[0] for one in handlers), (
+            f"{path.name}: its stream-read catches have drifted apart: {handlers}"
+        )
         return handlers[0]
 
     assert stream_read_catch(root / "enrichment.py") == stream_read_catch(

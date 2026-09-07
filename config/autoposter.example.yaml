@@ -423,6 +423,20 @@ collections:
   #     # episode_unmatched, show_unmatched, unplayed_episodes. Each takes the
   #     # modifiers of its type (tag/str/int/float/date/bool), as documented on
   #     # the item-level row of the same shape.
+  #     # `folder_location` (roadmap row 176) is the library FOLDER an item is
+  #     # in, and the one attribute whose Plex field is read from your server at
+  #     # run time rather than written down here -- Plex has no fixed name for
+  #     # the filter. Movie and show libraries both; on a show library it
+  #     # matches by EPISODE folder, which is the only level Plex exposes one
+  #     # at. Values resolve against the library's own folder list, so
+  #     # `.regex` works over them too. Refused on `smart_filter`: a stored
+  #     # smart query must not depend on a field the server can rename.
+  #     - title: On the NAS
+  #       builder: plex_search
+  #       params:
+  #         all:
+  #           folder_location: /mnt/media/Movies
+  #       libraries: [Movies]
   #     - title: Recently Aired
   #       builder: plex_search
   #       params:
