@@ -167,15 +167,11 @@ def test_the_wholesale_render_version_moves_and_that_is_expected(config):
     any render fingerprint (``render/pipeline.py`` fingerprints against
     ``render_version_for``), so no CURRENT row re-composites because of
     it: it is the config editor's "version A to B" line and
-    ``api/routes._render_affecting``'s cheap superset short-circuit. The one
-    place it is still load-bearing is row 111's dual read, which computes a
-    pre-111 row's LEGACY candidate from it -- so a not-yet-migrated row of any
-    art kind takes the grandfather's ``unchanged`` arm on its next pass and is
-    re-stamped with its per-kind value, with no composite, no provider call and
-    no upload. Task 1 Step 1b makes that re-stamp a precondition of executing
-    this plan at all. Pinned here so a future reader does not read the movement
-    as a defect, and so a change that made it stop moving -- which would break
-    the short-circuit's superset property -- is loud.
+    ``api/routes._render_affecting``'s cheap superset short-circuit. Roadmap
+    row 247 removed row 111's dual read, which was the third reader. Pinned
+    here so a future reader does not read the movement as a defect, and so a
+    change that made it stop moving -- which would break the short-circuit's
+    superset property -- is loud.
     """
     assert render_version(config) != PRE_ROW_78_WHOLESALE, (
         "the schema ADDITION itself moved the wholesale hash -- that is the "

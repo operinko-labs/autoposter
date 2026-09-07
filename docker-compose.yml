@@ -16,6 +16,10 @@ services:
   # Needs no credentials: `docker compose run --rm test pytest` is the whole
   # requirement, which is the substance of "a working Docker is enough".
   test:
+    # A bare `docker compose up` is the app, not the suite -- the suite
+    # truncates tables in the same postgres `api` uses. Naming `test` on the
+    # command line (`run`/`up test`) enables this profile automatically.
+    profiles: ["test"]
     build:
       context: .
       target: dev

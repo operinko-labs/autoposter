@@ -297,6 +297,18 @@ _BATCHED_FIELDS: dict[str, str] = {
     "subtitle_language": "subtitle_languages",
 }
 
+# Table attribute name -> the ``facts_read.ItemFactsValues`` field carrying it
+# (roadmap row 156). The two are the same word by construction -- that
+# dataclass is named for the TABLE, not for the ``item_facts`` columns -- so
+# this is an identity map and exists as a membership TEST rather than as a
+# translation: it is what tells ``get`` that an attribute belongs to the facts
+# branch. The column translation lives in ``facts_read._COLUMNS``, once.
+_FACTS_FIELDS: dict[str, str] = {
+    "common_sense_rating": "common_sense_rating",
+    "imdb_rating": "imdb_rating",
+    "tmdb_rating": "tmdb_rating",
+}
+
 
 class EnrichmentNotLoaded(LookupError):
     """A tier-2 attribute was read on a view built without its enrichment.
@@ -318,11 +330,18 @@ class PlexItemView:
     view every caller before phase B built, and it stays legal: a definition
     filtering on listing rows alone needs no enrichment and must not pay for
     one.
+
+    ``facts`` is a ``facts_read.ItemFactsValues`` or None, on exactly ``tags``'
+    terms: None is the view every caller before roadmap row 156 built and it
+    stays legal, because a definition naming no facts row must not pay for a
+    database read. An item that genuinely has no facts is
+    ``ItemFactsValues()`` -- a different object and a different answer.
     """
 
-    def __init__(self, item: object, tags=None) -> None:
+    def __init__(self, item: object, tags=None, facts=None) -> None:
         self._item = item
         self._tags = tags  # plex.client.ItemTags | None
+        self._facts = facts  # facts_read.ItemFactsValues | None
 
     def get(self, attribute: str, /) -> object | None:
         field = _BATCHED_FIELDS.get(attribute)
@@ -347,6 +366,21 @@ class PlexItemView:
             # so a direct reader of ``get`` has one thing to test for.
             values = getattr(self._tags, field)
             return tuple(values) or None
+        field = _FACTS_FIELDS.get(attribute)
+        if field is not None:
+            if self._facts is None:
+                raise EnrichmentNotLoaded(
+                    f"{attribute!r} is a facts-backed attribute and this view "
+                    "was built without its values -- the engine reads them "
+                    "once per pass for the resolved set; a direct caller "
+                    "passes `facts=` (see collections/facts_read.ensure_facts)"
+                )
+            # None here is "this item has no value", which is the answer for a
+            # NULL column, for an item with no facts row and for an item the
+            # sync has not seen -- three states ruling C3 treats identically.
+            # The NOT-LOADED case is the branch above; the two must never
+            # collapse.
+            return getattr(self._facts, field)
         accessor = _ACCESSORS.get(attribute)
         if accessor is None:
             row = BY_NAME.get(attribute)
@@ -372,6 +406,8 @@ class PlexItemView:
                 why = f"its source tier is {row.source!r}"
             raise AttributeNotInListing(
                 f"{attribute!r} has no accessor at any tier: {why}. Filterable "
-                "now: " + ", ".join(SHIPPED_ATTRIBUTES + BATCHED_ATTRIBUTES)
+                "now: " + ", ".join(
+                    SHIPPED_ATTRIBUTES + BATCHED_ATTRIBUTES + tuple(_FACTS_FIELDS)
+                )
             )
         return accessor(self._item)

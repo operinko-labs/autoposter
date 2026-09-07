@@ -26,6 +26,7 @@ from autoposter.collections.smart import smart_definition_hash
 from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ManagedCollection
 from autoposter.overlays.assets import INTER_BOLD
+from plex_doubles import FakeSection as PlexSection
 
 LABEL = "autoposter"
 
@@ -80,17 +81,6 @@ def _refusing_handler():
 
 
 # --- Common Sense smart collections + separator (reconcile.py) ------------
-
-
-class FakeChoice:
-    def __init__(self, title):
-        self.title = title
-        # Plex answers contentRating's key and title with the same string (the
-        # 10a-1 dynamic probe measured it), so the resolver is the identity
-        # here. Added when the Common Sense family started resolving its values
-        # through ``LibraryTagResolver`` rather than handing plexapi the
-        # written words.
-        self.key = title
 
 
 class RatingCollection:
@@ -159,60 +149,20 @@ class RatingCollection:
         self.locks += 1
 
 
-class RatingSection:
-    """Also stands in for ``section._server``, for the separator's raw POST."""
+class RatingSection(PlexSection):
+    """The shared Plex double with this file's collection and its count probe.
 
-    def __init__(self, ratings=(), existing=(), section_type="movie", matches=1):
-        self._ratings = list(ratings)
-        self._existing = {c.title: c for c in existing}
-        self.created = []
-        self.queries = []
-        self.key = "42"
-        self.type = section_type
-        # ``smart.count_matches``' own container-size-0 read (no ``title`` in
-        # the query, ``method=None``): how many items a smart filter matches
-        # before anything is written. See ``FakeServer`` in
-        # ``test_collection_smart.py``, whose shape this mirrors.
-        self._matches = matches
-        self._server = self
-        self._session = type("Sess", (), {
-            "post": "POST-SENTINEL", "put": "PUT-SENTINEL",
-        })()
+    ``matches`` defaults to 1 here rather than to the shared ``None``:
+    ``smart.count_matches``' container-size-0 read (no ``title`` in the
+    query, ``method=None``) is on every path this file exercises. See
+    ``FakeServer`` in ``test_collection_smart.py``, whose shape this mirrors.
+    """
 
-    def _uriRoot(self):
-        return "server://FAKE-MACHINE-ID/com.plexapp.plugins.library"
+    collection_factory = RatingCollection
+    created_labels = [LABEL]
 
-    def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
-        """Three routes: the create POST (which carries a ``title``), a
-        bucket's filter-replacing PUT (which carries only a ``uri``), and --
-        since ``method`` is None on a read -- ``count_matches``' container
-        probe, which returns an attrib rather than being recorded as a write."""
-        if method is None:
-            return type("Container", (), {"attrib": {"totalSize": str(self._matches)}})()
-        self.queries.append({"key": key, "method": method})
-        args = parse_qs(urlsplit(key).query)
-        if "title" not in args:
-            return None
-        title = args["title"][0]
-        collection = RatingCollection(title, rating_key=str(len(self._existing) + 1))
-        self._existing[title] = collection
-        return None
-
-    def collection(self, title):
-        return self._existing[title]
-
-    def listFilterChoices(self, field, libtype=None):
-        return [FakeChoice(r) for r in self._ratings]
-
-    def collections(self, **kw):
-        return list(self._existing.values())
-
-    def createCollection(self, title, items=None, smart=False, limit=None,
-                          libtype=None, sort=None, filters=None, **kw):
-        self.created.append((title, smart, libtype, sort, filters))
-        collection = RatingCollection(title, labels=[LABEL], rating_key=str(len(self.created)))
-        self._existing[title] = collection
-        return collection
+    def __init__(self, *, matches=1, **kw):
+        super().__init__(matches=matches, **kw)
 
 
 @pytest.fixture
@@ -227,7 +177,7 @@ def section_factory():
 
 
 async def test_a_smart_bucket_gets_its_poster(session, config_factory, tmp_path):
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
@@ -249,7 +199,7 @@ async def test_a_smart_bucket_gets_its_poster(session, config_factory, tmp_path)
 
 
 async def test_the_catch_all_gets_the_nr_poster(session, config_factory, tmp_path):
-    section = RatingSection({"NR"})
+    section = RatingSection(ratings={"NR"})
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
@@ -268,7 +218,7 @@ async def test_the_catch_all_gets_the_nr_poster(session, config_factory, tmp_pat
 
 
 async def test_the_separator_gets_the_separator_poster(session, config_factory, tmp_path):
-    section = RatingSection(())
+    section = RatingSection(ratings=())
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
@@ -296,7 +246,7 @@ async def test_a_protected_collision_never_gets_a_poster_applied(
     session, config_factory, tmp_path
 ):
     theirs = RatingCollection("Age 17+ Movies", labels=["Collection managed by Maintainerr"])
-    section = RatingSection({"17"}, existing=[theirs])
+    section = RatingSection(ratings={"17"}, existing=[theirs])
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
 
@@ -317,7 +267,7 @@ async def test_an_unlabelled_collision_never_gets_a_poster_applied(
     session, config_factory, tmp_path
 ):
     theirs = RatingCollection("Age 17+ Movies")  # the operator's own, no label at all
-    section = RatingSection({"17"}, existing=[theirs])
+    section = RatingSection(ratings={"17"}, existing=[theirs])
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
 
@@ -334,7 +284,7 @@ async def test_an_unlabelled_collision_never_gets_a_poster_applied(
 
 
 async def test_posters_false_disables_smart_collection_posters(session, config_factory, tmp_path):
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     config.collections.posters = False
@@ -358,7 +308,7 @@ async def test_a_smart_collection_with_an_unchanged_definition_still_gets_a_miss
     definition, so the definition-hash return fires before the poster block.
     A NULL ``poster_sha256`` -- never set, or a fetch that failed on the pass
     that created the collection -- must still bring us back here."""
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     config.collections.posters = False
@@ -396,7 +346,7 @@ async def test_a_third_pass_over_an_unchanged_collection_uploads_nothing(
 ):
     """Once the hash is stored the definition-hash return resumes and the
     poster block is not reached at all: no fetch, no upload, no action."""
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _jpeg_bytes()
@@ -422,7 +372,7 @@ async def test_a_third_pass_over_an_unchanged_collection_uploads_nothing(
 async def test_the_separator_with_an_unchanged_definition_still_gets_a_missing_poster(
     session, config_factory, tmp_path
 ):
-    section = RatingSection(())
+    section = RatingSection(ratings=())
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     config.collections.posters = False
@@ -446,7 +396,7 @@ async def test_a_dry_run_reports_the_poster_it_would_set_without_uploading(
 ):
     """``apply_to_plex: false`` used to produce a report that never mentioned
     posters at all, because every call site hardcoded ``dry_run=False``."""
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     config.collections.posters = False
@@ -490,6 +440,7 @@ class ListCollection:
         self._cache = list(items)
         self._labels = [type("L", (), {"tag": t})() for t in labels]
         self.summary = summary
+        self.summary_set = None
         self.uploaded_bytes = []
         self.locks = 0
         # Stands in for ``collection._server``: the summary is written with a
@@ -528,7 +479,8 @@ class ListCollection:
 
     def query(self, key, method=None, headers=None, params=None, timeout=None, **kwargs):
         """Stands in for ``server.query`` -- the item-level summary PUT."""
-        self.summary = parse_qs(urlsplit(key).query)["summary.value"][0]
+        self.summary_set = parse_qs(urlsplit(key).query)["summary.value"][0]
+        self.summary = self.summary_set
 
     def addLabel(self, labels, locked=True):
         self._labels.append(type("L", (), {"tag": labels})())
@@ -691,6 +643,75 @@ async def test_a_kind_without_a_key_makes_no_request(session, config_factory, tm
     assert collection.uploaded_bytes == []
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 is None
+
+
+async def test_a_tmdb_chart_writes_its_summary_and_fetches_its_poster_once(
+    session, config_factory, tmp_path
+):
+    """Row 146's wiring, at the level ``reconcile_list_collection`` actually
+    runs: the builder's transcribed summary reaches Plex through the item-level
+    PUT, and the hosted chart poster is fetched and uploaded exactly once.
+
+    The second pass is the half that matters. A chart's membership moves every
+    pass by construction, but with the SAME members and the SAME summary the
+    members hash is unchanged and ``poster_sha256`` is no longer NULL, so the
+    reconciler returns before the poster block -- one permanent ``upload://``
+    entry per collection, ever, which is precisely what ``imdb_chart`` has paid
+    since it shipped (rows 241/242: a single ``upload://`` entry cannot be
+    deleted through the HTTP API)."""
+    section = ListSection()
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    summary = "A collection of the most watched movies according to TMDb."
+    items = [FakeItem("a")]
+    data = _jpeg_bytes()
+    seen = []
+
+    async with _client(_serving_handler(data, seen)) as http:
+        await reconcile_list_collection(
+            session,
+            section,
+            "Movies",
+            "TMDb Popular",
+            items,
+            LABEL,
+            summary=summary,
+            summary_asserted=True,
+            dry_run=False,
+            kind="chart",
+            key="TMDb Popular",
+            http=http,
+            config=config,
+        )
+
+    collection = section._existing["TMDb Popular"]
+    assert collection.summary_set == summary
+    assert collection.uploaded_bytes == [data]
+    assert collection.locks == 1
+    assert seen == [hosted_poster_url("chart", "TMDb Popular")]
+
+    async with _client(_serving_handler(data, seen)) as http:
+        await reconcile_list_collection(
+            session,
+            section,
+            "Movies",
+            "TMDb Popular",
+            items,
+            LABEL,
+            summary=summary,
+            summary_asserted=True,
+            dry_run=False,
+            kind="chart",
+            key="TMDb Popular",
+            http=http,
+            config=config,
+        )
+
+    assert collection.uploaded_bytes == [data]
+    assert collection.locks == 1
+    assert len(seen) == 1
+    row = (await session.execute(select(ManagedCollection))).scalars().one()
+    assert row.poster_sha256 is not None
 
 
 async def test_the_franchise_builder_names_its_own_collection_as_the_poster_key():
@@ -1043,7 +1064,7 @@ async def test_the_gate_off_uploads_the_fetched_bytes_untouched(
     session, config_factory, tmp_path
 ):
     """The default, and the whole no-storm argument: off is byte-identical."""
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     assert config.collections.poster_title.enabled is False
@@ -1070,7 +1091,7 @@ async def test_the_gate_on_composites_the_title_onto_a_managed_poster(
     drawing removed. What is asserted instead is that the bottom third moved a
     great deal and the top half did not.
     """
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = _enable_title(config_factory(assets_root=str(tmp_path)))
     config.collections.apply_to_plex = True
     data = _poster_bytes()
@@ -1130,7 +1151,7 @@ async def test_the_gate_on_re_uploads_each_managed_poster_exactly_once(
     separately, by Task 1's ``test_the_same_inputs_give_byte_identical_output``;
     this test does not claim to prove it.
     """
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = config_factory(assets_root=str(tmp_path))
     config.collections.apply_to_plex = True
     data = _poster_bytes()
@@ -1189,7 +1210,7 @@ async def test_a_changed_text_knob_re_uploads_each_managed_poster_exactly_once(
     depend on a 200x300 fixture rendering two point sizes distinguishably: a
     different word is different glyphs at any size.
     """
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = _enable_title(config_factory(assets_root=str(tmp_path)))
     config.collections.apply_to_plex = True
     data = _poster_bytes()
@@ -1264,7 +1285,7 @@ async def test_an_operators_own_poster_file_passes_through_untouched(
     endpoint writes, so this covers the manual surface too: a file the operator
     supplied is theirs, and restyling it is a stronger claim than this service
     makes anywhere else."""
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = _enable_title(config_factory(assets_root=str(tmp_path)))
     config.collections.apply_to_plex = True
     theirs = _poster_bytes("green")
@@ -1289,7 +1310,7 @@ async def test_a_divider_is_never_captioned_twice(session, config_factory, tmp_p
     the fetched ``separators/<style>/<stem>.jpg``. Compositing on top would
     print the title twice.
     """
-    section = RatingSection(())
+    section = RatingSection(ratings=())
     config = _enable_title(config_factory(assets_root=str(tmp_path)))
     config.collections.apply_to_plex = True
     data = _poster_bytes()
@@ -1306,7 +1327,7 @@ async def test_a_font_that_resolves_nowhere_reports_a_skip_and_uploads_nothing(
     """Adjudication A-4's tail. The action names the FONT -- the string the
     operator wrote -- and nothing else; poster_sha256 is left NULL so the next
     pass retries, exactly as an unfetchable hosted default is."""
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = _enable_title(config_factory(assets_root=str(tmp_path)))
     config.collections.apply_to_plex = True
     config.fonts_root = str(tmp_path / "fonts")
@@ -1342,7 +1363,7 @@ async def test_a_font_refusal_on_an_existing_poster_is_retried_once_the_font_res
     short-circuit on ``definition_current`` forever, exactly as adjudicated:
     "the operator mounts the font. Nothing happens. Ever."
     """
-    section = RatingSection({"17"})
+    section = RatingSection(ratings={"17"})
     config = _enable_title(config_factory(assets_root=str(tmp_path)))
     config.collections.apply_to_plex = True
     config.fonts_root = str(tmp_path / "fonts")

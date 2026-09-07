@@ -112,12 +112,41 @@ def build_fit_argv(magick: str, font_path: str, style: TextStyle, text: str) -> 
     ]
 
 
+# Cap on the magick stderr that reaches a RuntimeError message and the pod
+# log line it is written to (`logger.warning(..., exc_info=True)`) -- never a
+# served string. A bare RuntimeError has no `served_detail`, so
+# `worker.py`'s `_served_reason` writes only the exception's class name to
+# `job.last_error`; the capped text never reaches that column. Same bound
+# `intake/routes.py`'s `_MAX_RAW_BODY_CHARS` puts on an unparseable webhook
+# body, for the same reason: how big a log line or exception message gets is
+# not a subprocess's decision.
+#
+# Here rather than in `compositor.py` because `compositor` already imports
+# from this module (`escape_caption_text`) and the reverse import would be a
+# cycle. Both magick entry points share the one bound (roadmap row 238,
+# surface 2).
+MAX_MAGICK_STDERR_CHARS = 2000
+
+
+def cap_magick_stderr(stderr: str) -> str:
+    """``stderr``, stripped, and truncated with a marker if it is over the cap."""
+    text = stderr.strip()
+    if len(text) > MAX_MAGICK_STDERR_CHARS:
+        return text[:MAX_MAGICK_STDERR_CHARS] + "...(truncated)"
+    return text
+
+
 def _run(argv: list[str]) -> str:
-    """Execute a magick command, raising with stderr attached on failure."""
-    result = subprocess.run(argv, capture_output=True, text=True)
+    """Execute a magick command, raising with capped stderr attached on failure.
+
+    stdout stays a pipe: this is the one magick call whose output is READ
+    (the point size, parsed at the bottom of this function).
+    """
+    result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result.returncode != 0:
         raise RuntimeError(
-            f"magick failed ({result.returncode}): {' '.join(argv)}\n{result.stderr.strip()}"
+            f"magick failed ({result.returncode}): {' '.join(argv)}\n"
+            f"{cap_magick_stderr(result.stderr)}"
         )
     return result.stdout.strip()
 

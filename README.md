@@ -109,13 +109,14 @@ that password rather than an open form to set one.
 ## Notifications
 
 A configured URL receives a POST when a run completes — a scheduled pass
-finishing, or a full pass being enqueued — in either Apprise's `json://`
-body shape (the default, so anything built for Apprise webhooks works
-unchanged) or this service's own versioned `autoposter/v1` shape. Delivery
+finishing, or a full pass being enqueued — in one of four shapes: Apprise's
+`json://` body (the default, so anything built for Apprise webhooks works
+unchanged), this service's own versioned `autoposter/v1` shape, a Discord
+webhook embed, or the body an Apprise API server accepts. Delivery
 is best-effort by design: bounded retries, and a failed notification never
 fails the run it reports on — it logs one warning and lands in the events
 feed instead. See `deploy/README.md`'s "Outbound notifications config" for
-the config block and both payload contracts.
+the config block and all four payload shapes.
 
 ## Development
 
@@ -128,6 +129,9 @@ docker compose run --rm test pytest     # the suite
 docker compose run --rm web npm test    # the frontend suite
 docker compose up web api               # the app, with hot reload
 ```
+
+`test` sits behind the `test` compose profile, so a bare `docker compose up`
+never starts it; naming it, as above, enables the profile automatically.
 
 The SPA is then on `http://localhost:5173` and the API on
 `http://localhost:8081`; the dev server proxies `/api` and `/healthz` through

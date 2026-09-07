@@ -128,9 +128,21 @@ async def test_the_scheduler_runs_a_due_job_and_records_success(session_factory)
     stop = asyncio.Event()
     scheduler = Scheduler(session_factory, [_job(run=body)], poll_seconds=0.01)
     task = asyncio.create_task(scheduler.run(stop))
-    await asyncio.sleep(0.1)
-    stop.set()
-    await task
+    # Waits for the behaviour rather than for the clock: a fixed sleep budgets
+    # ten poll intervals for one round trip to PostgreSQL, which is ample on an
+    # idle machine and not ample under `-n auto` (roadmap row 119). The timeout
+    # is swallowed so the assertion below reports the diagnosis rather than a
+    # bare "5 seconds passed", and the `finally` keeps that honest by stopping
+    # and awaiting the scheduler on both paths.
+    try:
+        async with asyncio.timeout(60):
+            while not ran:
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pass
+    finally:
+        stop.set()
+        await task
 
     assert ran
     async with session_factory() as session:
@@ -151,9 +163,16 @@ async def test_a_claimed_job_logs_that_it_started(session_factory, caplog):
     scheduler = Scheduler(session_factory, [_job(name="prune", run=body)], poll_seconds=0.01)
     with caplog.at_level(logging.INFO):
         task = asyncio.create_task(scheduler.run(stop))
-        await asyncio.sleep(0.1)
-        stop.set()
-        await task
+        # As above: wait on the log line, not on the clock (roadmap row 119).
+        try:
+            async with asyncio.timeout(60):
+                while not [r for r in caplog.records if "started" in r.message]:
+                    await asyncio.sleep(0.01)
+        except TimeoutError:
+            pass
+        finally:
+            stop.set()
+            await task
 
     started = [r for r in caplog.records if "started" in r.message]
     assert len(started) == 1
@@ -320,9 +339,22 @@ async def test_the_wired_run_loop_closes_a_drained_full_pass(session_factory):
     stop = asyncio.Event()
     scheduler = Scheduler(session_factory, [], poll_seconds=0.01)
     task = asyncio.create_task(scheduler.run(stop))
-    await asyncio.sleep(0.1)
-    stop.set()
-    await asyncio.wait_for(task, timeout=2)
+
+    # As above: wait for the row to close, not for the clock (roadmap row 119).
+    async def _closed():
+        async with session_factory() as probe:
+            row = (await probe.execute(select(Run).where(Run.id == run_id))).scalar_one()
+            return row.finished_at is not None
+
+    try:
+        async with asyncio.timeout(60):
+            while not await _closed():
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pass
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=2)
 
     async with session_factory() as session:
         row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()

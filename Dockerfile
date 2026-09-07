@@ -43,12 +43,31 @@ WORKDIR /frontend
 # arguments to `docker compose run`, so it happens whatever command is asked
 # for.
 #
-# `npm ci` deletes node_modules wholesale, so it is skipped when the volume is
-# already populated; `docker compose run --rm web npm ci` still forces it.
+# `npm ci` deletes node_modules wholesale, so it is gated rather than run
+# unconditionally on every `up`. The gate used to be "does node_modules/vite
+# exist" -- true forever once the volume is first populated, so a
+# package-lock.json changed by a merged PR (a dependency added, a version
+# bumped) never got installed until someone knew to run `docker compose run
+# --rm web npm ci` by hand. The gate is now a sha256 of package-lock.json
+# stashed as node_modules/.package-lock.sha256, written only after `npm ci`
+# succeeds: a missing or mismatched stamp means the lockfile moved (or the
+# volume is empty, which reads the same way -- no stamp), so it reinstalls;
+# a matching stamp means it's current, so it doesn't. Not the file's mtime:
+# this host's Docker clock steps backwards under load, and a bind mount or
+# `git checkout` can change mtime without changing content in either
+# direction, so mtime answers a different question than the one that
+# matters. `docker compose run --rm web npm ci` still forces it regardless:
+# the entrypoint's own check may skip its install, but the forwarded command
+# is `npm ci` itself, which always runs.
 RUN printf '%s\n' \
       '#!/bin/sh' \
       'set -e' \
-      '[ -d node_modules/vite ] || npm ci' \
+      'stamp=node_modules/.package-lock.sha256' \
+      'digest=$(sha256sum package-lock.json | cut -d" " -f1)' \
+      'if [ "$(cat "$stamp" 2>/dev/null)" != "$digest" ]; then' \
+      '  npm ci' \
+      '  printf "%s\n" "$digest" > "$stamp"' \
+      'fi' \
       'exec "$@"' \
     > /usr/local/bin/webdev-entrypoint \
  && chmod +x /usr/local/bin/webdev-entrypoint

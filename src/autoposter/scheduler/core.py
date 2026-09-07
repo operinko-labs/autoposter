@@ -235,10 +235,12 @@ class Scheduler:
         # the completion send uses: the claim above is committed, so the
         # scheduled_runs row already shows this run in flight and the payload
         # never describes a run the database does not. Fire-and-forget for the
-        # completion send's reason -- an awaited send's worst case is ~31.5s on
-        # the default retry config (notify/dispatch.py) and this loop runs
-        # every job sequentially, so awaiting it here would delay the work the
-        # notification is announcing.
+        # completion send's reason -- an awaited send's worst case is ~31.5s
+        # on the default retry config against an ordinary target, up to ~50s
+        # against one answering 429 with a Retry-After clamped to the timeout
+        # (notify/dispatch.py), and this loop runs every job sequentially, so
+        # awaiting it here would delay the work the notification is
+        # announcing.
         self._start_notification(
             "scheduled_run_started",
             f"scheduled run {job.name} started",
@@ -295,9 +297,11 @@ class Scheduler:
         # After the commit above, never before: the notification must not
         # describe a run the database does not yet show. And on a task of its
         # own, not awaited: one send's worst case is ~31.5s on the default
-        # retry config (see notify/dispatch.py), while this loop runs every
-        # job sequentially -- an awaited send would stall every job behind it
-        # and the poll cadence. The truncated detail matches what the row
+        # retry config against an ordinary target, up to ~50s against one
+        # answering 429 with a Retry-After clamped to the timeout (see
+        # notify/dispatch.py), while this loop runs every job sequentially --
+        # an awaited send would stall every job behind it and the poll
+        # cadence. The truncated detail matches what the row
         # recorded. send's boolean is deliberately ignored: the Notifier does
         # its own outcome logging, and a disabled notifier's vacuous True
         # must not be reported as a delivery.

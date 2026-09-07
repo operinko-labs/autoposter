@@ -163,8 +163,12 @@ async def test_a_season_poster_edit_moves_only_the_season_s_stored_fingerprint(
 
     config.artwork.season_poster.text.max_point_size += 1
     # `build_config` is the only production path that derives this; a test
-    # that mutates the model in place has to do it by hand, and the dual-read
-    # grandfather (Task 4) reads it.
+    # that mutates the model in place has to do it by hand to keep
+    # `config.version` honest about the edit -- not because this render path
+    # reads it (row 247 removed the last thing here that did), but because it
+    # is still `_render_affecting`'s superset short-circuit and the Settings
+    # page's "version A to B" line, and a stale value here would misreport
+    # both.
     config.version = render_version(config)
 
     composites.clear()

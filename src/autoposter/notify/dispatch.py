@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # 0.5s, then 1s, then 2s, ...
 BACKOFF_BASE_SECONDS = 0.5
 
+# The one 4xx that asking again fixes: the server is telling us to wait, not
+# that we are misconfigured. Discord's per-webhook budget is roughly 5
+# requests / 2 seconds and collection_changed fires once per changed
+# collection per pass, so this is normal operation, not a corner case.
+TOO_MANY_REQUESTS = 429
+
 # Module-level so tests record the backoff schedule instead of living through
 # it (the payload._utcnow precedent).
 _sleep = asyncio.sleep
@@ -61,6 +67,24 @@ def _host_of(url: str) -> str:
         return "(unknown host)"
 
 
+def _retry_after(response: httpx.Response, fallback: float, ceiling: float) -> float:
+    """The server's own wait, clamped -- or ``fallback`` if it did not give one.
+
+    ``Retry-After`` may also be an HTTP-date; Discord sends seconds, and
+    anything this cannot read as a positive number falls back rather than
+    failing a send. The clamp is what keeps the worst-case duration in
+    ``Notifier``'s docstring a contract: an unbounded server-supplied sleep
+    would park a background task for as long as the header asked.
+    """
+    try:
+        requested = float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        return fallback
+    if requested <= 0:
+        return fallback
+    return min(requested, ceiling)
+
+
 # Strong references to in-flight sends: asyncio holds only a weak reference to
 # a created task, so a fire-and-forget send nothing else references could be
 # garbage-collected mid-flight. The done-callback drops each reference.
@@ -71,8 +95,10 @@ def send_in_background(coroutine) -> None:
     """Fire one ``Notifier.send`` without awaiting it.
 
     The collections pass must not wait on a webhook: one send's worst case is
-    ``retry_count * timeout_seconds`` plus backoff (~31.5s on the defaults),
-    and a pass can have several collections to report. ``send`` never raises
+    ``retry_count * timeout_seconds`` plus backoff -- ~31.5s on the defaults
+    against an ordinary target, up to ~50s against one that answers 429 with
+    a ``Retry-After`` (clamped to ``timeout_seconds``) -- and a pass can have
+    several collections to report. ``send`` never raises
     and does its own outcome logging, so the result is deliberately dropped --
     in particular a disabled notifier's vacuous ``True`` is never reported as
     a delivery.
@@ -110,10 +136,15 @@ class Notifier:
     """POSTs one payload per event to the configured URL.
 
     Worst-case duration of one ``send``: ``retry_count`` attempts each
-    bounded by ``timeout_seconds``, plus the backoff sleeps between them --
-    ``retry_count * timeout_seconds + BACKOFF_BASE_SECONDS *
-    (2**(retry_count - 1) - 1)``. With the defaults (3 attempts, 10s
-    timeout) that is 3*10 + 0.5*(4-1) = 31.5 seconds.
+    bounded by ``timeout_seconds``, plus the sleeps between them. A sleep is
+    normally ``BACKOFF_BASE_SECONDS * 2**(n - 1)`` -- 0.5s, 1s, ... -- but a
+    429 answer replaces it with the server's own ``Retry-After``, CLAMPED to
+    ``timeout_seconds`` so a hostile or misconfigured header cannot park a
+    background task. Each sleep is therefore bounded by ``timeout_seconds``
+    or the computed backoff, whichever is larger. With the defaults (3
+    attempts, 10s timeout): 3*10 + 0.5 + 1 = 31.5 seconds against an
+    ordinary target, and 3*10 + 10 + 10 = 50 seconds against one that is
+    rate-limiting us. That time is spent on a background task.
     """
 
     def __init__(
@@ -127,6 +158,10 @@ class Notifier:
         self._session_factory = session_factory
         # The only URL component that may ever be logged or stored.
         self._host = _host_of(config.url)
+        # The clamp ceiling for a server-supplied Retry-After. httpx.Timeout
+        # is not a number, so the raw value is kept rather than unpacked back
+        # out of it.
+        self._timeout_seconds = float(config.timeout_seconds)
 
     async def send(
         self, event: str, summary: str, detail: dict, url: str | None = None
@@ -164,10 +199,13 @@ class Notifier:
         # a property of this call site, not a contract, and HTTPStatusError's
         # message embeds the full URL, token and all.
         failure = logged = "not attempted"
+        delay = 0.0
         for attempt in range(self._retry_count):
             if attempt:
-                await _sleep(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
+                await _sleep(delay)
             attempts = attempt + 1
+            # The sleep before the NEXT attempt, unless a 429 overrides it.
+            delay = BACKOFF_BASE_SECONDS * 2**attempt
             try:
                 response = await self._http.post(
                     url, json=payload, timeout=self._timeout
@@ -181,6 +219,9 @@ class Notifier:
                 logger.debug("notification %r delivered to %s", event, host)
                 return True
             failure = logged = f"HTTP {response.status_code}"
+            if response.status_code == TOO_MANY_REQUESTS:
+                delay = _retry_after(response, delay, self._timeout_seconds)
+                continue
             if response.status_code < 500:
                 # A 4xx is a misconfiguration (wrong path, revoked token):
                 # retrying cannot help, so fail now.

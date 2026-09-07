@@ -1677,6 +1677,49 @@ def test_a_row_citing_a_defaults_file_nobody_pinned_raises(monkeypatch):
         catalog._check_kometa_sources()
 
 
+def test_the_upstream_chart_titles_come_from_the_builders_transcription():
+    """Row 146: the five TMDb charts Kometa publishes take their title from
+    ``builders/tmdb.CHART_TITLES``, which is where the same defaults file's
+    summary is transcribed. Two tables would let a title and the summary that
+    must agree with it drift apart; the import direction that would be needed
+    to close that gap the other way (``builders`` importing ``catalog``) is a
+    cycle, so the single table lives on the builder side."""
+    from autoposter.collections.builders.tmdb import CHART_TITLES
+
+    titled = {chart: title for chart, title, _, _ in catalog._TMDB_CHARTS}
+    for chart, (title, _summary) in CHART_TITLES.items():
+        assert titled[chart] == title, chart
+
+    cited = {
+        chart
+        for chart, _title, source, _note in catalog._TMDB_CHARTS
+        if source == "defaults/chart/tmdb.yml"
+    }
+    assert cited == set(CHART_TITLES)
+
+
+def test_the_charts_kometa_does_not_publish_have_nothing_transcribed():
+    """The other three are charts this service's builder has and Kometa's
+    chart defaults do not, so there is no upstream string to transcribe and
+    the table must not carry an invented one. The endpoint-table check is what
+    refuses a typo'd key: a row here for a chart no endpoint serves would ship
+    a summary nothing can ever build."""
+    from autoposter.collections.builders.tmdb import CHART_TITLES
+    from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
+
+    assert set(CHART_TITLES) == {
+        "popular",
+        "top_rated",
+        "trending_week",
+        "airing_today",
+        "on_the_air",
+    }
+    for chart in ("now_playing", "upcoming", "trending_day"):
+        assert chart not in CHART_TITLES, chart
+    for chart in CHART_TITLES:
+        assert chart in CHART_ENDPOINTS, chart
+
+
 def test_the_pinned_set_holds_no_path_nothing_cites():
     """The check reads only one way on its own -- it refuses a row citing an
     unpinned path, and says nothing about a pinned path no row cites. A leftover
@@ -2401,6 +2444,50 @@ def test_the_listings_active_reads_the_setting_for_setting_backed_rows():
     divider = _row(off, "content_ratings", "content_ratings_divider")
     assert divider["setting"] == "collections.separators"
     assert divider["active"] is False
+
+
+def test_the_imdb_charts_row_names_the_three_titles_its_one_switch_builds():
+    """Roadmap row 163, closed as a documented asymmetry.
+
+    This is the one catalog row that stands for THREE collections, and it
+    named none of them: it carried no ``collections`` table, so ``titles()``
+    was empty and ``CatalogPanel``'s "Builds:" line did not render for it.
+    The all-or-nothing shape of ``collections.charts`` was invisible exactly
+    where an operator meets it.
+
+    The titles are DERIVED from ``builders/imdb_chart.py``'s own
+    ``CHART_TITLES``/``CHARTS_FOR`` -- the tables
+    ``sources.chart_and_award_definitions`` builds from -- so this is an
+    agreement test and not a second transcription.
+    """
+    row = next(preset for preset in CATALOG if preset.key == "imdb_charts")
+
+    assert row.titles() == ["IMDb Popular", "IMDb Top 250", "IMDb Lowest Rated"]
+    assert [
+        collection.title
+        for collection in row.collections
+        if collection.library_types == ("Movie",)
+    ] == ["IMDb Lowest Rated"], "IMDb has no lowest-rated TV chart"
+
+    # A DISPLAY table, never a producer: `Preset.definitions` returns [] for
+    # any row carrying a `setting`, whatever else the row holds. So this adds
+    # a line to the picker and builds no collection -- the charts tab's
+    # checksum is the proof, and it does not move.
+    assert row.setting == "collections.charts"
+    assert row.definitions("Movie") == []
+    assert row.definitions("Show") == []
+    assert CATALOG_CHECKSUM["charts"] == (10, 0, 1)
+
+
+def test_the_imdb_charts_description_names_the_per_definition_escape_hatch():
+    """The other half of the close: an operator who wants two of the three
+    gets the answer at the point of asking rather than only in the roadmap --
+    turn the switch off and write the ones you want as definitions."""
+    row = next(preset for preset in CATALOG if preset.key == "imdb_charts")
+
+    assert "collections.charts" in row.description
+    assert "definitions" in row.description
+    assert "imdb_chart" in row.description
 
 
 def test_ordinary_preset_rows_carry_no_setting_in_the_listing():

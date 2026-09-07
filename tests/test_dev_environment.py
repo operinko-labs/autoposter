@@ -105,10 +105,41 @@ def test_the_webdev_entrypoint_installs_and_forwards_the_command():
     )
     script = "\n".join(re.findall(r"'([^']*)'", write_match.group(0)))
 
-    assert re.search(r"\[ -d node_modules/\S+ \]\s*\|\|\s*npm ci", script), (
+    assert re.search(r"^stamp=node_modules/\.package-lock\.sha256$", script, re.MULTILINE), (
+        f"the entrypoint script ({script!r}) does not define a stamp file "
+        "under node_modules recording the digest of the lockfile last "
+        "installed from -- without it there is nothing to compare a fresh "
+        "package-lock.json against"
+    )
+    assert re.search(r"sha256sum\s+package-lock\.json", script), (
+        f"the entrypoint script ({script!r}) does not hash package-lock.json, "
+        "so `npm ci` can't be keyed on whether the lockfile changed since the "
+        "volume was last installed into"
+    )
+    assert re.search(
+        r'if\s*\[\s*"\$\(cat\s+"\$stamp"[^]]*\)"\s*!=\s*"\$digest"\s*\]\s*;\s*then',
+        script,
+    ), (
         f"the entrypoint script ({script!r}) does not guard `npm ci` behind a "
-        "check for an already-populated node_modules -- either the lazy "
-        "install is gone, or it now reinstalls unconditionally on every `up`"
+        "comparison of the stamp against the freshly computed digest -- either "
+        "the lazy install is gone, a stale volume whose lockfile changed would "
+        "never reinstall (the bug this guards against: a volume seeded before "
+        "a dependency was added never picks it up), or it now reinstalls "
+        "unconditionally on every `up`"
+    )
+    guarded_block = re.search(r"if\b.*?\bfi\b", script, re.DOTALL)
+    assert guarded_block and re.search(r"\bnpm ci\b", guarded_block.group(0)), (
+        f"the entrypoint script ({script!r}) does not run `npm ci` inside the "
+        "stamp-mismatch branch"
+    )
+    assert re.search(
+        r'npm ci\s*\n\s*printf\s+"%s\\n"\s+"\$digest"\s*>\s*"\$stamp"', script
+    ), (
+        f"the entrypoint script ({script!r}) does not write the stamp "
+        "immediately after `npm ci` -- writing it anywhere else risks "
+        "stamping a lockfile digest whose install never happened, or never "
+        "happened successfully (the script has `set -e`, so a failed `npm "
+        "ci` must abort before the stamp line runs)"
     )
     last_line = script.strip().splitlines()[-1].strip()
     assert last_line == 'exec "$@"', (
@@ -146,6 +177,24 @@ def test_development_services_build_from_the_dockerfile():
         assert isinstance(build, dict) and build.get("target"), (
             f"the {name!r} service must build from a named Dockerfile stage"
         )
+
+
+def test_the_test_service_is_behind_a_profile():
+    """A bare ``docker compose up`` (or ``up -d``) must start the app, not the suite.
+
+    The ``test`` service shares ``postgres`` with ``api``, and the suite
+    truncates tables -- run alongside a live ``api`` it fights the running
+    app. Compose enables a service's profiles automatically when the service
+    is named on the command line, so ``docker compose run test ...`` and
+    ``docker compose up test`` still work unchanged; only the profile-less
+    default start excludes it.
+    """
+    service = _service("test")
+    assert service.get("profiles") == ["test"], (
+        f"the test service's profiles are {service.get('profiles')!r}, not "
+        "['test']; without that, a bare `docker compose up` starts the suite "
+        "against the same postgres the api service uses"
+    )
 
 
 def test_the_test_service_needs_no_secrets():

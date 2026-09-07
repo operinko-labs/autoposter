@@ -22,10 +22,14 @@ from pydantic import ValidationError
 
 from autoposter.collections.builders import REGISTRY, BuilderContext, SourceClients
 from autoposter.collections.builders.base import LibraryTypeMismatch
-from autoposter.collections.builders.tmdb import TmdbBuilderRefused, TmdbRegionUnsupported
+from autoposter.collections.builders.tmdb import (
+    CHART_TITLES,
+    TmdbBuilderRefused,
+    TmdbRegionUnsupported,
+)
 from autoposter.collections.service import build_source_clients
 from autoposter.config.schema import Secrets
-from autoposter.providers.tmdb_lists import TmdbListClient, TmdbListRefused
+from autoposter.providers.tmdb_lists import CHART_ENDPOINTS, TmdbListClient, TmdbListRefused
 
 FIXTURES = Path(__file__).parent / "fixtures" / "collections"
 
@@ -219,19 +223,64 @@ async def test_a_malformed_language_is_refused():
         )
 
 
-async def test_a_chart_offers_no_summary_or_poster():
-    """Unlike ``imdb_chart``, whose title and summary are Kometa translation
-    strings transcribed in ``docs/research/kometa-collections.md`` §5. No such
-    transcription exists for TMDb's charts, and a guessed poster key is a
-    hosted URL that 404s and leaves the collection quietly without artwork."""
-    routes = {"/tv/popular": load("tmdb_chart_tv_top_rated.json")}
-    async with httpx.AsyncClient(transport=_routed(routes)) as http:
-        result = await REGISTRY["tmdb_chart"].build(
-            _ctx(_sources(http), library_type="Show", chart="popular")
-        )
+def _chart_payload(library_type: str) -> dict:
+    """One page of chart results for this library type.
 
-    assert result.summary is None
-    assert (result.poster_kind, result.poster_key) == (None, None)
+    ``total_pages`` is forced to 1 so the paged client stops after the first
+    request: what these tests are about is the two fields on the result, not
+    pagination, which ``test_tmdb_lists_client.py`` pins.
+    """
+    name = (
+        "tmdb_chart_movie_popular_p1.json"
+        if library_type == "Movie"
+        else "tmdb_chart_tv_top_rated.json"
+    )
+    return load(name) | {"total_pages": 1}
+
+
+@pytest.mark.parametrize(
+    "chart",
+    ["popular", "top_rated", "trending_week", "airing_today", "on_the_air"],
+)
+async def test_an_upstream_chart_carries_its_transcribed_summary_and_poster(chart):
+    """Row 146: the five charts Kometa's ``defaults/chart/tmdb.yml`` publishes
+    carry the title and summary its translation file gives them, transcribed in
+    ``docs/research/kometa-collections.md`` §5, and the title doubles as the
+    hosted poster key. The marker is substituted, never ``%``-formatted: two of
+    the five say "shows" literally because upstream's ``allowed_libraries:
+    show`` makes the library type a constant there, and ``%``-formatting those
+    would raise."""
+    title, template = CHART_TITLES[chart]
+    for library_type in CHART_ENDPOINTS[chart]:
+        routes = {CHART_ENDPOINTS[chart][library_type]: _chart_payload(library_type)}
+        async with httpx.AsyncClient(transport=_routed(routes)) as http:
+            result = await REGISTRY["tmdb_chart"].build(
+                _ctx(_sources(http), library_type=library_type, chart=chart)
+            )
+
+        assert result.summary == template.replace("<<library_translation>>", library_type.lower())
+        assert (result.poster_kind, result.poster_key) == ("chart", title)
+        assert "<<" not in result.summary
+
+
+@pytest.mark.parametrize("chart", ["now_playing", "upcoming", "trending_day"])
+async def test_a_chart_kometa_does_not_publish_still_offers_nothing(chart):
+    """The other three are this service's own: TMDb publishes them and Kometa's
+    chart defaults do not, so there is no upstream string to transcribe and no
+    upstream mapping to key a poster on. An invented summary would not be
+    parity, and a poster keyed on a title of ours is a guess even when it
+    happens not to 404 -- ``TMDb Now Playing.jpg`` exists upstream and is
+    referenced by no defaults file, which is exactly why it is declined. A
+    definition's own ``summary:`` is the way to set one for these."""
+    for library_type in CHART_ENDPOINTS[chart]:
+        routes = {CHART_ENDPOINTS[chart][library_type]: _chart_payload(library_type)}
+        async with httpx.AsyncClient(transport=_routed(routes)) as http:
+            result = await REGISTRY["tmdb_chart"].build(
+                _ctx(_sources(http), library_type=library_type, chart=chart)
+            )
+
+        assert result.summary is None
+        assert (result.poster_kind, result.poster_key) == (None, None)
 
 
 # --- list, collection, company, network, keyword -----------------------------

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
@@ -159,9 +159,9 @@ async def test_a_source_refused_park_serves_its_full_reason_on_failures(
     from dataclasses import asdict
 
     from autoposter.intake.arr import RenderIntent
-    from autoposter.queue.jobs import enqueue
     from autoposter.queue.worker import run_once
     from autoposter.render.pipeline import SourceRefused
+    from queue_support import enqueue_due
 
     async def handler(session_, job):
         exc = SourceRefused(
@@ -171,7 +171,7 @@ async def test_a_source_refused_park_serves_its_full_reason_on_failures(
         raise exc
 
     intent = RenderIntent(kind="movie", title="Sinners", tmdb_id=1234)
-    await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    await enqueue_due(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
     await run_once(session, "worker-1", {"process_item": handler})
 
     response = await client.get("/api/jobs/parked", headers=auth_headers)
@@ -191,26 +191,24 @@ async def test_a_runtime_error_park_keeps_the_bare_class_name_on_failures(
     from dataclasses import asdict
 
     from autoposter.intake.arr import RenderIntent
-    from autoposter.queue.jobs import MAX_ATTEMPTS, enqueue
+    from autoposter.queue.jobs import MAX_ATTEMPTS
     from autoposter.queue.worker import run_once
+    from queue_support import enqueue_due, make_due
 
     async def handler(session_, job):
         raise RuntimeError("provider exploded")
 
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=5678)
-    job_id = await enqueue(session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key)
+    job_id = await enqueue_due(
+        session, "process_item", asdict(intent), dedupe_key=intent.dedupe_key
+    )
     for _ in range(MAX_ATTEMPTS):
         # A fresh session per simulated attempt, matching run_worker's own
         # "async with session_factory() as session" per claim (worker.py):
         # reusing one session let a stale, never-expired identity-map ``Job``
         # mask claim()'s raw-SQL state/attempts writes between iterations.
         async with session_factory() as attempt_session:
-            job = (
-                await attempt_session.execute(select(Job).where(Job.id == job_id))
-            ).scalar_one()
-            job.state = "pending"
-            job.run_after = func.now()
-            await attempt_session.commit()
+            await make_due(attempt_session, job_id)
             # The fresh session alone is not enough here: this ``job`` local
             # stays alive across the call below (unlike run_worker's, which
             # is claim()'s own and dies with the loop iteration), keeping the

@@ -115,8 +115,33 @@ def _file_sha256(path: Path) -> str:
         return ""
 
 
-def _stage_override(override: Path, working: Path) -> str:
-    """Copy the manual-override file into the working directory and hash it."""
+def _stage_override(override: Path, working: Path, *, stage: str) -> str:
+    """Copy the manual-override file into the working directory and hash it.
+
+    ``manual_assets_root`` is a mount an operator writes to directly, and
+    nothing between it and this read enforces a byte cap: ``PICK_MAX_BYTES``
+    guards the API door (``api/candidates.py``), ``RENDER_MAX_BYTES`` guards a
+    provider download, and ``manual_override_path``/``find_logo_override`` do
+    a bare ``.exists()``. A file dropped straight onto the share reached
+    ImageMagick past all three (roadmap row 238, surface 3).
+
+    A ``stat()`` before the read, at the ceiling a downloaded source is
+    already held to, so an override that would cost the pod its memory is
+    refused with a served reason. ``process_item``'s per-kind
+    ``except SourceRefused`` records it and moves to the next art kind.
+
+    Deliberately a PRE-CHECK and nothing more: the bytes copied and the bytes
+    hashed are exactly what they were, so this return value -- which is
+    ``compute_fingerprint``'s ``base_sha256`` at the base call site and one of
+    its ``asset_hashes`` at the logo one -- is unmoved for every file that was
+    already accepted, and no stored fingerprint changes.
+    """
+    size = override.stat().st_size
+    if size > RENDER_MAX_BYTES:
+        raise SourceRefused(
+            f"{stage} override is {size} bytes, over the "
+            f"{RENDER_MAX_BYTES}-byte render source ceiling"
+        )
     working.write_bytes(override.read_bytes())
     return hashlib.sha256(working.read_bytes()).hexdigest()
 
@@ -554,9 +579,9 @@ def adopted_fingerprint(
     """
     # render_version_for, not config.version: roadmap row 111 confines an
     # invalidation to the kinds an edit touches. config.version is still the
-    # wholesale hash and is still what render_artifact's dual-read grandfather
-    # (its `legacy_candidate` in the adopted arm and `legacy_fingerprint` in
-    # the live compare) accepts from a row written before that row landed.
+    # wholesale hash -- `api/routes._render_affecting`'s superset
+    # short-circuit and the Settings page's "version A to B" line -- but
+    # since roadmap row 247 no fingerprint comparison reads it.
     return compute_fingerprint(
         render_version_for(art_kind, config), art_kind, None, base_sha256,
         text_inputs, asset_hashes,
@@ -1177,17 +1202,6 @@ async def render_artifact(
         adopted_candidate = adopted_fingerprint(
             config, art_kind, render.base_sha256, text_inputs, asset_hashes
         )
-        # Roadmap row 111's dual-read grandfather. Rows written before that row
-        # landed carry element 0 = the WHOLESALE config.version, and four
-        # per-kind payloads cannot all hash to that one value except by
-        # collision -- so without this arm the first deploy would strand every
-        # adopted row in the library. One extra sha256 over a joined string,
-        # and NO extra I/O: text_inputs and asset_hashes are already in hand.
-        # Removed one release later, once the pod has completed a full pass
-        # (roadmap follow-up row).
-        legacy_candidate = compute_fingerprint(
-            config.version, art_kind, None, render.base_sha256, text_inputs, asset_hashes
-        )
         # Re-hash rather than merely stat. Between the adoption run and the
         # moment the old tools are actually stopped (step 3 of the cutover in
         # deploy/README.md) they are still writing into the same asset tree, so
@@ -1197,14 +1211,9 @@ async def render_artifact(
         # one hash the adopted pass is meant to cost. _file_sha256 answers ""
         # for a file that is gone, so a deleted asset fails the comparison and
         # re-renders without needing a separate exists() check.
-        if render.fingerprint in (adopted_candidate, legacy_candidate):
+        if render.fingerprint == adopted_candidate:
             current_sha = await asyncio.to_thread(_file_sha256, target)
             if current_sha == render.base_sha256:
-                # The write-back, and it is the whole migration: a legacy row
-                # leaves this branch carrying the per-kind value, so the next
-                # pass matches outright. `detail` stays "adopted" -- no new
-                # served string is invented to make the migration visible.
-                render.fingerprint = adopted_candidate
                 render.status = "rendered"
                 render.detail = "adopted"
                 await session.commit()
@@ -1235,7 +1244,9 @@ async def render_artifact(
         logo_text_fallback_taken = False
         text_point_size: int | None = None
         if override is not None:
-            base_sha = await asyncio.to_thread(_stage_override, override, working)
+            base_sha = await asyncio.to_thread(
+                _stage_override, override, working, stage=f"the {art_kind} source"
+            )
             source_url, provider_name, textless = str(override), "manual", None
             local_source = True
         else:
@@ -1377,7 +1388,9 @@ async def render_artifact(
             picked_logo = await asyncio.to_thread(find_logo_override, config, item)
             if picked_logo is not None:
                 logo_path = Path(tmpdir) / f"logo{picked_logo.suffix}"
-                logo_sha = await asyncio.to_thread(_stage_override, picked_logo, logo_path)
+                logo_sha = await asyncio.to_thread(
+                    _stage_override, picked_logo, logo_path, stage="the clearlogo"
+                )
             elif not online_fetch_disabled(config, art_kind):
                 logo_path, logo_sha, skipped_logos = await _pick_logo(
                     http, config, item, providers, Path(tmpdir),
@@ -1429,21 +1442,10 @@ async def render_artifact(
             render_version_for(art_kind, config), art_kind, source_url, base_sha,
             text_inputs, asset_hashes,
         )
-        # Roadmap row 111's dual-read grandfather; see the adopted arm above
-        # for why it exists and when it goes.
-        legacy_fingerprint = compute_fingerprint(
-            config.version, art_kind, source_url, base_sha, text_inputs, asset_hashes
-        )
         # target.exists() offloaded (it's a stat() against assets_root, which
         # can be an NFS mount) — only reached once a fingerprint already
         # matches, so the short-circuit still skips it entirely otherwise.
-        if render.fingerprint in (fingerprint, legacy_fingerprint) and await asyncio.to_thread(
-            target.exists
-        ):
-            # The write-back. On a legacy match this is the migration: no
-            # composite, no asset write, no Plex upload -- the ladder and the
-            # download above already ran and would have run anyway.
-            render.fingerprint = fingerprint
+        if render.fingerprint == fingerprint and await asyncio.to_thread(target.exists):
             render.status = "rendered"
             render.detail = "unchanged"
             await session.commit()

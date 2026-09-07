@@ -221,7 +221,8 @@ async def test_the_response_does_not_wait_on_the_webhook(
     app, client, auth_headers, session
 ):
     """The notification is fire-and-forget. A webhook taking its worst-case
-    duration (31.5s on default retry config -- notify/dispatch.py) must not
+    duration (31.5s against an ordinary target, 50s against one that is
+    rate-limiting us, on default retry config -- notify/dispatch.py) must not
     hold the response open; the fake's 2-second sleep stands in for that.
     The response must come back with the send still in flight, and the send
     must still run to completion afterwards carrying the real counts."""
