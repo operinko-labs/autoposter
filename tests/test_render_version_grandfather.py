@@ -141,9 +141,12 @@ async def _seed_legacy_live_row(
     """A rendered row fingerprinted the way this service did BEFORE row 111:
     element 0 is the wholesale `config.version`.
 
-    `art_kind` defaults to `"poster"`, which is what the five `render_artifact`
-    tests want; the `process_item` test seeds the background through the same
-    function so a whole item can migrate in one pass.
+    `art_kind` defaults to `"poster"`. Three of the surviving four tests call
+    this to seed a legacy row (`test_a_whole_item_re_renders_through_process_item`
+    calls it twice, once per art kind, to seed a whole item); what each of
+    them proves is the same outcome: the row's pre-111 fingerprint no longer
+    matches, so it falls out of its short-circuit or live-compare arm and
+    re-renders once.
     """
     source_url = _url_for(art_kind)
     media_item = await _upsert_media_item(session, ITEM)
