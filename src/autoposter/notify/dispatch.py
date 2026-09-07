@@ -95,8 +95,10 @@ def send_in_background(coroutine) -> None:
     """Fire one ``Notifier.send`` without awaiting it.
 
     The collections pass must not wait on a webhook: one send's worst case is
-    ``retry_count * timeout_seconds`` plus backoff (~31.5s on the defaults),
-    and a pass can have several collections to report. ``send`` never raises
+    ``retry_count * timeout_seconds`` plus backoff -- ~31.5s on the defaults
+    against an ordinary target, up to ~50s against one that answers 429 with
+    a ``Retry-After`` (clamped to ``timeout_seconds``) -- and a pass can have
+    several collections to report. ``send`` never raises
     and does its own outcome logging, so the result is deliberately dropped --
     in particular a disabled notifier's vacuous ``True`` is never reported as
     a delivery.

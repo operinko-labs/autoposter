@@ -1,4 +1,4 @@
-"""Notification payload builders: the two shapes a configured webhook receives.
+"""Notification payload builders: the four shapes a configured webhook receives.
 
 Apprise ``json://`` shape, verified 2026-08-22 against the plugin source --
 ``NotifyJSON.send`` in
