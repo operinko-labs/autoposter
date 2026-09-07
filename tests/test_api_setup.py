@@ -1018,6 +1018,42 @@ async def test_a_plex_url_that_is_not_an_address_is_refused_with_a_fixed_sentenc
     assert progress.json()["config"] is False
 
 
+async def test_the_plex_url_refusal_names_the_credential_rule_it_now_enforces(setup_client):
+    """v2 routes this field through the shared address guard, which refuses
+    userinfo -- something v1's route accepted. A sentence that asks only for an
+    http:// address does not describe why `http://user:pass@plex` was refused,
+    which is exactly the failure row 213's fixed sentences exist to prevent."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config",
+        json={"plex_url": "http://operator:row-121-plex-secret@plex.example.test:32400"},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.PLEX_URL_NOT_AN_ADDRESS
+    # The sentence names the rule that refused it, and never the value.
+    assert "username or password" in setup_api.PLEX_URL_NOT_AN_ADDRESS
+    assert "row-121-plex-secret" not in response.text
+
+
+async def test_the_plex_url_loses_its_trailing_slash_so_appended_paths_never_double_one(
+    setup_client, setup_state
+):
+    """The other half of routing this field through the shared guard: a
+    behaviour change to a v1 route, pinned here rather than left to be
+    discovered by a `//library/sections` request."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config", json={"plex_url": PLEX_URL + "/"}, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert setup_state.config_document["plex"]["url"] == PLEX_URL
+
+
 async def test_the_wizard_sees_the_document_the_next_boot_will_read(
     setup_client, monkeypatch, tmp_path
 ):
@@ -1169,6 +1205,50 @@ async def test_the_deployment_url_step_refuses_userinfo_in_the_authority(setup_c
 
     assert response.status_code == 400
     assert response.json()["detail"] == setup_api.PUBLIC_URL_NOT_AN_ADDRESS
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://autoposter.example.test/?token=row-121-query",
+        "https://autoposter.example.test#row-121-fragment",
+        "https://autoposter.example.test/behind/a/proxy?row-121-query=1",
+    ],
+)
+async def test_the_deployment_url_step_refuses_a_query_string_or_a_fragment(setup_client, value):
+    """Facts C2: the registration URL never carries one -- and this address is
+    what the callback is BUILT from. `<public_url>/webhook/sonarr` over an
+    address ending in `?x=1` yields `...?x=1/webhook/sonarr`, a string written
+    into the *arr's database, its UI and its logs. The guard four callers share
+    is where that rule belongs, not in each caller."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/public-url", json={"url": value}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.PUBLIC_URL_NOT_AN_ADDRESS
+    assert "row-121" not in response.text
+
+
+async def test_the_deployment_url_keeps_a_path_prefix_and_drops_its_trailing_slash(
+    setup_client, setup_state
+):
+    """A path is legitimate here and a query string is not: this deployment can
+    live at a path prefix behind a reverse proxy, and the *arr callback is
+    appended to whatever is staged. The trailing slash is normalised away so
+    the fixed paths this module appends never double one."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/public-url",
+        json={"url": "https://media.example.test/autoposter/"},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert setup_state.public_url == "https://media.example.test/autoposter"
 
 
 async def test_the_deployment_url_refusal_never_echoes_the_address(setup_client):

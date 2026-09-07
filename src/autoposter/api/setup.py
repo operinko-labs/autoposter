@@ -107,17 +107,25 @@ PASSWORD_TOO_LONG = (
 # deployment that cannot reach Plex -- with the wizard gone by then. Checked
 # here, on the one field an operator types into this step, as a requirement and
 # never as the value that failed it.
+#
+# Two clauses beyond the scheme, because v2 routes this field through the
+# shared guard below and the guard enforces both: an operator who pasted
+# `http://user:pass@plex:32400` has to read a sentence that describes why it
+# was refused, which a sentence naming only the scheme does not.
 PLEX_URL_NOT_AN_ADDRESS = (
-    "the Plex server URL must be an http:// or https:// address"
+    "the Plex server URL must be an http:// or https:// address with a host, "
+    "with no username or password in it, and with no query string or fragment"
 )
 # The shared address guard's refusal, and the one Task 2's check endpoint
-# reuses. Two requirements in one sentence because they are one decision: an
-# address this service will connect to on a caller's say-so must be a web
-# address, and must not smuggle a credential into a string that ends up in an
-# *arr's database, its UI and its log lines.
+# reuses. Three requirements in one sentence because they are one decision: an
+# address this service will connect to -- or hand to an *arr as a callback --
+# on a caller's say-so must be a web address, must not smuggle a credential
+# into a string that ends up in an *arr's database, its UI and its log lines,
+# and must not carry a query string or fragment that a path appended to it
+# would land after (facts C2: the registration URL never carries one).
 PUBLIC_URL_NOT_AN_ADDRESS = (
-    "this must be an http:// or https:// address with a host, and with no "
-    "username or password in it"
+    "this must be an http:// or https:// address with a host, with no "
+    "username or password in it, and with no query string or fragment"
 )
 # Row 121 residue (b). The example document is baked into the image; an image
 # missing it cannot compose a config document at all, and the operator needs to
@@ -363,10 +371,22 @@ def _require_http_url(value: str, refusal: str) -> str:
     dropping it would produce a check that fails for a reason the sentence does
     not give. The returned value has its trailing slash removed so that the
     fixed paths this module appends never double one.
+
+    A PATH is allowed and a query string or fragment is not, because every
+    caller of this guard appends a fixed path to what it returns. A deployment
+    legitimately lives at a path prefix behind a reverse proxy, so
+    `https://media.example.test/autoposter` has to pass; but
+    `https://autoposter.example.test/?x=1` would compose the *arr callback as
+    `https://autoposter.example.test/?x=1/webhook/sonarr` -- a string written
+    into that *arr's database, its UI and its logs, and shown to the operator
+    on the finish page. Refused here, once, rather than in each of the four
+    callers (facts C2: the registration URL never carries one).
     """
     cleaned = value.strip()
     scheme, separator, rest = cleaned.partition("://")
     if scheme.lower() not in {"http", "https"} or not separator or not rest:
+        raise HTTPException(status_code=400, detail=refusal)
+    if "?" in rest or "#" in rest:
         raise HTTPException(status_code=400, detail=refusal)
     authority = rest.partition("/")[0]
     if "@" in authority or authority == "":
