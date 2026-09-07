@@ -15,6 +15,7 @@ from autoposter.queue.jobs import (
     fail,
     reclaim_stale,
 )
+from queue_support import bring_horizon_forward, enqueue_due, make_due
 
 
 async def test_enqueue_returns_a_job_id(session):
@@ -37,7 +38,7 @@ async def test_key_is_reusable_once_the_job_finished(session):
 
 
 async def test_claim_marks_running_and_counts_the_attempt(session):
-    await enqueue(session, "process_item", {"rating_key": "7"})
+    await enqueue_due(session, "process_item", {"rating_key": "7"})
     job = await claim(session, "worker-a")
     assert job is not None
     assert job.state == "running"
@@ -60,7 +61,7 @@ async def test_two_workers_never_claim_the_same_job(session_factory):
     # FOR UPDATE SKIP LOCKED guarantee: exactly one claim succeeds, the other skips
     # the locked row rather than double-claiming it.
     async with session_factory() as setup:
-        job_id = await enqueue(setup, "process_item", {"n": 1})
+        job_id = await enqueue_due(setup, "process_item", {"n": 1})
     async with session_factory() as s1, session_factory() as s2:
         first, second = await asyncio.gather(claim(s1, "worker-1"), claim(s2, "worker-2"))
     claimed = [job for job in (first, second) if job is not None]
@@ -71,8 +72,8 @@ async def test_two_workers_never_claim_the_same_job(session_factory):
 
 async def test_two_workers_claim_distinct_jobs_independently(session_factory):
     async with session_factory() as setup:
-        await enqueue(setup, "process_item", {"n": 1}, dedupe_key="a")
-        await enqueue(setup, "process_item", {"n": 2}, dedupe_key="b")
+        await enqueue_due(setup, "process_item", {"n": 1}, dedupe_key="a")
+        await enqueue_due(setup, "process_item", {"n": 2}, dedupe_key="b")
     async with session_factory() as s1, session_factory() as s2:
         first = await claim(s1, "worker-1")
         second = await claim(s2, "worker-2")
@@ -81,7 +82,7 @@ async def test_two_workers_claim_distinct_jobs_independently(session_factory):
 
 
 async def test_failure_reschedules_with_backoff(session):
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     state = await fail(session, job_id, "boom")
     assert state == "pending"
@@ -99,6 +100,74 @@ async def test_a_job_enqueued_without_delay_is_immediately_claimable(session):
     # and a database clock running behind, this job would not be due yet.
     await enqueue(session, "process_item", {"rating_key": "now"})
     assert await claim(session, "worker-a") is not None
+
+
+async def test_a_job_stamped_a_step_into_the_future_is_not_claimed(session):
+    """Rows 119/193/208's mechanism, injected rather than waited for.
+
+    ``_CLAIM_SQL`` (queue/jobs.py:16-35) matches ``run_after <= now()``, and
+    ``enqueue`` commits (:98) so ``claim`` reads ``now()`` in a LATER
+    transaction (:175-179). This machine's clock steps backwards 2.705 s every
+    ~30 s (docs/research/dev-clock-step/), so that later reading can land BELOW
+    a run_after stamped milliseconds earlier -- the row is not due, nothing is
+    claimed, the handler never runs, and the test fails on whatever the handler
+    should have written.
+
+    A backwards step of N seconds and a run_after stamped N seconds ahead are
+    the same arithmetic, so the step is injected as the stamp rather than
+    waited for: deterministic, machine-independent, and over in milliseconds,
+    where looping for the real 0.019%-per-execution event is neither.
+
+    The stamp itself is 5 minutes, not the ~2.7 s measured step: the first
+    assertion below only holds while less time passes between this commit and
+    ``claim``'s ``now()`` than the stamp is ahead -- a few seconds is a real
+    budget this suite can blow under load (recon logs multi-second stalls in
+    this same shared container), which would flake the assertion for reasons
+    having nothing to do with the mechanism under test. Minutes of margin cost
+    nothing (the row still isn't due) and remove that budget entirely.
+
+    The second half is the fix: ``make_due``'s hour of backdating absorbs a
+    step three orders of magnitude larger than any measured one.
+    """
+    job_id = await enqueue(session, "process_item", {})
+    await session.execute(
+        text("UPDATE jobs SET run_after = now() + interval '5 minutes' WHERE id = :id"),
+        {"id": job_id},
+    )
+    await session.commit()
+
+    assert await claim(session, "worker-a") is None, (
+        "a job whose run_after sits a clock step ahead of now() must not be "
+        "claimable -- if this passes, the injection is wrong, not the queue"
+    )
+
+    await make_due(session, job_id)
+    claimed = await claim(session, "worker-a")
+    assert claimed is not None, "make_due must leave the row due despite the step"
+    assert claimed.id == job_id
+
+
+async def test_make_due_leaves_more_margin_than_the_clock_can_step(session):
+    """The hour is the point, so the hour is pinned.
+
+    Shrinking the backdate to a few seconds -- as tests/test_queue.py's own
+    ``_make_due_now`` once did, at 5 s -- puts it back inside range of a double
+    step (5.41 s) and quietly restores the flake. The margin is computed
+    server-side in one statement, so this assertion is not itself a
+    cross-transaction wall-clock comparison.
+    """
+    job_id = await enqueue(session, "process_item", {})
+    await make_due(session, job_id)
+
+    margin_seconds = (
+        await session.execute(
+            select(func.extract("epoch", func.now() - Job.run_after)).where(Job.id == job_id)
+        )
+    ).scalar_one()
+    assert margin_seconds > 60, (
+        f"make_due backdated run_after by only {margin_seconds}s; the measured "
+        "clock step is 2.705s and steps compose, so the margin must be minutes"
+    )
 
 
 async def test_created_at_uses_the_database_clock(session):
@@ -122,7 +191,7 @@ async def test_created_at_uses_the_database_clock(session):
 
 
 async def test_fail_clears_claim_metadata(session):
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     await fail(session, job_id, "boom")
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -131,31 +200,13 @@ async def test_fail_clears_claim_metadata(session):
     assert job.claimed_at is None
 
 
-async def _make_due_now(session, job_id: int) -> None:
-    """Reset a job to pending and due, using the database clock.
-
-    Backdated a few seconds rather than set to exactly ``now()``: this
-    machine's Docker clock steps ~2.7s backwards every ~27s (see the review
-    at `.superpowers/sdd/2026-09-03-overlay-engine/task-3-review.md`, Probe
-    7), and `claim()`'s `run_after <= now()` runs in a *later* transaction --
-    a step landing between this statement and that one otherwise makes the
-    row not-yet-due and drops the claim.
-    """
-    job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-    job.state = "pending"
-    job.run_after = (
-        await session.execute(select(func.now() - func.make_interval(0, 0, 0, 0, 0, 0, 5)))
-    ).scalar_one()
-    await session.commit()
-
-
 async def test_job_parks_after_max_attempts(session):
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     for _ in range(MAX_ATTEMPTS - 1):
-        await _make_due_now(session, job_id)
+        await make_due(session, job_id)
         await claim(session, "worker-a")
         assert await fail(session, job_id, "boom") == "pending"
-    await _make_due_now(session, job_id)
+    await make_due(session, job_id)
     await claim(session, "worker-a")
     assert await fail(session, job_id, "boom") == "parked"
 
@@ -168,14 +219,14 @@ async def test_fail_parking_dismisses_a_parked_sibling_sharing_the_dedupe_key(se
     # nothing stopped the pile from growing. fail()'s park arm must now
     # retire any earlier parked row for the same dedupe_key itself, mirroring
     # complete()'s deferred-sibling sweep.
-    first = await enqueue(session, "process_item", {"n": 1}, dedupe_key="k-park")
+    first = await enqueue_due(session, "process_item", {"n": 1}, dedupe_key="k-park")
     await claim(session, "worker-a")
     assert await fail(session, first, "first reason", max_attempts=1) == "parked"
 
     # A fresh press for the same item: uq_jobs_pending_dedupe does not cover
     # 'parked', so this insert succeeds instead of colliding -- exactly how
     # the historical pile actually formed, one row per press.
-    second = await enqueue(session, "process_item", {"n": 2}, dedupe_key="k-park")
+    second = await enqueue_due(session, "process_item", {"n": 2}, dedupe_key="k-park")
     assert second is not None, "a fresh row must still be insertable while the sibling is parked"
     await claim(session, "worker-a")
     assert await fail(session, second, "second reason", max_attempts=1) == "parked"
@@ -194,15 +245,15 @@ async def test_fail_parking_dismisses_a_parked_sibling_sharing_the_dedupe_key(se
 async def test_fail_parking_leaves_unrelated_parked_rows_alone(session):
     # The sweep must match on dedupe_key alone -- a parked row for a
     # different item, or with no dedupe_key at all, must never be touched.
-    other = await enqueue(session, "process_item", {}, dedupe_key="k-other")
+    other = await enqueue_due(session, "process_item", {}, dedupe_key="k-other")
     await claim(session, "worker-a")
     assert await fail(session, other, "unrelated", max_attempts=1) == "parked"
 
-    keyless = await enqueue(session, "process_item", {})
+    keyless = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     assert await fail(session, keyless, "no key at all", max_attempts=1) == "parked"
 
-    target = await enqueue(session, "process_item", {}, dedupe_key="k-target")
+    target = await enqueue_due(session, "process_item", {}, dedupe_key="k-target")
     await claim(session, "worker-a")
     assert await fail(session, target, "target reason", max_attempts=1) == "parked"
 
@@ -215,9 +266,9 @@ async def test_a_deferred_job_waits_the_long_horizon_and_never_parks(session):
     # ``deferred`` is not a failure with a bigger budget -- it has no budget.
     # Well past the attempt cap that parks an ordinary failure, this one is
     # still waiting, because nothing about it is wrong.
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     for _ in range(MAX_ATTEMPTS + 3):
-        await _make_due_now(session, job_id)
+        await make_due(session, job_id)
         await claim(session, "worker-a")
         state = await fail(
             session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS
@@ -228,9 +279,14 @@ async def test_a_deferred_job_waits_the_long_horizon_and_never_parks(session):
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
     # The horizon, not the backoff curve: this row is waiting for the library
-    # to catch up, which happens on a scale of days.
+    # to catch up, which happens on a scale of days. ``run_after`` is stamped
+    # by ``fail()``'s committed transaction and ``db_now`` is read in a later
+    # one, so a backwards clock step between them can push ``remaining`` above
+    # DEFER_INTERVAL_SECONDS; the upper bound gets the same 300 s tolerance as
+    # the lower one rather than the zero-tolerance edge a single ~2.7 s step
+    # could redden.
     remaining = (job.run_after - db_now).total_seconds()
-    assert DEFER_INTERVAL_SECONDS - 300 < remaining <= DEFER_INTERVAL_SECONDS
+    assert DEFER_INTERVAL_SECONDS - 300 < remaining <= DEFER_INTERVAL_SECONDS + 300
     assert job.attempts == 0
 
 
@@ -238,16 +294,13 @@ async def test_claim_takes_a_deferred_job_once_its_horizon_passes(session):
     # What makes the wait a wait rather than a grave: the same claim that
     # picks up pending work picks a deferred row up when it comes due, with
     # nothing else having to resurrect it.
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
 
     assert await claim(session, "worker-a") is None, "claimed six hours early"
 
-    await session.execute(
-        text("UPDATE jobs SET run_after = now() WHERE id = :id"), {"id": job_id}
-    )
-    await session.commit()
+    await bring_horizon_forward(session, job_id)
 
     job = await claim(session, "worker-a")
     assert job is not None
@@ -259,7 +312,7 @@ async def test_a_cancelled_job_is_dismissed_rather_than_deferred(session):
     # Cancellation outranks the wait. It has to: the horizon is unbounded, so
     # a deferral that ignored the cancel would be the operator's last word
     # ignored forever.
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     await session.execute(
         text("UPDATE jobs SET cancel_requested = true WHERE id = :id"), {"id": job_id}
@@ -279,7 +332,7 @@ async def test_reenqueuing_a_deferred_key_wakes_it_instead_of_duplicating(sessio
     # piled up for one show. The widened index now covers 'deferred' too, and
     # enqueue() wakes the existing row on conflict instead of failing to
     # insert a duplicate.
-    job_id = await enqueue(session, "process_item", {"n": 1}, dedupe_key="k-wake")
+    job_id = await enqueue_due(session, "process_item", {"n": 1}, dedupe_key="k-wake")
     await claim(session, "worker-a")
     await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
 
@@ -311,7 +364,7 @@ async def test_reenqueuing_a_deferred_key_with_a_delay_honours_it(session):
     # moment to hit ItemNotFound again, whereupon fail() re-defers it for
     # DEFER_INTERVAL_SECONDS (6h), strictly worse than the bug this branch
     # fixes.
-    job_id = await enqueue(session, "process_item", {"n": 1}, dedupe_key="k-wake-delay")
+    job_id = await enqueue_due(session, "process_item", {"n": 1}, dedupe_key="k-wake-delay")
     await claim(session, "worker-a")
     await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
 
@@ -348,7 +401,7 @@ async def test_enqueue_batch_skips_a_deferred_key_rather_than_waking_it(session)
     # enqueue_batch backs the full-pass/backfill sweep, not a targeted event,
     # so it makes the opposite choice from enqueue(): a deferred row is left
     # alone (ON CONFLICT DO NOTHING), not woken.
-    job_id = await enqueue(session, "process_item", {}, dedupe_key="k-batch")
+    job_id = await enqueue_due(session, "process_item", {}, dedupe_key="k-batch")
     await claim(session, "worker-a")
     await fail(session, job_id, "no Plex item", defer_seconds=DEFER_INTERVAL_SECONDS)
 
@@ -370,10 +423,10 @@ async def test_complete_dismisses_a_deferred_sibling_created_while_the_first_ran
     # independent row. If that second row later defers on its own and the
     # first later completes, the second is stranded exactly as
     # complete()'s sibling-dismissal sweep was written to handle.
-    first = await enqueue(session, "process_item", {}, dedupe_key="k-race")
+    first = await enqueue_due(session, "process_item", {}, dedupe_key="k-race")
     await claim(session, "worker-a")  # first -> running, no longer index-covered
 
-    second = await enqueue(session, "process_item", {}, dedupe_key="k-race")
+    second = await enqueue_due(session, "process_item", {}, dedupe_key="k-race")
     assert second is not None, "a fresh row must still be insertable while the first is running"
 
     await claim(session, "worker-b")
@@ -390,7 +443,7 @@ async def test_complete_dismisses_a_deferred_sibling_created_while_the_first_ran
 
 
 async def test_complete_marks_done(session):
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     await complete(session, job_id)
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
@@ -400,7 +453,7 @@ async def test_complete_marks_done(session):
 async def test_reclaim_stale_resets_old_running_jobs(session):
     # A job whose claim is far older than the threshold means the process that
     # claimed it is gone (crash, OOM, SIGKILL) — it must become claimable again.
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     await session.execute(
         text("UPDATE jobs SET claimed_at = now() - interval '20 minutes' WHERE id = :id"),
@@ -424,7 +477,7 @@ async def test_reclaim_stale_resets_run_after_so_the_job_is_immediately_claimabl
     # anything once the worker holding it is dead — the work is overdue, not
     # pending a future slot. Even a job scheduled an hour out must become
     # immediately claimable once its claim is stale.
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     await session.execute(
         text(
@@ -466,7 +519,7 @@ async def test_reclaim_stale_resets_run_after_so_the_job_is_immediately_claimabl
 
 
 async def test_reclaim_stale_leaves_recent_claims_alone(session):
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
 
     count = await reclaim_stale(session, older_than_seconds=900)
@@ -484,7 +537,7 @@ async def test_reclaim_stale_staggers_run_after_across_reclaimed_jobs(session):
     # once -- the concurrent renders OOMKilled the pod within seconds. The
     # jobs died together (same restart); restarting them together is what
     # killed it, so reclaim must re-admit them one at a time instead.
-    job_ids = [await enqueue(session, "process_item", {"n": i}) for i in range(3)]
+    job_ids = [await enqueue_due(session, "process_item", {"n": i}) for i in range(3)]
     for job_id in job_ids:
         await claim(session, "worker-a")
     await session.execute(
@@ -520,7 +573,7 @@ async def test_reclaim_stale_preserves_cancel_requested(session):
     # Cancel would hang forever again. Adding `cancel_requested = false` to
     # the reclaim SQL is a natural-looking "a reclaimed job starts fresh"
     # edit that would pass every other test in the suite.
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
     await session.execute(
         text(

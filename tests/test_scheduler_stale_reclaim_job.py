@@ -18,14 +18,15 @@ import logging
 from sqlalchemy import func, select, text
 
 from autoposter.db.models import Job as JobRow
-from autoposter.queue.jobs import claim, enqueue
+from autoposter.queue.jobs import claim
 from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import make_stale_reclaim_job
+from queue_support import enqueue_due
 
 
 async def test_scheduler_tick_reclaims_a_stale_running_claim(session_factory):
     async with session_factory() as setup:
-        job_id = await enqueue(setup, "process_item", {})
+        job_id = await enqueue_due(setup, "process_item", {})
         await claim(setup, "worker-a")
         # Older than reclaim_stale's 900s threshold, on the database clock --
         # a worker that died mid-job, not one still genuinely working it.
@@ -74,7 +75,7 @@ async def test_scheduler_tick_reclaims_a_stale_running_claim(session_factory):
 
 async def test_scheduler_tick_leaves_a_young_running_claim_alone(session_factory):
     async with session_factory() as setup:
-        job_id = await enqueue(setup, "process_item", {})
+        job_id = await enqueue_due(setup, "process_item", {})
         await claim(setup, "worker-a")
 
     stop = asyncio.Event()
@@ -93,7 +94,7 @@ async def test_scheduler_tick_leaves_a_young_running_claim_alone(session_factory
 
 
 async def test_stale_reclaim_job_logs_only_when_something_was_reclaimed(session, caplog):
-    job_id = await enqueue(session, "process_item", {})
+    job_id = await enqueue_due(session, "process_item", {})
     await claim(session, "worker-a")
 
     job = make_stale_reclaim_job()
