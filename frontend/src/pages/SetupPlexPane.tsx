@@ -49,6 +49,20 @@ const POLL_INTERVAL_MS = 2000;
 const CONFIGURED_DOCUMENT =
   "This deployment provides its own configuration document, so the Plex address and the libraries are read from that and cannot be set here. Signing in still stores the Plex token.";
 
+/** A document THIS WIZARD wrote at the state path on an earlier run.
+ *
+ * `stage_config_document` refuses on `config_document_path() is not None`,
+ * which is `"configured"` and `"state"` alike -- so the submit is replaced here
+ * for the same reason. A SECOND sentence rather than the one above widened,
+ * because `CONFIGURED_DOCUMENT`'s first clause is false here: the deployment
+ * does not provide this document, an earlier finish of this wizard wrote it.
+ * Amendment 3's write order is what makes the shape reachable -- a finish
+ * interrupted between the config write and the secrets write is the survivable
+ * window, and the wizard served at the next boot finds that document already in
+ * place. The sign-in stays offered for the same reason as above. */
+const STATE_DOCUMENT =
+  "A previous run of this wizard already wrote this deployment's configuration document, so the Plex address and the libraries are read from that and cannot be set again here. Signing in still stores the Plex token.";
+
 /** The library read failed and the address is still worth recording.
  *
  * Submitting with an EMPTY exclusion list is the honest answer -- every library
@@ -97,8 +111,11 @@ export function SetupPlexPane({
   const [unread, setUnread] = useState(false);
   const deadline = useRef<number>(0);
 
-  // The one thing `configured` changes: there is nothing to submit to.
-  const canSubmit = configSource !== "configured";
+  // The one thing a RESOLVING document changes: there is nothing to submit to.
+  // Two values and not one -- the server rule is
+  // `config_document_path() is not None`, which `"state"` satisfies as surely
+  // as `"configured"` does.
+  const canSubmit = configSource !== "configured" && configSource !== "state";
 
   async function signIn() {
     setError(null);
@@ -170,9 +187,14 @@ export function SetupPlexPane({
 
   return (
     <div className="setup-plex">
-      {!canSubmit && (
+      {configSource === "configured" && (
         <p className="setup-hint" data-testid="plex-configured">
           {CONFIGURED_DOCUMENT}
+        </p>
+      )}
+      {configSource === "state" && (
+        <p className="setup-hint" data-testid="plex-state-document">
+          {STATE_DOCUMENT}
         </p>
       )}
       {code === null ? (

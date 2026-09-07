@@ -261,6 +261,36 @@ describe("SetupPlexPane", () => {
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith("http://plex.invalid:32400", []));
   });
 
+  it("offers no submit on a document an EARLIER FINISH wrote, and names that instead", () => {
+    // Round-2 I3. `stage_config_document` refuses on
+    // `config_document_path() is not None`, which is `"configured"` AND
+    // `"state"` -- and `"state"` is reachable by design: Amendment 3's write
+    // order makes a finish interrupted between the config write and the
+    // secrets write the survivable window, and the wizard that comes back at
+    // the next boot sees a document at the state path. Both controls that post
+    // to that route would only ever collect a fixed refusal there.
+    //
+    // Its own sentence and not `CONFIGURED_DOCUMENT`'s: "this deployment
+    // provides its own configuration document" is false here -- this wizard
+    // wrote it last run.
+    vi.stubGlobal("fetch", transport(0));
+    render(
+      <SetupPlexPane
+        address="http://plex.invalid:32400"
+        configSource="state"
+        credentialValue="row-121-typed-token"
+        onSelect={async () => true}
+      />,
+    );
+
+    expect(screen.getByTestId("plex-state-document")).toBeInTheDocument();
+    expect(screen.queryByTestId("plex-configured")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use this address" })).toBeNull();
+    // The sign-in stays offered: it stages the account token, which is written
+    // whatever the document's source is.
+    expect(screen.getByRole("button", { name: "Sign in with Plex" })).toBeInTheDocument();
+  });
+
   it("shows the server's fixed sentence when minting fails", async () => {
     const detail = "the Plex account could not be reached (ConnectError).";
     vi.stubGlobal("fetch", vi.fn(async () => respond({ detail }, 502)));

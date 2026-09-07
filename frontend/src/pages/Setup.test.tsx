@@ -731,4 +731,72 @@ describe("Setup", () => {
     expect(screen.queryByRole("button", { name: "Use this address" })).toBeNull();
     expect(screen.getByRole("button", { name: "Sign in with Plex" })).toBeInTheDocument();
   });
+
+  it("reaches the configuration document from the accordion's own two fields", async () => {
+    // Round-2 M13, and the positive half of the case above. The three pane
+    // cases render `SetupPlexPane` with `address`/`credentialValue` as PROPS;
+    // nothing until now asserted that `Setup.tsx` actually HANDS the accordion's
+    // fields to it. If that wiring were dropped the pane's own tests would all
+    // stay green and the Critical this branch closed -- a configuration
+    // document reachable only behind a completed plex.tv sign-in -- would be
+    // back. This is the line whose regression re-opens it, walked the way an
+    // operator walks it: type the address and the token into the accordion,
+    // read the libraries, submit.
+    const fetchMock = progressMock(
+      { ...PROGRESS, config_source: null },
+      (path, init) => {
+        if (path === "/api/setup/plex/libraries" && init?.method === "POST") {
+          return respond({
+            libraries: [
+              { key: "1", title: "Movies", type: "movie" },
+              { key: "2", title: "Photos", type: "photo" },
+            ],
+          });
+        }
+        if (path === "/api/setup/config" && init?.method === "POST") {
+          return respond({ path: "/state/autoposter.yaml" });
+        }
+        return undefined;
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await goToSystemsStep();
+    fireEvent.click(screen.getByRole("button", { name: /Plex token/ }));
+    await waitFor(() => expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("Plex token address"), {
+      target: { value: "http://plex.invalid:32400" },
+    });
+    fireEvent.change(screen.getByLabelText("AUTOPOSTER_PLEX_TOKEN"), {
+      target: { value: "row-121-typed-token" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use this address" }));
+    await waitFor(() => expect(screen.getByLabelText("Photos")).toBeChecked());
+
+    // The read carried BOTH accordion fields -- the address the operator typed
+    // and the token they pasted beside it, which is the whole of the manual
+    // arrival.
+    const read = fetchMock.mock.calls.find(([path]) => path === "/api/setup/plex/libraries");
+    expect(JSON.parse(String(read?.[1]?.body))).toEqual({
+      base_url: "http://plex.invalid:32400",
+      credential_value: "row-121-typed-token",
+    });
+
+    fireEvent.click(screen.getByLabelText("Photos"));
+    fireEvent.click(screen.getByRole("button", { name: "Use this server" }));
+
+    // ...and it ends at the ONE writer of the configuration document.
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([path]) => path === "/api/setup/config"),
+      ).toBe(true),
+    );
+    const staged = fetchMock.mock.calls.find(([path]) => path === "/api/setup/config");
+    expect(JSON.parse(String(staged?.[1]?.body))).toEqual({
+      plex_url: "http://plex.invalid:32400",
+      excluded_libraries: ["Photos"],
+    });
+  });
 });
