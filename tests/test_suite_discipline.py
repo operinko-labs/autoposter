@@ -32,8 +32,8 @@ What this guard CANNOT catch, stated plainly so nobody mistakes it for total:
 the claim-predicate family that produced nine of the eleven sightings, because
 there is no comparison in the test at all -- the comparison lives inside
 ``_CLAIM_SQL``. It also does not read subscripts (``run_afters[0] <= db_now``,
-test_queue.py:513) or SQL expressions built with ``func`` inside a ``select``
-(test_queue.py:455, test_scheduler_stale_reclaim_job.py:67), both of which are
+test_queue.py:566) or SQL expressions built with ``func`` inside a ``select``
+(test_queue.py:508, test_scheduler_stale_reclaim_job.py:67), both of which are
 deliberate server-side idioms. That is why the guard ships WITH the fix rather
 than instead of it.
 
