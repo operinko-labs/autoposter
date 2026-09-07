@@ -38,6 +38,7 @@ from autoposter.api.candidates import PICK_MAX_BYTES
 from autoposter.badges.compose import badge_fingerprint
 from autoposter.config.loader import RENDER_ART_KINDS, render_version_for
 from autoposter.db.models import EventLog
+from autoposter.overlays.schema import OverlayDefinition
 from autoposter.plex.client import ResolvedItem
 from autoposter.render.pipeline import gather_fingerprint_inputs
 
@@ -456,13 +457,38 @@ async def test_an_upload_moves_no_badge_fingerprint(client, auth_headers, config
     """`badges/compose.py:259-262` hashes the shipped badge MANIFEST and the
     definitions' FIELDS -- nothing under `overlays_root`. The pin exists
     because that is precisely why an in-place overwrite would FREEZE rather
-    than storm, and why this route refuses one."""
-    args = ("f" * 64, "poster", {"rating": "8.1"}, "m" * 64, config.badges.all_definitions())
+    than storm, and why this route refuses one.
+
+    A config that NAMES the uploaded file in a definition's `file:` is the
+    real freeze case -- against a config carrying no such definition, this
+    could not fail even if `badge_fingerprint` read the file. The second half
+    is the non-vacuity check `test_naming_the_uploaded_file_in_a_config_value_does_move_it`
+    is for asset hashes: the same definitions list, with only `file:` changed,
+    MUST move the digest, or the freeze proved above would be proving nothing
+    about a function that ignores its `definitions` argument entirely."""
+    named = config.model_copy(
+        update={
+            "badges": config.badges.model_copy(
+                update={"definitions": [OverlayDefinition(name="pin", file="quiet.png")]}
+            )
+        }
+    )
+    args = ("f" * 64, "poster", {"rating": "8.1"}, "m" * 64, named.badges.all_definitions())
     before = badge_fingerprint(*args)
 
     await _upload(client, "overlays", auth_headers, _envelope(_png(), "quiet.png"))
 
     assert badge_fingerprint(*args) == before
+
+    other = config.model_copy(
+        update={
+            "badges": config.badges.model_copy(
+                update={"definitions": [OverlayDefinition(name="pin", file="different.png")]}
+            )
+        }
+    )
+    other_args = ("f" * 64, "poster", {"rating": "8.1"}, "m" * 64, other.badges.all_definitions())
+    assert badge_fingerprint(*other_args) != before
 
 
 async def test_naming_the_uploaded_file_in_a_config_value_does_move_it(
