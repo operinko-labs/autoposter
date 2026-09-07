@@ -274,6 +274,12 @@ async def _uploaded_source(request: Request, workspace: Path) -> Path:
     file name is a browser's own string that this service has no use for: the
     stored name comes from ``manual_override_target`` alone.
     """
+    # The parser's own exception, and it is imported rather than caught as the
+    # `ValueError` it happens to subclass: `python-multipart` is a declared
+    # dependency of this project under exactly this name (`pyproject.toml:37`)
+    # and the name says what is being refused.
+    from python_multipart.exceptions import MultipartParseError
+
     bounded = Request(
         request.scope, _budgeted_receive(request.receive, PICK_MAX_BYTES + UPLOAD_ENVELOPE_BYTES)
     )
@@ -283,6 +289,16 @@ async def _uploaded_source(request: Request, workspace: Path) -> Path:
     except _UploadTooLarge:
         logger.warning("refused a manual upload: past the byte budget")
         raise HTTPException(status_code=413, detail=UPLOAD_TOO_LARGE) from None
+    except MultipartParseError:
+        # Starlette converts only its OWN `MultiPartException`
+        # (`starlette/requests.py:292`), and a body that declares a boundary
+        # and then contradicts it -- a truncated browser upload, or a proxy
+        # that rewrote the body without the header -- comes out of
+        # `python_multipart` instead and would otherwise be an unhandled 500.
+        # Its message carries offsets and byte values, so the served sentence
+        # is the same fixed one the missing-boundary case earns.
+        logger.warning("refused a manual upload: the multipart body does not parse")
+        raise HTTPException(status_code=422, detail=UPLOAD_MALFORMED) from None
     except StarletteHTTPException as exc:
         # Starlette's own Request._get_form catches the parser's own
         # MultiPartException and re-raises it as HTTPException(400,
