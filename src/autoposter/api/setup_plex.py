@@ -148,7 +148,7 @@ async def poll_pin(
 
 
 async def owned_servers(
-    account_token: str, transport: httpx.BaseTransport | None = None
+    account_token: str, client_identifier: str, transport: httpx.BaseTransport | None = None
 ) -> list[dict]:
     """The account's OWN servers, with no token in any entry.
 
@@ -161,11 +161,16 @@ async def owned_servers(
     Connections are ordered ``local`` first. Every connection probe 1 saw was
     https with exactly one ``local: true`` entry on 32400, which is the address
     a pod inside the same network should be given first.
+
+    ``client_identifier`` is the same deployment-stable string the mint and
+    poll send: the implementation probe measured plex.tv answering 400
+    ``X-Plex-Client-Identifier is missing`` on this call without it, token and
+    ``Accept`` alone are not enough.
     """
     resources = await _request_json(
         "GET",
         f"{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=0",
-        {"X-Plex-Token": account_token, "Accept": "application/json"},
+        {**_headers(client_identifier), "X-Plex-Token": account_token},
         transport,
     )
 
@@ -201,18 +206,25 @@ async def owned_servers(
 
 
 async def library_sections(
-    base_url: str, token: str, transport: httpx.BaseTransport | None = None
+    base_url: str,
+    token: str,
+    client_identifier: str,
+    transport: httpx.BaseTransport | None = None,
 ) -> list[dict]:
     """``key``, ``title`` and ``type`` per library, and nothing else.
 
     The same read ``setup_checks``' Plex probe makes, which is why that probe
     uses ``/library/sections`` rather than the unauthenticated ``/identity``:
     one call proves the address AND the token AND produces the tick-list.
+
+    ``client_identifier`` is the same deployment-stable string the mint and
+    poll send, for the same reason ``owned_servers`` now takes one: plex.tv
+    answers 400 without it.
     """
     body = await _request_json(
         "GET",
         f"{base_url}/library/sections",
-        {"X-Plex-Token": token, "Accept": "application/json"},
+        {**_headers(client_identifier), "X-Plex-Token": token},
         transport,
     )
     container = body.get("MediaContainer") or {}

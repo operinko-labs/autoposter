@@ -958,13 +958,17 @@ async def list_plex_servers(request: Request) -> dict:
     account_token = _effective(request).get("AUTOPOSTER_PLEX_ACCOUNT_TOKEN", "")
     if not account_token:
         raise HTTPException(status_code=400, detail=NO_PLEX_ACCOUNT_TOKEN)
+    state = request.app.state.setup
+    identifier = state.plex_client_identifier or str(uuid.uuid4())
     try:
-        servers = await setup_plex.owned_servers(account_token)
+        servers = await setup_plex.owned_servers(account_token, identifier)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
             detail=CHECK_UNREACHABLE.format(system="the Plex account", failure=type(exc).__name__),
         ) from None
+    async with state.lock:
+        state.plex_client_identifier = identifier
     return {"servers": servers}
 
 
@@ -1000,13 +1004,17 @@ async def list_plex_libraries(body: PlexLibrariesRequest, request: Request) -> d
     token = body.credential_value or _effective(request).get("AUTOPOSTER_PLEX_TOKEN", "")
     if not token:
         raise HTTPException(status_code=400, detail=NO_PLEX_ACCOUNT_TOKEN)
+    state = request.app.state.setup
+    identifier = state.plex_client_identifier or str(uuid.uuid4())
     try:
-        libraries = await setup_plex.library_sections(base_url, token)
+        libraries = await setup_plex.library_sections(base_url, token, identifier)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
             detail=CHECK_UNREACHABLE.format(system="Plex", failure=type(exc).__name__),
         ) from None
+    async with state.lock:
+        state.plex_client_identifier = identifier
     return {"libraries": libraries}
 
 

@@ -252,7 +252,9 @@ async def test_only_owned_servers_are_listed():
     Filtered server-side, not defaulted to."""
     transport, _seen = _plex_transport(authorised=True)
 
-    servers = await setup_plex.owned_servers(ACCOUNT_TOKEN, transport=transport)
+    servers = await setup_plex.owned_servers(
+        ACCOUNT_TOKEN, "row-121-client-id", transport=transport
+    )
 
     assert [s["client_identifier"] for s in servers] == [OWNED_ID]
 
@@ -260,7 +262,9 @@ async def test_only_owned_servers_are_listed():
 async def test_no_server_entry_carries_a_token():
     transport, _seen = _plex_transport(authorised=True)
 
-    servers = await setup_plex.owned_servers(ACCOUNT_TOKEN, transport=transport)
+    servers = await setup_plex.owned_servers(
+        ACCOUNT_TOKEN, "row-121-client-id", transport=transport
+    )
 
     assert ACCOUNT_TOKEN not in repr(servers)
     assert all("accessToken" not in server for server in servers)
@@ -271,21 +275,59 @@ async def test_connections_are_ordered_local_first():
     32400, and that is the one a pod inside the cluster should use."""
     transport, _seen = _plex_transport(authorised=True)
 
-    servers = await setup_plex.owned_servers(ACCOUNT_TOKEN, transport=transport)
+    servers = await setup_plex.owned_servers(
+        ACCOUNT_TOKEN, "row-121-client-id", transport=transport
+    )
 
     assert [c["local"] for c in servers[0]["connections"]] == [True, False]
+
+
+async def test_the_resources_call_carries_the_client_identifier():
+    """The load-bearing header this row exists for: the implementation probe
+    measured plex.tv answering 400 `X-Plex-Client-Identifier is missing` on
+    `/api/v2/resources` without it, and 200 with it -- the same identifier the
+    mint and poll send, or the account looks like a different device."""
+    transport, seen = _plex_transport(authorised=True)
+    identifier = "row-121-client-id"
+    await setup_plex.mint_pin(identifier, transport=transport)
+
+    await setup_plex.owned_servers(ACCOUNT_TOKEN, identifier, transport=transport)
+
+    request = next(r for r in seen if r.url.path == "/api/v2/resources")
+    assert "X-Plex-Client-Identifier" in request.headers
+    assert "X-Plex-Product" in request.headers
+    assert "X-Plex-Token" in request.headers
+    assert request.headers["X-Plex-Client-Identifier"] == identifier
 
 
 async def test_library_sections_are_key_title_and_type_and_nothing_else():
     transport, _seen = _plex_transport(authorised=True)
 
-    sections = await setup_plex.library_sections(PLEX_BASE, ACCOUNT_TOKEN, transport=transport)
+    sections = await setup_plex.library_sections(
+        PLEX_BASE, ACCOUNT_TOKEN, "row-121-client-id", transport=transport
+    )
 
     assert sections == [
         {"key": "1", "title": "Movies", "type": "movie"},
         {"key": "2", "title": "TV", "type": "show"},
         {"key": "3", "title": "Photos", "type": "photo"},
     ]
+
+
+async def test_the_sections_call_carries_the_client_identifier():
+    """Same header, same reason, on the second of the two calls the live probe
+    found broken: a picked server's `/library/sections` read."""
+    transport, seen = _plex_transport(authorised=True)
+    identifier = "row-121-client-id"
+    await setup_plex.mint_pin(identifier, transport=transport)
+
+    await setup_plex.library_sections(PLEX_BASE, ACCOUNT_TOKEN, identifier, transport=transport)
+
+    request = next(r for r in seen if r.url.path == "/library/sections")
+    assert "X-Plex-Client-Identifier" in request.headers
+    assert "X-Plex-Product" in request.headers
+    assert "X-Plex-Token" in request.headers
+    assert request.headers["X-Plex-Client-Identifier"] == identifier
 
 
 async def test_a_library_read_stops_at_the_body_cap():
@@ -316,7 +358,7 @@ async def test_a_library_read_stops_at_the_body_cap():
     # above turns it into a class name like every other failure.
     with pytest.raises(Exception):
         await setup_plex.library_sections(
-            PLEX_BASE, ACCOUNT_TOKEN, transport=httpx.MockTransport(handler)
+            PLEX_BASE, ACCOUNT_TOKEN, "row-121-client-id", transport=httpx.MockTransport(handler)
         )
 
     within_the_cap = setup_plex.PLEX_BODY_LIMIT_BYTES // 4096 + 1
@@ -339,7 +381,7 @@ async def test_no_plex_call_logs_the_token_the_pin_or_the_identifier(caplog):
 
     await setup_plex.mint_pin("row-121-client-id", transport=transport)
     await setup_plex.poll_pin(PIN_ID, "row-121-client-id", transport=transport)
-    await setup_plex.owned_servers(ACCOUNT_TOKEN, transport=transport)
+    await setup_plex.owned_servers(ACCOUNT_TOKEN, "row-121-client-id", transport=transport)
 
     text = "\n".join(record.getMessage() for record in caplog.records)
     assert ACCOUNT_TOKEN not in text
@@ -681,7 +723,7 @@ async def test_a_dripping_answer_is_cut_off_by_the_total_time_bound(monkeypatch)
     # can stop this one.
     with pytest.raises(TimeoutError):
         await setup_plex.library_sections(
-            PLEX_BASE, ACCOUNT_TOKEN, transport=httpx.MockTransport(handler)
+            PLEX_BASE, ACCOUNT_TOKEN, "row-121-client-id", transport=httpx.MockTransport(handler)
         )
 
     assert offered < chunks, "the whole call must be bounded, not merely each read"
