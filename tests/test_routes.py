@@ -384,6 +384,53 @@ async def test_a_non_string_event_type_is_refused(client, session):
     assert [(e.event_type, e.outcome) for e in events] == [(None, REFUSED)]
 
 
+async def test_a_nul_in_event_type_is_refused_and_never_a_500(client, session):
+    """A NUL passes the length and type check alone -- `VARCHAR` and `JSONB`
+    both refuse it outright, so before the control-character check existed
+    this reached the insert and died as a 500. Same shape as the over-long
+    and non-string cases: an envelope failure, so the row keeps a null
+    event_type."""
+    payload = load("radarr_download.json")
+    payload["eventType"] = "Test\x00"
+    response = await client.post(
+        "/webhook/radarr", json=payload, headers={"X-Autoposter-Token": TOKEN}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == REFUSED
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert [(e.event_type, e.outcome) for e in events] == [(None, REFUSED)]
+
+
+async def test_a_nul_in_a_title_is_refused(client, session):
+    """The same hole one level down: a fully valid, accepted Radarr body with
+    a NUL inside `movie.title` passed the gate and died on the `payload`
+    JSONB insert. The envelope itself validates (its own eventType has no
+    NUL), so this is a stage-two refusal and the row keeps the event type."""
+    payload = load("radarr_download.json")
+    payload["movie"]["title"] = "Dune\x00: Part Two"
+    response = await client.post(
+        "/webhook/radarr", json=payload, headers={"X-Autoposter-Token": TOKEN}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == REFUSED
+    events = (await session.execute(select(EventLog))).scalars().all()
+    assert [(e.event_type, e.outcome) for e in events] == [("Download", REFUSED)]
+
+
+async def test_an_explicit_null_episodes_is_tolerated(client):
+    """The other optional fields all tolerate an explicit `null`; `episodes`
+    now does too. `parse_sonarr` already reads `payload.get("episodes") or
+    []`, so a body that sends `"episodes": null` on a Rename must still
+    enqueue the show rather than 400."""
+    payload = load("sonarr_rename.json")
+    payload["episodes"] = None
+    response = await client.post(
+        "/webhook/sonarr", json=payload, headers={"X-Autoposter-Token": TOKEN}
+    )
+    assert response.status_code == 200
+    assert response.json()["queued"] >= 1
+
+
 async def test_a_tokenless_junk_post_writes_no_event_row(client, session):
     """The order pin. `_authorise` runs before `_ingest` is entered, so a caller
     with no secret reaches neither the body read, nor the JSON decode, nor the

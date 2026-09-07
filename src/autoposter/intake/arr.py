@@ -1,3 +1,4 @@
+import unicodedata
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
@@ -16,10 +17,34 @@ SONARR_EVENTS = {"download", "rename", "seriesadd"}
 
 # ``events_log.event_type`` is String(64) (db/models.py:285) and the value is
 # served verbatim by GET /api/events (api/snapshots.py:143,:152) and by the
-# dashboard stream. Before this cap an over-long or non-string ``eventType``
-# reached that column unchecked and the delivery died on the insert, so
-# bounding it here is as much of the fix as the shape check is.
+# dashboard stream. An over-long or non-string ``eventType`` reached that
+# column unchecked and the delivery died on the insert; so did a NUL, which
+# the length and type checks alone let through. The cap below stops the
+# first two; ``_reject_control_characters`` (applied to ``eventType`` here
+# and to the payload titles below) stops the third for both this
+# ``VARCHAR`` column and the ``JSONB`` one the accepted payload lands in.
 EVENT_TYPE_MAX_CHARS = 64
+
+
+def _reject_control_characters(value: str | None) -> str | None:
+    """Refuse a Unicode control character (category ``Cc``, NUL included) or
+    a line/paragraph separator, before the value can reach a column that
+    cannot hold it.
+
+    Length and type checks alone let a NUL through: ``Test\\x00`` is a valid
+    5-character string. Postgres refuses NUL outright in both ``VARCHAR``
+    (``events_log.event_type``) and ``JSONB`` (``events_log.payload``),
+    which turns an otherwise-valid delivery into a 500 on the insert instead
+    of a 400 at the gate. U+2028/U+2029 are not ``Cc`` but are refused for
+    the same reason: neither has any business in an event name or a title.
+    The raised message never names the value -- it is only ever logged via
+    ``loc``, which carries field names, not the string that failed.
+    """
+    if value is None:
+        return None
+    if any(unicodedata.category(ch) == "Cc" or ch in (" ", " ") for ch in value):
+        raise ValueError("control characters are not allowed")
+    return value
 
 
 class ArrEnvelope(BaseModel):
@@ -40,6 +65,8 @@ class ArrEnvelope(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     eventType: Annotated[str, Field(min_length=1, max_length=EVENT_TYPE_MAX_CHARS)]
+
+    _reject_control_event_type = field_validator("eventType")(_reject_control_characters)
 
 
 def _lower_event_type(value: object) -> object:
@@ -63,6 +90,8 @@ class _Movie(BaseModel):
     imdbId: str | None = None
     year: StrictInt | None = None
 
+    _reject_control_title = field_validator("title")(_reject_control_characters)
+
 
 class RadarrPayload(ArrEnvelope):
     """A Radarr delivery this service will do work for.
@@ -84,6 +113,8 @@ class _Episode(BaseModel):
     episodeNumber: StrictInt
     title: str | None = None
 
+    _reject_control_title = field_validator("title")(_reject_control_characters)
+
 
 class _Series(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -94,6 +125,8 @@ class _Series(BaseModel):
     imdbId: str | None = None
     year: StrictInt | None = None
 
+    _reject_control_title = field_validator("title")(_reject_control_characters)
+
 
 class SonarrPayload(ArrEnvelope):
     """A Sonarr delivery this service will do work for."""
@@ -101,11 +134,13 @@ class SonarrPayload(ArrEnvelope):
     eventType: Literal["download", "rename", "seriesadd"]
     series: _Series
     # Absent on Rename and SeriesAdd, where the parser yields the show alone.
-    # A plain default rather than ``| None``: the Arr serialiser omits null
-    # fields rather than emitting them (which is why series.imdbId is simply
-    # missing from the rename fixture), so "absent" is the only shape either
-    # service sends for an empty array.
-    episodes: list[_Episode] = Field(default_factory=list)
+    # ``| None`` rather than a bare default: the Arr serialiser omits null
+    # fields rather than emitting them, so no known build sends an explicit
+    # ``"episodes": null`` -- but ``parse_sonarr`` already reads
+    # ``payload.get("episodes") or []``, so tolerating one costs nothing here
+    # and keeps a legitimate delivery from 400ing on a shape the model does
+    # not actually need to forbid.
+    episodes: list[_Episode] | None = None
 
     _casefold_event_type = field_validator("eventType", mode="before")(_lower_event_type)
 

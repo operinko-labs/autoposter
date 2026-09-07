@@ -36,21 +36,41 @@ _MAX_RAW_BODY_CHARS = 2000
 NOT_AN_ARR_DELIVERY = "body does not match the webhook schema for this service"
 
 
+def _without_nul(value: object) -> object:
+    """Strip a literal NUL (U+0000) from every string in a JSON-shaped value.
+
+    Postgres refuses NUL outright in both ``VARCHAR`` and ``JSONB`` columns.
+    ``ArrEnvelope``/``RadarrPayload``/``SonarrPayload`` now refuse a NUL in
+    ``eventType`` or a title before it is work, but the row committed below
+    always keeps the *raw* body as evidence -- refused or not -- so a NUL
+    anywhere else in that body would still crash this insert. Applied only to
+    the stored copy: validation and parsing still see the untouched payload.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {key: _without_nul(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_without_nul(item) for item in value]
+    return value
+
+
 def _log_refusal(source: str, exc: ValidationError) -> None:
     """Say which fields failed, and nothing about what was in them.
 
     ``loc`` holds this module's own declared field names and list indices and
     nothing else, because every model in ``intake/arr.py`` is
     ``extra="ignore"``: an unknown key is dropped rather than reported, so no
-    part of ``loc`` can be a string the sender chose. ``msg`` and ``input``
-    are never read -- those do quote the body.
+    part of ``loc`` can be a string the sender chose. ``msg``, ``input``,
+    ``ctx`` and ``url`` do quote the body -- excluded from ``errors()``
+    itself, so the no-leak property holds even if a future edit here forgets
+    to filter them back out.
 
     DEBUG rather than WARNING: a refusal is the expected outcome of a port
     scan, and a scanner must not be able to fill the pod log.
     """
-    fields = sorted(
-        {part for error in exc.errors() for part in error["loc"] if isinstance(part, str)}
-    )
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    fields = sorted({part for error in errors for part in error["loc"] if isinstance(part, str)})
     logger.debug("%s webhook body refused (%s): %s", source, type(exc).__name__, ", ".join(fields))
 
 
@@ -96,7 +116,7 @@ async def _ingest(
             text = text[:_MAX_RAW_BODY_CHARS] + "...(truncated)"
         payload_for_log = {"_raw": text}
     else:
-        payload_for_log = payload
+        payload_for_log = _without_nul(payload)
         accepted = False
         try:
             # Stage one, for every body: is this a plausible delivery at all?
