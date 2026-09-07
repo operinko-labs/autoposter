@@ -51,6 +51,20 @@ registers, so row 213's no-token-in-URL rule is untouched. The *arr exercises
 the hook for real on its own first matching event instead, which is the
 sentence the finish page and the per-service result both carry.
 
+On UPDATE ``forceSave`` alone is enough: ``ProviderControllerBase.UpdateProvider``
+gates its own connection test on ``!forceSave`` and skips it outright. On
+CREATE it does not -- ``CreateProvider`` runs the test whenever the
+definition's derived ``Enable`` is true, which it is the instant any ``on*``
+flag is ticked, and a failed test there is a hard error rather than a warning
+(diagnosis doc section 4-5). So a service with no existing Autoposter entry is
+registered in two writes: a POST with every ``on*`` flag ``False`` (``Enable``
+is false, so CREATE never calls ``Test`` at all), then a PUT of the returned
+entry's id with the real flags -- the UPDATE path, where ``forceSave`` already
+skips the test. A failure on that second write is reported the same fixed way
+as any other failure and leaves the entry behind disabled rather than absent;
+that is harmless, because it is found by NAME on the next run of this wizard
+and turned on then.
+
 Two bodies from two tables rather than one with nulls: Sonarr 400s on
 ``onMovieAdded`` and Radarr on ``onSeriesAdd``. The ticked events are exactly
 the ones ``intake/arr.py`` accepts, plus the two that also arrive as
@@ -282,6 +296,45 @@ def build_body(service: str, public_url: str, secret: str, existing: dict | None
     return body
 
 
+def _create_body(service: str, public_url: str, secret: str) -> dict:
+    """The first write of a create: `build_body`'s create shape, with every
+    accepted event flag forced ``False``.
+
+    Every listed flag in `_EVENTS` deliberate `True` is what a fresh
+    registration means -- but `NotificationDefinition.Enable` is true the
+    instant any one of them is ticked, and a true `Enable` runs the *arr's
+    save-time connection test on CREATE no matter what `forceSave` says
+    (module docstring, diagnosis doc section 4). All-`False` keeps `Enable`
+    false, so CREATE never calls `Test` at all; `_enable_body` below turns the
+    flags on with a second write that `forceSave` DOES exempt from the test.
+    """
+    body = build_body(service, public_url, secret, None)
+    for event in _EVENTS[service]:
+        body[event] = False
+    return body
+
+
+def _enable_body(service: str, public_url: str, secret: str, entry_id) -> dict:
+    """The second write of a create: the full body `build_body` would have
+    sent as the POST if events had not been suppressed, addressed at the id
+    the *arr just handed back for the disabled entry `_create_body` made."""
+    body = build_body(service, public_url, secret, None)
+    body["id"] = entry_id
+    return body
+
+
+def _write_refusal(response: httpx.Response) -> str | None:
+    """``None`` on a written response the caller may proceed past, else the
+    same fixed marker every other failure in this module reports -- never the
+    *arr's own body, which echoes the fields it was sent (facts, module
+    docstring)."""
+    if response.status_code in (401, 403):
+        return "refused"
+    if not response.is_success:
+        return f"HTTPStatus{response.status_code}"
+    return None
+
+
 async def _capped_json(response: httpx.Response):
     """The head of a streamed listing, with the rest abandoned rather than read.
 
@@ -333,41 +386,59 @@ async def register(
                     entries = await _capped_json(listing)
 
                 existing = find_existing(entries if isinstance(entries, list) else [], service)
-                body = build_body(service, public_url, secret, existing)
 
-                # forceSave=true, the *arr's own documented switch, on both
-                # writes: on save the *arr POSTs a test event to `fields[url]`
-                # and refuses the save on anything but a 200 back from it, and
-                # during setup that test can never pass -- the secret is only
-                # STAGED here until finish, and this application serves no
-                # `/webhook/*` route yet. A query parameter on the *arr API
-                # call this module makes, never on the url it registers: row
-                # 213's no-token-in-URL rule is about `fields[url]` and is
-                # untouched by it.
-                if existing is None:
-                    written = await client.post(
-                        f"{origin}{NOTIFICATION_PATH}",
-                        headers=headers,
-                        json=body,
-                        params={"forceSave": "true"},
-                    )
-                    action = "created"
-                else:
+                # forceSave=true, the *arr's own documented switch, on every
+                # write below: on save the *arr POSTs a test event to
+                # `fields[url]` and refuses the save on anything but a 200
+                # back from it, and during setup that test can never pass --
+                # the secret is only STAGED here until finish, and this
+                # application serves no `/webhook/*` route yet. A query
+                # parameter on the *arr API call this module makes, never on
+                # the url it registers: row 213's no-token-in-URL rule is
+                # about `fields[url]` and is untouched by it.
+                if existing is not None:
                     written = await client.put(
                         f"{origin}{NOTIFICATION_PATH}/{existing['id']}",
                         headers=headers,
-                        json=body,
+                        json=build_body(service, public_url, secret, existing),
                         params={"forceSave": "true"},
                     )
-                    action = "updated"
+                    refusal = _write_refusal(written)
+                    if refusal is not None:
+                        return None, refusal
+                    return "updated", None
 
-        if written.status_code in (401, 403):
-            return None, "refused"
-        if not written.is_success:
-            # The status and nothing else: the body echoes the fields that were
-            # sent, and one of them is the secret.
-            return None, f"HTTPStatus{written.status_code}"
-        return action, None
+                # No existing entry: `forceSave` alone is not enough here --
+                # the *arr runs its save-time connection test on CREATE
+                # whenever the definition's derived `Enable` is true, which
+                # `forceSave` does not gate (module docstring). So the entry
+                # is created disabled first (no test at all, since `Enable`
+                # is false), then turned on with a second write through the
+                # UPDATE path, where `forceSave` already skips the test. A
+                # failure on that second write leaves the entry behind
+                # disabled rather than absent -- harmless, since it is found
+                # by NAME (`find_existing`) and turned on next run.
+                written = await client.post(
+                    f"{origin}{NOTIFICATION_PATH}",
+                    headers=headers,
+                    json=_create_body(service, public_url, secret),
+                    params={"forceSave": "true"},
+                )
+                refusal = _write_refusal(written)
+                if refusal is not None:
+                    return None, refusal
+
+                new_id = written.json().get("id")
+                enabled = await client.put(
+                    f"{origin}{NOTIFICATION_PATH}/{new_id}",
+                    headers=headers,
+                    json=_enable_body(service, public_url, secret, new_id),
+                    params={"forceSave": "true"},
+                )
+                refusal = _write_refusal(enabled)
+                if refusal is not None:
+                    return None, refusal
+                return "created", None
 
     try:
         return await asyncio.wait_for(attempt(), timeout=ARR_TIMEOUT_SECONDS)

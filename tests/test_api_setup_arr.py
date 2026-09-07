@@ -315,6 +315,9 @@ def test_a_connection_of_another_implementation_is_never_matched():
 
 
 async def test_an_absent_connection_is_created():
+    """The residual from the diagnosis (section 7): a service with no existing
+    Autoposter entry is created in TWO writes now, not one -- see the block
+    below for why."""
     transport, seen = _arr_transport([])
 
     action, failure = await setup_arr.register(
@@ -322,9 +325,88 @@ async def test_an_absent_connection_is_created():
     )
 
     assert (action, failure) == ("created", None)
-    assert [request.method for request in seen] == ["GET", "POST"]
+    assert [request.method for request in seen] == ["GET", "POST", "PUT"]
     assert seen[1].url.path == "/api/v3/notification"
     assert json.loads(seen[1].content)["name"] == "Autoposter - Sonarr"
+
+
+# --- the create-path residual: a fresh *arr still tests on CREATE -----------
+#
+# `ProviderControllerBase.CreateProvider` runs its save-time connection test
+# whenever the definition's derived `Enable` is true, and that is NOT gated on
+# `forceSave` the way `UpdateProvider`'s is (diagnosis doc section 4). `Enable`
+# is true the instant any `on*` flag is ticked, so a fresh registration -- no
+# existing Autoposter entry to find -- would still 400 for exactly the reason
+# row 187 fixed for updates. The fix: create disabled (every flag `False`,
+# `Enable` false, no test at all), then enable with a second write through the
+# UPDATE path, where `forceSave` already skips the test.
+
+
+async def test_a_created_connection_is_two_writes_post_then_put():
+    transport, seen = _arr_transport([])
+
+    action, failure = await setup_arr.register(
+        "sonarr", SONARR_BASE, APIKEY, PUBLIC_URL, SECRET, transport=transport
+    )
+
+    assert (action, failure) == ("created", None)
+    assert [request.method for request in seen] == ["GET", "POST", "PUT"]
+    # `{"id": 9}` is what the fake transport's write handler answers.
+    assert seen[2].url.path == "/api/v3/notification/9"
+
+
+async def test_the_create_post_carries_every_flag_off_and_forcesave():
+    transport, seen = _arr_transport([])
+
+    await setup_arr.register("sonarr", SONARR_BASE, APIKEY, PUBLIC_URL, SECRET, transport=transport)
+
+    posted = json.loads(seen[1].content)
+    assert all(posted[event] is False for event in setup_arr._EVENTS["sonarr"])
+    assert seen[1].method == "POST"
+    assert seen[1].url.params["forceSave"] == "true"
+
+
+async def test_the_enabling_put_carries_the_accepted_flags_the_url_the_header_and_the_new_id():
+    transport, seen = _arr_transport([])
+
+    await setup_arr.register("sonarr", SONARR_BASE, APIKEY, PUBLIC_URL, SECRET, transport=transport)
+
+    enabling = json.loads(seen[2].content)
+    assert enabling["onDownload"] is True
+    assert enabling["onUpgrade"] is True
+    assert enabling["onRename"] is True
+    assert enabling["onImportComplete"] is True
+    assert enabling["onSeriesAdd"] is True
+    assert enabling["onGrab"] is False
+    assert enabling["id"] == 9
+    assert _fields(enabling)["url"] == f"{PUBLIC_URL}/webhook/sonarr"
+    assert _fields(enabling)["headers"] == [{"key": "X-Autoposter-Token", "value": SECRET}]
+    assert seen[2].method == "PUT"
+    assert seen[2].url.params["forceSave"] == "true"
+
+
+async def test_a_failed_enabling_write_is_the_fixed_refusal_and_no_third_write():
+    """The half-created disabled entry left behind is harmless -- it is found
+    by NAME (`find_existing`) and turned on the next time this wizard runs.
+    What must not happen is the *arr's own response body leaking, or a third
+    write being attempted."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": 9})
+        return httpx.Response(400, json={"message": ARR_ERROR_BODY})
+
+    action, failure = await setup_arr.register(
+        "sonarr", SONARR_BASE, APIKEY, PUBLIC_URL, SECRET, transport=httpx.MockTransport(handler)
+    )
+
+    assert (action, failure) == (None, "HTTPStatus400")
+    assert ARR_ERROR_BODY not in str(failure)
+    assert [request.method for request in seen] == ["GET", "POST", "PUT"]
 
 
 async def test_an_existing_connection_is_updated_in_place():
@@ -719,7 +801,7 @@ async def test_a_concurrent_second_call_is_refused_without_reaching_the_arr(
     overlap two calls, and an overlapping pair both lists an empty
     registration and both creates -- the duplicate facts C2a exists to
     prevent. The in-flight guard refuses the second outright, and the fake
-    transport proves only one POST ever reached the *arr.
+    transport proves only one create sequence ever reached the *arr.
     """
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -761,8 +843,8 @@ async def test_a_concurrent_second_call_is_refused_without_reaching_the_arr(
         "action": None,
         "detail": "Sonarr's webhook registration is already in progress.",
     }
-    # The whole point: the second call never listed or created.
-    assert [request.method for request in seen] == ["GET", "POST"]
+    # The whole point: the second call never listed, created, or enabled.
+    assert [request.method for request in seen] == ["GET", "POST", "PUT"]
 
 
 async def test_the_in_flight_flag_is_freed_after_the_call_so_a_later_one_still_works(
