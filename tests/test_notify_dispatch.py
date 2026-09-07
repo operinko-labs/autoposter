@@ -133,6 +133,25 @@ async def test_a_500_then_200_succeeds_via_retry(make_client, sleeps):
     assert sleeps == [0.5]
 
 
+async def test_a_204_with_no_body_counts_as_delivered(make_client, sleeps):
+    """Discord's success answer. httpx's is_success is a 2xx test, so this
+    needs no transport change -- pin it so it cannot regress into a
+    status-code equality check."""
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(204)
+
+    notifier = build_notifier(_config(mode="discord"), make_client(handler), _refuse_db)
+
+    ok = await notifier.send("collection_changed", "Movies: 'X' changed: +1 -0", {})
+
+    assert ok is True
+    assert len(seen) == 1
+    assert sleeps == []
+
+
 async def test_a_4xx_is_a_misconfiguration_and_is_not_retried(
     make_client, session_factory, sleeps
 ):

@@ -3710,7 +3710,7 @@ class ArrSyncConfig(BaseModel):
 class NotificationsConfig(BaseModel):
     """Outbound run-completion webhooks: one POST to ``url`` per event.
 
-    The two payload shapes live in ``notify/payload.py``. ``mode`` is a
+    The four payload shapes live in ``notify/payload.py``. ``mode`` is a
     ``Literal`` on purpose -- an unknown mode must fail validation at config
     load, not fall back to some shape at send time. ``url`` is config, not a
     secret, but may embed a token in its path (Uptime-Kuma-style), so it is
@@ -3722,12 +3722,14 @@ class NotificationsConfig(BaseModel):
         default="",
         description="The webhook URL each run-completion event is POSTed to. May embed a token in its path; only its host is ever logged.",
     )
-    mode: Literal["apprise-json", "autoposter-v1"] = Field(
+    mode: Literal["apprise-json", "autoposter-v1", "discord", "apprise-api"] = Field(
         default="apprise-json",
         description=(
-            "'apprise-json' (the default) sends the body Apprise's json:// scheme "
-            "POSTs; 'autoposter-v1' sends this service's own versioned shape, "
-            "carrying the full detail dict."
+            "The payload shape. 'apprise-json' (the default) sends the body "
+            "Apprise's json:// scheme POSTs; 'autoposter-v1' sends this "
+            "service's own versioned shape, carrying the full detail dict; "
+            "'discord' sends a Discord webhook embed; 'apprise-api' sends the "
+            "{title, body, type} body an Apprise API server accepts."
         ),
     )
     # Per-attempt HTTP timeout and the number of attempts before giving up.

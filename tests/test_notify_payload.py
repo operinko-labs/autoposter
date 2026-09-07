@@ -100,6 +100,169 @@ def test_autoposter_v1_at_is_utc_iso8601():
     assert parsed.utcoffset() == timedelta(0)
 
 
+# --- discord mode ------------------------------------------------------------
+#
+# Discord's own limits are enforced in the builder, not hoped for: an
+# over-length embed field is a 400, and dispatch.py refuses to retry a 4xx, so
+# the notification would simply be lost with one warning. Each limit gets a
+# test because each one is a silent data-loss bug when it is missed.
+
+_FIXED_NOW = datetime(2026, 9, 7, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def frozen_clock(monkeypatch):
+    monkeypatch.setattr(payload_module, "_utcnow", lambda: _FIXED_NOW)
+    return _FIXED_NOW
+
+
+def test_discord_success_shape_exactly(frozen_clock):
+    built = build_payload(
+        "discord",
+        event="scheduled_run_completed",
+        summary="scheduled run collections finished: ok",
+        detail={"job": "collections", "status": "ok", "detail": "nothing to do"},
+    )
+    assert built == {
+        "embeds": [
+            {
+                "title": "autoposter: scheduled_run_completed",
+                "description": "scheduled run collections finished: ok",
+                "color": 0x57F287,
+                "timestamp": frozen_clock.isoformat(),
+                "fields": [
+                    {"name": "job", "value": "collections", "inline": True},
+                    {"name": "status", "value": "ok", "inline": True},
+                    {"name": "detail", "value": "nothing to do", "inline": True},
+                ],
+            }
+        ],
+        "allowed_mentions": {"parse": []},
+    }
+
+
+def test_discord_failed_status_is_red(frozen_clock):
+    built = build_payload(
+        "discord",
+        event="scheduled_run_failed",
+        summary="scheduled run collections failed: PlexApiError",
+        detail={"job": "collections", "status": "failed", "detail": "PlexApiError"},
+    )
+    assert built["embeds"][0]["color"] == 0xFF0000
+
+
+def test_discord_flattens_the_detail_dict_generically(frozen_clock):
+    """No per-event shapes: collection_changed's four keys become four fields
+    with no special-casing in payload.py."""
+    built = build_payload(
+        "discord",
+        event="collection_changed",
+        summary="Movies: 'Top Rated' changed: +3 -1",
+        detail={"library": "Movies", "collection": "Top Rated", "added": 3, "removed": 1},
+    )
+    assert built["embeds"][0]["fields"] == [
+        {"name": "library", "value": "Movies", "inline": True},
+        {"name": "collection", "value": "Top Rated", "inline": True},
+        {"name": "added", "value": "3", "inline": True},
+        {"name": "removed", "value": "1", "inline": True},
+    ]
+
+
+def test_discord_sends_exactly_one_embed(frozen_clock):
+    """Discord accepts at most 10; we send one, always."""
+    built = build_payload("discord", event="e", summary="s", detail={})
+    assert len(built["embeds"]) == 1
+
+
+def test_discord_title_is_clipped_at_256(frozen_clock):
+    built = build_payload("discord", event="x" * 400, summary="s", detail={})
+    title = built["embeds"][0]["title"]
+    assert len(title) == 256
+    assert title.endswith("...[truncated]")
+
+
+def test_discord_description_is_clipped_at_4096(frozen_clock):
+    built = build_payload("discord", event="e", summary="y" * 5000, detail={})
+    description = built["embeds"][0]["description"]
+    assert len(description) == 4096
+    assert description.endswith("...[truncated]")
+
+
+def test_discord_field_value_is_clipped_at_1024(frozen_clock):
+    """scheduler/core.py:304 truncates a failure detail to 2000 chars -- the
+    real payload, not a synthetic one. An embed field value tops out at 1024,
+    so this is the collision that would otherwise produce a 400."""
+    built = build_payload(
+        "discord",
+        event="scheduled_run_completed",
+        summary="scheduled run collections finished: failed",
+        detail={"job": "collections", "status": "failed", "detail": "z" * 2000},
+    )
+    value = built["embeds"][0]["fields"][2]["value"]
+    assert len(value) == 1024
+    assert value.endswith("...[truncated]")
+
+
+def test_discord_field_name_is_clipped_at_256(frozen_clock):
+    built = build_payload("discord", event="e", summary="s", detail={"k" * 400: "v"})
+    name = built["embeds"][0]["fields"][0]["name"]
+    assert len(name) == 256
+    assert name.endswith("...[truncated]")
+
+
+def test_discord_caps_fields_at_25_and_marks_the_omission(frozen_clock):
+    """detail is an open dict by contract, so the cap is not optional even
+    though today's largest event carries four keys."""
+    built = build_payload(
+        "discord",
+        event="e",
+        summary="s",
+        detail={f"k{n:02d}": "v" for n in range(40)},
+    )
+    fields = built["embeds"][0]["fields"]
+    assert len(fields) == 25
+    assert fields[-1] == {
+        "name": "...[truncated]",
+        "value": "16 more field(s) omitted",
+        "inline": False,
+    }
+
+
+def test_discord_embed_total_never_exceeds_6000(frozen_clock):
+    """The worst case this service can actually produce: a maximal summary and
+    twenty detail keys each holding a maximal truncated detail string."""
+    built = build_payload(
+        "discord",
+        event="e" * 300,
+        summary="s" * 5000,
+        detail={f"k{n:02d}": "v" * 2000 for n in range(20)},
+    )
+    embed = built["embeds"][0]
+    total = (
+        len(embed["title"])
+        + len(embed["description"])
+        + sum(len(f["name"]) + len(f["value"]) for f in embed["fields"])
+    )
+    assert total <= 6000
+
+
+def test_discord_suppresses_every_mention(frozen_clock):
+    """A Plex collection titled @everyone must not ping a server. Titles and
+    library names flow into summary and detail straight from Plex."""
+    built = build_payload(
+        "discord",
+        event="collection_changed",
+        summary="Movies: '@everyone' changed: +1 -0",
+        detail={"library": "Movies", "collection": "@everyone", "added": 1, "removed": 0},
+    )
+    assert built["allowed_mentions"] == {"parse": []}
+
+
+def test_mode_discord_loads_from_config(tmp_path):
+    loaded = load_config(_variant(tmp_path, "mode: apprise-json", "mode: discord"))
+    assert loaded.notifications.mode == "discord"
+
+
 # --- the mode gate -----------------------------------------------------------
 
 

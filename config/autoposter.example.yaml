@@ -656,6 +656,11 @@ notifications:
   #   autoposter-v1: this service's own versioned shape --
   #     {"schema": "autoposter/v1", "event": ..., "at": <ISO 8601 UTC>,
   #      "summary": ..., "detail": {...}} -- carries the full detail dict.
+  #   discord: a Discord webhook embed --
+  #     {"embeds": [{"title": ..., "description": ..., "color": ...,
+  #      "timestamp": ..., "fields": [...]}], "allowed_mentions": {"parse": []}}
+  #     -- detail becomes embed fields, and mentions are suppressed so a
+  #     collection titled @everyone cannot ping a server.
   mode: apprise-json
   timeout_seconds: 10 # per-attempt HTTP timeout
   retry_count: 3 # attempts before giving up; notification failure never fails the run it reports on
