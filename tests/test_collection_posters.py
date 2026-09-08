@@ -72,18 +72,6 @@ BASE = "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master"
         ("award_year", "tiff:2025", f"{BASE}/award/tiff/2025.jpg"),
         ("award_static", "venice:winner", f"{BASE}/award/venice/winner.jpg"),
         ("award_year", "venice:2025", f"{BASE}/award/venice/2025.jpg"),
-        ("chart", "IMDb Popular", f"{BASE}/chart/color/IMDb%20Popular.jpg"),
-        ("chart", "IMDb Top 250", f"{BASE}/chart/color/IMDb%20Top%20250.jpg"),
-        ("chart", "IMDb Lowest Rated", f"{BASE}/chart/color/IMDb%20Lowest%20Rated.jpg"),
-        # Row 146. The five TMDb chart keys Kometa's ``defaults/chart/tmdb.yml``
-        # publishes; each was fetched live (200) before the key was chosen, and
-        # the three charts that are ours are deliberately absent -- a key
-        # nobody upstream maps is a guess whether or not it resolves.
-        ("chart", "TMDb Popular", f"{BASE}/chart/color/TMDb%20Popular.jpg"),
-        ("chart", "TMDb Top Rated", f"{BASE}/chart/color/TMDb%20Top%20Rated.jpg"),
-        ("chart", "TMDb Trending", f"{BASE}/chart/color/TMDb%20Trending.jpg"),
-        ("chart", "TMDb Airing Today", f"{BASE}/chart/color/TMDb%20Airing%20Today.jpg"),
-        ("chart", "TMDb On The Air", f"{BASE}/chart/color/TMDb%20On%20The%20Air.jpg"),
         ("content_rating", "17", f"{BASE}/content_rating/cs/17.jpg"),
         ("content_rating", "1", f"{BASE}/content_rating/cs/1.jpg"),
         ("content_rating_other", "", f"{BASE}/content_rating/cs/NR.jpg"),
@@ -99,9 +87,12 @@ def test_hosted_urls_match_the_verified_paths(kind, key, expected):
     assert hosted_poster_url(kind, key) == expected
 
 
-def test_only_chart_keys_are_url_encoded():
-    """Encoding the award year would be harmless; encoding its slash would
-    not, so the encoding is deliberately per-kind rather than blanket."""
+def test_no_key_in_this_table_is_url_encoded():
+    """Encoding the award year would be harmless; encoding its slash would not,
+    so the encoding is deliberately per-kind rather than blanket. ``chart`` was
+    the one kind here that WAS encoded, and roadmap row 252 moved it to
+    ``default_images.FAMILIES``, where ``candidate_urls`` does the encoding --
+    so no key this table builds a path from is encoded any more."""
     assert "%2F" not in hosted_poster_url("award_year", "oscars:2026")
     assert "/winner/2026.jpg" in hosted_poster_url("award_year", "oscars:2026")
 

@@ -14,6 +14,7 @@ import httpx
 import pytest
 from PIL import Image
 
+from autoposter.collections.default_images import default_image_url
 from autoposter.collections.posters import (
     TMDB_PROFILE_KIND,
     _write_and_upload,
@@ -542,7 +543,11 @@ async def test_the_hosted_defaults_are_untouched_by_the_new_branch(
 ):
     """The dispatch is on ``kind``, so every other kind must still reach
     ``hosted_poster_url`` and its ``Default-Images`` URL -- the regression a
-    new branch in front of it could introduce without any test noticing."""
+    new branch in front of it could introduce without any test noticing.
+
+    Driven by ``content_rating`` rather than by the file's ``KIND`` since
+    roadmap row 252: ``chart`` moved to ``default_images.FAMILIES`` and is no
+    longer one of the kinds this test speaks for."""
     config = config_factory(assets_root=str(tmp_path), library_folders=True)
     data = _jpeg_bytes()
     record = await _record(session)
@@ -554,11 +559,11 @@ async def test_the_hosted_defaults_are_untouched_by_the_new_branch(
 
     async with _client(handler) as http:
         await apply_poster(
-            session, http, config, _FakeCollection(), record, LIBRARY, KIND, KEY,
-            dry_run=False,
+            session, http, config, _FakeCollection(), record, LIBRARY,
+            "content_rating", "17", dry_run=False,
         )
 
-    assert fetched == [hosted_poster_url(KIND, KEY)]
+    assert fetched == [hosted_poster_url("content_rating", "17")]
     assert fetched[0].startswith(
         "https://raw.githubusercontent.com/Kometa-Team/Default-Images/master/"
     )
@@ -646,16 +651,48 @@ async def test_a_default_image_that_404s_leaves_the_collection_exactly_as_today(
     assert record.poster_sha256 is None
 
 
-async def test_the_six_original_kinds_are_untouched_by_the_new_branch(
-    tmp_path, config_factory, session
+@pytest.mark.parametrize(
+    "kind,key,expected,caches",
+    [
+        ("award_static", "oscars:best_picture_winner",
+         hosted_poster_url("award_static", "oscars:best_picture_winner"), False),
+        ("award_year", "oscars:2026",
+         hosted_poster_url("award_year", "oscars:2026"), False),
+        ("content_rating", "17", hosted_poster_url("content_rating", "17"), False),
+        ("content_rating_other", "other",
+         hosted_poster_url("content_rating_other", "other"), False),
+        ("separator", "orig:content_rating",
+         hosted_poster_url("separator", "orig:content_rating"), False),
+        (KIND, KEY, default_image_url(KIND, KEY), True),
+        (TMDB_PROFILE_KIND, PROFILE_PATH, PROFILE_URL, False),
+    ],
+)
+async def test_the_seven_poster_kinds_each_take_the_rung_their_kind_names(
+    kind, key, expected, caches, tmp_path, config_factory, session
 ):
-    """`hosted_poster_url`'s table is not extended by this phase, and a chart
-    still goes straight down the old path with no cache file written."""
+    """One case per kind ``apply_poster`` can be called with, and the rung each
+    one takes.
+
+    This was ``test_the_six_original_kinds_are_untouched_by_the_new_branch``,
+    which drove the file's module-level ``KIND = "chart"`` and asserted that a
+    chart went down the ``hosted_poster_url`` path leaving no cache file.
+    Roadmap row 252 makes that assertion false on purpose: ``chart`` is a
+    ``default_images`` family now, so it takes the cached rung and writes under
+    ``.generated/`` like every other family, and ``hosted_poster_url`` answers
+    ``None`` for it. A whole table rather than a re-pointed single case,
+    because the regression the old test guarded -- a new branch in front of the
+    dispatch quietly swallowing a kind -- is a property of the WHOLE dispatch,
+    and with two source rungs plus the TMDb profile CDN there are now three
+    answers a kind can have instead of one.
+
+    The URL each rung produces is asserted against the pure function that owns
+    it, so a change to a path is a change in one place and this test follows
+    it; ``caches`` is the half that tells the rungs apart."""
     config = config_factory(assets_root=str(tmp_path), library_folders=True)
     data = _jpeg_bytes()
     record = await _record(session)
     collection = _FakeCollection()
-    seen = []
+    seen: list[str] = []
 
     async def handler(request):
         seen.append(str(request.url))
@@ -663,9 +700,105 @@ async def test_the_six_original_kinds_are_untouched_by_the_new_branch(
 
     async with _client(handler) as http:
         await apply_poster(
+            session, http, config, collection, record, LIBRARY, kind, key,
+            dry_run=False,
+        )
+
+    assert seen == [expected]
+    assert (tmp_path / ".generated").exists() is caches
+
+
+async def test_a_chart_poster_is_cached_and_the_second_pass_fetches_nothing(
+    tmp_path, config_factory, session
+):
+    """Roadmap row 252, the request it exists to remove. ``chart`` is a
+    ``default_images`` family now, so the image is written under
+    ``.generated/collection-posters/chart/`` on the first pass and READ from
+    there on the second -- where before, every pass that reached the poster
+    block re-downloaded roughly 480 KB from the public Default-Images CDN and
+    only the sha256 compare stopped the re-upload.
+
+    The cache stem is OUR key percent-encoded with nothing safe
+    (``default_images._cache_paths``), which is why the file on disk is
+    ``IMDb%20Top%20250.jpg`` and not ``IMDb Top 250.jpg``."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+    seen: list[str] = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, content=data)
+
+    async with _client(handler) as http:
+        first = await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY,
+            dry_run=False,
+        )
+        second = await apply_poster(
             session, http, config, collection, record, LIBRARY, KIND, KEY,
             dry_run=False,
         )
 
-    assert seen == [hosted_poster_url(KIND, KEY)]
-    assert not (tmp_path / ".generated").exists()
+    assert first == "set the poster for %r from the hosted default image" % TITLE
+    assert second is None, "the bytes were unchanged, so nothing was re-uploaded"
+    assert seen == [default_image_url(KIND, KEY)], "one fetch across two passes"
+    assert collection.uploaded_bytes == [data]
+    assert (
+        tmp_path / ".generated" / "collection-posters" / "chart"
+        / "IMDb%20Top%20250.jpg"
+    ).is_file()
+
+
+async def test_a_chart_miss_writes_the_marker_and_is_not_re_fetched(
+    tmp_path, config_factory, session
+):
+    """The other half of row 252, and the reason ``hosted_poster_url``'s own
+    ``chart`` branch was DELETED rather than left as an unreachable-on-hit
+    fallback: with the kind in ``FAMILIES`` and that branch still present, a
+    proven 404 would be fetched TWICE in a single pass -- once by
+    ``ensure_default_image`` writing the ``.miss`` marker, once by the hosted
+    rung immediately after -- which is the opposite of the request this row
+    removes. So ``seen`` is the assertion that matters: one URL, once, for a
+    miss across two passes.
+
+    The disclosure that comes with it is the twelve other families'
+    disclosure verbatim (``default_images``' module docstring): a PROVEN
+    absence is sticky, and deleting
+    ``<assets_root>/.generated/collection-posters/chart/`` is how it is
+    re-checked. A chart miss is impossible for the eight keys that ship today
+    -- all are upstream's own mapping names and row 146 verified the five TMDb
+    URLs live 200 before the keys were chosen -- so the marker guards a future
+    key, not a live population. Unproven failures (429/5xx/timeout/non-image)
+    write nothing and are retried, which
+    ``test_collection_default_images.py::test_a_transient_failure_leaves_no_marker_and_is_retried``
+    already pins for the family machinery."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    record = await _record(session)
+    collection = _FakeCollection()
+    seen: list[str] = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(404)
+
+    async with _client(handler) as http:
+        first = await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY,
+            dry_run=False,
+        )
+        second = await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY,
+            dry_run=False,
+        )
+
+    assert first == "no poster source for %r" % TITLE
+    assert second == "no poster source for %r" % TITLE
+    assert seen == [default_image_url(KIND, KEY)], "no second fetch, in either pass"
+    assert collection.uploaded_bytes == []
+    assert record.poster_sha256 is None
+    assert (
+        tmp_path / ".generated" / "collection-posters" / "chart"
+        / "IMDb%20Top%20250.miss"
+    ).is_file()

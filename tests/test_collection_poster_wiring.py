@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from autoposter.collections import groups
 from autoposter.collections.buckets import Bucket
+from autoposter.collections.default_images import default_image_url
 from autoposter.collections.lists import _members_hash, reconcile_list_collection
 from autoposter.collections.posters import DEFAULT_IMAGES_BASE, hosted_poster_url
 from autoposter.collections.reconcile import definition_hash, reconcile_content_ratings
@@ -522,7 +523,7 @@ async def test_a_chart_collection_gets_its_chart_poster(session, config_factory,
     collection = section._existing["IMDb Top 250"]
     assert collection.uploaded_bytes == [data]
     assert collection.locks == 1
-    assert seen == [hosted_poster_url("chart", "IMDb Top 250")]
+    assert seen == [default_image_url("chart", "IMDb Top 250")]
 
 
 async def test_an_oscars_year_collection_gets_that_years_poster(session, config_factory, tmp_path):
@@ -688,7 +689,7 @@ async def test_a_tmdb_chart_writes_its_summary_and_fetches_its_poster_once(
     assert collection.summary_set == summary
     assert collection.uploaded_bytes == [data]
     assert collection.locks == 1
-    assert seen == [hosted_poster_url("chart", "TMDb Popular")]
+    assert seen == [default_image_url("chart", "TMDb Popular")]
 
     async with _client(_serving_handler(data, seen)) as http:
         await reconcile_list_collection(

@@ -6,6 +6,7 @@ that file's own section names. Nothing here reaches the network: the fetch
 tests drive ``httpx.MockTransport``.
 """
 import httpx
+import pytest
 
 from autoposter.collections.default_images import (
     FAMILIES,
@@ -340,3 +341,33 @@ def test_the_resolution_keys_are_exactly_the_packs_four_buckets():
     from autoposter.collections.default_images import RESOLUTION_KEYS
 
     assert RESOLUTION_KEYS == frozenset({"4k", "1080", "720", "480"})
+
+
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("IMDb Popular", BASE + "/chart/color/IMDb%20Popular.jpg"),
+        ("IMDb Top 250", BASE + "/chart/color/IMDb%20Top%20250.jpg"),
+        ("IMDb Lowest Rated", BASE + "/chart/color/IMDb%20Lowest%20Rated.jpg"),
+        # Row 146. The five TMDb chart keys Kometa's ``defaults/chart/tmdb.yml``
+        # publishes; each was fetched live (200) before the key was chosen, and
+        # the three charts that are ours are deliberately absent -- a key
+        # nobody upstream maps is a guess whether or not it resolves.
+        ("TMDb Popular", BASE + "/chart/color/TMDb%20Popular.jpg"),
+        ("TMDb Top Rated", BASE + "/chart/color/TMDb%20Top%20Rated.jpg"),
+        ("TMDb Trending", BASE + "/chart/color/TMDb%20Trending.jpg"),
+        ("TMDb Airing Today", BASE + "/chart/color/TMDb%20Airing%20Today.jpg"),
+        ("TMDb On The Air", BASE + "/chart/color/TMDb%20On%20The%20Air.jpg"),
+    ],
+)
+def test_the_chart_family_urls_match_the_verified_paths(key, expected):
+    """Roadmap row 252 moved these eight rows here from
+    ``test_collection_posters.py::test_hosted_urls_match_the_verified_paths``,
+    which is where they were pinned while ``chart`` was a ``hosted_poster_url``
+    kind. The URL is unchanged BY DESIGN -- a `Family` with
+    ``directory="chart/color"`` builds the byte-identical path the deleted
+    branch built, which is what makes the move invisible to every collection
+    that already has its poster. Eight keys, and no more: three
+    ``builders/imdb_chart.CHART_TITLES`` titles and five
+    ``builders/tmdb.CHART_TITLES`` titles."""
+    assert default_image_url("chart", key) == expected

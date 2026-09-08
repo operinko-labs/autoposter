@@ -1,11 +1,12 @@
 """Which upstream default poster, if any, a managed collection carries.
 
-``collections/posters.py`` answers that question for the six kinds this
-service has always known -- awards, charts, content ratings, separators -- from
-a hand-checked table of Kometa's own folder names. This module answers it for
-the families whose members are enumerated rather than curated: one row per
-family we BUILD, naming the ``Kometa-Team/Default-Images`` directory its art
-lives in and the key scheme that directory is named by.
+``collections/posters.py`` answers that question for the five kinds it still
+owns -- awards, content ratings, separators -- from a hand-checked table of
+Kometa's own folder names. ``chart`` was a sixth until roadmap row 252 moved it
+here, where the disk cache it had been doing without already lived. This module
+answers it for the families whose members are enumerated rather than curated:
+one row per family we BUILD, naming the ``Kometa-Team/Default-Images``
+directory its art lives in and the key scheme that directory is named by.
 
 **The table is DATA, and the data was listed rather than recalled.**
 ``.superpowers/sdd/p-defimg-probe.md`` records the live listings -- §1 through
@@ -19,8 +20,8 @@ so a franchise is ``franchise/Jurassic Park.jpg`` and not
 **Four key schemes, and the split is upstream's, not ours.**
 
 - *exact display name* -- ``franchise``, ``genre``, ``studio``, ``country``,
-  ``network``, ``streaming``. Spaces and punctuation are literal in the
-  filename and percent-encoded in the URL.
+  ``network``, ``streaming``, ``chart``. Spaces and punctuation are literal in
+  the filename and percent-encoded in the URL.
 - *lowercase ISO code* -- ``audio_language``, ``subtitle_language``.
 - *number* -- ``decade``, ``year``.
 - *short lowercase code* -- ``universe`` (``mcu``, ``dcu``, ``dca`` ...), and
@@ -29,9 +30,9 @@ so a franchise is ``franchise/Jurassic Park.jpg`` and not
 
 **Two directory shapes, and no code derives one from the other.** Most families
 keep their full posters flat at ``<dir>/<name>.jpg``. Four -- ``network``,
-``country``, ``streaming`` and the already-shipped ``chart`` -- keep nothing at
-their base but an index image, with the full poster under ``<dir>/color/``
-(probe §4, "Pattern B"). Each row spells its directory in full for that reason.
+``country``, ``streaming`` and ``chart`` -- keep nothing at their base but an
+index image, with the full poster under ``<dir>/color/`` (probe §4,
+"Pattern B"). Each row spells its directory in full for that reason.
 ``logos/``, ``overlays/``, ``white/``, ``best/`` and ``standards/`` are never
 read: they are logo cutouts, name-stamped overlays and rendering variants, out
 of scope by the phase's own C1.6, and the probe measured that their casing and
@@ -157,6 +158,22 @@ FAMILIES: dict[str, Family] = {
         "`STREAMING_NAMES` -- because the builder is the generic "
         "`tmdb_discover` and the provider id is the only thing on it that "
         "names the service.",
+    ),
+    "chart": Family(
+        "chart/color", "display name", False,
+        "Probe §4/§6: Pattern B, 591 entries under `chart/color/`. Ours is the "
+        "one family whose keys were already upstream's own mapping names "
+        "before it was a family -- the three `builders/imdb_chart.CHART_TITLES` "
+        "titles and the five `builders/tmdb.CHART_TITLES` ones, each of the "
+        "latter fetched live (200) by row 146 before the key was chosen -- so "
+        "a miss is impossible for everything that ships and the `.miss` marker "
+        "guards a FUTURE key rather than a live population. The URL is "
+        "byte-identical to the one `posters.hosted_poster_url` built until "
+        "roadmap row 252 deleted that branch, because `candidate_urls` "
+        "percent-encodes the key with nothing safe exactly as that branch did; "
+        "the branch went rather than staying as a fallback because with the "
+        "kind here as well, a proven 404 would have been fetched twice per "
+        "pass.",
     ),
     "audio_language": Family(
         "audio_language", "iso code", False,
