@@ -2110,7 +2110,15 @@ class CollectionDefinition(BaseModel):
             raise ValueError(
                 f"'poster_url' is longer than {POSTER_URL_MAX_LENGTH} characters"
             )
-        parsed = urlparse(value)
+        if re.search(r"[\s\x00-\x1f\x7f]", value):
+            raise ValueError(
+                "'poster_url' contains whitespace or control characters; fix "
+                "the pasted value"
+            )
+        try:
+            parsed = urlparse(value)
+        except ValueError as exc:
+            raise ValueError("'poster_url' is not a parsable URL") from exc
         if parsed.scheme not in ("http", "https"):
             raise ValueError("'poster_url' must be an http:// or https:// address")
         if not parsed.hostname:
