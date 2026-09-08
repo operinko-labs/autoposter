@@ -994,6 +994,34 @@ export interface BulkRerenderResponse {
   detail: string;
 }
 
+/** `POST /api/actions/rebuild` -- roadmap row 233's Rebuild action.
+ *
+ * One endpoint, two request shapes: `{row: {item_id, art_kind}, apply: true}`
+ * for the row button, or the same filter fields `BulkRerenderResponse`'s
+ * request carries for the bulk bar. Both answer this.
+ *
+ * `matched` counts render ROWS across the whole request, `selected` counts
+ * the rows in THIS batch (capped by `scheduler.drift_batch_size`), `cleared`
+ * counts the fingerprints this press actually moved to NULL -- a second press
+ * on the same row reports 0, because it is already cleared -- `items` counts
+ * the distinct items behind those rows and `enqueued` counts jobs actually
+ * created, which is fewer whenever the pending dedupe swallowed one.
+ *
+ * `rating_keys` names the Plex items this press queued. It is the only
+ * non-numeric field, and it is deliberate: row 213 permits counts and rating
+ * keys and nothing else, so there is no `detail` sentence here -- the page
+ * writes its own copy from these numbers.
+ */
+export interface RebuildResponse {
+  status: "dry run" | "enqueued" | "complete";
+  matched: number;
+  selected: number;
+  cleared: number;
+  items: number;
+  enqueued: number;
+  rating_keys: string[];
+}
+
 /** `GET /api/actions/backfill` -- the quality backfill's standing progress.
  *
  * Measured over rows that CAN be scored (`status = 'rendered'`) rather than

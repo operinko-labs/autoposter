@@ -34,6 +34,7 @@ import type {
   ItemFiltersResponse,
   QualityBackfillStatus,
   QualityBackfillTrigger,
+  RebuildResponse,
 } from "../api/types";
 import { formatTime } from "../format";
 // The pill and the row-error paragraph are dashboard.css's, exactly as
@@ -101,6 +102,14 @@ export function ActionCenter() {
   const [armed, setArmed] = useState(false);
   const [bulk, setBulk] = useState<BulkRerenderResponse | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  // Its own arm, its own result and its own busy flag rather than a shared
+  // "which bulk action" enum: the two panels are two questions with two
+  // response shapes, and one shared flag would disable the other panel's
+  // button for a request it has nothing to do with.
+  const [armedRebuild, setArmedRebuild] = useState(false);
+  const [rebuildResult, setRebuildResult] = useState<RebuildResponse | null>(null);
+  const [rebuildBusy, setRebuildBusy] = useState(false);
 
   const [coverage, setCoverage] = useState<QualityBackfillStatus | null>(null);
   const [coverageDetail, setCoverageDetail] = useState<string | null>(null);
@@ -228,6 +237,8 @@ export function ActionCenter() {
     setOffset(0);
     setArmed(false);
     setBulk(null);
+    setArmedRebuild(false);
+    setRebuildResult(null);
     setNotice(null);
   }
 
@@ -298,6 +309,64 @@ export function ActionCenter() {
       });
       return null;
     });
+  }
+
+  /** Row 233. Clear this row's fingerprints and queue its item.
+   *
+   * No arm, exactly like Re-search beside it: this is one row the operator
+   * clicked, it removes nothing, and the next render keeps the outgoing
+   * asset as its backup generation -- so the two-step gate the bulk bar needs
+   * would be ceremony here. `apply: true` is sent explicitly because the
+   * endpoint's default is the dry run.
+   */
+  function rebuild(row: ActionRow) {
+    return act(row, async () => {
+      const response = await apiFetch<RebuildResponse>("/api/actions/rebuild", {
+        method: "POST",
+        body: JSON.stringify({
+          row: { item_id: row.item_id, art_kind: row.art_kind },
+          apply: true,
+        }),
+      });
+      if (response.matched === 0) {
+        return `${row.title}: this row is no longer in the queue; nothing was rebuilt.`;
+      }
+      if (response.cleared === 0 && response.enqueued === 0) {
+        return `${row.title}: already queued; nothing new to clear.`;
+      }
+      if (response.enqueued === 0) {
+        return `${row.title}: fingerprint cleared; a pass for this item is already queued.`;
+      }
+      return `${row.title}: fingerprint cleared and the item queued for a rebuild.`;
+    });
+  }
+
+  async function runRebuild(apply: boolean) {
+    setArmedRebuild(false);
+    setRebuildBusy(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = { apply };
+      if (flag !== "") body.flag = flag;
+      if (library !== "") body.library = library;
+      if (artKind !== "") body.art_kind = artKind;
+      if (includeDismissed) body.include_dismissed = true;
+      const response = await apiFetch<RebuildResponse>("/api/actions/rebuild", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (live.current) setRebuildResult(response);
+      if (apply) await load();
+    } catch (caught) {
+      if (live.current) {
+        setError(refusalMessage(caught));
+        // A prior run's result panel would otherwise sit under this error,
+        // directly beneath the button that just failed.
+        setRebuildResult(null);
+      }
+    } finally {
+      if (live.current) setRebuildBusy(false);
+    }
   }
 
   async function runBulk(apply: boolean) {
@@ -474,7 +543,14 @@ export function ActionCenter() {
           ) : (
             /* Arms the gate. It must never post -- see the mutation proof in
                ActionCenter.test.tsx. */
-            <button type="button" disabled={bulkBusy} onClick={() => setArmed(true)}>
+            <button
+              type="button"
+              disabled={bulkBusy}
+              onClick={() => {
+                setArmedRebuild(false);
+                setArmed(true);
+              }}
+            >
               Re-search everything matching
             </button>
           )}
@@ -496,6 +572,97 @@ export function ActionCenter() {
               {bulk.status}
             </span>
             <span>{bulk.detail}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="panel action-bulk">
+        <div className="row-actions">
+          <button type="button" disabled={rebuildBusy} onClick={() => void runRebuild(false)}>
+            Count what a rebuild would clear
+          </button>
+          {armedRebuild ? (
+            <>
+              {/* `alert`, so a screen reader is told the question appeared:
+                  the button label alone does not carry what is about to
+                  happen. */}
+              <span className="action-confirm" role="alert">
+                Clear the fingerprint and re-render every asset matching these filters?
+                Nothing is removed.
+              </span>
+              <button
+                type="button"
+                className="primary"
+                disabled={rebuildBusy}
+                autoFocus
+                onClick={() => void runRebuild(true)}
+              >
+                Yes, rebuild them
+              </button>
+              <button type="button" onClick={() => setArmedRebuild(false)}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            /* Arms the gate. It must never post -- see the mutation proof in
+               ActionCenter.test.tsx. Arming this one disarms the re-search
+               arm above, so there is never a second Cancel on screen. */
+            <button
+              type="button"
+              disabled={rebuildBusy}
+              onClick={() => {
+                setArmed(false);
+                setArmedRebuild(true);
+              }}
+            >
+              Rebuild everything matching
+            </button>
+          )}
+        </div>
+        <p className="muted action-caveat">
+          A rebuild clears the asset&rsquo;s fingerprint and queues its item, so the next pass
+          re-renders it even when the ladder picks the same artwork &mdash; which a re-search
+          alone cannot do. Nothing is unlinked from the asset tree and nothing is removed from
+          Plex: the published file is replaced only when the new render lands, and the
+          outgoing generation is kept as the backup copy.
+        </p>
+        {rebuildResult !== null && (
+          /* `status` rather than `alert`: this is the outcome of something the
+             operator asked for, including "nothing matched". */
+          <div className="action-bulk-result" role="status">
+            {/* The pill follows what this press actually MOVED, not the dry
+                run's preview: `cleared` is now honest even before a press
+                applies anything, so a dry run with cleared > 0 must still
+                read as skipped -- a green pill beside "Nothing was queued"
+                would be the page contradicting its own sentence. */}
+            <span
+              className={`pill ${
+                rebuildResult.status !== "dry run" && rebuildResult.cleared > 0
+                  ? "pill-ok"
+                  : "pill-skipped"
+              }`}
+            >
+              {rebuildResult.status}
+            </span>
+            {/* One template literal rather than interleaved text and
+                expressions: JSX's own whitespace folding across a wrapped
+                line decides whether "covers 2, cleared 0" keeps its comma
+                against the number, and a sentence a test matches by regex
+                must not depend on where the source happens to wrap. A dry
+                run gets its own sentence: `cleared` and `items` are what the
+                endpoint says a rebuild WOULD do, not what this press did, so
+                the past-tense apply template would misreport a press that
+                queued nothing. */}
+            <span>
+              {rebuildResult.status === "dry run"
+                ? `${rebuildResult.matched} row(s) matched; this batch covers ` +
+                  `${rebuildResult.selected}, ${rebuildResult.cleared} of which would ` +
+                  `clear a fingerprint, for ${rebuildResult.items} item(s). ` +
+                  `Nothing was queued.`
+                : `${rebuildResult.matched} row(s) matched; this batch covers ` +
+                  `${rebuildResult.selected}, cleared ${rebuildResult.cleared}, ` +
+                  `queued ${rebuildResult.enqueued} job(s) for ${rebuildResult.items} item(s).`}
+            </span>
           </div>
         )}
       </div>
@@ -551,6 +718,13 @@ export function ActionCenter() {
                           onClick={() => void reSearch(row)}
                         >
                           Re-search
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyKeys.has(rowKey(row))}
+                          onClick={() => void rebuild(row)}
+                        >
+                          Rebuild
                         </button>
                         {/* The picker is row 73's and lives on the item page.
                             A second copy of it inside the queue would be a

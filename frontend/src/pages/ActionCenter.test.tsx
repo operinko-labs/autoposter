@@ -131,6 +131,14 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
     if (path.startsWith("/api/actions/rerender")) {
       return json(overrides.rerender ?? { queued: true, job_id: 12 });
     }
+    if (path.startsWith("/api/actions/rebuild")) {
+      return json(
+        overrides.rebuild ?? {
+          status: "enqueued", matched: 1, selected: 1, cleared: 1,
+          items: 1, enqueued: 1, rating_keys: ["7"],
+        },
+      );
+    }
     if (path.startsWith("/api/actions/dismiss")) {
       if (overrides.dismissRefusal !== undefined) return json(overrides.dismissRefusal, 422);
       return json({ dismissed: true, evidence: "a".repeat(64) });
@@ -613,6 +621,189 @@ describe("ActionCenter", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Yes, queue them" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("rebuilds one row through the rebuild endpoint and re-reads", async () => {
+    // The row press names the row, not a filter: the queue's unit is
+    // (item, art kind), which is what `renders` keys uniquely.
+    const fetchMock = stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Rebuild" })[0]);
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(before + 1));
+    expect(paths(fetchMock)[before]).toBe("/api/actions/rebuild");
+    expect(initOf(fetchMock, before).method).toBe("POST");
+    expect(bodyOf(fetchMock, before)).toEqual({
+      row: { item_id: 7, art_kind: "poster" },
+      apply: true,
+    });
+    // Re-read rather than mutated locally: the rebuild has been QUEUED, not
+    // run, so the server is still the authority on what is flagged.
+    const after = paths(fetchMock).slice(before);
+    expect(after.some((path) => path.startsWith("/api/actions?"))).toBe(true);
+    expect(after.some((path) => path.startsWith("/api/actions/summary"))).toBe(true);
+  });
+
+  it("says nothing was cleared when a row rebuild press is idempotent", async () => {
+    // The endpoint's own idempotence case -- a render already cleared and
+    // queued, so a second press matches the row but clears and queues
+    // nothing (`cleared: 0, enqueued: 0`). The old wording read "fingerprint
+    // cleared" here even though nothing was: the same honesty rule as the
+    // dry-run sentence, but for the row press.
+    const fetchMock = stubFetch({
+      rebuild: {
+        status: "enqueued", matched: 1, selected: 1, cleared: 0,
+        items: 1, enqueued: 0, rating_keys: ["7"],
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Rebuild" })[0]);
+
+    expect(
+      await screen.findByText("Dune: Part Two: already queued; nothing new to clear."),
+    ).toBeInTheDocument();
+    expect(paths(fetchMock).filter((path) => path === "/api/actions/rebuild")).toHaveLength(1);
+  });
+
+  it("counts what a bulk rebuild would clear without clearing anything", async () => {
+    // `cleared` and `items` are the endpoint's honest preview -- one of the
+    // two matched rows already has no fingerprint to clear -- so the
+    // sentence must say what WOULD happen, not repeat the apply-shaped
+    // template with fabricated zeros.
+    const fetchMock = stubFetch({
+      rebuild: {
+        status: "dry run", matched: 2, selected: 2, cleared: 1,
+        items: 2, enqueued: 0, rating_keys: [],
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Count what a rebuild would clear" }));
+
+    const detail = await screen.findByText(/1 of which would clear a fingerprint/);
+    expect(detail).toBeInTheDocument();
+    expect(screen.getByText(/Nothing was queued/)).toBeInTheDocument();
+    expect(bodyOf(fetchMock, before).apply).toBe(false);
+    // Nothing was actually cleared yet, so the pill must not read as a
+    // success -- a green pill beside "Nothing was queued" would be the page
+    // contradicting its own sentence.
+    expect(within(detail.closest(".action-bulk-result") as HTMLElement)
+      .getByText("dry run")).toHaveClass("pill-skipped");
+  });
+
+  it("arming either bulk action disarms the other", async () => {
+    // The two panels share one grant: only one confirm may be on screen at a
+    // time, so arming either one must withdraw the other's.
+    stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+    await screen.findByRole("button", { name: "Yes, queue them" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild everything matching" }));
+
+    expect(await screen.findByRole("button", { name: "Yes, rebuild them" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Yes, queue them" })).not.toBeInTheDocument();
+
+    // And the other direction: cancel the rebuild arm, arm it again, then
+    // arm re-search -- the rebuild confirm must vanish in turn.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild everything matching" }));
+    await screen.findByRole("button", { name: "Yes, rebuild them" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+
+    expect(await screen.findByRole("button", { name: "Yes, queue them" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Yes, rebuild them" })).not.toBeInTheDocument();
+  });
+
+  it("withdraws an armed bulk rebuild and clears its result when a filter changes", async () => {
+    // The grant was for the filters described when it was armed; changing
+    // them changes the request, so `refocus` withdraws it -- the same rule
+    // "disarms the bulk apply when a filter changes" pins for re-search.
+    stubFetch({
+      rebuild: {
+        status: "dry run", matched: 2, selected: 2, cleared: 1,
+        items: 2, enqueued: 0, rating_keys: [],
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getByRole("button", { name: "Count what a rebuild would clear" }));
+    await screen.findByText(/Nothing was queued/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild everything matching" }));
+    await screen.findByRole("button", { name: "Yes, rebuild them" });
+
+    fireEvent.change(screen.getByLabelText("Library"), { target: { value: "Shows" } });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Yes, rebuild them" })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Nothing was queued/)).not.toBeInTheDocument();
+  });
+
+  it("arms the bulk rebuild without posting anything", async () => {
+    // The mutation proof, the same one the re-search arm carries: arming is a
+    // state change and nothing else.
+    const fetchMock = stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild everything matching" }));
+
+    expect(await screen.findByRole("button", { name: "Yes, rebuild them" })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.length).toBe(before);
+    // Only one arm can be open at a time, so there is never a second Cancel
+    // and never two confirm buttons to press by accident.
+    expect(screen.queryByRole("button", { name: "Yes, queue them" })).not.toBeInTheDocument();
+  });
+
+  it("rebuilds everything matching once the arm is confirmed, then re-reads", async () => {
+    const fetchMock = stubFetch({
+      rebuild: {
+        status: "enqueued", matched: 2, selected: 2, cleared: 2,
+        items: 2, enqueued: 2, rating_keys: ["7", "8"],
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild everything matching" }));
+    const before = fetchMock.mock.calls.length;
+
+    fireEvent.click(await screen.findByRole("button", { name: "Yes, rebuild them" }));
+
+    await waitFor(() => expect(screen.getByText(/cleared 2/)).toBeInTheDocument());
+    expect(bodyOf(fetchMock, before).apply).toBe(true);
+    const after = paths(fetchMock).slice(before);
+    expect(after.some((path) => path.startsWith("/api/actions?"))).toBe(true);
+    expect(after.some((path) => path.startsWith("/api/actions/summary"))).toBe(true);
+  });
+
+  it("never offers the retired word the row was filed under", async () => {
+    // Row 233's ruling is that "delete" MEANS rebuild, and nothing here
+    // deletes anything -- so the word is retired from this page's copy. A
+    // button labelled Delete would promise an unlink the endpoint does not do.
+    stubFetch();
+
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    // `queryAll`, not `query`: the singular form THROWS on more than one
+    // match, so a regression that added two Delete labels would fail with
+    // "found multiple elements" rather than with this test's own sentence.
+    expect(screen.queryAllByRole("button", { name: /delete/i })).toHaveLength(0);
+    expect(screen.queryAllByText(/delete/i)).toHaveLength(0);
   });
 
   it("renders an empty state when nothing is flagged", async () => {
