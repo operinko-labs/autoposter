@@ -247,11 +247,23 @@ async def test_an_art_kind_the_item_cannot_have_never_reaches_the_mount(
 
 
 async def test_a_failed_rename_is_503_and_changes_nothing(
-    client, auth_headers, session, manual_root, monkeypatch
+    client, auth_headers, session, manual_root, monkeypatch, caplog
 ):
     """A read-only mount, simulated. Nothing may be cleared or queued: a
     cleared fingerprint with the override still in place re-renders straight
-    back to the override while the UI says it was cleared."""
+    back to the override while the UI says it was cleared.
+
+    Roadmap row 248: the served detail is the FIXED sentence, never the
+    OSError. str(exc) here was "[Errno 30] Read-only file system: '<absolute
+    path on the mount>'" -- an errno and the server's directory layout on a
+    served surface, against row 213's law. The sentence asserted below is
+    byte-identical to the one api/manual.py and api/candidates.py already
+    serve for the same mount and the same OSError, so the three sites agree.
+    The errno and the path are not lost: they stay on the endpoint's WARNING,
+    and the pod log is the trusted sink (row 207) -- pinned below, so a later
+    edit that trims the path or the errno off that WARNING fails here instead
+    of only being noticed by rereading routes.py.
+    """
     item_id = await _item(session)
     override = _plant(manual_root)
 
@@ -260,12 +272,20 @@ async def test_a_failed_rename_is_503_and_changes_nothing(
 
     monkeypatch.setattr(os, "replace", refuse)
 
-    response = await client.post(
-        f"/api/items/{item_id}/renders/poster/clear-override", headers=auth_headers
-    )
+    with caplog.at_level("WARNING"):
+        response = await client.post(
+            f"/api/items/{item_id}/renders/poster/clear-override", headers=auth_headers
+        )
 
     assert response.status_code == 503
-    assert "Read-only file system" in response.json()["detail"]
+    assert response.json()["detail"] == "could not write to the override mount"
+    assert any(
+        str(override) in record.getMessage()
+        and "Read-only file system" in record.getMessage()
+        and record.getMessage() != "could not write to the override mount"
+        for record in caplog.records
+        if record.levelname == "WARNING"
+    )
     assert override.read_bytes() == OVERRIDE_BYTES
     render = (
         await session.execute(select(Render).where(Render.item_id == item_id))

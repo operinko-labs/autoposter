@@ -198,6 +198,36 @@ def test_the_api_dash_key_spelling_is_scrubbed_too():
     assert "api-key=REDACTED" in entry["message"]
 
 
+def test_the_wider_credential_vocabulary_is_scrubbed_too():
+    """Roadmap row 248: the pattern caught api_key/apikey/api-key/token and
+    nothing else, so a query parameter carrying the OTHER half of the
+    credential vocabulary -- secret, password, pass, auth -- was served whole.
+    No shipped provider spells a credential that way (src/ grepped, zero
+    carriers), but an operator's own ``changes_webhook`` or
+    ``notifications.url`` may, so this closes a documented gap rather than a
+    live leak -- the same shape as row 207's api-key spelling above.
+
+    The values below are obviously fake fixtures, never a real credential, and
+    the host is a .test name. What is asserted is whole-message equality, not
+    a substring: the credential goes, the param NAME survives, and the path
+    survives untouched (rows 207/212/214's tradeoff, which this row keeps).
+    """
+    buffer = LogBuffer()
+    for name, value in (
+        ("secret", "NOT-A-REAL-SECRET-248"),
+        ("password", "NOT-A-REAL-PASSWORD-248"),
+        ("pass", "NOT-A-REAL-PASS-248"),
+        ("auth", "NOT-A-REAL-AUTH-248"),
+    ):
+        buffer.emit(record(f"POST https://hooks.example.test/notify?{name}={value} failed"))
+    assert [entry["message"] for entry in buffer.lines()] == [
+        "POST https://REDACTED/notify?secret=REDACTED failed",
+        "POST https://REDACTED/notify?password=REDACTED failed",
+        "POST https://REDACTED/notify?pass=REDACTED failed",
+        "POST https://REDACTED/notify?auth=REDACTED failed",
+    ]
+
+
 def test_a_nested_encoded_url_loses_its_host_and_keeps_its_encoded_path():
     """Roadmap row 212: both patterns were anchored on literal characters an
     encoded URL does not contain, so after row 207's fix the nested CREDENTIAL

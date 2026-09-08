@@ -108,8 +108,12 @@ function CollectionRow({ collection }: { collection: CollectionSummary }) {
       );
     } catch (caught) {
       // Verbatim: a 422 names a bad mount path, a 502 says the URL would not
-      // serve an image, a 503 carries the OS error for the assets mount. This
-      // page is behind require_session.
+      // serve an image, and a 503 is the fixed sentence "could not write to
+      // the assets mount" -- never the OS error. This panel's only call is
+      // POST /api/collections/{id}/poster -> api/manual.py's
+      // install_collection_poster, whose OSError branch always serves that
+      // sentence; roadmap row 248 corrected this comment rather than any
+      // behaviour here. This page is behind require_session.
       setFailure((caught as Error).message);
     } finally {
       setBusy(false);
