@@ -27,8 +27,6 @@ plex:
 
 providers:
   order: [TMDB, TVDB, Fanart]
-  favourite: TMDB
-  tmdb_vote_sorting: vote_average
   cache_ttl_seconds: 86400 # 24 hours; 0 disables response caching
 
 operations:
