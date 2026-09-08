@@ -190,7 +190,9 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
             # has loaded and quietly done nothing since row 87 shipped, and
             # turning a config that boots today into one that refuses to is a
             # deployment risk this row has no mandate to take. The question is
-            # filed beside rows 229/230, which already own that family.
+            # filed beside row 229, which already owns that family; row 230
+            # (the sibling question, for ``reset``) closed as won't-do, and
+            # restore-from-backup is refiled as roadmap row 256 under row 86.
             #
             # INFO, not WARNING (task-2 fix round 1, I-2): this fires once
             # PER ITEM per pass, the same per-item volume as the sibling

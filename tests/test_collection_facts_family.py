@@ -386,8 +386,13 @@ async def test_the_over_cap_refusal_reaches_the_logs_page(session, caplog):
     ]
     assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
     message = warnings[0].getMessage()
-    assert "Movies" in message
-    assert "Countries of origin" in message
+    # The reason string already embeds the library (``%r`` of ``ctx.library``
+    # inside ``why``), so a bare "Movies" in message` substring check passes
+    # even if ``ctx.library`` were dropped from the outer ``%s`` in
+    # ``logger.warning("%s: %r was not built: %s", ...)``. Only the record's
+    # own shape -- library, then ``: ``, then the quoted title -- pins that
+    # argument.
+    assert message.startswith("Movies: 'Countries of origin' was not built:")
     assert "`max_collections` is 3" in message
     note = " ".join(ctx.run_cache.get("facts_family:notes", []))
     assert note == (
