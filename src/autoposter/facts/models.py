@@ -24,6 +24,12 @@ class GatheredFacts:
     # mass-op WRITE values, not badge inputs.
     user_rating: float | None = None
     original_title: str | None = None
+    # Roadmap row 227, under the same rule the two lines above state: a
+    # mass-op WRITE value, derived per pass from a TMDb response the provider
+    # cache already holds (``/movie/{id}/release_dates``), so there is no
+    # ``item_facts`` column for it and no migration. Kometa's
+    # ``mass_added_at_update``, movie libraries only.
+    added_at: date | None = None
     # The three prefetch fields (roadmap rows 189/192). Named OURS, never
     # Kometa's filter names, and enumeration-only: row 156 owns the question of
     # ever making a facts-backed value `filters:`-writable, and it needs a
@@ -60,6 +66,7 @@ class GatheredFacts:
                 self.originally_available,
                 self.user_rating is not None,
                 self.original_title,
+                self.added_at,
                 self.tmdb_origin_country,
                 self.tmdb_original_language,
                 self.tmdb_collection_id is not None,

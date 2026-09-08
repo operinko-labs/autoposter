@@ -7,8 +7,10 @@ import pytest
 
 from conftest import session_factory_for
 from autoposter.facts.tmdb_facts import (
+    TMDB_RELEASE_TYPES,
     TMDBFactsClient,
     parse_movie_facts,
+    parse_release_date,
     parse_season_episode_ratings,
     parse_show_facts,
 )
@@ -461,3 +463,145 @@ def test_a_gather_whose_only_fact_is_a_status_is_not_empty():
     assert parse_show_facts({"status": "Ended"}).is_empty() is False
     assert parse_show_facts({"last_air_date": "2024-05-01"}).is_empty() is False
     assert parse_show_facts({}).is_empty() is True
+
+
+# --- Roadmap row 227: TMDb release dates -----------------------------------
+
+
+def test_the_two_release_types_are_kometas_own_codes():
+    """Transcribed from Kometa's ``modules/operations.py`` at v2.4.8. The four
+    codes this service does not offer are deliberately absent: a source it
+    cannot serve is a config load error, so a map entry no ``Literal`` can
+    reach could only ever be a lie about what loads."""
+    assert TMDB_RELEASE_TYPES == {"tmdb_premiere": 1, "tmdb_digital": 4}
+
+
+def test_the_digital_date_is_the_earliest_across_every_region():
+    """Kometa's rule with no region set: iterate every region, take min().
+    The US type-4 entry here is 2026-05-12 (a 4K re-release of a 1999 film),
+    so a parser that stops at the first region gets this wrong."""
+    payload = load("tmdb_release_dates.json")
+    assert parse_release_date(payload, 4) == date(1999, 12, 1)
+
+
+def test_the_premiere_date_is_the_earliest_across_every_region():
+    payload = load("tmdb_release_dates.json")
+    assert parse_release_date(payload, 1) == date(1999, 9, 21)
+
+
+def test_several_entries_of_one_type_in_one_region_resolve_to_the_earliest():
+    """Measured, not theoretical: the captured response carries three type-5
+    entries for one movie in one country. min() decides the value."""
+    payload = load("tmdb_release_dates.json")
+    assert parse_release_date(payload, 5) == date(2000, 4, 25)
+
+
+def test_a_type_with_no_entry_anywhere_is_none():
+    """Kometa's ``raise Failed``, at this seam: a source that yields nothing
+    writes nothing, and must never yield an empty value instead."""
+    payload = load("tmdb_release_dates.json")
+    assert parse_release_date(payload, 6) is None
+
+
+def test_an_empty_results_list_is_none():
+    assert parse_release_date({"id": 550, "results": []}, 4) is None
+    assert parse_release_date({}, 4) is None
+
+
+def test_the_iso_8601_shape_with_a_time_is_what_is_parsed():
+    """The trap this test exists for: TMDb answers
+    ``"1999-10-15T00:00:00.000Z"``, and ``_as_date`` (strptime "%Y-%m-%d")
+    returns None for it. A build that reuses ``_as_date`` unchanged ships a
+    feature that silently never fires, and a hand-typed "1999-10-15" fixture
+    would not catch it -- so this test asserts BOTH halves."""
+    from autoposter.facts.tmdb_facts import _as_date
+
+    assert _as_date("1999-10-15T00:00:00.000Z") is None
+
+    payload = {"results": [
+        {"iso_3166_1": "US", "release_dates": [
+            {"release_date": "1999-10-15T00:00:00.000Z", "type": 4},
+        ]},
+    ]}
+    assert parse_release_date(payload, 4) == date(1999, 10, 15)
+
+
+def test_a_malformed_release_date_is_ignored_rather_than_raising():
+    payload = {"results": [
+        {"iso_3166_1": "US", "release_dates": [
+            {"release_date": "", "type": 4},
+            {"release_date": "not-a-date", "type": 4},
+            {"release_date": None, "type": 4},
+            {"release_date": "2001-01-05T00:00:00.000Z", "type": 4},
+        ]},
+    ]}
+    assert parse_release_date(payload, 4) == date(2001, 1, 5)
+
+
+def test_a_malformed_results_shape_is_ignored_rather_than_raising():
+    assert parse_release_date({"results": "oops"}, 4) is None
+    assert parse_release_date({"results": ["junk", {"release_dates": "nope"}]}, 4) is None
+
+
+async def test_the_client_requests_the_release_dates_endpoint():
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=load("tmdb_release_dates.json"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = TMDBFactsClient("tok", http)
+        found = await client.release_date(550, "tmdb_digital")
+
+    assert seen["url"] == "https://api.themoviedb.org/3/movie/550/release_dates"
+    assert "append_to_response" not in seen["url"]
+    assert found == date(1999, 12, 1)
+
+
+async def test_the_client_returns_none_on_404():
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(404, json={}))
+    ) as http:
+        found = await TMDBFactsClient("tok", http).release_date(550, "tmdb_premiere")
+    assert found is None
+
+
+async def test_the_release_dates_read_does_not_orphan_the_movie_cache_entry(session):
+    """The single highest-value acceptance line of this task.
+
+    ``build_cache_key`` hashes ``[method, url, params]``, so reaching the
+    release dates by adding ``?append_to_response=release_dates`` to
+    ``/movie/{id}`` would change the movie request's key and orphan every
+    cached movie-facts entry in the table at once -- 25,044 rows on this
+    deployment. This is the same failure ``providers/tmdb.py``'s ``fetch``
+    docstring already records for the artwork client. A separate endpoint is
+    a separate key, and the proof is that the movie read is still served from
+    the cache AFTER the new read has happened.
+    """
+    from autoposter.facts.tmdb_facts import BASE_URL
+    from autoposter.providers.cache import ProviderCache, build_cache_key
+
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if request.url.path.endswith("/release_dates"):
+            return httpx.Response(200, json=load("tmdb_release_dates.json"))
+        return httpx.Response(200, json=load("tmdb_movie.json"))
+
+    cache = ProviderCache(session_factory_for(session))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = TMDBFactsClient("tok", http, cache=cache, cache_ttl_seconds=3600)
+        await client.movie(550)
+        await client.release_date(550, "tmdb_digital")
+        again = await client.movie(550)
+
+    assert calls == [
+        "https://api.themoviedb.org/3/movie/550",
+        "https://api.themoviedb.org/3/movie/550/release_dates",
+    ], "the third read must have been served from the cache, not the api"
+    assert again.originally_available == date(2023, 5, 12)
+    assert build_cache_key("GET", f"{BASE_URL}/movie/550", None) != build_cache_key(
+        "GET", f"{BASE_URL}/movie/550/release_dates", None
+    )

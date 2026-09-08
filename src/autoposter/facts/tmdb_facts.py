@@ -26,6 +26,74 @@ def _as_date(value: object) -> date | None:
         return None
 
 
+# Roadmap row 227. Kometa's own table (``modules/operations.py`` at v2.4.8) is
+# six codes -- premiere 1, theatricallimited 2, theatrical 3, digital 4,
+# physical 5, tv 6. Two are offered here, and the other four are NOT
+# transcribed as dead entries: a source this service cannot serve is a config
+# load error (``config/schema.py``'s ``Literal``), so a map entry no
+# ``Literal`` can reach could only ever be a lie about what loads.
+TMDB_RELEASE_TYPES: dict[str, int] = {
+    "tmdb_premiere": 1,
+    "tmdb_digital": 4,
+}
+
+
+def _release_date(value: object) -> date | None:
+    """TMDb's ``release_date``, which is ISO-8601 WITH a time and a ``Z``.
+
+    Measured rather than assumed: ``/movie/550/release_dates`` answers
+    ``"1999-10-15T00:00:00.000Z"``. ``_as_date`` above is
+    ``strptime(value, "%Y-%m-%d")`` and returns ``None`` for every one of
+    these strings, so reusing it unchanged would ship a feature that silently
+    never fires -- and a hand-typed ``"1999-10-15"`` fixture would pass
+    anyway. The date half is the first ten characters; the time and the zone
+    are dropped rather than parsed, because Kometa compares these at date
+    granularity and so does this project's writer.
+    """
+    if not isinstance(value, str):
+        return None
+    return _as_date(value[:10])
+
+
+def parse_release_date(payload: dict, type_code: int) -> date | None:
+    """The earliest ``type_code`` release date in ANY region, or ``None``.
+
+    Kometa's rule verbatim (``modules/operations.py``'s
+    ``tmdb_release_date``): it consults ``config.TMDb.region`` only when that
+    is set AND the movie carries it, and otherwise iterates every region and
+    takes ``min()``. This project has no TMDb region setting at all, so the
+    faithful port is Kometa's own default path -- all regions, ``min()`` --
+    with no knob and no region parameter. A parameter no caller can ever pass
+    is a config knob wearing a signature's clothes.
+
+    ``min()`` also decides the WITHIN-region case, which is not theoretical:
+    the captured response carries two type-1 entries and three type-5 entries
+    for one movie in one country.
+
+    Nothing matching anywhere is ``None`` -- Kometa's ``raise Failed`` at this
+    seam. A source that yields nothing writes nothing, which is this
+    project's standing rule that a missing value must never be written as an
+    empty one (``facts/models.py:9-11``).
+    """
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return None
+    dates: list[date] = []
+    for country in results:
+        if not isinstance(country, dict):
+            continue
+        entries = country.get("release_dates")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("type") != type_code:
+                continue
+            parsed = _release_date(entry.get("release_date"))
+            if parsed is not None:
+                dates.append(parsed)
+    return min(dates) if dates else None
+
+
 def _rating(payload: dict) -> float | None:
     """``vote_average``, treating 0 as absent.
 
@@ -354,6 +422,28 @@ class TMDBFactsClient:
     async def movie(self, tmdb_id: int) -> GatheredFacts:
         payload = await self._get(f"/movie/{tmdb_id}")
         return parse_movie_facts(payload) if payload else GatheredFacts()
+
+    async def release_date(self, tmdb_id: int, source: str) -> date | None:
+        """The earliest ``source`` release date TMDb has for this movie (row 227).
+
+        Its OWN endpoint, and never ``append_to_response`` on ``/movie/{id}``:
+        ``providers/cache.build_cache_key`` hashes ``[method, url, params]``,
+        so widening the movie request's query string would change that key and
+        orphan every cached movie-facts entry in the table at once -- the same
+        failure ``providers/tmdb.py``'s ``fetch`` docstring already records for
+        the artwork client. A distinct URL is a distinct key and leaves the
+        existing entries alone. It also costs one request only for movies and
+        only when a source is named, where ``append_to_response`` would widen
+        the payload for every movie and every show whether or not the feature
+        is on.
+
+        Through ``_get`` rather than a hand-rolled ``httpx`` call, so this read
+        inherits the bearer header, the shared rate budget, the 429 backoff --
+        and that handler's class-name-only logging, which matters more here
+        than anywhere else: the URL now carries a TMDb id (row 213).
+        """
+        payload = await self._get(f"/movie/{tmdb_id}/release_dates")
+        return parse_release_date(payload, TMDB_RELEASE_TYPES[source]) if payload else None
 
     async def show(self, tmdb_id: int) -> GatheredFacts:
         payload = await self._get(f"/tv/{tmdb_id}")

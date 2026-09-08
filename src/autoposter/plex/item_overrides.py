@@ -88,6 +88,17 @@ RATING_FIELDS = frozenset({"critic_rating", "audience_rating", "user_rating"})
 DATE_FIELDS = frozenset({"originally_available"})
 LIST_FIELDS = frozenset({"genres"})
 
+# Roadmap row 227, option (d): filed, not shipped. ``added_at`` is writable by
+# the provider path and is deliberately NOT offered per item. ``parse_override``
+# below dispatches on the four frozensets above and RAISES for a field in none
+# of them, so advertising it in the served ``writable`` list (api/item_overrides.py:191,
+# which also gates the PUT at :242) would offer a field every value written to
+# it refuses. Opening it later means a ``DATE_FIELDS`` entry, a
+# ``canonical_value`` branch, an ``override_edits`` branch carrying the same
+# epoch conversion ``plan_edits`` does, and the ItemDetail panel -- a decision
+# of its own, not a side effect of adding a provider source.
+OVERRIDE_EXCLUDED_FIELDS = frozenset({"added_at"})
+
 # A cheap ceiling on a text override. Unbounded, an oversized value rides
 # ``writer.py``'s single batched ``item.edit()`` call alongside that item's
 # provider-sourced writes and its row-87 verb edits -- a value Plex refuses on
@@ -113,8 +124,15 @@ def writable_fields(kind: str) -> list[str]:
     operator gets for an unwritable field would then depend on which of them
     the request happened to reach. Intersected with ``_PLEX_FIELD_NAMES``
     because a field with no Plex attribute could be stored and never written.
+
+    ``OVERRIDE_EXCLUDED_FIELDS`` is subtracted last: a field this service
+    writes from a provider but has no per-item shape for would otherwise be
+    advertised here and then refused by ``parse_override``.
     """
-    return sorted(WRITABLE_BY_KIND.get(kind, set()) & set(_PLEX_FIELD_NAMES))
+    return sorted(
+        (WRITABLE_BY_KIND.get(kind, set()) & set(_PLEX_FIELD_NAMES))
+        - OVERRIDE_EXCLUDED_FIELDS
+    )
 
 
 def parse_override(field: str, raw: str) -> object:

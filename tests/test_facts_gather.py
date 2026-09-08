@@ -285,6 +285,54 @@ async def test_mdblist_http_error_does_not_abort_the_other_facts(session):
     assert facts.critic_rating == pytest.approx(4.9)
 
 
+async def test_a_release_dates_5xx_does_not_abort_the_rest_of_the_gather(session, caplog):
+    """Row 227 review finding I1: ``/movie/{id}/release_dates`` is optional
+    and secondary, but until this fix ``gather.py`` caught only
+    ``TmdbRateLimited`` around it -- so a transient 500/502/503 propagated out
+    of ``gather_facts`` and discarded a gather that would otherwise complete
+    entirely from cache plus MDBList, over one optional value. The block
+    above (:162-167, the tvdb precedent) already states the rule in its own
+    words: "one provider's transient failure must not throw away everything
+    else this pass gathered."
+
+    Wired through a REAL ``TMDBFactsClient`` and ``httpx.MockTransport``, not
+    a hand-raised exception, so this proves the fix against what ``_get``
+    actually raises for a non-429 status (an ``httpx.HTTPStatusError``, not
+    ``TmdbRateLimited``).
+    """
+    import json
+
+    from autoposter.facts.tmdb_facts import TMDBFactsClient
+
+    movie_payload = json.loads((FIXTURES / "tmdb_movie.json").read_text(encoding="utf-8"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/release_dates"):
+            return httpx.Response(500, text="tmdb is down")
+        return httpx.Response(200, json=movie_payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        tmdb = TMDBFactsClient("tok", http)
+        operations = OperationsConfig(added_at_source="tmdb_digital")
+        with caplog.at_level(logging.WARNING):
+            facts = await gather_facts(
+                session, item(), tmdb, FakeMDBList(), operations=operations,
+            )
+
+    assert facts.added_at is None
+    assert "added_at" not in facts.sources
+    # The rest of the gather -- read entirely from the SAME mocked movie
+    # endpoint -- survives untouched.
+    assert facts.audience_rating == pytest.approx(6.3)
+    assert facts.genres == ["Horror", "Drama"]
+    assert facts.studio == "First Studio"
+    assert facts.originally_available == date(2023, 5, 12)
+    assert "tmdb release_dates request failed" in caplog.text
+    # Row 213's spirit, one module along: never the URL an httpx error's
+    # str() carries in full.
+    assert "https://" not in caplog.text
+
+
 async def test_updated_at_advances_on_second_persist_facts(session_factory):
     """Verify updated_at is re-stamped on upsert via on_conflict_do_update.
 

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import date, datetime, time
 
 from autoposter.facts.gather import format_audience, format_critic
 from autoposter.facts.models import GatheredFacts
@@ -39,6 +40,11 @@ WRITABLE_BY_KIND: dict[str, set[str]] = {
         # carries originalTitle for movies and not for shows or episodes
         # (plex/client.py:59-61, row 44's finding).
         "user_rating", "original_title",
+        # Roadmap row 227. Movies only -- plexapi puts ``AddedAtMixin`` on all
+        # four Edit mixins, so the limit is KOMETA's, whose own helper refuses
+        # a non-movie library outright. This map is the whole enforcement, the
+        # same shape ``original_title`` above already has.
+        "added_at",
         # Roadmap row 99, override-only.
         "title", "sort_title", "summary", "tagline",
     },
@@ -71,6 +77,7 @@ _PLEX_FIELD_NAMES: dict[str, tuple[str, str]] = {
     "studio": ("studio", "studio"),
     "originally_available": ("originallyAvailableAt", "originallyAvailableAt"),
     "original_title": ("originalTitle", "originalTitle"),
+    "added_at": ("addedAt", "addedAt"),
     "genres": ("genres", "genre"),
     # Roadmap row 99. Each is the same string twice, written out rather than
     # special-cased for the reason the block above states. ``title``'s Plex
@@ -540,6 +547,22 @@ def override_edits(item, overrides: dict) -> dict[str, object]:
     return edits
 
 
+def _added_at_epoch(value: date) -> int:
+    """The unix epoch plexapi's own ``editAddedAt`` would send for this date.
+
+    ``int(round(...))`` on a NAIVE LOCAL midnight, both verbatim from
+    ``plexapi/mixins/edit.py:33-48`` -- and naive-local rather than UTC on
+    purpose, because the READ side is naive-local too: ``plexapi/utils.py``'s
+    ``DATETIME_TIMEZONE`` is ``None``, so ``toDatetime`` hands back a datetime
+    in the runner's own clock (the fact ``collections/engine.py:1310-1329``
+    already records for the ``added`` filter). The two round-trip exactly.
+
+    Verified on the pod at ``TZ=Europe/Helsinki``: 1999-10-15 is 939934800,
+    and ``fromtimestamp(939934800)`` is 1999-10-15T00:00:00.
+    """
+    return int(round(datetime.combine(value, time.min).timestamp()))
+
+
 def plan_edits(
     item, facts: GatheredFacts, operations=None, parental_categories=None,
     overrides=None,
@@ -620,6 +643,42 @@ def plan_edits(
     if "original_title" in writable and facts.original_title:
         if getattr(item, "originalTitle", None) != facts.original_title:
             put("originalTitle", facts.original_title)
+
+    if "added_at" in writable and facts.added_at:
+        # Roadmap row 227. The sibling ``originally_available`` branch above
+        # CANNOT be copied verbatim, and that is the single most important
+        # fact in this row: it writes the "%Y-%m-%d" string, and
+        # ``addedAt.value`` is a unix epoch INT. plexapi's ``AddedAtMixin``
+        # converts a date to ``int(round(datetime.timestamp()))`` before it
+        # ever reaches ``editField`` (``plexapi/mixins/edit.py:33-48``), so a
+        # date string here is a shape plexapi deliberately never sends and
+        # whose acceptance by the server is unverified.
+        #
+        # COMPARED at date granularity all the same -- Kometa's own compare,
+        # and the sibling's. The compare is steady WHILE the container
+        # timezone is unchanged; a timezone change moves local midnight's
+        # epoch and can shift the read-back across a calendar day, which
+        # re-fires the full rewrite once.
+        #
+        # ``_ensure_locked`` on the equal case is deliberately absent: no
+        # provider branch in this function calls it (only ``override_edits``
+        # does, and the genres exception at the bottom is row 246's own
+        # ruling). Matching the siblings keeps this write one-time.
+        formatted = facts.added_at.strftime("%Y-%m-%d")
+        current = getattr(item, "addedAt", None)
+        current_str = current.strftime("%Y-%m-%d") if hasattr(current, "strftime") else current
+        if current_str != formatted:
+            if getattr(operations, "added_at_apply", False):
+                put("addedAt", _added_at_epoch(facts.added_at))
+            else:
+                # Row 213: the item and the field, never the value. The date
+                # IS the content of this operation, so a line carrying it
+                # would put library metadata into the pod log every pass.
+                logger.info(
+                    "plex: would set added_at on %s "
+                    "(operations.added_at_apply is off)",
+                    _item_label(item),
+                )
 
     if "genres" in writable and genres:
         current_genres = _current_genres(item)
