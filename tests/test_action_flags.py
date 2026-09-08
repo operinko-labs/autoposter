@@ -634,9 +634,10 @@ async def test_near_miss_is_off_by_default_and_names_one_integer(session, config
     """Off by default because the population is unmeasured: a library of long
     titles under a tight `max_width` could put thousands of rows on the
     floor, which is the flood argument that already keeps `skipped` and
-    `unknown_provenance` out of the default queue (`flags.py:312-318`,
-    `:437-441`). Non-instant because the column only exists on rows the
-    Action Center phase's write-back has filled -- what `unscored` is for.
+    `unknown_provenance` out of the default queue (`flags.py`'s own
+    `skipped` and `unknown_provenance` registry rows). Non-instant because
+    the column only exists on rows the Action Center phase's write-back has
+    filled -- what `unscored` is for.
 
     The detail sentence names the fitted size and nothing else -- one
     integer, fixed words, never `render.detail`, never a path (roadmap row
@@ -702,7 +703,7 @@ def test_the_near_miss_flag_moves_no_render_version(config):
     config it was handed (normalising a floor, say) would move them.
     """
     # `Render`, `select` and `MediaItem` are already module-level imports in
-    # this file (`:16`, `:19`); re-importing `Render` here would be an F811.
+    # this file (`:15`, `:19`); re-importing `Render` here would be an F811.
     from autoposter.config.loader import RENDER_ART_KINDS, render_version, render_version_for
 
     for art_kind in flags.ART_KINDS:
