@@ -31,7 +31,12 @@ from pydantic import ValidationError
 
 from autoposter.collections.builders import REGISTRY, BuilderContext, SourceClients
 from autoposter.collections.builders.base import LibraryTypeMismatch
-from autoposter.collections.builders.imdb_search import GENRES, SORTS
+from autoposter.collections.builders.imdb_search import (
+    GENRES,
+    SORTS,
+    _LIST_CONSTRAINTS,
+    ImdbSearchParams,
+)
 from autoposter.collections.imdb_graphql import (
     MAX_PAGES,
     PAGE_SIZE,
@@ -969,3 +974,76 @@ async def test_a_bare_string_where_the_list_belongs_is_refused_not_iterated(
     messages = _messages(caught)
     assert any(f"`{param}` {sentence}" in m for m in messages)
     assert not any(value in m for m in messages)
+
+
+# --- fix round 1: non-string elements, country whitespace, the registry -------
+
+
+@pytest.mark.parametrize(
+    "param,value,sentence,forbidden",
+    [
+        # YAML 1.1 makes Norway's `NO` into `False`; the element must be
+        # refused rather than handed to `re.match`/`.strip()`, which raise a
+        # raw TypeError/AttributeError instead of a clean ValidationError.
+        ("country", [False], "takes IMDb's 2-letter country codes", "False"),
+        ("language", [False], "takes IMDb's language codes", "False"),
+        ("keyword", [3], "takes IMDb keyword phrases", "3"),
+        ("country", [["US"]], "takes IMDb's 2-letter country codes", "['US']"),
+    ],
+)
+async def test_a_non_string_element_is_refused_not_matched_or_stripped(
+    param, value, sentence, forbidden
+):
+    """Task 3 review, Important: a non-``str`` element inside an otherwise
+    list-shaped value escaped as a raw traceback rather than a ValidationError,
+    because it reached ``re.match``/``.strip()`` before any type check. Row 213:
+    the family's existing fixed sentence, never the operator's value."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: value})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` {sentence}" in m for m in messages)
+    assert not any(forbidden in m for m in messages)
+
+
+async def test_a_trailing_newline_in_a_country_code_is_stripped_before_matching():
+    """Task 3 review, Minor: `us\\n` (a YAML block scalar) matched
+    `^[A-Za-z]{2}$` because `$` also matches just before a trailing newline --
+    the exact silent-empty failure the module's docstring exists to prevent, so
+    this asserts the exact byte reaching the wire rather than just that the
+    field loads."""
+    assert await _constraints(country_any=["us\n"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_COUNTRY,
+    }
+
+
+def test_the_list_constraints_table_matches_the_family_params_on_the_model():
+    """Task 3 review, Minor: the table was never checked against the model or
+    against what the parametrised family tests above cover, so a typo'd row
+    would stay invisible until ``search_constraints``'s ``getattr`` raised at
+    build time for every collection using that family."""
+    table_params = {row[0] for row in _LIST_CONSTRAINTS}
+    assert table_params <= set(ImdbSearchParams.model_fields)
+    family_params = {
+        name
+        for name in ImdbSearchParams.model_fields
+        if name.startswith(("country", "language", "keyword"))
+    }
+    assert table_params == family_params
+
+
+async def test_two_params_in_the_same_family_are_merged_not_overwritten():
+    """Task 3 review, mutation gap: replacing the ``setdefault`` merge in
+    ``search_constraints`` with a plain overwrite (``constraints[obj] = ...``)
+    passes every other test in this file -- none of them writes two params of
+    the SAME family together, only across families -- and would silently drop
+    ``allCountries`` whenever ``country`` and ``country_not`` are both
+    written."""
+    assert await _constraints(country=["us"], country_not=["gb"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "originCountryConstraint": {
+            "allCountries": ["US"],
+            "excludeCountries": ["GB"],
+        },
+    }

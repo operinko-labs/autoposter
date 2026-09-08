@@ -165,9 +165,7 @@ _CONTENT_RATING_REGION = (
     "'remove every member'."
 )
 
-_REGION_CODE = re.compile(r"^[A-Za-z]{2}$")
-
-_COUNTRY_CODE = re.compile(r"^[A-Za-z]{2}$")
+_COUNTRY_CODE = re.compile(r"^[A-Za-z]{2}\Z")
 
 # The list-valued families' dispatch table: one row per operator key, in the
 # document's §2 order within each family. ``(param, constraint object, GraphQL
@@ -361,7 +359,7 @@ class ImdbSearchParams(BaseModel):
             if not isinstance(rating, str) or not rating.strip():
                 raise ValueError(_CONTENT_RATING_NEEDS_RATING)
             region = entry.get("region", _DEFAULT_REGION)
-            if not isinstance(region, str) or not _REGION_CODE.match(region):
+            if not isinstance(region, str) or not _COUNTRY_CODE.match(region):
                 raise ValueError(_CONTENT_RATING_REGION)
             certificates.append({"region": region.upper(), "rating": rating.strip()})
         return certificates
@@ -383,17 +381,21 @@ class ImdbSearchParams(BaseModel):
                 "it does not know with an empty result rather than an error, "
                 "so this is refused at load instead."
             )
+        not_two_letters = (
+            f"`{info.field_name}` takes IMDb's 2-letter country codes "
+            "(`US`, `GB`, `JP`) and one of the values written here is "
+            "not two letters. IMDb answers a code it does not know with "
+            "an empty result rather than an error, so this is refused "
+            "at load instead."
+        )
         codes = []
         for code in value:
-            if not _COUNTRY_CODE.match(code):
-                raise ValueError(
-                    f"`{info.field_name}` takes IMDb's 2-letter country codes "
-                    "(`US`, `GB`, `JP`) and one of the values written here is "
-                    "not two letters. IMDb answers a code it does not know with "
-                    "an empty result rather than an error, so this is refused "
-                    "at load instead."
-                )
-            codes.append(code.upper())
+            if not isinstance(code, str):
+                raise ValueError(not_two_letters)
+            stripped = code.strip()
+            if not _COUNTRY_CODE.match(stripped):
+                raise ValueError(not_two_letters)
+            codes.append(stripped.upper())
         return codes
 
     @field_validator(
@@ -411,17 +413,20 @@ class ImdbSearchParams(BaseModel):
                 "than an error, so a value that cannot be one is refused at "
                 "load."
             )
+        blank = (
+            f"`{info.field_name}` takes IMDb's language codes (`en`, "
+            "`fr`, `ja`) and one of the values written here is blank. "
+            "IMDb pins no language vocabulary and answers a code it "
+            "does not know with an empty result rather than an error, "
+            "so a value that cannot be one is refused at load."
+        )
         languages = []
         for language in value:
+            if not isinstance(language, str):
+                raise ValueError(blank)
             folded = language.strip().casefold()
             if not folded:
-                raise ValueError(
-                    f"`{info.field_name}` takes IMDb's language codes (`en`, "
-                    "`fr`, `ja`) and one of the values written here is blank. "
-                    "IMDb pins no language vocabulary and answers a code it "
-                    "does not know with an empty result rather than an error, "
-                    "so a value that cannot be one is refused at load."
-                )
+                raise ValueError(blank)
             languages.append(folded)
         return languages
 
@@ -436,16 +441,19 @@ class ImdbSearchParams(BaseModel):
                 "not a single value typed alone. Spaces are rewritten to "
                 "hyphens; a bare string here is not a list of keywords."
             )
+        blank = (
+            f"`{info.field_name}` takes IMDb keyword phrases "
+            "(`time-travel`, `heist`) and one of the values written "
+            "here is blank. Spaces are rewritten to hyphens; a blank is "
+            "not a keyword IMDb can match."
+        )
         keywords = []
         for keyword in value:
+            if not isinstance(keyword, str):
+                raise ValueError(blank)
             folded = keyword.strip().casefold().replace(" ", "-")
             if not folded:
-                raise ValueError(
-                    f"`{info.field_name}` takes IMDb keyword phrases "
-                    "(`time-travel`, `heist`) and one of the values written "
-                    "here is blank. Spaces are rewritten to hyphens; a blank is "
-                    "not a keyword IMDb can match."
-                )
+                raise ValueError(blank)
             keywords.append(folded)
         return keywords
 
