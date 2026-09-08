@@ -51,10 +51,12 @@ THE_OTHER_THREE_VERSIONS = {
     "title_card": "84750d93008ca70b",
 }
 
-# The WHOLESALE hash -- config.version -- as it stood before the key existed,
-# from the same measurement. Pinned so the disclosure is proven rather than
-# asserted: the claim the PR body and deploy/README.md make is that the SCHEMA
-# ADDITION moved this value, and only a pre-change literal can show that.
+# The WHOLESALE hash -- config.version -- as it stood before row 78's
+# show_title key existed. Untouched by the 2026-09-08 row-219 re-measurement
+# above: it is a genuine pre-row-78 value from a different, earlier
+# measurement. Pinned so the disclosure is proven rather than asserted: the
+# claim the PR body and deploy/README.md make is that the SCHEMA ADDITION
+# moved this value, and only a pre-change literal can show that.
 PRE_ROW_78_WHOLESALE = "d66ab041c795004a"
 
 
@@ -139,14 +141,16 @@ def test_the_example_config_ships_the_upstream_values_with_the_gate_off():
 
 
 def test_only_the_season_posters_version_moves(config):
-    """The storm proof (facts C2), against literals measured before the key
-    existed.
+    """The storm proof (facts C2), against the other three kinds' render
+    versions.
 
     Roadmap row 111 confines a render version to the art kind whose settings
     the edit touched. ``artwork.season_poster.show_title`` is a member of
     exactly one kind's payload, so exactly one kind's version may move. The
-    three digests below are what ``origin/main`` produced for the shipped
-    example config before this row; they must still be produced now.
+    three digests below were re-measured on 2026-09-08, after roadmap row 219
+    removed ``min_width``/``min_height`` from ``ArtKindConfig`` (see the
+    module docstring); this test still proves that only the season-posters
+    version moves when a season-only key changes.
     """
     for art_kind, digest in THE_OTHER_THREE_VERSIONS.items():
         assert render_version_for(art_kind, config) == digest, (
