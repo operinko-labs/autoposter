@@ -493,8 +493,10 @@ def test_aspect_is_not_searchable_and_the_refusal_says_where_it_lives():
 def test_every_operator_maps_onto_plexapis_own_operator_table():
     """9b translates this vocabulary into a Plex search rather than reinventing
     it, so every operator names the ``plexapi.base.OPERATORS`` key it means --
-    or ``None``, explicitly, for the ones plexapi has no equivalent for. This
-    is the only test in the file that imports plexapi; the model never does."""
+    or ``None``, explicitly, where plexapi has no single equivalent: no
+    equivalent at all, or (roadmap row 157's ``("date", "to")``) one whose
+    answer depends on the ROW rather than the operator alone. This is the only
+    test in the file that imports plexapi; the model never does."""
     from plexapi.base import OPERATORS
 
     pairs = {(t, op) for t, ops in OPERATORS_BY_TYPE.items() for op in ops}

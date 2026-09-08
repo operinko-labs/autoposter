@@ -365,11 +365,12 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_moment_field():
     moment field, by up to 24 hours -- the client compares against ``now`` (a
     moment, time of day included) while the wire compares against
     ``now.date()`` (that day's midnight). Amendment 1 happens to make ``.to:
-    today`` AGREE (both halves land on the same calendar day), which is what
-    this test exercises; the surviving asymmetry is on ``.from`` and is
-    inherited from the pre-existing ``_Today`` convention (``.after: today``
-    has the same split) -- out of scope for roadmap row 157 (review
-    Important 3).
+    today`` AGREE (both halves land on the same calendar day); this test
+    itself exercises a literal date, ``A = 2026-01-10``, never ``today``, so
+    that agreement is asserted here in prose, not by an assertion. The
+    surviving asymmetry is on ``.from`` and is inherited from the
+    pre-existing ``_Today`` convention (``.after: today`` has the same
+    split) -- out of scope for roadmap row 157 (review Important 3).
     """
     at_midnight = {"added": dt.datetime(2026, 1, 10, 0, 0)}
     during_the_day = {"added": dt.datetime(2026, 1, 10, 9, 15)}

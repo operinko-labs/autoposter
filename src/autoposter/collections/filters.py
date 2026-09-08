@@ -18,8 +18,9 @@ work -- a note on every non-obvious cell. Everything else is generated from or
 checked against it: the operator set of a row is its *type's* operator set
 (``FilterAttribute.operators``), the parser's vocabulary is ``BY_NAME``, and
 ``PLEXAPI_EQUIVALENT`` states, per operator, the ``plexapi.base.OPERATORS`` key
-9b will translate into -- or ``None``, explicitly, where plexapi has no
-equivalent.
+9b will translate into -- or ``None``, explicitly, where plexapi has no single
+equivalent: no equivalent at all, or (roadmap row 157's ``("date", "to")``) one
+whose answer depends on the ROW rather than the operator alone.
 
 **Where the table came from.** Kometa publishes no machine-readable filter
 schema, so the rows are *transcribed* from its documented filter semantics.
@@ -606,9 +607,12 @@ RELATIVE_UNITS: dict[str, str] = {
 # ``"ne"`` -- plexapi's own negation key, which happens to exist, but is not
 # the *positive counterpart's* key the stated convention promises. Fixed to
 # ``"exact"``, matching each type's ``eq`` row, the same as every other
-# negative operator in this table already did.) The two ``None`` entries are
-# the deliberate gap: "in the last N days" is a relative window and every entry
-# in plexapi's table is an absolute comparison.
+# negative operator in this table already did.) Two ``None`` entries are the
+# deliberate gap: "in the last N days" is a relative window and every entry in
+# plexapi's table is an absolute comparison. A third, roadmap row 157's
+# ``("date", "to")``, is a different kind of gap -- it has TWO plexapi
+# equivalents, not none, and which one applies depends on the ROW; see that
+# entry's own comment below.
 PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
     ("tag", "eq"): "iexact",
     ("tag", "not"): "iexact",
@@ -2509,9 +2513,11 @@ class RelativeWindow:
     nothing to hand a unit to. A search has a server, and Plex takes the unit
     natively -- Kometa sends ``f"{count}{unit}"`` (builder.py:4446-4452) with
     the unit taken from the value's last character. This is the narrowing of
-    9a's two ``PLEXAPI_EQUIVALENT`` ``None``s that the roadmap's Notes-for-9b
-    item 2 predicted: those two entries mean "plexapi's CLIENT-side table has
-    no key", not "Plex cannot do this".
+    9a's ORIGINAL two ``PLEXAPI_EQUIVALENT`` ``None``s -- ``("date", "eq")``
+    and ``("date", "not")``, not roadmap row 157's later third,
+    ``("date", "to")`` -- that the roadmap's Notes-for-9b item 2 predicted:
+    those two entries mean "plexapi's CLIENT-side table has no key", not
+    "Plex cannot do this".
 
     ``unit`` is a key of ``RELATIVE_UNITS``. Note ``o`` is months and ``m`` is
     minutes; the renderer rewrites ``o`` to ``mon`` on the wire
