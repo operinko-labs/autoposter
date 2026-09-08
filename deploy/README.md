@@ -1107,6 +1107,49 @@ date — replacing Kometa's `mass_*_update`):
   refresh entirely, for operators who prefer to run it by hand.
 - `imdb_miss_refresh_minutes` (default `60`) — rate limit for the
   miss-triggered refresh described below. `0` disables it.
+- `added_at_source` (default unset) and `added_at_apply` (default `false`) —
+  Kometa's `mass_added_at_update`. `added_at_source` names which TMDb release
+  date is written to Plex's "added at" date: `tmdb_digital` (TMDb release type
+  4) or `tmdb_premiere` (type 1). Unset makes no request at all.
+  `added_at_apply` gates the write; off reports which items would change and
+  writes nothing. **Movie libraries only**, as Kometa has it — naming the
+  source on a show library logs one line and is otherwise ignored.
+
+  Three things to know before turning both on.
+
+  **It reorders Recently Added.** `addedAt` is the key for Plex's own
+  *Recently Added* hubs, and it is a user-visible sort no other operation in
+  this service touches. The first pass rewrites it once per movie whose TMDb
+  date differs from Plex's; from the second pass onwards the compare finds
+  nothing to do and nothing is written.
+
+  **It is one-way through this service's own surfaces.** Nothing here records
+  the overwritten value at write time, and there is no `reset` verb. The one
+  real undo is the metadata backup (`operations.metadata_backup_enabled`),
+  which picks `added_at` up automatically — so take a backup *before* the
+  first apply pass if you want one.
+
+  **The date can move forward.** TMDb's digital entry for an old film is often
+  a modern re-release: Fight Club's US type-4 entry is a 2026 4K remaster of a
+  1999 film. Taking the earliest date across every region mitigates this but
+  does not eliminate it, so a decades-old film can land at the top of Recently
+  Added.
+
+  **Divergence from Kometa: none beyond the absent region knob.** Kometa has
+  a `tmdb.region` setting and consults it first, falling back to the earliest
+  date across every region when it is unset or the movie does not carry that
+  region — and that fallback is Kometa's own DEFAULT path, since `tmdb.region`
+  ships unset. This service has no TMDb region setting at all, so it always
+  takes that same fallback path; a Kometa deployment that never pinned a
+  region behaves identically. The one real gap is the knob itself: an
+  operator who wants Kometa's other path — a specific pinned region — has no
+  way to ask for it here. Everything else is Kometa's rule verbatim: the same
+  two type codes, the same `min()` when one region carries several entries of
+  a type, and the same "a source that yields nothing writes nothing". Kometa's
+  third source — an explicit `YYYY-MM-DD` — is not offered here either,
+  because a fixed date is a per-item value and this service's home for those
+  is the per-item override panel; `added_at` is deliberately not in that
+  panel yet.
 - `tmdb_backoff_seconds` (default `60`) — how long TMDb is left alone after
   it answers `429` without a usable `Retry-After`. `0` disables the shared
   window entirely, restoring the behaviour before it existed: each `429` is

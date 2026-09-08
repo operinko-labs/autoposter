@@ -71,6 +71,17 @@ operations:
   # parental_labels_enabled: false
   # parental_labels_apply: false
   # parental_labels_include_none: false
+  # Roadmap row 227 -- which TMDb release date is written to Plex's "added
+  # at" date. 'tmdb_digital' (the digital release) or 'tmdb_premiere' (the
+  # premiere), taking the EARLIEST matching date across every region, which
+  # is Kometa's own rule with no region set -- this service has no TMDb
+  # region setting, so there is nothing to configure. Movie libraries only.
+  # Two flags, like row 85: naming the source gates the fetch, `apply` gates
+  # the write. `apply` is off by default and deliberately so -- writing this
+  # field reorders the library's Recently Added shelf for every movie it
+  # touches, and turning the flag back off does not put the old dates back.
+  # added_at_source: tmdb_digital
+  # added_at_apply: false
   # Roadmap row 99 -- per-item metadata overrides, declared one item at a time
   # from the item page. Off leaves any stored overrides in place and ignored
   # (the panel goes read-only), so turning this back on restores them.
