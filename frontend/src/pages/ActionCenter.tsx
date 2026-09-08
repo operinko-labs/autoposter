@@ -627,22 +627,38 @@ export function ActionCenter() {
           /* `status` rather than `alert`: this is the outcome of something the
              operator asked for, including "nothing matched". */
           <div className="action-bulk-result" role="status">
-            {/* The pill follows what this press actually MOVED. A batch whose
-                rows were already cleared answers "enqueued" with cleared 0,
-                and a green pill beside "cleared 0" would be the page
-                contradicting the sentence next to it. */}
-            <span className={`pill ${rebuildResult.cleared > 0 ? "pill-ok" : "pill-skipped"}`}>
+            {/* The pill follows what this press actually MOVED, not the dry
+                run's preview: `cleared` is now honest even before a press
+                applies anything, so a dry run with cleared > 0 must still
+                read as skipped -- a green pill beside "Nothing was queued"
+                would be the page contradicting its own sentence. */}
+            <span
+              className={`pill ${
+                rebuildResult.status !== "dry run" && rebuildResult.cleared > 0
+                  ? "pill-ok"
+                  : "pill-skipped"
+              }`}
+            >
               {rebuildResult.status}
             </span>
             {/* One template literal rather than interleaved text and
                 expressions: JSX's own whitespace folding across a wrapped
                 line decides whether "covers 2, cleared 0" keeps its comma
                 against the number, and a sentence a test matches by regex
-                must not depend on where the source happens to wrap. */}
+                must not depend on where the source happens to wrap. A dry
+                run gets its own sentence: `cleared` and `items` are what the
+                endpoint says a rebuild WOULD do, not what this press did, so
+                the past-tense apply template would misreport a press that
+                queued nothing. */}
             <span>
-              {`${rebuildResult.matched} row(s) matched; this batch covers ` +
-                `${rebuildResult.selected}, cleared ${rebuildResult.cleared}, ` +
-                `queued ${rebuildResult.enqueued} job(s) for ${rebuildResult.items} item(s).`}
+              {rebuildResult.status === "dry run"
+                ? `${rebuildResult.matched} row(s) matched; this batch covers ` +
+                  `${rebuildResult.selected}, ${rebuildResult.cleared} of which would ` +
+                  `clear a fingerprint, for ${rebuildResult.items} item(s). ` +
+                  `Nothing was queued.`
+                : `${rebuildResult.matched} row(s) matched; this batch covers ` +
+                  `${rebuildResult.selected}, cleared ${rebuildResult.cleared}, ` +
+                  `queued ${rebuildResult.enqueued} job(s) for ${rebuildResult.items} item(s).`}
             </span>
           </div>
         )}

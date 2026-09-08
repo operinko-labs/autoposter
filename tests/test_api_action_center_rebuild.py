@@ -183,11 +183,17 @@ async def test_a_rebuild_of_a_row_that_is_gone_matches_nothing_and_says_complete
 
 
 async def test_the_bulk_dry_run_counts_and_writes_nothing(client, auth_headers, session):
-    """The unguarded offer: it clears nothing, queues nothing and logs
-    nothing, so it needs no arm."""
-    _, first = await _seed(session, rating_key="1")
-    _, second = await _seed(session, rating_key="2")
-    first_id, second_id = first.id, second.id
+    """The unguarded offer: it answers what a rebuild WOULD do -- `cleared`
+    and `items` counted honestly, the same split `bulk_rerender_action`'s
+    dry run keeps between `items` (honest) and `enqueued` (a write count) --
+    while it clears nothing, queues nothing and logs nothing, so it needs no
+    arm. One row already has no fingerprint to clear, so `cleared` (1) is
+    distinguishable from `selected` (2) rather than a tautology."""
+    _, already_clear = await _seed(
+        session, rating_key="1", fingerprint=None, badge_fingerprint=None
+    )
+    _, still_set = await _seed(session, rating_key="2")
+    already_clear_id, still_set_id = already_clear.id, still_set.id
 
     body = (
         await client.post("/api/actions/rebuild", headers=auth_headers, json={"apply": False})
@@ -196,10 +202,11 @@ async def test_the_bulk_dry_run_counts_and_writes_nothing(client, auth_headers, 
     assert body["status"] == "dry run"
     assert body["matched"] == 2
     assert body["selected"] == 2
-    assert body["cleared"] == 0
+    assert body["cleared"] == 1
+    assert body["items"] == 2
     assert body["enqueued"] == 0
-    assert await _fingerprints_of(session, first_id) == ("1" * 64, "1" * 64)
-    assert await _fingerprints_of(session, second_id) == ("2" * 64, "2" * 64)
+    assert await _fingerprints_of(session, already_clear_id) == (None, None)
+    assert await _fingerprints_of(session, still_set_id) == ("2" * 64, "2" * 64)
     assert (await session.execute(select(Job))).scalars().all() == []
     assert (await session.execute(select(EventLog))).scalars().all() == []
 

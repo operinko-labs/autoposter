@@ -727,13 +727,24 @@ async def rebuild_action(
         if not body.apply:
             # Returned BEFORE any assignment below: a dry run that had already
             # NULLed the ORM objects would clear a batch's worth on whatever
-            # flush this session made next.
+            # flush this session made next. `cleared` and `items` still
+            # answer the button's own question -- what a rebuild WOULD do --
+            # read-only, the same split `bulk_rerender_action`'s dry run
+            # keeps between `items` (honest) and `enqueued` (a write count
+            # that stays zero because nothing was queued).
+            preview_item_ids: list[int] = []
+            would_clear = 0
+            for render in batch:
+                if render.fingerprint is not None or render.badge_fingerprint is not None:
+                    would_clear += 1
+                if render.item_id not in preview_item_ids:
+                    preview_item_ids.append(render.item_id)
             return {
                 "status": "dry run",
                 "matched": matched,
                 "selected": len(batch),
-                "cleared": 0,
-                "items": 0,
+                "cleared": would_clear,
+                "items": len(preview_item_ids),
                 "enqueued": 0,
                 "rating_keys": [],
             }

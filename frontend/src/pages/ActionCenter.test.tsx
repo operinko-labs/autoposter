@@ -648,10 +648,14 @@ describe("ActionCenter", () => {
   });
 
   it("counts what a bulk rebuild would clear without clearing anything", async () => {
+    // `cleared` and `items` are the endpoint's honest preview -- one of the
+    // two matched rows already has no fingerprint to clear -- so the
+    // sentence must say what WOULD happen, not repeat the apply-shaped
+    // template with fabricated zeros.
     const fetchMock = stubFetch({
       rebuild: {
-        status: "dry run", matched: 2, selected: 2, cleared: 0,
-        items: 0, enqueued: 0, rating_keys: [],
+        status: "dry run", matched: 2, selected: 2, cleared: 1,
+        items: 2, enqueued: 0, rating_keys: [],
       },
     });
     renderPage();
@@ -660,8 +664,69 @@ describe("ActionCenter", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Count what a rebuild would clear" }));
 
-    expect(await screen.findByText(/cleared 0/)).toBeInTheDocument();
+    const detail = await screen.findByText(/1 of which would clear a fingerprint/);
+    expect(detail).toBeInTheDocument();
+    expect(screen.getByText(/Nothing was queued/)).toBeInTheDocument();
     expect(bodyOf(fetchMock, before).apply).toBe(false);
+    // Nothing was actually cleared yet, so the pill must not read as a
+    // success -- a green pill beside "Nothing was queued" would be the page
+    // contradicting its own sentence.
+    expect(within(detail.closest(".action-bulk-result") as HTMLElement)
+      .getByText("dry run")).toHaveClass("pill-skipped");
+  });
+
+  it("arming either bulk action disarms the other", async () => {
+    // The two panels share one grant: only one confirm may be on screen at a
+    // time, so arming either one must withdraw the other's.
+    stubFetch();
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+    await screen.findByRole("button", { name: "Yes, queue them" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild everything matching" }));
+
+    expect(await screen.findByRole("button", { name: "Yes, rebuild them" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Yes, queue them" })).not.toBeInTheDocument();
+
+    // And the other direction: cancel the rebuild arm, arm it again, then
+    // arm re-search -- the rebuild confirm must vanish in turn.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild everything matching" }));
+    await screen.findByRole("button", { name: "Yes, rebuild them" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-search everything matching" }));
+
+    expect(await screen.findByRole("button", { name: "Yes, queue them" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Yes, rebuild them" })).not.toBeInTheDocument();
+  });
+
+  it("withdraws an armed bulk rebuild and clears its result when a filter changes", async () => {
+    // The grant was for the filters described when it was armed; changing
+    // them changes the request, so `refocus` withdraws it -- the same rule
+    // "disarms the bulk apply when a filter changes" pins for re-search.
+    stubFetch({
+      rebuild: {
+        status: "dry run", matched: 2, selected: 2, cleared: 1,
+        items: 2, enqueued: 0, rating_keys: [],
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getByRole("button", { name: "Count what a rebuild would clear" }));
+    await screen.findByText(/Nothing was queued/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Rebuild everything matching" }));
+    await screen.findByRole("button", { name: "Yes, rebuild them" });
+
+    fireEvent.change(screen.getByLabelText("Library"), { target: { value: "Shows" } });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Yes, rebuild them" })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Nothing was queued/)).not.toBeInTheDocument();
   });
 
   it("arms the bulk rebuild without posting anything", async () => {
