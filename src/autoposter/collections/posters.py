@@ -40,6 +40,7 @@ from autoposter.collections.poster_title import (
 )
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection
+from autoposter.net.guard import BodyRefused, FetchRefused, guarded_download
 from autoposter.providers.tmdb import IMAGE_BASE
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,23 @@ TMDB_PROFILE_KIND = "tmdb_profile"
 # so the producer below and the row-105 composite cannot drift into two
 # spellings of one string.
 SEPARATOR_KIND = "separator"
+
+# Roadmap row 222. The one fixed phrase the definition's own poster URL is ever
+# reported as. NEVER the URL: it is an operator's own string, it can carry
+# ``user:password@`` userinfo, a signed query parameter or the name of an
+# internal host, and this value is interpolated into ``apply_poster``'s return
+# string, which ``collections/service.py`` serves and logs.
+DEFINITION_POSTER_SOURCE = "the definition's poster URL"
+
+# What that rung is allowed to fetch, and how much of it. The same values and
+# the same reasoning as ``api/candidates.PICK_MAX_BYTES`` /
+# ``PICK_CONTENT_TYPES``: far above any real poster, low enough that a body
+# which simply never stops arriving is refused rather than kept. Declared here
+# rather than imported because nothing under ``collections/`` imports
+# ``api/``, and this rung must not be the first to -- the same argument
+# ``render/artwork_fetch.RENDER_MAX_BYTES`` records for its own copy.
+DEFINITION_POSTER_MAX_BYTES = 50 * 1024 * 1024
+DEFINITION_POSTER_CONTENT_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 
 _LOCAL_EXTENSIONS = ("jpg", "jpeg", "png", "webp")
 
@@ -358,6 +376,57 @@ async def fetch_poster(http: httpx.AsyncClient, url: str) -> bytes | None:
     return data
 
 
+async def download_definition_poster(http: httpx.AsyncClient, url: str) -> bytes:
+    """Fetch a definition's ``poster_url`` through the SSRF guard.
+
+    Deliberately NOT ``fetch_poster`` above, and this is roadmap row 222's
+    security decision rather than a style one. That function is a bare
+    ``http.get`` on the shared client with no scheme allowlist, no address
+    check and no redirect control. It is safe today only because every URL it
+    has ever been handed was built by this repository from
+    ``DEFAULT_IMAGES_BASE``, ``providers.tmdb.IMAGE_BASE`` or
+    ``default_images.candidate_urls`` -- ``net/guard.py`` names this module by
+    name as a reason it passes ``follow_redirects=False`` per request instead
+    of configuring the shared client's defaults. A ``poster_url`` is the first
+    operator-typed string this module has ever fetched, so it goes through
+    ``guarded_download`` like every other operator-supplied source
+    (``api/manual.py``'s ``_staged_source``, ``overlays/sources.py``'s image
+    cache), inheriting the guard's two documented residuals -- DNS rebinding,
+    and NAT64/6to4 literals -- unchanged and unre-litigated.
+
+    The bytes are then put through ``_is_image``, which is both the gate every
+    other rung in this module passes and the same class of check
+    ``api/manual.py::install_collection_poster`` gets from
+    ``api/candidates._prepare_jpeg``: a Content-Type is the other end's claim
+    and only a decoder settles it. There is no transcode here because there is
+    nothing to transcode INTO -- that endpoint writes a file literally named
+    ``poster.jpg`` and has to make the name true, whereas this rung hands bytes
+    to ``_write_and_upload``, which names its own temporary file.
+
+    The download lands in a temporary directory rather than the
+    ``.generated/`` cache: what stops a re-upload is ``record.poster_sha256``
+    (see ``apply_poster``), and what stops a re-FETCH is the caller's
+    short-circuit -- ``lists.py`` does not reach the poster block at all while
+    the membership hash is current and a poster is already recorded.
+
+    Raises ``FetchRefused`` (the guard's own refusals, whose messages carry a
+    reason and never the URL) or ``httpx.HTTPError`` (a transport failure,
+    whose message CAN embed the URL and must not be repeated). The caller
+    reports; nothing here raises out of a pass.
+    """
+    with tempfile.TemporaryDirectory() as workspace:
+        destination = Path(workspace) / "poster"
+        await guarded_download(
+            http, url, destination,
+            max_bytes=DEFINITION_POSTER_MAX_BYTES,
+            content_types=DEFINITION_POSTER_CONTENT_TYPES,
+        )
+        data = destination.read_bytes()
+    if not _is_image(data):
+        raise BodyRefused("the body did not decode as an image")
+    return data
+
+
 async def apply_poster(
     session: AsyncSession,
     http: httpx.AsyncClient,
@@ -369,19 +438,31 @@ async def apply_poster(
     key: str,
     dry_run: bool = True,
     generated: Path | None = None,
+    poster_url: str | None = None,
 ) -> str | None:
     """Give ``collection`` its poster, uploading only when something changed.
 
     Resolution order: a local override first (read directly off disk, no
-    request made), a file some source already produced second when one
-    resolves -- the caller's generated separator art
-    (``collections/separator_art.py``), or this collection's family poster
-    cached from ``Kometa-Team/Default-Images`` (``collections/default_images.py``),
-    both read directly off disk -- the source ``kind`` names third (a hosted
-    default from the six-kind table, or a person's TMDb profile photo), nothing
-    fourth. The bytes are hashed and compared against ``record.poster_sha256``
-    -- a match means an unchanged pass uploads nothing, the same guarantee
-    ``definition_hash`` already gives the collection's filter.
+    request made), the definition's own ``poster_url`` second (roadmap row
+    222 -- fetched through the SSRF guard, never through ``fetch_poster``),
+    a file some source already produced third when one resolves -- the
+    caller's generated separator art (``collections/separator_art.py``), or
+    this collection's family poster cached from
+    ``Kometa-Team/Default-Images`` (``collections/default_images.py``), both
+    read directly off disk -- the source ``kind`` names fourth (a hosted
+    default from the six-kind table, or a person's TMDb profile photo),
+    nothing fifth. The bytes are hashed and compared against
+    ``record.poster_sha256`` -- a match means an unchanged pass uploads
+    nothing, the same guarantee ``definition_hash`` already gives the
+    collection's filter.
+
+    ``poster_url`` sits below the local file and above everything this
+    service can find for itself, which is the priority roadmap row 222 asked
+    for: a file on disk still wins, because an operator who put one there
+    meant it -- and ``api/manual.py``'s poster endpoint writes THROUGH that
+    rung, so an image installed from the Collections page outranks a
+    ``poster_url`` added to the config later. A URL still beats a generic
+    default, cached or hosted.
 
     Both branches are validated with ``_is_image``: an operator's file can be
     truncated, zero-byte, or an HTML error page saved as ``poster.jpg`` just
@@ -432,6 +513,47 @@ async def apply_poster(
                 "local poster %s did not decode as an image; using whatever source kind names",
                 local,
             )
+    if data is None and poster_url:
+        # Roadmap row 222. Above every default and below the operator's own
+        # file. Any failure here is REPORTED and the collection left alone,
+        # like every other poster failure: a missing poster is cosmetic and
+        # must never fail the surrounding pass. It deliberately does not fall
+        # through to the default below -- the operator named an address, and
+        # silently substituting a generic poster for it would read as the URL
+        # having worked.
+        try:
+            data = await download_definition_poster(http, poster_url)
+        except FetchRefused as exc:
+            # Row 213. The guard's own messages are URL-free by construction
+            # (its module docstring, "a refusal never names the URL"), so the
+            # reason is safe to hand back verbatim -- which is the point:
+            # "that source was refused" with no reason leaves an operator with
+            # a working URL and no idea why. ``api/manual.py``'s
+            # ``_staged_source`` makes the same call for the same value.
+            logger.warning(
+                "refused the definition's poster URL for %r: %s", record.title, exc
+            )
+            return "could not use %s for %r: %s" % (
+                DEFINITION_POSTER_SOURCE, record.title, exc,
+            )
+        except httpx.HTTPError as exc:
+            # NOT str(exc), and NOT exc_info: httpx's exception messages -- and
+            # the traceback exc_info would attach -- can embed the full request
+            # URL, which is the one thing that must not reach even the pod log.
+            # The class name only, the same treatment ``api/manual.py`` gives
+            # this branch.
+            logger.warning(
+                "the definition's poster URL for %r failed: %s",
+                record.title, type(exc).__name__,
+            )
+            return "could not fetch %s for %r" % (DEFINITION_POSTER_SOURCE, record.title)
+        source = DEFINITION_POSTER_SOURCE
+        # Row 105's composite is NOT drawn on it, for adjudication A-2's own
+        # reason one rung up: an operator's own choice of image is theirs. A
+        # URL typed into the definition is that choice as squarely as a file
+        # dropped on the mount, and the art an operator points at is usually
+        # already captioned.
+        composable = False
     if data is None:
         # A file some source already produced, below the operator's own
         # override and above anything fetched fresh: generated separator art

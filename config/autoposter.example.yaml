@@ -350,6 +350,7 @@ collections:
   #       item_label: [Hand Picked] # labels applied to every member; only ever added, never removed
   #       sort_title: "!010_Hand Picked" # the whole Plex sort title, not a prefix
   #       collection_mode: hide # default | hide | hideItems | showItems
+  #       poster_url: https://example.invalid/dceu.jpg # this collection's artwork, fetched through the SSRF guard; a poster file under assets_root still wins, every hosted or cached default loses
   #       tmdb_summary: 10 # borrow the summary from this TMDB collection (summary: above, and a builder's own derived summary, both still win -- tmdb_summary then does nothing)
   #       visible_library: true # pin to the library's Recommended page (Plex Pass)
   #       visible_home: false # ...and to your Home page

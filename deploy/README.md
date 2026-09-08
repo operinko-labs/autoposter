@@ -1545,8 +1545,9 @@ URL, name the collection, pick which of `collections.libraries` it applies to
 
 Rows marked **override** carry an **Edit** button. The form edits a curated
 set of the definition's fields — title, library scope, summary, sort, sync
-mode, limit, sort title, collection mode, labels, label sync and member
-labels — and leaves every other field of that definition exactly as stored.
+mode, limit, sort title, collection mode, labels, label sync, member labels
+and poster URL — and leaves every other field of that definition exactly as
+stored.
 
 Three things are shown and not editable:
 
@@ -1882,13 +1883,48 @@ Open Font License by its own author, independently of either repository above,
 which is why it *is* vendored here, with its provenance recorded alongside it.
 
 A file at `<assets_root>/<library>/<collection title>/poster.{jpg,jpeg,png,webp}`
-overrides the hosted default, and is the supported way to pin your own poster
+overrides every other source, and is the supported way to pin your own poster
 on one managed collection — the same `prioritize_assets`-style override the
 badge pipeline uses for item artwork. An unreadable or non-image file there is
-ignored and the hosted default used instead. Without one, the poster is
+ignored and the next source used instead. Without one, the poster is
 fetched at runtime from Kometa's `Default-Images` repository and never
 vendored into this repository (see the module docstring on
 `autoposter/collections/posters.py` for the reasoning).
+
+**`poster_url:` on a definition points that one collection at arbitrary
+artwork without a file on the box.** It is Kometa's `url_poster`, and it ranks
+between the two sources above: a poster file under `assets_root` still wins,
+because an operator who put one there meant it, and the URL beats every
+default this service can find for itself — the cached `Default-Images` family
+poster as well as the raw hosted one. It is fetched through the same
+server-side-request-forgery guard the manual-mode installer uses: `http` and
+`https` only, every address the host resolves to must be a public one,
+redirects are followed by hand and validated at every hop, and the body is
+capped and decoded before anything is uploaded. A URL carrying a
+`user:password@` credential is refused when the config loads. Two residuals
+are inherited from that guard and are documented rather than solved: a DNS
+record that changes between validation and connection (rebinding), and NAT64
+(`64:ff9b::/96`) or 6to4 (`2002::/16`) literals, neither of which is
+exploitable without a translator on the network path this deployment does not
+have.
+
+**The address is never written down.** A collection whose poster came from
+`poster_url` reports it as *the definition's poster URL*, and a refusal reports
+the guard's own reason — "the host resolves to a link-local address", "image
+exceeded the size cap" — and nothing else. The URL reaches no run report and
+no log line, because an operator's own address can be an internal hostname or
+carry a signed query parameter, and both end up pasted into tickets.
+
+**It coexists with the Collections page's Set poster form, and loses to it.**
+That form fetches a URL through the same guard, transcodes it and writes it to
+`<assets_root>/<library>/<collection title>/poster.jpg` — that is, into the
+local-override rung above. So if you have used it on a collection and later add
+`poster_url:` to the same definition, the installed file keeps winning, and the
+run report will say the poster came from a local file. Delete that file to let
+the definition's URL take over. The difference between the two is what
+`poster_url:` is for: the form's result is a file on the box, invisible to the
+config, to a config export and to the definitions editor, and lost if the
+assets mount is rebuilt; the field is a line in the config document.
 
 **A failed fetch leaves the collection untouched, not the pass.** A missing
 poster is cosmetic; the collection is logged and skipped, and the rest of

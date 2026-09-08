@@ -567,6 +567,10 @@ async def reconcile_smart_collection(
         message = await apply_poster(
             session, http, config, collection, record, library,
             poster_kind, poster_key, dry_run=dry_run,
+            # Roadmap row 222, same as ``lists.py``: a smart definition names
+            # a collection OBJECT even though Plex owns its membership, and
+            # artwork is a property of the object.
+            poster_url=getattr(settings, "poster_url", None),
         )
         if message:
             actions.append(message)

@@ -33,7 +33,9 @@ logger = logging.getLogger(__name__)
 # The per-definition settings that ride along on a collection, and the value
 # each has when the operator has not asked for it. Order is fixed because it
 # feeds a hash; the defaults are what keep that hash unchanged for every
-# definition that sets none of them (see ``_settings_parts``).
+# definition that sets none of them (see ``_settings_parts``). Appended to,
+# never reordered: a new pair at the END leaves the payload of every
+# definition that sets none of the new fields byte-identical.
 _RIDE_ALONG_DEFAULTS = (
     ("labels", []),
     ("label_sync", False),
@@ -44,6 +46,15 @@ _RIDE_ALONG_DEFAULTS = (
     ("visible_home", None),
     ("visible_shared", None),
     ("hub_priority", None),
+    # Roadmap row 222. Not a setting ``apply_collection_settings`` writes to
+    # Plex -- it is read by ``posters.apply_poster``'s fifth rung -- but it
+    # belongs here for the reason this tuple exists: the short-circuit below
+    # (``:314``, "definition_current and not (posters_on and poster_sha256 is
+    # None)") returns BEFORE ``apply_poster`` whenever the membership is
+    # unchanged and a poster has already been uploaded. A ``poster_url``
+    # outside this tuple would therefore be a setting that reads as saved and
+    # silently never applies.
+    ("poster_url", None),
 )
 
 
@@ -440,7 +451,13 @@ async def reconcile_list_collection(
 
     if posters_on and collection is not None and record is not None:
         message = await apply_poster(
-            session, http, config, collection, record, library, kind, key, dry_run=dry_run,
+            session, http, config, collection, record, library, kind, key,
+            dry_run=dry_run,
+            # Roadmap row 222. ``getattr`` rather than an attribute access:
+            # ``settings`` is optional here and is not always a
+            # ``CollectionDefinition`` -- several callers pass a stand-in with
+            # only the fields they exercise.
+            poster_url=getattr(settings, "poster_url", None),
         )
         if message:
             actions.append(message)

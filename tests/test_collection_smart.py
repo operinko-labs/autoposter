@@ -8,13 +8,17 @@ rule ``test_the_oracles_vocabulary_fixture_matches_this_files_copy`` already
 states about ``CHOICES``.
 """
 import ast
+import io
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
+from PIL import Image
 from sqlalchemy import select
 
+from autoposter.collections.posters import DEFINITION_POSTER_SOURCE
 from autoposter.collections.smart import (
     SmartCollectionUnavailable,
     SmartFilterMatchedNothing,
@@ -849,3 +853,77 @@ def test_the_item_level_smart_hash_is_unmoved():
     a second implementation of the thing being pinned, and would agree with any
     change to the payload."""
     assert smart_definition_hash(URL, None) == SHIPPED_ITEM_LEVEL_HASH
+
+
+# --- row 222 (Task 2 review I-1): poster_url threads through this callsite --
+
+# `.invalid` is reserved by RFC 2606 and can never resolve; `resolve_host` is
+# patched out below so nothing ever asks. Copied by value from
+# tests/test_collection_poster_apply.py's own POSTER_URL -- an oracle and the
+# code it judges must not share a symbol, same rule as this file's own header
+# note about CHOICES.
+POSTER_URL = "https://posters.invalid/dc-extended-universe.jpg"
+PUBLIC_ADDRESS = "93.184.216.34"
+
+
+def _jpeg_bytes() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def _image_handler(data, seen):
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, content=data, headers={"content-type": "image/jpeg"})
+
+    return handler
+
+
+async def test_a_definitions_poster_url_reaches_the_smart_reconcilers_poster_step(
+    session, config_factory, tmp_path, monkeypatch
+):
+    """Task 2 review I-1: `smart.py:567-573` threads `poster_url=` into
+    `apply_poster` alongside `poster_kind`/`poster_key`, but nothing drove
+    `reconcile_smart_collection` with a definition carrying one -- deleting
+    that one kwarg left the whole suite green.
+
+    `poster_kind="chart"` names a real Default-Images family -- the same one
+    `test_collection_poster_wiring.py`'s list-path sibling test uses. That is
+    what makes `seen == [POSTER_URL]` discriminate the callsite rather than
+    merely prove SOME poster step ran: drop the kwarg and `apply_poster`
+    falls through to that family's hosted default instead, fetching a
+    DIFFERENT url.
+
+    `dry_run=True` against an already-existing collection/row: the poster
+    rung still resolves and fetches under a dry run (`apply_poster`'s own
+    docstring says so), but nothing is uploaded -- so the fake collection
+    needs no `uploadPoster`/`lockPoster` this file has never given it.
+    """
+    monkeypatch.setattr(
+        "autoposter.net.guard.resolve_host", lambda host, port: [PUBLIC_ADDRESS]
+    )
+    existing = FakeCollection(TITLE, labels=[LABEL], smart=True)
+    section = FakeSection(matches=3, existing=[existing])
+    session.add(ManagedCollection(
+        library="Movies", title=TITLE, kind="smart", plex_rating_key="12345",
+        definition_hash="stale",
+    ))
+    await session.flush()
+
+    config = config_factory(assets_root=str(tmp_path))
+    data = _jpeg_bytes()
+    seen = []
+    definition = CollectionDefinition(
+        title=TITLE, builder="plex_id", params={"ids": ["1"]}, poster_url=POSTER_URL,
+    )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_image_handler(data, seen))) as http:
+        actions = await reconcile_smart_collection(
+            session, section, "Movies", "Movie", TITLE, URL, LABEL,
+            dry_run=True, http=http, config=config, settings=definition,
+            poster_kind="chart", poster_key=TITLE,
+        )
+
+    assert seen == [POSTER_URL]
+    assert any(DEFINITION_POSTER_SOURCE in action for action in actions)

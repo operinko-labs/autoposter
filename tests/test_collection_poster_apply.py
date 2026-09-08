@@ -16,6 +16,7 @@ from PIL import Image
 
 from autoposter.collections.default_images import default_image_url
 from autoposter.collections.posters import (
+    DEFINITION_POSTER_SOURCE,
     TMDB_PROFILE_KIND,
     _write_and_upload,
     apply_poster,
@@ -31,6 +32,46 @@ KEY = "IMDb Top 250"
 
 PROFILE_PATH = "/a-constructed-profile-path.jpg"
 PROFILE_URL = "https://image.tmdb.org/t/p/original/a-constructed-profile-path.jpg"
+
+# Row 222. An address that is obviously nobody's: `.invalid` is reserved by
+# RFC 2606 and can never resolve, and `resolve_host` is patched out below so
+# nothing ever asks. The guard's own suite makes the same call
+# (tests/test_fetch_guard.py's module docstring).
+POSTER_URL = "https://posters.invalid/dc-extended-universe.jpg"
+# A public literal, so `_address_refusal` passes it. TEST-NET (192.0.2.0/24)
+# would NOT do -- Python's ipaddress marks the documentation ranges private.
+PUBLIC_ADDRESS = "93.184.216.34"
+# What an SSRF attempt through a definition's poster_url looks like, with a
+# credential and a signed parameter attached: every one of these three
+# fragments must be absent from every action string and every log record.
+CREDENTIAL_URL = (
+    "http://operator:hunter2@169.254.169.254/latest/meta-data/?token=hunter2"
+)
+
+
+@pytest.fixture
+def public_resolver(monkeypatch):
+    """Every name in this module's row-222 tests resolves to one public
+    address, without a lookup. ``resolve_host`` is a module attribute for
+    exactly this reason (``net/guard.py:133-143``)."""
+    monkeypatch.setattr(
+        "autoposter.net.guard.resolve_host", lambda host, port: [PUBLIC_ADDRESS]
+    )
+
+
+def _image_handler(data, seen):
+    """A 200 that is a real image AND says so. ``store_body`` refuses a body
+    whose Content-Type is outside the allowlist before a byte is kept
+    (``net/guard.py:225-232``), so a header-less response would be refused
+    for the wrong reason."""
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(
+            200, content=data, headers={"content-type": "image/jpeg"}
+        )
+
+    return handler
 
 
 def _jpeg_bytes(color: str = "red") -> bytes:
@@ -652,56 +693,58 @@ async def test_a_default_image_that_404s_leaves_the_collection_exactly_as_today(
 
 
 @pytest.mark.parametrize(
-    "kind,key,expected,caches",
+    "kind,key,poster_url,expected,caches",
     [
-        ("award_static", "oscars:best_picture_winner",
+        ("award_static", "oscars:best_picture_winner", None,
          hosted_poster_url("award_static", "oscars:best_picture_winner"), False),
-        ("award_year", "oscars:2026",
+        ("award_year", "oscars:2026", None,
          hosted_poster_url("award_year", "oscars:2026"), False),
-        ("content_rating", "17", hosted_poster_url("content_rating", "17"), False),
-        ("content_rating_other", "other",
+        ("content_rating", "17", None, hosted_poster_url("content_rating", "17"), False),
+        ("content_rating_other", "other", None,
          hosted_poster_url("content_rating_other", "other"), False),
-        ("separator", "orig:content_rating",
+        ("separator", "orig:content_rating", None,
          hosted_poster_url("separator", "orig:content_rating"), False),
-        (KIND, KEY, default_image_url(KIND, KEY), True),
-        (TMDB_PROFILE_KIND, PROFILE_PATH, PROFILE_URL, False),
+        (KIND, KEY, None, default_image_url(KIND, KEY), True),
+        (TMDB_PROFILE_KIND, PROFILE_PATH, None, PROFILE_URL, False),
+        # Roadmap row 222's rung, on the one kind that would otherwise take
+        # the CACHED rung: the definition's URL outranks it, so the fetch is
+        # the operator's address and nothing is written under `.generated/`.
+        (KIND, KEY, POSTER_URL, POSTER_URL, False),
     ],
 )
-async def test_the_seven_poster_kinds_each_take_the_rung_their_kind_names(
-    kind, key, expected, caches, tmp_path, config_factory, session
+async def test_every_poster_source_takes_the_rung_its_inputs_name(
+    kind, key, poster_url, expected, caches, tmp_path, config_factory, session,
+    public_resolver,
 ):
-    """One case per kind ``apply_poster`` can be called with, and the rung each
-    one takes.
+    """One case per source ``apply_poster`` can be called with, and the rung
+    each one takes.
 
-    This was ``test_the_six_original_kinds_are_untouched_by_the_new_branch``,
-    which drove the file's module-level ``KIND = "chart"`` and asserted that a
-    chart went down the ``hosted_poster_url`` path leaving no cache file.
-    Roadmap row 252 makes that assertion false on purpose: ``chart`` is a
-    ``default_images`` family now, so it takes the cached rung and writes under
-    ``.generated/`` like every other family, and ``hosted_poster_url`` answers
-    ``None`` for it. A whole table rather than a re-pointed single case,
-    because the regression the old test guarded -- a new branch in front of the
-    dispatch quietly swallowing a kind -- is a property of the WHOLE dispatch,
-    and with two source rungs plus the TMDb profile CDN there are now three
-    answers a kind can have instead of one.
+    This was ``test_the_seven_poster_kinds_each_take_the_rung_their_kind_names``,
+    and before that ``test_the_six_original_kinds_are_untouched_by_the_new_branch``.
+    It is renamed again for the same reason it was renamed before: the
+    regression it guards -- a new branch in front of the dispatch quietly
+    swallowing a source -- is a property of the WHOLE dispatch, and roadmap row
+    222 makes the dispatch's input a ``kind`` plus a ``poster_url`` rather than
+    a ``kind`` alone. The eighth row is the new rung, deliberately paired with
+    the kind that takes the cached rung when no URL is given (the row above
+    it): the two rows differ in one input and disagree about both the URL
+    fetched and whether anything is cached, which is what makes the ordering
+    falsifiable rather than merely covered.
 
     The URL each rung produces is asserted against the pure function that owns
     it, so a change to a path is a change in one place and this test follows
-    it; ``caches`` is the half that tells the rungs apart."""
+    it; ``caches`` is the half that tells the two file-producing rungs apart.
+    """
     config = config_factory(assets_root=str(tmp_path), library_folders=True)
     data = _jpeg_bytes()
     record = await _record(session)
     collection = _FakeCollection()
     seen: list[str] = []
 
-    async def handler(request):
-        seen.append(str(request.url))
-        return httpx.Response(200, content=data)
-
-    async with _client(handler) as http:
+    async with _client(_image_handler(data, seen)) as http:
         await apply_poster(
             session, http, config, collection, record, LIBRARY, kind, key,
-            dry_run=False,
+            dry_run=False, poster_url=poster_url,
         )
 
     assert seen == [expected]
@@ -802,3 +845,233 @@ async def test_a_chart_miss_writes_the_marker_and_is_not_re_fetched(
         tmp_path / ".generated" / "collection-posters" / "chart"
         / "IMDb%20Top%20250.miss"
     ).is_file()
+
+
+# --- row 222: the definition's own poster URL -------------------------------
+
+
+async def test_a_local_file_still_wins_over_the_definitions_poster_url(
+    tmp_path, config_factory, session, public_resolver
+):
+    """The cell's own stated priority, and the half of it that is a decision
+    rather than a convenience: a file on disk still wins, because an operator
+    who put one there meant it -- and `api/manual.py::install_collection_poster`
+    writes THROUGH that rung, so this is also what happens when the operator
+    used the Collections page's install form and later added a poster_url."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    local = tmp_path / LIBRARY / TITLE
+    local.mkdir(parents=True)
+    mine = _jpeg_bytes("blue")
+    (local / "poster.jpg").write_bytes(mine)
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        raise AssertionError("a local override must not be fetched over")
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY,
+            dry_run=False, poster_url=POSTER_URL,
+        )
+
+    assert collection.uploaded_bytes == [mine]
+    assert "local file" in message
+
+
+async def test_the_poster_url_is_never_fetched_through_fetch_poster(
+    tmp_path, config_factory, session, public_resolver, monkeypatch
+):
+    """`posters.fetch_poster` is a bare `http.get` with no scheme allowlist, no
+    address check and no redirect control, on the shared client -- safe only
+    while every URL it sees was built by this repository from
+    DEFAULT_IMAGES_BASE or TMDb's CDN, which `net/guard.py:258-262` names it by
+    name for. An operator-typed URL breaks that invariant outright, so this
+    rung must go through `guarded_download` instead.
+
+    The kind and key here are a real Default-Images family, so an
+    implementation that fell through to a later rung would call the exploding
+    fetcher and fail loudly rather than silently passing."""
+
+    async def explode(http, url):
+        raise AssertionError("the definition's poster URL must not reach fetch_poster")
+
+    monkeypatch.setattr("autoposter.collections.posters.fetch_poster", explode)
+
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+    seen = []
+
+    async with _client(_image_handler(data, seen)) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY, KIND, KEY,
+            dry_run=False, poster_url=POSTER_URL,
+        )
+
+    assert seen == [POSTER_URL]
+    assert message == "set the poster for %r from %s" % (TITLE, DEFINITION_POSTER_SOURCE)
+    assert collection.uploaded_bytes == [data]
+
+
+async def test_a_poster_url_pointing_at_a_private_address_is_refused_unrequested(
+    tmp_path, config_factory, session
+):
+    """The security invariant, asserted the way `tests/test_fetch_guard.py`
+    asserts it: the REQUEST LOG first. "It raised" would also be true of an
+    implementation that fetched the metadata service and complained
+    afterwards, by which time the credentials are already in this process.
+
+    No resolver patch: 169.254.169.254 is a literal, so getaddrinfo answers
+    out of the string and nothing is looked up."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    record = await _record(session)
+    collection = _FakeCollection()
+    seen = []
+
+    async def handler(request):
+        seen.append(str(request.url))
+        raise AssertionError("the guard must refuse before any request is made")
+
+    async with _client(handler) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY, None, None,
+            dry_run=False, poster_url=CREDENTIAL_URL,
+        )
+
+    assert seen == []
+    assert collection.uploaded_bytes == []
+    assert record.poster_sha256 is None
+    assert "link-local" in message
+
+
+async def test_a_refused_poster_url_reaches_neither_the_action_nor_the_log(
+    tmp_path, config_factory, session, caplog
+):
+    """Roadmap row 213, on the one value in this module that an operator
+    typed. `apply_poster`'s return string is served: it reaches
+    `collections/service.py`'s `actions` list, is rendered in the run report
+    and is logged. The guard's own refusal carries the reason and the hop and
+    never the URL (`net/guard.py:79-84`), which is what makes it safe to hand
+    back verbatim -- and the value itself must appear nowhere."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        raise AssertionError("the guard must refuse before any request is made")
+
+    with caplog.at_level("DEBUG"):
+        async with _client(handler) as http:
+            message = await apply_poster(
+                session, http, config, collection, record, LIBRARY, None, None,
+                dry_run=False, poster_url=CREDENTIAL_URL,
+            )
+
+    logged = "\n".join(record_.getMessage() for record_ in caplog.records)
+    for secret in ("hunter2", "169.254", "operator:", "token="):
+        assert secret not in message, message
+        assert secret not in logged, logged
+    assert message.strip()
+
+
+async def test_a_transport_failure_fetching_the_poster_url_reaches_neither_the_action_nor_the_log(
+    tmp_path, config_factory, session, caplog, public_resolver
+):
+    """Task 2 review I-2, the sibling of
+    `test_a_refused_poster_url_reaches_neither_the_action_nor_the_log` on the
+    OTHER except clause (`posters.py:539-549`, `except httpx.HTTPError`). That
+    branch's own comment names the danger: httpx's exception messages -- and
+    the traceback `exc_info` would attach -- can embed the full request URL.
+    Nothing exercised it: every fake elsewhere either returns a 200 or raises
+    `AssertionError` on a request the guard is expected never to make.
+
+    The `MockTransport` handler here raises `httpx.ConnectError` carrying the
+    URL in ITS OWN message, deliberately -- so a mutation that formats `exc`
+    into the returned string, or adds `exc_info=True` to the `logger.warning`
+    call, is exactly what turns this test red. The second half needs its own
+    assertion (Task 3 review I-2): `caplog.records[...].getMessage()` never
+    renders what `exc_info` attaches, so the explicit `record_.exc_info is
+    None` check below is what actually catches that mutant."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        raise httpx.ConnectError("failed to connect to %s" % POSTER_URL)
+
+    with caplog.at_level("DEBUG"):
+        async with _client(handler) as http:
+            message = await apply_poster(
+                session, http, config, collection, record, LIBRARY, None, None,
+                dry_run=False, poster_url=POSTER_URL,
+            )
+
+    logged = "\n".join(record_.getMessage() for record_ in caplog.records)
+    for secret in ("posters.invalid", "dc-extended-universe"):
+        assert secret not in message, message
+        assert secret not in logged, logged
+    # `getMessage()` never renders what `exc_info` attaches -- only a
+    # `Formatter` does -- so the loop above cannot catch `exc_info=True`
+    # being added to the `logger.warning` call. Assert on the record
+    # directly (Task 3 review I-2).
+    assert all(record_.exc_info is None for record_ in caplog.records)
+    assert message.strip()
+    assert collection.uploaded_bytes == []
+    assert record.poster_sha256 is None
+
+
+async def test_an_unchanged_poster_url_image_uploads_nothing_on_a_second_pass(
+    tmp_path, config_factory, session, public_resolver
+):
+    """The hash-compare the rung inherits by being a rung: `poster_sha256`
+    already means "the bytes we last uploaded", so an image that has not
+    changed behind a stable URL is fetched, hashed, found equal and not
+    re-uploaded. That is what keeps a definition that adopts the field from
+    re-uploading a poster on every pass that reaches the poster block."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    data = _jpeg_bytes()
+    record = await _record(session)
+    collection = _FakeCollection()
+    seen = []
+
+    async with _client(_image_handler(data, seen)) as http:
+        first = await apply_poster(
+            session, http, config, collection, record, LIBRARY, None, None,
+            dry_run=False, poster_url=POSTER_URL,
+        )
+        second = await apply_poster(
+            session, http, config, collection, record, LIBRARY, None, None,
+            dry_run=False, poster_url=POSTER_URL,
+        )
+
+    assert first == "set the poster for %r from %s" % (TITLE, DEFINITION_POSTER_SOURCE)
+    assert second is None
+    assert collection.uploaded_bytes == [data]
+    assert record.poster_sha256 == hashlib.sha256(data).hexdigest()
+    assert seen == [POSTER_URL, POSTER_URL]
+
+
+async def test_a_poster_url_body_that_is_not_an_image_is_rejected_unuploaded(
+    tmp_path, config_factory, session, public_resolver
+):
+    """A Content-Type is the other end's claim and only a decoder settles it --
+    the same argument `api/candidates._prepare_jpeg` makes for the installed
+    image. Uploading a non-image would be worse than uploading nothing: it
+    would be hashed and recorded, so a later pass would never retry it."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    record = await _record(session)
+    collection = _FakeCollection()
+    seen = []
+
+    async with _client(_image_handler(b"<html>not an image</html>", seen)) as http:
+        message = await apply_poster(
+            session, http, config, collection, record, LIBRARY, None, None,
+            dry_run=False, poster_url=POSTER_URL,
+        )
+
+    assert seen == [POSTER_URL]
+    assert collection.uploaded_bytes == []
+    assert record.poster_sha256 is None
+    assert "did not decode as an image" in message

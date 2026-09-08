@@ -829,3 +829,146 @@ def test_a_definition_defaults_to_no_changes_webhook():
         title="Hand Picked", builder="plex_id", params={"ids": ["1"]}
     )
     assert definition.changes_webhook == ""
+
+
+# --- row 222: the definition's own poster URL -------------------------------
+
+
+def test_a_definition_defaults_to_no_poster_url():
+    """Row 222's field is opt-in: a definition that names none behaves exactly
+    as it does today, which is what keeps every stored hash byte-identical."""
+    definition = CollectionDefinition(
+        title="Hand Picked", builder="plex_id", params={"ids": ["1"]}
+    )
+    assert definition.poster_url is None
+
+
+def test_an_https_poster_url_is_accepted_verbatim():
+    """Stored unmodified: the guard, not this validator, decides whether the
+    address is fetchable, and a validator that rewrote the operator's string
+    would make `GET /api/config` serve something they did not write."""
+    definition = CollectionDefinition(
+        title="DC Extended Universe",
+        builder="plex_id",
+        params={"ids": ["1"]},
+        poster_url="https://posters.invalid/dceu.jpg",
+    )
+    assert definition.poster_url == "https://posters.invalid/dceu.jpg"
+
+
+def test_an_http_poster_url_is_accepted():
+    """`http` as well as `https`: the guard's own allowlist is both
+    (`net/guard.py:96`), and a LAN image host on plain http is a real
+    deployment shape."""
+    definition = CollectionDefinition(
+        title="DC Extended Universe",
+        builder="plex_id",
+        params={"ids": ["1"]},
+        poster_url="http://posters.invalid/dceu.jpg",
+    )
+    assert definition.poster_url == "http://posters.invalid/dceu.jpg"
+
+
+@pytest.mark.parametrize(
+    "value,fragment",
+    [
+        ("ftp://posters.invalid/SECRET.jpg", "http:// or https://"),
+        ("file:///etc/SECRET", "http:// or https://"),
+        ("posters.invalid/SECRET.jpg", "http:// or https://"),
+        ("https://operator:SECRET@posters.invalid/dceu.jpg", "user:password@"),
+        ("https://", "names no host"),
+        ("https://[SECRET-INTERNAL-HOST]/a.jpg", "not a parsable URL"),
+        ("http://[::SECRET1", "not a parsable URL"),
+    ],
+)
+def test_a_bad_poster_url_is_refused_without_echoing_it(value, fragment):
+    """Row 213, held to the rule `tests/test_collection_config.py`'s
+    credential-bearing-param test already states: what is SERVED is
+    `errors()[...]["msg"]` -- `api/routes.py`'s ValidationError seam serves
+    exactly those on five config endpoints -- so the message is what must
+    never carry the operator's own string. An operator's poster URL can be an
+    intranet address, or carry `user:password@` userinfo or a signed query
+    parameter, which is the same class of value `net/guard.py:79-84` refuses
+    to write into a log line.
+
+    Every case's value carries the literal `SECRET`, so a validator that
+    interpolated `{value!r}` would put it straight back into `served`.
+    """
+    with pytest.raises(ValidationError) as error:
+        CollectionDefinition.model_validate({
+            "title": "Leaky",
+            "builder": "plex_id",
+            "params": {"ids": ["1"]},
+            "poster_url": value,
+        })
+
+    served = "; ".join(item["msg"] for item in error.value.errors())
+    assert "SECRET" not in served, served
+    assert "poster_url" in served
+    assert fragment in served
+
+
+def test_an_over_long_poster_url_is_refused_without_echoing_it():
+    """A bound rather than none: this string is stored in the config document,
+    served by `GET /api/config`, carried by an overrides export and folded into
+    a hash on every pass. 2048 is generous next to any real image URL."""
+    value = "https://posters.invalid/" + ("SECRET" * 400) + ".jpg"
+
+    with pytest.raises(ValidationError) as error:
+        CollectionDefinition.model_validate({
+            "title": "Leaky",
+            "builder": "plex_id",
+            "params": {"ids": ["1"]},
+            "poster_url": value,
+        })
+
+    served = "; ".join(item["msg"] for item in error.value.errors())
+    assert "SECRET" not in served, served
+    assert "2048" in served
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://posters.invalid/SECRET.jpg\n",
+        "https://po\tsters.invalid/SECRET.jpg",
+        " https://posters.invalid/SECRET.jpg",
+    ],
+)
+def test_a_poster_url_with_whitespace_anywhere_is_refused(value):
+    """Row 222 / I-1. `urlsplit` strips leading/trailing whitespace and drops
+    embedded tab/CR/LF before checking the shape, but this validator must not
+    store a different string than the one it checked -- so a value carrying
+    whitespace anywhere is refused outright rather than silently rewritten.
+    The operator fixes the paste; nothing here strips it for them.
+
+    Each value carries the literal `SECRET`, so a validator that interpolated
+    `{value!r}` would put it straight back into `served`, the same
+    discriminating marker `test_a_bad_poster_url_is_refused_without_echoing_it`
+    uses above."""
+    with pytest.raises(ValidationError) as error:
+        CollectionDefinition.model_validate({
+            "title": "Leaky",
+            "builder": "plex_id",
+            "params": {"ids": ["1"]},
+            "poster_url": value,
+        })
+
+    served = "; ".join(item["msg"] for item in error.value.errors())
+    assert "SECRET" not in served, served
+    assert "poster_url" in served
+    assert "whitespace" in served
+
+
+def test_a_clean_poster_url_is_still_accepted():
+    """The whitespace refusal must not catch an ordinary value: a URL with no
+    whitespace or control characters anywhere is accepted and returned
+    byte-identical to what was passed in."""
+    value = "https://posters.invalid/dceu.jpg"
+    definition = CollectionDefinition(
+        title="DC Extended Universe",
+        builder="plex_id",
+        params={"ids": ["1"]},
+        poster_url=value,
+    )
+    assert definition.poster_url == value

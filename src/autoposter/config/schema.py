@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
+from urllib.parse import urlparse
 
 from PIL import ImageColor
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -1827,6 +1828,13 @@ _SMART_REFUSABLE_DEFAULTS: dict[str, object] = {
 # "no entry", distinct from every default above -- ``None`` is four of them.
 _UNTABLED = object()
 
+# Roadmap row 222. A ceiling on the definition's own poster URL. Not a limit
+# any real image address comes near -- it is a ceiling on what an accident or
+# a paste can put into a value this service stores in the config document,
+# serves from GET /api/config, carries in an overrides export and folds into a
+# hash on every reconcile.
+POSTER_URL_MAX_LENGTH = 2048
+
 
 class CollectionDefinition(BaseModel):
     """One operator-configured collection: a builder plus how to apply it.
@@ -1991,6 +1999,22 @@ class CollectionDefinition(BaseModel):
         default=None, ge=0,
         description="Position among the library's managed recommendations, 0 = first.",
     )
+    # Roadmap row 222 (Kometa's ``url_poster``). Ranked BETWEEN the operator's
+    # own file under ``assets_root`` and every default this service can find
+    # for itself: a file on disk still wins, because an operator who put one
+    # there meant it, and a URL still beats a generic default. Fetched through
+    # ``net/guard.guarded_download`` -- never ``posters.fetch_poster``, whose
+    # lack of a scheme allowlist, address check and redirect control is safe
+    # only while every URL it sees was built by this repository.
+    poster_url: str | None = Field(
+        default=None,
+        description=(
+            "An http or https address this collection's poster is downloaded "
+            "from, through this service's SSRF guard. A poster file under "
+            "assets_root still wins; every cached or hosted default is "
+            "outranked."
+        ),
+    )
     # Row 30: take the summary from TMDB instead of writing one by hand -- the
     # id of the TMDB *collection* whose overview this collection borrows.
     # ``summary`` above and a builder's own derived summary (charts, awards,
@@ -2046,6 +2070,57 @@ class CollectionDefinition(BaseModel):
             "configured; a Plex-evaluated smart collection never fires it."
         ),
     )
+
+    @field_validator("poster_url")
+    @classmethod
+    def _poster_url_must_be_a_plain_http_address(cls, value: str | None) -> str | None:
+        """Refuse at config LOAD, and say only which field and what shape.
+
+        Row 213. This is an operator's own string, and the class of value
+        ``net/guard.py:79-84`` already writes the rule for: it can carry
+        ``user:password@`` userinfo, a signed query parameter, or the name of
+        an internal host that is itself worth not writing into a line that
+        gets pasted into a ticket. What a refusal here reaches is
+        ``errors()[...]["msg"]`` -- ``api/routes.py``'s ValidationError seam
+        serves exactly those on five config endpoints -- so no message below
+        interpolates the value. (pydantic-core also appends its own
+        ``input_value=`` tail to ``str(ValidationError)``; nothing serves that
+        tail, which is the finding
+        ``tests/test_collection_config.py``'s credential-bearing-param test
+        records for the eight validators before this one.)
+
+        The userinfo check is this validator's own and not the guard's: the
+        guard refuses on the ADDRESS, and ``https://operator:secret@`` resolves
+        to a perfectly public host. Refusing it at load is what keeps a
+        credential out of the stored config document in the first place -- the
+        same argument ``builders/smart_url.py`` makes for refusing a
+        token-bearing paste rather than stripping it.
+        """
+        if value is None:
+            return value
+        if len(value) > POSTER_URL_MAX_LENGTH:
+            raise ValueError(
+                f"'poster_url' is longer than {POSTER_URL_MAX_LENGTH} characters"
+            )
+        if re.search(r"[\s\x00-\x1f\x7f]", value):
+            raise ValueError(
+                "'poster_url' contains whitespace or control characters; fix "
+                "the pasted value"
+            )
+        try:
+            parsed = urlparse(value)
+        except ValueError as exc:
+            raise ValueError("'poster_url' is not a parsable URL") from exc
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError("'poster_url' must be an http:// or https:// address")
+        if not parsed.hostname:
+            raise ValueError("'poster_url' names no host")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError(
+                "'poster_url' carries user:password@ userinfo; remove the "
+                "credential from the address"
+            )
+        return value
 
     @field_validator("builder")
     @classmethod
@@ -2913,6 +2988,10 @@ _REFUSED_PLAYLIST_FIELDS: dict[str, str] = {
     "visible_home": "hub visibility is a collection setting; playlists are never promoted to hubs",
     "visible_shared": "hub visibility is a collection setting; playlists are never promoted to hubs",
     "hub_priority": "hub ordering is a collection setting; playlists are never promoted to hubs",
+    "poster_url": (
+        "collection artwork is a collection setting (roadmap row 222); this "
+        "service applies no poster to a playlist"
+    ),
     "sync_to_mdb_list": (
         "the MDBList push (roadmap row 31) is a collection feature and is not "
         "offered for playlists"
