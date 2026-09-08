@@ -433,3 +433,29 @@ async def test_closing_full_passes_trims_full_pass_history_to_the_keep_bound(ses
     await session.commit()
 
     assert len(await _rows(session, name=FULL_PASS_NAME)) == RUN_HISTORY_KEEP
+
+
+async def test_the_closed_windows_collector_matches_what_the_call_closed(session):
+    """The out-parameter's whole contract, asserted rather than assumed: one
+    (started_at, finished_at) pair per row THIS call closed, so
+    len(closed_windows) is the return value and roadmap row 236's digest counts
+    the same interval the seven count columns were taken over. A collector that
+    appended a row it did not close, or missed one it did, would send a digest
+    describing a window the `runs` row does not."""
+    run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    session.add(Job(kind="process_item", payload={}, state="done"))
+    await session.commit()
+
+    windows: list = []
+    assert await close_drained_full_passes(session, closed_windows=windows) == 1
+    await session.commit()
+
+    row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert len(windows) == 1
+    assert windows[0] == (row.started_at, row.finished_at)
+
+
+async def test_closing_nothing_appends_nothing(session):
+    windows: list = []
+    assert await close_drained_full_passes(session, closed_windows=windows) == 0
+    assert windows == []

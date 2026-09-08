@@ -409,6 +409,7 @@ def create_app(
         scheduler = Scheduler(
             session_factory, scheduler_jobs,
             poll_seconds=config.scheduler.poll_seconds, notifier=notifier,
+            config_holder=app.state.config_holder,
         )
         scheduler_task = asyncio.create_task(scheduler.run(stop_event))
 

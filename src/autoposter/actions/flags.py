@@ -215,6 +215,62 @@ def _unscored(config: Config) -> ColumnElement[bool]:
     return and_(Render.status == "rendered", Render.quality_scored_at.is_(None))
 
 
+def _min_point_size(config: Config, art_kind: str) -> int | None:
+    """This art kind's own auto-fit floor, live, or None if it draws no text.
+
+    `ArtKindConfig.text` is `TextStyle | None` (`config/schema.py:456-462`):
+    a kind with no text block has no floor, and no row of that kind can carry
+    a `text_point_size` at all -- `render/pipeline.py:1046` only records the
+    size when a primary text block was fitted.
+
+    Read, never written. This is the whole of row 235's threshold story: the
+    operator's existing `min_point_size` rather than a number this flag
+    invents, so nothing new enters `config.artwork` and no render fingerprint
+    moves (`config/loader.py:71`, `:188` -- both allow-lists over that
+    subtree).
+    """
+    text = getattr(config.artwork, art_kind).text
+    return None if text is None else text.min_point_size
+
+
+def _near_miss(config: Config) -> ColumnElement[bool]:
+    """The title fitted only by dropping to this art kind's own floor.
+
+    Live, like the language and provider flags: raising `min_point_size`
+    re-shapes the queue on the next request with no row write and no
+    backfill. A `near_miss` boolean on `FitResult` would be a stored verdict
+    needing a whole-library re-render to change, which is what this module's
+    docstring exists to refuse.
+
+    `<=` rather than `==` so a floor an operator LATER RAISES retroactively
+    catches every row that fitted below the new floor. Equality would make
+    the flag silent on exactly the rows the raise was meant to surface.
+
+    One term per art kind, OR-ed: text styles have no per-library override
+    the way `language_order` does (`config/schema.py:689-695` is
+    language-only), so this is strictly simpler than `_language_miss` above
+    -- a kind and a number, nothing crossed with library.
+
+    The population cannot overlap `truncated`: a truncated render returns at
+    `render/pipeline.py:1471`, before the write-back at `:1503` that fills
+    the column, so every truncated row's `text_point_size` is NULL. The
+    explicit `IS NOT NULL` gate states that rather than leaning on SQL's
+    NULL-is-not-TRUE, and is what keeps every logo poster, verbatim source
+    and pre-capture row out of the queue.
+    """
+    terms: list[ColumnElement[bool]] = []
+    for art_kind in ART_KINDS:
+        floor = _min_point_size(config, art_kind)
+        if floor is None:
+            continue
+        terms.append(
+            and_(Render.art_kind == art_kind, Render.text_point_size <= literal(floor))
+        )
+    if not terms:
+        return literal(False)
+    return and_(Render.text_point_size.isnot(None), or_(*terms))
+
+
 def excluded_library_predicate(config: Config) -> ColumnElement[bool]:
     """Rows whose Plex library this service is configured never to touch.
 
@@ -292,6 +348,19 @@ def _language_detail(render: Render) -> str:
 
 def _provider_detail(render: Render) -> str:
     return f"selected {render.provider}; rank {render.provider_rank} in the ladder that ran"
+
+
+def _near_miss_detail(render: Render) -> str:
+    """The fitted size and nothing else -- `Flag.detail` stays unwidened.
+
+    Roadmap row 213's rule: never `render.detail` (free text the pipeline
+    resets on every pass) and never a path (a served column is not the place
+    for the filesystem). The live floor this size is judged against is a
+    config value `Flag.detail: Callable[[Render], str]` cannot reach without
+    widening the contract, so the sentence names the one fact this callable
+    does have.
+    """
+    return f"fitted at {render.text_point_size} pt, at or below this kind's floor"
 
 
 # --- the registry ------------------------------------------------------------
@@ -456,6 +525,22 @@ _REGISTRY: tuple[Flag, ...] = (
         predicate=_unscored,
         detail=_plain("rendered before the quality taxonomy; re-render to score it"),
     ),
+    Flag(
+        code="near_miss",
+        label="Fitted only at the minimum size",
+        description=(
+            "The title fitted its box only by shrinking to this art kind's "
+            "configured minimum point size. The file was written, unlike "
+            "'Text does not fit', but there was no room left. Off by "
+            "default: the size of this population depends entirely on the "
+            "configured box and floor, and a library of long titles could "
+            "put thousands of rows on it."
+        ),
+        default_on=False,
+        instant=False,
+        predicate=_near_miss,
+        detail=_near_miss_detail,
+    ),
 )
 
 #: Insertion-ordered, and that order is the order the page's chips appear in.
@@ -506,6 +591,13 @@ _EVIDENCE_COLUMNS = (
     Render.textless_fallback,
     Render.logo_text_fallback,
     Render.quality_scored_at.isnot(None),
+    # Roadmap row 235. `near_miss` rests on it, so a dismissal made while a
+    # title sat on the floor must not survive the re-render that fitted it
+    # comfortably -- the exact failure this tuple's comment above is written
+    # against. Adding it moved `evidence_expression()` for every row and
+    # returned every existing dismissal to the queue ONCE, which was the
+    # accepted cost of the row.
+    Render.text_point_size,
 )
 
 

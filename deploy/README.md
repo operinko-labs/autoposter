@@ -473,7 +473,11 @@ Practical consequences:
   clients, notification wiring, Plex connection settings, `poll_seconds`,
   and whether a scheduled job is registered at all. A restart also brings
   any other replica up to date; a running sibling replica keeps its old
-  configuration until then.
+  configuration until then. In the shipped manifests that case does not
+  arise: the deployment pins a single replica with the `Recreate` strategy,
+  so two pods never run at once — not even for the seconds a rolling update
+  would give them — and every pod re-reads the persisted overrides at boot
+  before anything is built from them.
 - `api_docs_enabled` is the one exception a restart does NOT fix: it must
   be set in the ConfigMap. FastAPI decides whether `/docs`, `/redoc` and
   `/openapi.json` exist when the application object is built, and that
@@ -3082,7 +3086,7 @@ consequences worth knowing:
 The `notifications:` block in `autoposter.yaml` controls the Phase 5a
 run-completion webhook: one POST to a configured URL when a run boundary is
 crossed, replacing the notification capability Posterizarr's Apprise config
-provided. Six events exist, each hooked where the fact it reports is already
+provided. Seven events exist, each hooked where the fact it reports is already
 recorded. Three are global, at the scheduler boundary:
 
 - `scheduled_run_started` -- a named scheduler job began, after its claim
@@ -3098,10 +3102,23 @@ recorded. Three are global, at the scheduler boundary:
   renaming or dropping a shipped event would break the automation this
   webhook exists for. Detail: `{job, status, detail}`.
 
-One is an API boundary:
+Two are full-pass boundaries:
 
 - `full_pass_enqueued` -- `POST /api/full-pass` enqueued its batch,
   carrying the real `{total, queued, skipped}` counts, after their commit.
+- `newly_actionable` -- a full pass finished draining and the scheduler
+  closed its `runs` row. Detail: one integer per Action Center flag code
+  (`missing`, `plex_generated`, `language_miss`, …), counting the renders
+  that pass scored which that flag fires on. **Opt-in and off by default**
+  (`actionable_digest_enabled`), and suppressed entirely when the pass
+  produced nothing in the queue's default population -- a quiet pass sends
+  nothing rather than a digest of zeroes. One POST per closed pass, never
+  one per asset. It answers "a pass has just produced fifty of these" for
+  the page at `/actions`, which is otherwise a pull surface. It does **not**
+  see newness caused by a config edit: re-pointing a language order moves
+  rows into the queue with no row write at all, so no timestamp could -- the
+  config editor's impact preview is what answers that, and the operator who
+  made the edit is at the keyboard for it.
 
 Two are per collection, and they are the only ones that can go somewhere
 other than `notifications.url`:
@@ -3146,6 +3163,12 @@ Settings:
 - `timeout_seconds` (default `10`) -- per-attempt HTTP timeout.
 - `retry_count` (default `3`) -- total attempts per notification, not
   retries after the first.
+- `actionable_digest_enabled` (default `false`) -- a TOP-LEVEL setting, not a
+  `notifications` one, and deliberately so: the `notifications` block is
+  frozen because the sender is built once at startup, while this switch is
+  re-read on every scheduler tick, so an edit applies at the next pass that
+  closes rather than at the next restart. Turns the `newly_actionable`
+  digest on. Still gated on `notifications.enabled` like every other event.
 
 ### The four payload shapes
 
@@ -3191,7 +3214,9 @@ want the structured detail the Apprise shape has no field for:
 `at` is the payload build time, ISO 8601 UTC with an explicit offset.
 `detail` for `scheduled_run_completed` is `{job, status, detail}` with
 `status` exactly `ok` or `failed`; for `full_pass_enqueued` it is
-`{total, queued, skipped}`.
+`{total, queued, skipped}`; for `newly_actionable` it is one key per Action
+Center flag code with an integer count, always all of them, zero-filled, so
+a consumer gating on one code never finds it missing.
 
 `discord` is a Discord webhook embed, for a `notifications.url` pointing
 at `https://discord.com/api/webhooks/{id}/{token}`:

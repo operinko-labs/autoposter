@@ -216,6 +216,33 @@
   color: var(--ok);
 }
 
+/* Between a pick and its queued re-render landing. `--warn` rather than `--ok`:
+ * the file on the mount is the picked one, but the rendered artwork is not yet,
+ * and the green border next door means the render itself agrees. */
+.candidate-tile.is-picked {
+  border-color: var(--warn);
+}
+
+.candidate-picked {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+/* An SVG candidate: shown, because the render path composites SVG clearlogos
+ * and the ladder may already be using this very image -- only the pick cannot
+ * take it. Dimmed rather than hidden, with the reason on the tile; the disabled
+ * Pick already gets its own treatment from theme.css's `button:disabled`. */
+.candidate-tile.is-unpickable {
+  opacity: 0.65;
+}
+
+.candidate-unpickable {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .candidate-tile .pick {
   margin-top: auto;
   font-size: 12px;
