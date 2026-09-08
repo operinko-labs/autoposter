@@ -377,3 +377,93 @@ async def test_the_bulk_rebuild_skips_a_dismissed_row_unless_it_is_asked_for(
 
     assert asked["cleared"] == 1
     assert await _fingerprints_of(session, render_id) == (None, None)
+
+
+# --- task-1 review I2: four mutants that survived the tests above ------------
+
+
+async def test_a_row_press_in_an_excluded_library_matches_nothing_and_clears_nothing(
+    client, auth_headers, session
+):
+    """I2#1: the row branch's own `flags.excluded_library_predicate(config)`
+    term. Nothing above seeds an excluded library and presses the row form,
+    so the guarantee that a row in an excluded library is not stranded
+    cleared -- nothing can re-render it once cleared -- was unpinned. The
+    example config excludes `Photos`.
+    """
+    item, render = await _seed(session, rating_key="1", library="Photos")
+    render_id = render.id
+
+    body = (
+        await client.post(
+            "/api/actions/rebuild",
+            headers=auth_headers,
+            json={"row": {"item_id": item.id, "art_kind": "poster"}, "apply": True},
+        )
+    ).json()
+
+    assert body["matched"] == 0
+    assert body["status"] == "complete"
+    assert await _fingerprints_of(session, render_id) == ("1" * 64, "1" * 64)
+
+
+async def test_the_cleared_count_counts_a_row_whose_badge_fingerprint_alone_is_set(
+    client, auth_headers, session
+):
+    """I2#2: `cleared` is `fingerprint is not None or badge_fingerprint is
+    not None`. Every seed above sets both columns together, so the two halves
+    of that `or` are indistinguishable. `backfill_trigger` clears only
+    `fingerprint`, so a row with `fingerprint IS NULL` and `badge_fingerprint`
+    still set is reachable in production, and a rebuild over it really does
+    clear a badge fingerprint -- it must count.
+    """
+    item, render = await _seed(session, rating_key="1", fingerprint=None)
+    render_id = render.id
+    assert await _fingerprints_of(session, render_id) == (None, "1" * 64)
+
+    body = (
+        await client.post(
+            "/api/actions/rebuild",
+            headers=auth_headers,
+            json={"row": {"item_id": item.id, "art_kind": "poster"}, "apply": True},
+        )
+    ).json()
+
+    assert body["cleared"] == 1
+    assert await _fingerprints_of(session, render_id) == (None, None)
+
+
+async def test_a_bulk_rebuild_with_no_matches_writes_no_event_log_row(
+    client, auth_headers, session
+):
+    """I2#3: the `if batch:` guard on the `EventLog` insert. The dry-run test
+    above returns before this line is ever reached, and the "row that is
+    gone" test asserts nothing about `events_log` -- so writing an audit row
+    for a zero-row `apply: True` press would go unnoticed. Nothing is seeded
+    here, so nothing matches; only the guard stands between this press and a
+    zero-row `EventLog` entry.
+    """
+    body = (
+        await client.post("/api/actions/rebuild", headers=auth_headers, json={"apply": True})
+    ).json()
+
+    assert body["matched"] == 0
+    assert body["status"] == "complete"
+    assert (await session.execute(select(EventLog))).scalars().all() == []
+
+
+async def test_rating_keys_are_sorted_lexicographically(client, auth_headers, session):
+    """I2#4: `sorted(...)` on `rating_keys`. Every assertion above is over a
+    one-element list, which cannot tell a sort from a pass-through. Seeding
+    "9" before "2" gives them ascending `Render.id`s, so an unsorted
+    (insertion-order) return would read `["9", "2"]`; the endpoint's own
+    `sorted()` must produce `["2", "9"]`.
+    """
+    await _seed(session, rating_key="9")
+    await _seed(session, rating_key="2")
+
+    body = (
+        await client.post("/api/actions/rebuild", headers=auth_headers, json={"apply": True})
+    ).json()
+
+    assert body["rating_keys"] == ["2", "9"]
