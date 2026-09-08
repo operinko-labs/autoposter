@@ -938,6 +938,81 @@ async def test_an_instance_without_a_tmdb_client_says_so(session, registry_entry
     assert any("no TMDB client" in action for action in actions)
 
 
+async def test_a_builder_summary_beats_the_tmdb_pull(session, registry_entry):
+    """Roadmap row 251, and it is Kometa's order rather than a preference.
+
+    Upstream's ``update_details`` consults ``summary`` -> ``translation`` ->
+    ``tmdb_description`` -> ... -> ``tmdb_summary``
+    (``modules/builder.py:5273-5284``, transcribed in the roadmap cell), and
+    the summary our builders derive IS upstream's translation string:
+    ``docs/research/kometa-collections.md`` §5 (:411-441) records that Kometa
+    reads ``collections.<translation_key>`` from ``Kometa-Team/Translations``
+    ``defaults/en.yml`` for a collection's name and summary, and quotes the
+    eleven entries verbatim -- ``tmdb_popular``'s among them, which is the
+    exact string ``builders/tmdb.CHART_TITLES`` carries. So a definition that
+    sets ``tmdb_summary:`` on a builder that derives its own summary keeps the
+    builder's, and the setting does nothing.
+
+    Two assertions, not one. That the pull is **not even made** is the half
+    that matters operationally: it is one fewer TMDB request per affected
+    definition per pass, and it is why this path produces no action string --
+    which makes ``summary_asserted`` True at the call site
+    (``engine.py:1024``), correctly, because the summary IS resolved rather
+    than fallen back to.
+
+    The double stands in for a real chart builder deliberately, as its
+    neighbour ``test_a_static_summary_beats_a_person_builders_biography``
+    already argues: ``_summary_for`` reads ``result.summary`` and never learns
+    which builder produced it."""
+    registry_entry(_Listing(
+        "settings_builder_beats_tmdb", [("imdb", "tt1")], summary="BuildersOwn",
+    ))
+    section = _one_item_section()
+    summaries = _Summaries("TmdbPulled")
+
+    await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Fresh", builder="settings_builder_beats_tmdb", tmdb_summary=10,
+        )],
+        summaries=summaries,
+    )
+
+    assert summaries.asked == [], "the pull is not made, not merely discarded"
+    writes = section._existing["Fresh"].summary_writes
+    assert writes, "the summary was written to Plex"
+    assert all("BuildersOwn" in write for write in writes)
+    assert not any("TmdbPulled" in write for write in writes)
+
+
+async def test_the_tmdb_pull_still_wins_when_the_builder_derived_no_summary(
+    session, registry_entry
+):
+    """The other side of row 251's swap, and the reason it is a swap rather
+    than a removal: with no builder-derived summary in the way, a
+    ``tmdb_summary:`` definition still gets the TMDB overview, which is the
+    only case row 30 shipped the setting for. Six of the shipped builders
+    derive no summary at all, and three more refuse ``tmdb_summary:`` at config
+    load -- so this, not the case above, is what the setting does in
+    production."""
+    registry_entry(_Listing("settings_tmdb_still_wins", [("imdb", "tt1")]))
+    section = _one_item_section()
+    summaries = _Summaries("TmdbPulled")
+
+    await _run(
+        session, section,
+        [CollectionDefinition(
+            title="Fresh", builder="settings_tmdb_still_wins", tmdb_summary=10,
+        )],
+        summaries=summaries,
+    )
+
+    assert summaries.asked == [10]
+    writes = section._existing["Fresh"].summary_writes
+    assert writes, "the summary was written to Plex"
+    assert all("TmdbPulled" in write for write in writes)
+
+
 async def test_tmdb_summary_is_refused_on_a_smart_definition():
     with pytest.raises(ValueError):
         CollectionDefinition(
