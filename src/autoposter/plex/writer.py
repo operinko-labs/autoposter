@@ -626,9 +626,10 @@ def plan_edits(
         # whose acceptance by the server is unverified.
         #
         # COMPARED at date granularity all the same -- Kometa's own compare,
-        # and the sibling's. A container timezone change moves the epoch by
-        # the offset, and an epoch compare would then rewrite the whole
-        # library; the date compare absorbs anything short of a day.
+        # and the sibling's. The compare is steady WHILE the container
+        # timezone is unchanged; a timezone change moves local midnight's
+        # epoch and can shift the read-back across a calendar day, which
+        # re-fires the full rewrite once.
         #
         # ``_ensure_locked`` on the equal case is deliberately absent: no
         # provider branch in this function calls it (only ``override_edits``
