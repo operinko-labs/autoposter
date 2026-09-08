@@ -1047,6 +1047,7 @@ def test_a_definition_with_no_settings_hashes_exactly_as_before():
         ("visible_home", False),
         ("visible_shared", True),
         ("hub_priority", 0),
+        ("poster_url", "https://posters.invalid/dceu.jpg"),
     ],
 )
 def test_every_ride_along_setting_changes_the_hash(field, value):
@@ -1059,6 +1060,40 @@ def test_every_ride_along_setting_changes_the_hash(field, value):
 
     assert _members_hash(items, None, "sync", plain) != _members_hash(
         items, None, "sync", edited
+    )
+
+
+def test_a_poster_url_at_its_default_leaves_every_definition_hash_byte_identical():
+    """Roadmap row 222's storm-guard, and the reason the field can be a hash
+    term at all.
+
+    `_settings_parts` emits a pair only for a field whose value differs from
+    its default, so a `poster_url` of None contributes NOTHING to the payload
+    and every digest already stored on the live server still matches. Without
+    that, adding the term would re-reconcile every managed collection in every
+    library to write nothing.
+
+    Asserted against the digest of a definition BUILT BEFORE the field
+    existed, which is what `_members_hash(items, summary)` -- the two-argument
+    call the base suite still uses everywhere -- reproduces exactly. Same
+    idiom as `tests/test_collection_poster_wiring.py`'s
+    `test_the_gate_off_leaves_every_definition_hash_byte_identical`.
+    """
+    items = [SimpleNamespace(ratingKey="m1"), SimpleNamespace(ratingKey="m2")]
+    plain = CollectionDefinition(title="X", builder="plex_id", params={"ids": ["1"]})
+    assert plain.poster_url is None
+
+    assert _members_hash(items, "a summary") == _members_hash(
+        items, "a summary", "sync", plain
+    )
+
+    # ...and adopting the field DOES move it, which is what makes an edit
+    # apply on the very next pass rather than never (lists.py:314 returns
+    # before apply_poster whenever the hash is current and poster_sha256 is
+    # set).
+    adopted = plain.model_copy(update={"poster_url": "https://posters.invalid/dceu.jpg"})
+    assert _members_hash(items, "a summary", "sync", plain) != _members_hash(
+        items, "a summary", "sync", adopted
     )
 
 
