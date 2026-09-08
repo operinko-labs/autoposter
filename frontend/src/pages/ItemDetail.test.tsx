@@ -184,6 +184,50 @@ const CANDIDATES = {
   current: { source_url: TVDB_URL, provider: "tvdb" },
 };
 
+/** A logo grid as TMDB actually serves one: an SVG beside a raster.
+ *
+ * TMDB's `logos` array carries `.svg` file paths and nothing filters them
+ * (providers/tmdb.py); the browse copies every candidate through, and
+ * `thumb_url` (api/candidates.py) rewrites only the `/t/p/original` prefix, so
+ * the `.svg` segment survives into BOTH urls and the tile renders it in a plain
+ * <img> exactly like a jpeg. The response carries no per-candidate pickability
+ * field and no content type, so the grid has only the URL to go on -- which is
+ * the whole of what these two tiles pin.
+ *
+ * `current` is null because a logo has no render row: browse_candidates skips
+ * the lookup entirely for that art kind. */
+const TMDB_SVG_URL = "https://image.tmdb.org/t/p/original/cccccc.svg";
+const TMDB_SVG_THUMB = "https://image.tmdb.org/t/p/w342/cccccc.svg";
+const TMDB_LOGO_URL = "https://image.tmdb.org/t/p/original/dddddd.png";
+const TMDB_LOGO_THUMB = "https://image.tmdb.org/t/p/w342/dddddd.png";
+
+const LOGO_CANDIDATES = {
+  candidates: [
+    {
+      provider: "tmdb",
+      url: TMDB_SVG_URL,
+      thumb_url: TMDB_SVG_THUMB,
+      language: "en",
+      width: null,
+      height: null,
+      score: 8.1,
+      includes_text: null,
+    },
+    {
+      provider: "tmdb",
+      url: TMDB_LOGO_URL,
+      thumb_url: TMDB_LOGO_THUMB,
+      language: "en",
+      width: 1600,
+      height: 400,
+      score: 5.4,
+      includes_text: null,
+    },
+  ],
+  errors: {},
+  current: null,
+};
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -1400,20 +1444,22 @@ describe("ItemDetail candidate picker", () => {
     expect(document.querySelector(".candidate-error")).toBeNull();
   });
 
-  it("marks the newly-picked tile as current without reopening the panel", async () => {
-    // onPicked only re-reads the item; the panel's own `current` came from the
-    // candidates response fetched when it opened, and a pick does not
-    // otherwise touch it. Left alone, the is-current highlight and the
-    // replaces-override warning would keep describing the pre-pick state
-    // until the panel is closed and reopened.
+  it("marks the newly-picked tile as pending, against the response production actually returns", async () => {
+    // The re-read at the end of `pick` was already happening; what it comes
+    // back with is the point. `provider="manual"` is stamped by the RENDER
+    // (render/pipeline.py:1250), and a pick touches only the two fingerprint
+    // columns (api/candidates.py) -- so the browse endpoint, which derives
+    // `current` from the Render row, answers the SAME pre-pick provenance it
+    // answered a moment ago. This stub returns exactly that, which is why the
+    // mark cannot come from `current` at all. The version of this test that
+    // shipped in 6d stubbed a second response moving `current` to the picked
+    // tile: green, and describing a server that does not exist.
     let candidateCalls = 0;
     stubFetch(
       movieRoutes({
         "/api/items/3/candidates/poster": () => {
           candidateCalls += 1;
-          return candidateCalls === 1
-            ? json(CANDIDATES)
-            : json({ ...CANDIDATES, current: { source_url: TMDB_URL, provider: "tmdb" } });
+          return json(CANDIDATES);
         },
         "/api/items/3/candidates/poster/pick": () =>
           json({ status: "picked", queued: true }),
@@ -1432,11 +1478,164 @@ describe("ItemDetail candidate picker", () => {
       expect(document.querySelector(".candidate-note")).not.toBeNull(),
     );
 
-    // After the pick: the tmdb tile (index 0) is current -- read from a
-    // second candidates fetch, not the panel's stale first one.
+    // The re-read still happens: the errors list and the Renders table are read
+    // from it, and a server that one day DID move `current` would be honoured.
     expect(candidateCalls).toBe(2);
-    expect(tiles()[0].classList.contains("is-current")).toBe(true);
+    // After the pick, with `current` unchanged: the picked tile is marked
+    // pending, and the tile the server still calls current has stopped saying
+    // so -- it names the file that has just been replaced.
+    expect(tiles()[0].classList.contains("is-picked")).toBe(true);
+    expect(tiles()[0].textContent).toContain("picked · re-render pending");
     expect(tiles()[1].classList.contains("is-current")).toBe(false);
+    expect(candidatePanel().textContent).not.toContain("in use");
+  });
+
+  it("keeps the pending mark when the panel is closed and reopened", async () => {
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/poster": () => json(CANDIDATES),
+        "/api/items/3/candidates/poster/pick": () =>
+          json({ status: "picked", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    fireEvent.click(within(tiles()[0]).getByRole("button", { name: "Pick" }));
+    await waitFor(() =>
+      expect(document.querySelector(".candidate-note")).not.toBeNull(),
+    );
+    expect(tiles()[0].querySelector(".candidate-picked")?.textContent).toBe(
+      "picked · re-render pending",
+    );
+
+    // The close/reopen an operator actually performs. A flag held inside
+    // CandidatePanel dies exactly here -- the panel is keyed on the art kind
+    // and unmounted by the toggle -- which is why the set lives in ItemDetail.
+    fireEvent.click(screen.getByRole("button", { name: "Browse candidates" }));
+    expect(document.querySelector(".candidate-panel")).toBeNull();
+    await openPanel("Browse candidates");
+
+    expect(tiles()[0].querySelector(".candidate-picked")?.textContent).toBe(
+      "picked · re-render pending",
+    );
+    // The reopened panel re-fetched, and its `current` is still tvdb's -- which
+    // is exactly the stale claim that must not come back with it.
+    expect(tiles().some((tile) => tile.classList.contains("is-current"))).toBe(false);
+  });
+
+  it("warns that an existing override is not kept as soon as a pick has been made", async () => {
+    // The fixture's render row is tvdb's, so nothing warns before the pick.
+    // After it, an override file exists on the mount that the server cannot
+    // report yet -- and a SECOND pick in that window would overwrite it with no
+    // backup. That silent window is the half of the defect an operator loses a
+    // file to.
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/poster": () => json(CANDIDATES),
+        "/api/items/3/candidates/poster/pick": () =>
+          json({ status: "picked", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    for (const tile of tiles()) {
+      expect(tile.querySelector("button")!.getAttribute("title") ?? "").not.toContain(
+        "the previous file is not kept",
+      );
+    }
+
+    fireEvent.click(within(tiles()[0]).getByRole("button", { name: "Pick" }));
+    await waitFor(() =>
+      expect(document.querySelector(".candidate-note")).not.toBeNull(),
+    );
+
+    // Every tile, not only the one just picked: the warning is about the file
+    // on the mount, and any of these buttons would replace it.
+    for (const tile of tiles()) {
+      expect(tile.querySelector("button")!.getAttribute("title")).toContain(
+        "the previous file is not kept",
+      );
+    }
+  });
+
+  it("marks an SVG candidate unpickable instead of hiding it, and its Pick fires nothing", async () => {
+    const fetchMock = stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/logo": () => json(LOGO_CANDIDATES),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse logos");
+
+    // Shown, not filtered. The compositor rasterises an SVG clearlogo
+    // (build_logo_argv's -density 300 branch) and the render path leaves
+    // `raster_only` off for exactly that reason, so the automatic ladder may
+    // already be using the very image a filter would have hidden. Only the pick
+    // cannot take it.
+    expect(tiles()).toHaveLength(2);
+    expect(tiles()[0].querySelector("img")!.getAttribute("src")).toBe(TMDB_SVG_THUMB);
+    expect(tiles()[0].classList.contains("is-unpickable")).toBe(true);
+
+    const button = within(tiles()[0]).getByRole("button", { name: "Pick" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    // Ours and fixed: never the provider's URL, a Content-Type header, or an
+    // exception message. It names the reason -- the pick decodes the image and
+    // Pillow has no SVG decoder -- rather than leaving the operator to guess.
+    expect(tiles()[0].textContent).toContain("cannot be picked");
+    expect(tiles()[0].textContent).toContain("Pillow has no SVG decoder");
+    expect(button.getAttribute("title")).toContain("cannot be picked");
+
+    fireEvent.click(button);
+    await act(async () => {});
+
+    // No request at all. Sent, it would come back 502 "could not fetch the
+    // picked image from tmdb" -- which reads as the provider failing rather
+    // than as this image kind being unsupported.
+    expect(
+      fetchMock.mock.calls
+        .map((call) => call[0] as string)
+        .filter((path) => path.endsWith("/pick")),
+    ).toEqual([]);
+    expect(document.querySelector(".candidate-note")).toBeNull();
+    expect(document.querySelector(".candidate-error")).toBeNull();
+  });
+
+  it("leaves the raster candidate beside it pickable", async () => {
+    // The refusal is per tile, not per grid: an SVG in the list must not cost
+    // the operator the logo they can actually install.
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/logo": () => json(LOGO_CANDIDATES),
+        "/api/items/3/candidates/logo/pick": () =>
+          json({ status: "picked", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse logos");
+
+    const button = within(tiles()[1]).getByRole("button", { name: "Pick" });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    expect(tiles()[1].classList.contains("is-unpickable")).toBe(false);
+    expect(tiles()[1].textContent).not.toContain("cannot be picked");
+
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(document.querySelector(".candidate-note")).not.toBeNull(),
+    );
+
+    expect(tiles()[1].querySelector(".candidate-picked")?.textContent).toBe(
+      "picked · re-render pending",
+    );
+    // ...and the SVG tile beside it is still refused after a pick has landed.
+    expect(
+      within(tiles()[0]).getByRole("button", { name: "Pick" }).hasAttribute("disabled"),
+    ).toBe(true);
   });
 
   it("closes the panel when Browse candidates is clicked a second time", async () => {
