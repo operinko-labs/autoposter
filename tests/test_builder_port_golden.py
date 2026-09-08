@@ -64,6 +64,34 @@ group's renumbering moved nothing (no scenario reaches section 050).
 tests grade the behaviour this fixture can only witness. It landed as its own
 reviewed commit.
 
+**Fifth deliberate amendment, roadmap row 252.** ``chart`` became a
+``default_images`` family, so a proven-missing chart poster no longer reaches
+``hosted_poster_url`` at all -- it fails inside ``ensure_default_image`` and
+reports the same ``no poster source for`` sentence every other family kind
+already used, with no URL attached. Adjudicated in advance
+(`docs/superpowers/plans/2026-09-08-chart-default-images-and-summary-precedence.md`
+C1: "the sticky-miss semantics the family entry implies... is accepted"). Three
+things moved, all consequences of the one cache. ``movies_posters_missing``'s
+three chart lines (``IMDb Popular``, ``IMDb Top 250``, ``IMDb Lowest Rated``)
+lost their URL, because every other kind in that scenario still carries its
+URL and only ``chart`` left the hosted table.
+``movies_posters_served``'s three chart cells (``golden_port.json:1322,1325,1328``)
+changed from ``"...from the hosted default"`` to ``"...from the hosted default
+image"``, because that is the family rung's own pre-existing label
+(``posters.py:455``), unchanged by this amendment but now the one chart takes.
+And that scenario's own ``assets_root`` (``:454``) stopped being shared with
+scenario 6, because ``default_images._cache_paths`` keys the on-disk cache on
+``(family, key)`` alone with no scenario dimension, so scenario 6's proven-404
+``.miss`` markers for the three chart titles would otherwise leak into
+scenario 7 -- which exists to exercise the serve-and-upload path for those
+same three titles -- and report "no poster source" instead. Every other cell
+in both scenarios is the original capture, unchanged. Unlike the first four
+amendments, this one did not land as its own reviewed commit: the three cells
+above are a consequence of the production change rather than a separable
+decision, so they ride with it in the same commit.
+`tests/test_collection_poster_apply.py`'s new cache-hit and miss-marker tests
+grade the behaviour this fixture can only witness.
+
 ``_library_pass`` below is the one seam: it is the per-library sequence
 ``service.reconcile_libraries`` runs, and the port rewrites it from "the smart
 reconciler, then ``build_all``" into the single engine call. Everything else in
@@ -420,18 +448,26 @@ async def _scenarios(session, config_factory, tmp_path) -> dict:
     )
 
     # 6. Posters on, every hosted default missing: the failure string carries
-    # the URL, which is what pins each collection's poster kind and key.
+    # the URL, which is what pins each collection's poster kind and key --
+    # except the chart three, whose miss is a family miss now (row 252) and
+    # carries no URL at all.
     section = FakeSection(items=MOVIE_GUIDS, ratings=MOVIE_RATINGS)
     await record(
         "movies_posters_missing", section, "Poster Movies", "Movie",
         _config(config_factory, tmp_path, posters=True), _handler(posters="missing"),
     )
 
-    # 7. Posters on and served: the upload path.
+    # 7. Posters on and served: the upload path. A separate assets_root from
+    # scenario 6, not a shared one -- since row 252, chart posters are cached
+    # on disk by (family, key) alone, so reusing scenario 6's tmp_path would
+    # have this scenario inherit ITS proven-404 ``.miss`` markers for the
+    # three chart collections and report "no poster source" instead of
+    # exercising the serve-and-upload path this scenario exists to cover.
     section = FakeSection(items=MOVIE_GUIDS, ratings=MOVIE_RATINGS)
     await record(
         "movies_posters_served", section, "Art Movies", "Movie",
-        _config(config_factory, tmp_path, posters=True), _handler(posters="served"),
+        _config(config_factory, tmp_path / "posters_served", posters=True),
+        _handler(posters="served"),
     )
 
     # 8. A dead chart fetcher must not touch its collections, nor stop the

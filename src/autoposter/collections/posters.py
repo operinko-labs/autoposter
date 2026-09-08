@@ -26,7 +26,6 @@ import os
 import tempfile
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import quote
 
 import httpx
 from PIL import Image
@@ -119,11 +118,14 @@ class PosterPathRefused(Exception):
 def hosted_poster_url(kind: str, key: str) -> str | None:
     """The default poster URL for a collection of the given kind, or ``None``.
 
-    ``kind`` is one of ``award_static``, ``award_year``, ``chart``,
-    ``content_rating``, ``content_rating_other``, ``separator``; ``key`` is
-    the piece that varies. Only the chart key is URL-encoded -- the others
-    have no spaces, and encoding the year path's slash would break
-    ``award/oscars/winner/2026``. An unrecognised kind returns ``None``
+    ``kind`` is one of ``award_static``, ``award_year``, ``content_rating``,
+    ``content_rating_other``, ``separator``; ``key`` is the piece that varies.
+    No key here is URL-encoded: none of them carries a space, and encoding the
+    year path's slash would break ``award/oscars/winner/2026``. ``chart`` was
+    the one encoded kind and is a ``default_images`` family since roadmap row
+    252 -- ``candidate_urls`` builds the byte-identical URL there, and leaving
+    the branch here as a fallback would have re-fetched a proven 404 a second
+    time on every pass. An unrecognised kind returns ``None``
     rather than guessing: a wrong URL 404s and the collection quietly keeps
     no poster, which is harder to spot than an error.
 
@@ -147,8 +149,6 @@ def hosted_poster_url(kind: str, key: str) -> str | None:
             return None
         folder = images.static if kind == "award_static" else images.year
         return f"{DEFAULT_IMAGES_BASE}/award/{folder}/{stem}.jpg"
-    if kind == "chart":
-        return f"{DEFAULT_IMAGES_BASE}/chart/color/{quote(key, safe='')}.jpg"
     if kind == "content_rating":
         return f"{DEFAULT_IMAGES_BASE}/content_rating/cs/{key}.jpg"
     if kind == "content_rating_other":

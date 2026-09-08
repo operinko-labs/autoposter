@@ -193,13 +193,17 @@ class _Listing:
 
 class _PosterFailing:
     """A builder whose action strings will carry a URL: naming a poster the
-    hosted default cannot serve is what puts one in the report."""
+    hosted default cannot serve is what puts one in the report.
+
+    ``content_rating``, not ``chart``, since roadmap row 252: a missing
+    ``chart`` poster no longer reaches ``hosted_poster_url`` at all, so its
+    failure message carries no URL to redact."""
 
     type_name = "preview_poster"
 
     async def build(self, ctx) -> BuilderResult:
         return BuilderResult(
-            ids=[("imdb", "tt1")], poster_kind="chart", poster_key="nonesuch"
+            ids=[("imdb", "tt1")], poster_kind="content_rating", poster_key="nonesuch"
         )
 
 

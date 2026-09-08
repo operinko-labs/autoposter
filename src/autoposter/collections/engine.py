@@ -1357,11 +1357,21 @@ async def _summary_for(
 ) -> tuple[str | None, str | None]:
     """The summary this collection should carry, and anything to report.
 
-    Three sources, in order: the one written in the config, the one TMDB holds
-    for the collection the definition names (roadmap row 30), and the one the
-    builder derived. The static summary wins because it is an explicit choice;
+    Three sources, in order: the one written in the config, the one the builder
+    derived, and the one TMDB holds for the collection the definition names
+    (roadmap row 30). The static summary wins because it is an explicit choice;
     a pull that silently overrode it would be a setting that reads as applied
     and is not.
+
+    The builder's own summary comes SECOND because that is Kometa's order --
+    ``update_details`` runs ``summary`` -> ``translation`` -> ... ->
+    ``tmdb_summary`` (``modules/builder.py:5273-5284``), and what our builders
+    derive is upstream's translation string
+    (``docs/research/kometa-collections.md`` §5). So a chart definition that
+    also sets ``tmdb_summary:`` keeps the transcribed chart string and the
+    setting does nothing (roadmap row 251). The elided middle rungs of
+    upstream's ladder name builders this service does not have, so this is a
+    two-element swap and not a re-implementation of that ladder.
 
     The pull is contained here rather than by the caller's builder wrapper: a
     summary is cosmetic, and a TMDB outage must leave the collection's
@@ -1370,7 +1380,11 @@ async def _summary_for(
     so -- and nothing derived from the exception reaches the action string,
     because a provider error carries the URL it failed on.
     """
-    if definition.summary is not None or definition.tmdb_summary is None:
+    if (
+        definition.summary is not None
+        or result.summary is not None
+        or definition.tmdb_summary is None
+    ):
         return definition.summary or result.summary, None
 
     if summaries is None:
