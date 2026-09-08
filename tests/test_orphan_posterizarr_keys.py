@@ -18,8 +18,10 @@ kind's whole ``ArtKindConfig`` dump -- and ``TitleCardConfig``
 (``schema.py:523``) and ``SeasonPosterConfig`` (``schema.py:737``) both
 subclass it, so all four art kinds carry the two removed fields. Removing them
 moves all four per-kind fingerprints and the wholesale version, and the next
-pass re-renders the whole library (~16,000 items, ~3.5 h at measured
-throughput). The user accepted that cost explicitly.
+pass re-renders the whole library: every one of the ~16,000 moved fingerprints re-composites
+and re-uploads. The ~3.5 h figure was measured on a pass with zero composites, so the real
+pass is bounded by ``magick`` and ~3.5 h is a floor, not an estimate. The user accepted that
+cost explicitly.
 
 So the third test is the HONEST INVERSE of the usual pin: instead of proving a
 fingerprint did not move, it proves it DID, against the exact literals the

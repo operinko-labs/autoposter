@@ -478,8 +478,10 @@ def test_render_version_for_is_stable_across_two_loads_of_identical_content(tmp_
 # the one shape this pin is meant to catch -- and here it is correct: row 219
 # removed `min_width`/`min_height` from `ArtKindConfig`, the model every art
 # kind is or subclasses, so the field came out of all four payloads at once.
-# The re-render that follows (~16,000 items, ~3.5 h at measured throughput) is
-# the accepted cost of that row, stated in its PR body and proved as a MOVE by
+# The re-render that follows moves every one of the ~16,000 fingerprints, each of which
+# re-composites and re-uploads; the ~3.5 h figure was measured on a pass with zero composites,
+# so the real pass is bounded by ImageMagick and ~3.5 h is a floor, not an estimate. That
+# re-render is the accepted cost of that row, stated in its PR body and proved as a MOVE by
 # tests/test_orphan_posterizarr_keys.py rather than left to this comment. The
 # values below are the post-removal measurement.
 EXAMPLE_PER_KIND_VERSIONS = {
