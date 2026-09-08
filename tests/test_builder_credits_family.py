@@ -507,11 +507,15 @@ async def test_the_record_is_seeded_before_any_write_and_survives_one_failing(se
     assert generated_titles(ctx.run_cache, definition) == {"Ann", "Bob", "Cy"}
 
 
-async def test_a_person_plex_cannot_resolve_is_contained_to_that_one_key(session):
+async def test_a_person_the_vocabulary_does_not_know_leaves_the_family(session):
     """The credits cache and the library's tag vocabulary are two sources, and
     they can disagree: a person the scan recorded before a Plex rescan renamed
-    the tag resolves to nothing. That is one person's problem -- the other
-    collections are still managed -- and the refusal names them."""
+    the tag resolves to nothing. Since row 224 that disagreement is settled
+    ABOVE the cap -- she is not built, not counted against ``limit``, and not in
+    the sweep's record, which is the deliberate consequence: the family is the
+    top N people this library can actually search, so a member who leaves the
+    vocabulary leaves the family. The other collections are still managed and
+    the narrowing is reported rather than silent."""
     await _seed(session, {"Ann": 3, "Zed": 3})
     section = FakeSection(people=("Ann",))
     definition = _definition(params={"type": "actor", "depth": 1})
@@ -520,9 +524,12 @@ async def test_a_person_plex_cannot_resolve_is_contained_to_that_one_key(session
     actions = await REGISTRY["credits_family"].apply(ctx)
 
     assert list(section._existing) == ["Ann"]
-    assert any(one.startswith("refused 'Zed'") for one in actions), actions
-    assert any("Zed" in one for one in actions)
-    assert generated_titles(ctx.run_cache, definition) == {"Ann", "Zed"}
+    assert not any(one.startswith("refused ") for one in actions), actions
+    assert any(
+        "1 of the 2 actor(s) that met depth 1" in one and "vocabulary" in one
+        for one in actions
+    ), actions
+    assert generated_titles(ctx.run_cache, definition) == {"Ann"}
 
 
 async def test_generated_titles_is_none_when_the_family_refused_at_family_level(session):
@@ -678,3 +685,124 @@ async def test_the_count_is_never_described_as_a_complete_cast(session):
 
     assert "200" in module.__doc__
     assert "ABSENT" in credits_module.enumerate_credits.__doc__
+
+
+# --- row 224: the cap is filled from people the vocabulary knows ---------------
+
+
+async def test_an_unsearchable_top_ranked_person_is_backfilled_from_below_the_cap(session):
+    """Row 224. ``limit`` caps the people this family BUILDS, so a person the
+    library's tag vocabulary does not know must not consume one of its slots:
+    the cap is applied to the people who can actually be searched, and the
+    next-most-credited searchable person takes the place.
+
+    ``Bob`` outranks ``Cy`` on count and is absent from the section's
+    vocabulary. Before this row he took the second slot and then refused inside
+    the loop, so the family built one collection out of two; now ``Cy`` takes it
+    and the family builds both.
+    """
+    await _seed(session, {"Ann": 6, "Bob": 5, "Cy": 4})
+    section = FakeSection(people=("Ann", "Cy"))
+    definition = _definition(params={"type": "actor", "depth": 1, "limit": 2})
+    ctx = _ctx(session, section, definition)
+
+    actions = await REGISTRY["credits_family"].apply(ctx)
+
+    assert sorted(section._existing) == ["Ann", "Cy"]
+    assert not any(one.startswith("refused ") for one in actions), actions
+    assert any(
+        "1 of the 3 actor(s) that met depth 1" in one and "vocabulary" in one
+        for one in actions
+    ), actions
+    assert generated_titles(ctx.run_cache, definition) == {"Ann", "Cy"}
+
+
+async def test_an_all_searchable_family_keeps_its_membership_and_its_order(session):
+    """The no-op half of row 224, which is what makes the change safe to ship
+    on a live deployment: when every eligible person is in the vocabulary the
+    filter removes nobody, the cap falls in the same place, the membership is
+    identical and so is its most-credited-first ORDER."""
+    await _seed(session, {"Ann": 6, "Bob": 5, "Cy": 4})
+    section = FakeSection(people=("Ann", "Bob", "Cy"))
+    definition = _definition(params={"type": "actor", "depth": 1, "limit": 2})
+    ctx = _ctx(session, section, definition)
+
+    actions = await REGISTRY["credits_family"].apply(ctx)
+
+    assert list(section._existing) == ["Ann", "Bob"]
+    assert not any("vocabulary" in one for one in actions), actions
+    assert any(
+        "3 actor(s) meet depth 1" in one and "built the 2 most-credited" in one
+        for one in actions
+    ), actions
+
+
+async def test_the_vocabulary_is_read_once_for_the_whole_family(session):
+    """Row 224 costs no extra Plex round trip, which is the whole reason it is
+    an S. ``LibraryTagResolver`` memoises one ``listFilterChoices`` per
+    (library, libtype-scope, field) per pass on ``ctx.run_cache``, so asking
+    ``known()`` about every eligible person BEFORE the cap and then resolving
+    each built person's tag INSIDE the loop is still one call -- the same one
+    call this builder already paid for."""
+    await _seed(session, {"Ann": 6, "Bob": 5, "Cy": 4, "Dee": 4, "Eve": 4})
+    section = FakeSection(people=("Ann", "Bob", "Cy", "Dee", "Eve"))
+
+    await REGISTRY["credits_family"].apply(_ctx(
+        session, section, _definition(params={"type": "actor", "depth": 1}),
+    ))
+
+    assert section.choice_calls == [("actor", "movie")]
+
+
+async def test_a_family_whose_people_the_vocabulary_knows_none_of_says_so(session):
+    """The sentence row 224 needs and did not have. "No actor has 5
+    appearance(s) yet" is the SCAN's answer and stays correct only while the
+    count filter is what emptied the family; when people cleared the floor and
+    the library's own tag vocabulary knows none of them, that sentence would be
+    false. A distinct one is returned, with both numbers and no person named --
+    naming seventeen hundred of them is not a report."""
+    await _seed(session, {"Zed": 3, "Ozy": 3})
+    section = FakeSection(people=("Ann",))
+    definition = _definition(params={"type": "actor", "depth": 1})
+    ctx = _ctx(session, section, definition)
+
+    actions = await REGISTRY["credits_family"].apply(ctx)
+
+    assert section._existing == {}
+    assert len(actions) == 1, actions
+    assert "2 actor(s)" in actions[0] and "vocabulary" in actions[0], actions
+    assert "no actor has" not in actions[0].lower(), actions
+    assert generated_titles(ctx.run_cache, definition) is None
+
+
+async def test_an_unreadable_vocabulary_falls_back_to_the_in_loop_drop_paths(session):
+    """The fallback the ruling requires. ``known()`` reads the same
+    ``listFilterChoices`` every tag search reads, and a library that will not
+    answer it at all raises ``PlexSearchUnavailable`` -- once, memoised. That
+    must not turn a per-person refusal into a whole-family failure escaping the
+    engine's unwrapped smart dispatch: the pre-cap filter is skipped, the
+    ranking falls back to counts alone, and the existing in-loop paths refuse
+    each person exactly as they did before this row."""
+    from plexapi.exceptions import NotFound
+
+    class MuteSection(FakeSection):
+        def listFilterChoices(self, field, libtype=None):
+            self.choice_calls.append((field, libtype))
+            raise NotFound("no such filter")
+
+    await _seed(session, {"Ann": 3, "Bob": 3})
+    section = MuteSection()
+    definition = _definition(params={"type": "actor", "depth": 1})
+    ctx = _ctx(session, section, definition)
+
+    actions = await REGISTRY["credits_family"].apply(ctx)
+
+    assert section._existing == {}
+    assert section.choice_calls == [("actor", "movie")], "memoised, asked once"
+    assert sorted(one for one in actions if one.startswith("refused ")) == [
+        "refused 'Ann': Plex has no 'actor' filter for this library "
+        "(NotFound), so its values cannot be resolved",
+        "refused 'Bob': Plex has no 'actor' filter for this library "
+        "(NotFound), so its values cannot be resolved",
+    ], actions
+    assert generated_titles(ctx.run_cache, definition) == {"Ann", "Bob"}

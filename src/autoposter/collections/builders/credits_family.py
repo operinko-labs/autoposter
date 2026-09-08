@@ -326,8 +326,7 @@ class CreditsFamilyBuilder:
         eligible = [
             (person, count) for person, count in counted if count >= params.depth
         ]
-        capped = eligible[: params.limit]
-        if not capped:
+        if not eligible:
             return [
                 "%r built nothing: no %s has %d appearance(s) in %r yet. The "
                 "credits scan has visited %d of %d item(s) there; the family "
@@ -337,12 +336,72 @@ class CreditsFamilyBuilder:
                 % (definition.title, params.type, params.depth, ctx.library,
                    attempted, total)
             ]
+
+        # Roadmap row 224. The cap decides who this family BUILDS, so it has to
+        # be applied to the people this library can actually be searched for --
+        # not to the raw counts, which let a person whose tag the vocabulary
+        # does not know take a slot and then refuse inside the loop below,
+        # wasting it instead of backfilling from the next-most-credited person
+        # who would have searched cleanly. Measured on the live deployment at
+        # the ruling: 29 of 75 slots across three person packs produced no
+        # collection, against 1,878 eligible people to backfill from.
+        #
+        # It costs no extra Plex round trip: ``LibraryTagResolver`` memoises one
+        # ``listFilterChoices`` per (library, libtype-scope, field) per pass on
+        # ``ctx.run_cache``, and this builder already pays for that exact call
+        # inside the loop. The construction moved up here from below the cap for
+        # the same reason -- it is the same object, asked earlier.
+        resolver = LibraryTagResolver(ctx, ctx.section, libtype)
+        try:
+            searchable = [
+                (person, count) for person, count in eligible
+                if resolver.known(params.type, person)
+            ]
+        except PlexSearchUnavailable as refusal:
+            # ``engine.py:1158``'s own clause, for its reason. This is the
+            # resolver's ONLY memoised failure -- "Plex has no such filter for
+            # this library", or "Plex would not answer at all" -- and both are
+            # already class-name-only inside it, so the message carries no Plex
+            # URL and is safe to log whole (row 213). Uncaught it would escape
+            # the engine's unwrapped smart dispatch and cost the library its
+            # whole reconcile, which is exactly what the per-person catches
+            # below exist to prevent; so the ranking falls back to counts alone
+            # and those catches stay the fallback they always were.
+            logger.warning(
+                "%s: %r: could not read this library's %s vocabulary (%s), so "
+                "the ranking was capped on the counts alone",
+                ctx.library, definition.title, params.type, refusal,
+            )
+            searchable = eligible
+        if not searchable:
+            # NOT the sentence above: that one says the SCAN has not found
+            # anybody yet, and it would be false here -- people cleared the
+            # floor and this library's own tag vocabulary knows none of them.
+            # Numbers and the library, never a person: naming every one of them
+            # is not a report.
+            return [
+                "%r built nothing: %d %s(s) have %d appearance(s) or more in "
+                "%r, but %r's %s tag vocabulary knows none of them, so none "
+                "can be searched for. A Plex library scan is what reconciles "
+                "the credits cache with the tags Plex will answer on"
+                % (definition.title, len(eligible), params.type, params.depth,
+                   ctx.library, ctx.library, params.type)
+            ]
+        capped = searchable[: params.limit]
         if len(eligible) > len(capped):
             actions.append(
                 "%r: %d %s(s) meet depth %d; built the %d most-credited "
                 "(`limit`)"
                 % (definition.title, len(eligible), params.type, params.depth,
                    len(capped))
+            )
+        if len(searchable) < len(eligible):
+            actions.append(
+                "%r: %d of the %d %s(s) that met depth %d are not in %r's tag "
+                "vocabulary and were dropped before `limit:`, so the cap was "
+                "filled from the next-most-credited people instead"
+                % (definition.title, len(eligible) - len(searchable),
+                   len(eligible), params.type, params.depth, ctx.library)
             )
 
         # The key IS the person's name here, unlike ``dynamic``'s Plex-keyed
@@ -412,7 +471,6 @@ class CreditsFamilyBuilder:
         # The pass's one listing, fetched here rather than at context
         # construction so a definition that refuses above costs nothing.
         listing = ctx.listing() if ctx.listing is not None else None
-        resolver = LibraryTagResolver(ctx, ctx.section, libtype)
         collections = ctx.config.collections
 
         for unit in titled:
