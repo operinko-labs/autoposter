@@ -251,7 +251,17 @@ async def test_a_failed_rename_is_503_and_changes_nothing(
 ):
     """A read-only mount, simulated. Nothing may be cleared or queued: a
     cleared fingerprint with the override still in place re-renders straight
-    back to the override while the UI says it was cleared."""
+    back to the override while the UI says it was cleared.
+
+    Roadmap row 248: the served detail is the FIXED sentence, never the
+    OSError. str(exc) here was "[Errno 30] Read-only file system: '<absolute
+    path on the mount>'" -- an errno and the server's directory layout on a
+    served surface, against row 213's law. The sentence asserted below is
+    byte-identical to the one api/manual.py and api/candidates.py already
+    serve for the same mount and the same OSError, so the three sites agree.
+    The errno and the path are not lost: they stay on the endpoint's WARNING,
+    and the pod log is the trusted sink (row 207).
+    """
     item_id = await _item(session)
     override = _plant(manual_root)
 
@@ -265,7 +275,7 @@ async def test_a_failed_rename_is_503_and_changes_nothing(
     )
 
     assert response.status_code == 503
-    assert "Read-only file system" in response.json()["detail"]
+    assert response.json()["detail"] == "could not write to the override mount"
     assert override.read_bytes() == OVERRIDE_BYTES
     render = (
         await session.execute(select(Render).where(Render.item_id == item_id))

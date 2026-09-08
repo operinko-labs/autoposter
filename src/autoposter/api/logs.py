@@ -53,8 +53,22 @@ HEARTBEAT_SECONDS = 15.0
 # a credential (row 117's close records the same tradeoff). Row 207 added the
 # api-key spelling and the %3D alternation -- a URL nested inside another
 # URL's query value carries its '=' percent-encoded, and the encoded form
-# must redact exactly like the literal one.
-_CREDENTIAL_PARAM = re.compile(r"(?i)([-\w]*(?:api[-_]?key|token))(=|%3D)[^&\s'\"]+")
+# must redact exactly like the literal one. Row 248 added the other half of
+# the vocabulary -- secret/password/pass/auth -- which no shipped provider
+# uses (src/ grepped, zero carriers) but an operator's own changes_webhook or
+# notifications.url may: a documented gap closed, not a live leak. The [-\w]*
+# prefix is deliberately NOT tightened for the new words, so bypass= and
+# compass= are redacted too. Same direction as the over-match above, and for
+# a sharper reason: the only way to exclude them is a per-alternative prefix,
+# which would then MISS user_pass=/http_pass=/db_pass= -- shapes an operator
+# URL plausibly carries, where bypass= is not one. A false positive costs one
+# unreadable value on a debugging surface whose full copy is in the pod log;
+# a miss costs a credential. Note also that the value class excludes quotes,
+# so a Python repr in a traceback (auth='bearer', the shape
+# api/setup_checks.py's rows would print) matches nothing at all.
+_CREDENTIAL_PARAM = re.compile(
+    r"(?i)([-\w]*(?:api[-_]?key|token|secret|password|pass|auth))(=|%3D)[^&\s'\"]+"
+)
 
 # Roadmap row 207's other half: the credential pattern redacts the PARAM and
 # leaves the host, so /api/logs still served the operator's base URL

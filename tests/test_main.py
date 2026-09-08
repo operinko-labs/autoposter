@@ -202,7 +202,17 @@ async def test_build_keeps_httpx_request_urls_out_of_the_log(caplog):
     (config/schema.py's NotificationsConfig documents the host-only
     guarantee) or fanart.tv's api_key in its query string. ``build()``'s
     logging setup must therefore cap the ``httpx`` logger at WARNING;
-    deleting that line from ``build()`` must turn this red."""
+    deleting that line from ``build()`` must turn this red.
+
+    Roadmap row 248 named this test the control for the path-borne case. That
+    row widened ``api/logs.py``'s credential-PARAM vocabulary but deliberately
+    kept URL PATHS in the served log (rows 207/212/214's tradeoff), so a token
+    in a webhook's path is not answered at that sink -- it is answered here,
+    at the source, together with ``notify/dispatch.py``'s ``_host_of`` and
+    ``GET /api/config``'s host-only redaction of ``notifications.url``. Raise
+    the httpx logger to INFO for one debugging session and the token path
+    lands in ``LogBuffer``; this test is what stops that landing in main.
+    """
     main_module.build()
 
     # The property: build() itself capped the httpx logger. Asserted on the

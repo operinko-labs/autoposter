@@ -986,8 +986,18 @@ async def clear_manual_override(
         try:
             await asyncio.to_thread(os.replace, override, disabled)
         except OSError as exc:
+            # Roadmap row 248, under row 213's served-string law: the errno and
+            # the absolute path on the mount stay on this WARNING -- the pod
+            # log is the trusted sink (row 207) -- and the served detail is the
+            # fixed sentence api/manual.py and api/candidates.py already serve
+            # for the same mount and the same OSError, so the three sites now
+            # agree. str(exc) on an os.replace failure is "[Errno N] <libc
+            # text>: '<absolute path>'": an unbounded string the OS chose,
+            # which is exactly the case the generic rule exists for.
             logger.warning("could not disable override %s: %s", override, exc)
-            raise HTTPException(status_code=503, detail=str(exc)) from None
+            raise HTTPException(
+                status_code=503, detail="could not write to the override mount"
+            ) from None
 
         render = (
             await session.execute(

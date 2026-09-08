@@ -19,11 +19,27 @@ five-pattern vocabulary -- credential params (plain and percent-encoded), URL
 authorities (plain and percent-encoded), and the scheme-less ``host=``/``port=``
 shape ``requests`` writes for its own connection target -- applied to a
 FORMATTED log record, traceback included, at the ``LogBuffer`` seam. It has one
-consumer and its own doctrine (roadmap rows 117/207/212/214) and it deliberately
-stays there. The two vocabularies also disagree on purpose: that one keeps the
-path (``http://REDACTED/library/sections/9/all``) because a served LOG line has
-to stay debuggable; this one takes the URL whole, because a served ACTION string
-does not need it.
+consumer and its own doctrine (roadmap rows 117/207/212/214/248) and it
+deliberately stays there. The two vocabularies also disagree on purpose: that
+one keeps the path (``http://REDACTED/library/sections/9/all``) because a served
+LOG line has to stay debuggable; this one takes the URL whole, because a served
+ACTION string does not need it.
+
+**Row 248 re-opened that disagreement on purpose and kept it.** The Logs page
+still serves paths. What that row changed there was the credential-PARAM
+vocabulary only -- ``secret``/``password``/``pass``/``auth`` added to the
+existing alternation -- and the path-borne case it was filed for
+(``notifications.url``'s Uptime-Kuma ``/api/push/<token>`` shape) is answered at
+the SOURCE rather than at that sink, in three places that already held:
+``notify/dispatch.py`` reduces every first-party line to ``_host_of(url)``;
+``GET /api/config`` serves that value host-only through ``api/routes.py``'s
+``_REDACTORS``, so the two served surfaces agree about it; and ``main.py``'s
+httpx-to-WARNING gag keeps httpx's own per-request INFO line -- the one that
+carries the full URL -- out of ``LogBuffer`` entirely, pinned by
+``tests/test_main.py::test_build_keeps_httpx_request_urls_out_of_the_log``.
+Nothing in THIS module changed; this paragraph exists because this is the one
+place the divergence is documented, and a divergence that has been adjudicated
+twice should say so.
 
 **And it is not a pod-log redactor.** Roadmap row 207 adjudicated the pod log as
 the TRUSTED sink: ``exc_info`` tracebacks reach stdout whole, keys included,

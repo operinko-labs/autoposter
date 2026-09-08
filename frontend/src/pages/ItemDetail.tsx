@@ -885,9 +885,12 @@ export function ItemDetail() {
       });
     } catch (caught) {
       // Shown verbatim: a 409 says there was no override to clear, and a 503
-      // carries the OS error, whose absolute path on the mount is the only
-      // thing that says which file to go and look at. This page is behind
-      // require_session.
+      // says the mount refused the write -- "could not write to the override
+      // mount", the same fixed sentence the poster-install and pick endpoints
+      // serve. This comment used to argue for keeping the OS error's absolute
+      // path here; roadmap row 248 overturned that. The errno and the path
+      // are still written, on the endpoint's own WARNING, and the pod log is
+      // the trusted sink. This page is behind require_session either way.
       setClearNote({ artKind, failed: true, message: (caught as Error).message });
     } finally {
       setClearing(null);
