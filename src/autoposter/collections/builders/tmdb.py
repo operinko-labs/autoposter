@@ -28,8 +28,9 @@ five are Kometa's own (``defaults/chart/tmdb.yml``): their titles and summaries
 are its translation strings, transcribed verbatim in
 ``docs/research/kometa-collections.md`` §5 and held in ``CHART_TITLES`` below,
 and the same title is the poster key, because upstream keys chart art by the
-mapping name -- so ``posters.hosted_poster_url("chart", title)`` resolves the
-URL its own template builds. ``now_playing``, ``upcoming`` and ``trending_day``
+mapping name -- so ``default_images.default_image_url("chart", title)``
+resolves the URL the ``chart`` family row builds. ``now_playing``, ``upcoming``
+and ``trending_day``
 are charts this service has and that file does not, so there is nothing to
 transcribe for them and they get nothing: an invented summary would not be
 parity, and a poster keyed on a title of ours is a guess even when it happens
@@ -81,7 +82,8 @@ LIBRARY_TRANSLATION = "<<library_translation>>"
 # ``imdb_chart.CHART_TITLES`` already ships from; the rows are also recorded in
 # ``docs/research/kometa-collections.md`` §5. The title is BOTH the collection
 # name upstream gives the chart and the poster key
-# ``posters.hosted_poster_url("chart", ...)`` resolves, because
+# ``default_images.default_image_url("chart", ...)`` resolves, via the
+# ``chart`` row in ``FAMILIES``, because
 # ``defaults/chart/tmdb.yml``'s ``image: chart/<<style>>/<<mapping_name_encoded>>``
 # is keyed by the mapping name.
 #
