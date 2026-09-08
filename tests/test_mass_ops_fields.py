@@ -145,18 +145,28 @@ def _item(kind="movie", **over):
 
 
 class FakeTMDB:
-    """Answers ``movie``/``show`` with a fixed facts object."""
+    """Answers ``movie``/``show`` with a fixed facts object.
 
-    def __init__(self, facts=None):
+    ``release_date`` is row 227's read (``/movie/{id}/release_dates``). It
+    defaults to ``None`` -- "TMDb has no such entry for this title" -- so every
+    caller written before that row is byte-identical, and it is only ever
+    reached at all when ``operations.added_at_source`` names a source.
+    """
+
+    def __init__(self, facts=None, release_date=None):
         self._facts = facts if facts is not None else GatheredFacts(
             audience_rating=7.6, original_title="Heat (original)",
         )
+        self._release_date = release_date
 
     async def movie(self, tmdb_id):
         return self._facts
 
     async def show(self, tmdb_id):
         return self._facts
+
+    async def release_date(self, tmdb_id, source):
+        return self._release_date
 
 
 @pytest.mark.asyncio

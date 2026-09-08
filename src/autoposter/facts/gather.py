@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 # deployment from spamming one warning line per item across a whole library.
 _tvdb_source_unconfigured_warned = False
 
+# Roadmap row 227, and the same latch for the same reason one line up: this
+# config document holds library NAMES and nothing that says whether a name is
+# a movie library, so "movie libraries only" cannot be a config-load refusal
+# and is enforced here instead. One warning per PROCESS, not one per item: a
+# library-wide misconfiguration must not cost 13,841 warning lines a pass.
+_added_at_non_movie_warned = False
+
 
 def format_critic(value: float | None) -> str | None:
     """One decimal, always — ``9.0`` rather than ``9``.
@@ -203,12 +210,39 @@ async def gather_facts(
     if original_title:
         sources["original_title"] = "tmdb"
 
+    # Row 227. Only asked for when config NAMES a source, and only for a
+    # MOVIE -- Kometa's own rule, whose helper's first act is to refuse a
+    # non-movie library. A deployment that names no source pays no request and
+    # gets today's behaviour exactly, which is the whole safety claim of this
+    # row.
+    added_at = None
+    added_at_source = getattr(operations, "added_at_source", None)
+    if added_at_source and item.kind != "movie":
+        global _added_at_non_movie_warned
+        if not _added_at_non_movie_warned:
+            logger.warning(
+                "operations.added_at_source names a TMDb release date, which "
+                "is served for movies only; it is ignored on every non-movie "
+                "item"
+            )
+            _added_at_non_movie_warned = True
+    elif added_at_source and item.tmdb_id:
+        try:
+            added_at = await tmdb.release_date(item.tmdb_id, added_at_source)
+        except TmdbRateLimited as exc:
+            # One provider's spent budget must not throw away the pass -- the
+            # shape :129-130 already uses.
+            logger.warning("tmdb rate budget reached; skipping tmdb facts: %s", exc)
+    if added_at is not None:
+        sources["added_at"] = added_at_source
+
     return replace(
         facts,
         critic_rating=critic,
         content_rating=content_rating,
         user_rating=user_rating,
         original_title=original_title,
+        added_at=added_at,
         sources=sources,
     )
 

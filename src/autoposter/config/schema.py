@@ -1195,6 +1195,52 @@ class OperationsConfig(BaseModel):
         ),
     )
 
+    # Roadmap row 227, Kometa's ``mass_added_at_update``. TWO knobs, not one,
+    # and the split is row 85's: naming the source gates the FETCH (one cached
+    # ``/movie/{id}/release_dates`` request per in-scope movie per TTL) and
+    # ``added_at_apply`` gates the WRITE.
+    #
+    # The five other value-write sources (``user_rating_source``,
+    # ``original_title_source``, ``genres_source``, ``studio_source``,
+    # ``originally_available_source``) carry no apply flag -- naming them IS
+    # their arming -- and this one diverges deliberately. The write rewrites
+    # Plex's own "recently added" ordering for the whole library, this service
+    # records no undo for it, and every ``*_apply`` flag already present in
+    # this deployment's stored overrides is ``true``, so anything that reused
+    # an existing flag would ship armed. A NEW flag ships off.
+    #
+    # NO region knob, and that is Kometa's own default path rather than a
+    # simplification: ``modules/operations.py``'s ``tmdb_release_date`` uses
+    # ``config.TMDb.region`` only when it is set AND present on the movie, and
+    # otherwise takes ``min()`` across every region. This project has no TMDb
+    # region setting anywhere, so the faithful port is the all-regions
+    # ``min()``.
+    #
+    # Movie libraries only, per Kometa -- enforced by
+    # ``plex/writer.WRITABLE_BY_KIND["movie"]`` and by ``gather_facts``' own
+    # ``item.kind == "movie"`` term, because this document holds library NAMES
+    # and nothing that says whether a name is a movie library
+    # (``_library_names_must_be_configured`` below records the same limit).
+    added_at_source: Literal["tmdb_digital", "tmdb_premiere"] | None = Field(
+        default=None,
+        description=(
+            "Which TMDb release date is written to Plex's 'added at' date, "
+            "library-wide: 'tmdb_digital' for the digital release, "
+            "'tmdb_premiere' for the premiere. The earliest matching date "
+            "across every region, as Kometa has it. Movie libraries only; "
+            "unset makes no request and writes nothing."
+        ),
+    )
+    added_at_apply: bool = Field(
+        default=False,
+        description=(
+            "Actually write the fetched date to Plex's 'added at'; off only "
+            "reports which items would change. Turning this on reorders the "
+            "library's Recently Added shelf, and turning it back off does not "
+            "put the old dates back."
+        ),
+    )
+
     # Roadmap row 85. IMDb's own parental-guide categories, written as Plex
     # labels. Default OFF -- the family posture rows 86 (backup) and 87
     # (verbs) already use. Two flags, not one, on purpose: `enabled` gates
@@ -1656,6 +1702,10 @@ class OperationsOverride(BaseModel):
     originally_available_source: Literal["tmdb", "tvdb"] | None = Field(
         default=None,
         description=_per_library("operations", "originally_available_source"))
+    added_at_source: Literal["tmdb_digital", "tmdb_premiere"] | None = Field(
+        default=None, description=_per_library("operations", "added_at_source"))
+    added_at_apply: bool | None = Field(
+        default=None, description=_per_library("operations", "added_at_apply"))
     parental_labels_enabled: bool | None = Field(
         default=None, description=_per_library("operations", "parental_labels_enabled"))
     parental_labels_apply: bool | None = Field(
