@@ -233,6 +233,18 @@ async def gather_facts(
             # One provider's spent budget must not throw away the pass -- the
             # shape :129-130 already uses.
             logger.warning("tmdb rate budget reached; skipping tmdb facts: %s", exc)
+        except httpx.HTTPError as exc:
+            # The tvdb precedent at :162-167, in its own words: "one
+            # provider's transient failure must not throw away everything
+            # else this pass gathered." release_dates is optional and
+            # secondary -- a transient 5xx here must not discard a gather
+            # that would otherwise complete entirely from cache plus
+            # MDBList (review finding I1). Rating key and field only, never
+            # the URL: an httpx error's str() carries it in full.
+            logger.warning(
+                "tmdb release_dates request failed for %s; skipping added_at: %s",
+                item.rating_key, type(exc).__name__,
+            )
     if added_at is not None:
         sources["added_at"] = added_at_source
 
