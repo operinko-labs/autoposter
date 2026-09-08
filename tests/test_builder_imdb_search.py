@@ -812,3 +812,160 @@ async def test_a_padded_rating_is_stripped_before_it_reaches_the_wire():
         "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
         **PROBED_CERTIFICATE,
     }
+
+
+# --- country, language and keyword (rows 260, 261, 262) -----------------------
+
+
+PROBED_COUNTRY = {"originCountryConstraint": {"anyCountries": ["US"]}}
+PROBED_LANGUAGE = {"languageConstraint": {"anyLanguages": ["en"]}}
+PROBED_KEYWORD = {"keywordConstraint": {"anyKeywords": ["time-travel"]}}
+
+
+@pytest.mark.parametrize(
+    "params,probed",
+    [
+        ({"country_any": ["US"]}, PROBED_COUNTRY),
+        ({"language_any": ["en"]}, PROBED_LANGUAGE),
+        ({"keyword_any": ["time-travel"]}, PROBED_KEYWORD),
+    ],
+)
+async def test_the_probed_shape_reaches_the_wire_for_each_of_these_families(
+    params, probed
+):
+    """Rows 260, 261 and 262, session 4 -- 24,320, 34,699 and 188 titles against
+    a control of 78,732. One probed field per family; every sibling below is the
+    same GraphQL input object on the transcription's authority."""
+    assert await _constraints(**params) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **probed,
+    }
+
+
+@pytest.mark.parametrize(
+    "param,value,obj,field",
+    [
+        ("country", "US", "originCountryConstraint", "allCountries"),
+        ("country_any", "US", "originCountryConstraint", "anyCountries"),
+        ("country_not", "US", "originCountryConstraint", "excludeCountries"),
+        ("country_origin", "US", "originCountryConstraint", "anyPrimaryCountries"),
+        ("language", "en", "languageConstraint", "allLanguages"),
+        ("language_any", "en", "languageConstraint", "anyLanguages"),
+        ("language_not", "en", "languageConstraint", "excludeLanguages"),
+        ("language_primary", "en", "languageConstraint", "anyPrimaryLanguages"),
+        ("keyword", "heist", "keywordConstraint", "allKeywords"),
+        ("keyword_any", "heist", "keywordConstraint", "anyKeywords"),
+        ("keyword_not", "heist", "keywordConstraint", "excludeKeywords"),
+    ],
+)
+async def test_each_suffix_reaches_the_graphql_field_the_document_names(
+    param, value, obj, field
+):
+    """The `.not` forms are real here. Kometa DROPS `.not` for its eight
+    text-matching families (the document's §2.1) and none of these three is
+    among them, so ``excludeCountries``/``excludeLanguages``/``excludeKeywords``
+    are sent rather than silently swallowed."""
+    assert await _constraints(**{param: [value]}) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        obj: {field: [value.upper() if obj == "originCountryConstraint" else value]},
+    }
+
+
+@pytest.mark.parametrize(
+    "param", ["country", "country_any", "country_not", "country_origin"]
+)
+async def test_a_country_code_that_is_not_two_letters_is_refused(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["Zzland"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb's 2-letter country codes" in m for m in messages)
+    assert not any("Zzland" in m for m in messages)
+
+
+@pytest.mark.parametrize(
+    "param", ["language", "language_any", "language_not", "language_primary"]
+)
+async def test_a_blank_language_is_refused(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["\t"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb's language codes" in m for m in messages)
+    assert not any("\t" in m for m in messages)
+
+
+@pytest.mark.parametrize("param", ["keyword", "keyword_any", "keyword_not"])
+async def test_a_blank_keyword_is_refused(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["\t"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb keyword phrases" in m for m in messages)
+    assert not any("\t" in m for m in messages)
+
+
+async def test_country_codes_are_upper_cased_and_languages_are_lower_cased():
+    """IMDb matches both case-sensitively and answers a value it does not know
+    with ``total: 0`` and no error, so the case fold happens here rather than
+    producing a collection that looks like it works."""
+    assert await _constraints(country_any=["us"], language_any=["EN"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_COUNTRY,
+        **PROBED_LANGUAGE,
+    }
+
+
+async def test_keyword_spaces_become_hyphens():
+    """Kometa's whole normalisation for this family (the document's §2 row 22),
+    and the reason ``time travel`` and ``time-travel`` are the same search."""
+    assert await _constraints(keyword_any=["Time Travel"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_KEYWORD,
+    }
+
+
+@pytest.mark.parametrize(
+    "param,value",
+    [
+        ("country", "US"), ("country_any", "US"), ("country_not", "US"),
+        ("country_origin", "US"),
+        ("language", "en"), ("language_any", "en"), ("language_not", "en"),
+        ("language_primary", "en"),
+        ("keyword", "heist"), ("keyword_any", "heist"), ("keyword_not", "heist"),
+    ],
+)
+async def test_each_of_these_families_alone_satisfies_the_one_constraint_guard(
+    param, value
+):
+    """``_needs_at_least_one_constraint`` derives its filtering set from
+    ``model_fields`` and excludes only ``type`` and ``sort``, so a new param is
+    a filter for free -- this is the assertion that it stayed that way."""
+    async with httpx.AsyncClient(transport=_paged()) as http:
+        result = await _build(http, **{param: [value]})
+
+    assert result.ids
+
+
+@pytest.mark.parametrize(
+    "param,value,sentence",
+    [
+        ("country", "US", "takes IMDb's 2-letter country codes"),
+        ("language", "en", "takes IMDb's language codes"),
+        ("keyword", "time-travel", "takes IMDb keyword phrases"),
+    ],
+)
+async def test_a_bare_string_where_the_list_belongs_is_refused_not_iterated(
+    param, value, sentence
+):
+    """A ``str`` is iterable too: unguarded, ``country: US`` would walk its
+    characters and build ``["U", "S"]`` rather than refusing the shape -- the
+    same trap ``_must_be_a_rating_or_a_region_and_rating`` guards against for
+    ``content_rating`` (Task 2's fix round). Row 213: the sentence names the
+    key, never the operator's value."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: value})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` {sentence}" in m for m in messages)
+    assert not any(value in m for m in messages)

@@ -167,6 +167,38 @@ _CONTENT_RATING_REGION = (
 
 _REGION_CODE = re.compile(r"^[A-Za-z]{2}$")
 
+_COUNTRY_CODE = re.compile(r"^[A-Za-z]{2}$")
+
+# The list-valued families' dispatch table: one row per operator key, in the
+# document's §2 order within each family. ``(param, constraint object, GraphQL
+# field, element wrapper)`` -- the wrapper is the key each element is wrapped in
+# when IMDb's field takes objects rather than scalars, and ``None`` when it
+# takes the value as written.
+#
+# A table rather than seventeen near-identical branches, for the reason
+# ``search_constraints``' docstring already gives: an unwritten constraint must
+# be ABSENT, never sent wide open, and seventeen hand-written absence guards is
+# seventeen chances to write one wrong. The bare key is the ``all*`` field
+# wherever the family has one (the document's §2, ``check_constraint``'s empty
+# suffix); ``.any`` and ``.not`` are the ``any*``/``exclude*`` siblings.
+#
+# ``.not`` is real for every family here. Kometa accepts and then silently DROPS
+# ``.not`` for its eight text-matching families (§2.1) -- none of ours is among
+# them, so every exclude field below is sent.
+_LIST_CONSTRAINTS: tuple[tuple[str, str, str, str | None], ...] = (
+    ("country", "originCountryConstraint", "allCountries", None),
+    ("country_any", "originCountryConstraint", "anyCountries", None),
+    ("country_not", "originCountryConstraint", "excludeCountries", None),
+    ("country_origin", "originCountryConstraint", "anyPrimaryCountries", None),
+    ("language", "languageConstraint", "allLanguages", None),
+    ("language_any", "languageConstraint", "anyLanguages", None),
+    ("language_not", "languageConstraint", "excludeLanguages", None),
+    ("language_primary", "languageConstraint", "anyPrimaryLanguages", None),
+    ("keyword", "keywordConstraint", "allKeywords", None),
+    ("keyword_any", "keywordConstraint", "anyKeywords", None),
+    ("keyword_not", "keywordConstraint", "excludeKeywords", None),
+)
+
 
 class ImdbSearchParams(BaseModel):
     """``imdb_search``'s params: the minimal constraint tier.
@@ -210,6 +242,25 @@ class ImdbSearchParams(BaseModel):
     # both normalise to the pair ``anyRegionCertificateRatings`` takes, because
     # the region is carried PER VALUE and is not a constraint-wide setting.
     content_rating: _Certificates | None = Field(default=None, min_length=1)
+    # Row 260 (``country``/``.any``/``.not``/``.origin``, the document's §2
+    # row 20). 2-letter codes; Kometa checks only the length and pins no
+    # vocabulary, so neither does this -- what it can check is the shape.
+    country: _Strings | None = Field(default=None, min_length=1)
+    country_any: _Strings | None = Field(default=None, min_length=1)
+    country_not: _Strings | None = Field(default=None, min_length=1)
+    country_origin: _Strings | None = Field(default=None, min_length=1)
+    # Row 261 (``language``/``.any``/``.not``/``.primary``, §2 row 21). Kometa
+    # validates NOTHING here, not even a length; the case fold and the
+    # blank refusal are this repository's, for the tier-3 reason in §4.
+    language: _Strings | None = Field(default=None, min_length=1)
+    language_any: _Strings | None = Field(default=None, min_length=1)
+    language_not: _Strings | None = Field(default=None, min_length=1)
+    language_primary: _Strings | None = Field(default=None, min_length=1)
+    # Row 262 (``keyword``/``.any``/``.not``, §2 row 22). Lowercase, and spaces
+    # become hyphens -- that rewrite is the whole normalisation.
+    keyword: _Strings | None = Field(default=None, min_length=1)
+    keyword_any: _Strings | None = Field(default=None, min_length=1)
+    keyword_not: _Strings | None = Field(default=None, min_length=1)
     sort: str = "popularity.desc"
 
     @field_validator("type")
@@ -314,6 +365,89 @@ class ImdbSearchParams(BaseModel):
                 raise ValueError(_CONTENT_RATING_REGION)
             certificates.append({"region": region.upper(), "rating": rating.strip()})
         return certificates
+
+    @field_validator(
+        "country", "country_any", "country_not", "country_origin", mode="before"
+    )
+    @classmethod
+    def _must_be_two_letter_country_codes(cls, value, info: ValidationInfo):
+        """``mode="before"``, matching ``_must_be_a_rating_or_a_region_and_rating``:
+        a bare string is iterable too, and unguarded would walk its characters
+        rather than refuse the shape (``country: US`` becoming ``["U", "S"]``)."""
+        if value is None or not hasattr(value, "__iter__"):
+            return value
+        if isinstance(value, (Mapping, str, bytes)):
+            raise ValueError(
+                f"`{info.field_name}` takes IMDb's 2-letter country codes as "
+                "a list, not a single value typed alone. IMDb answers a code "
+                "it does not know with an empty result rather than an error, "
+                "so this is refused at load instead."
+            )
+        codes = []
+        for code in value:
+            if not _COUNTRY_CODE.match(code):
+                raise ValueError(
+                    f"`{info.field_name}` takes IMDb's 2-letter country codes "
+                    "(`US`, `GB`, `JP`) and one of the values written here is "
+                    "not two letters. IMDb answers a code it does not know with "
+                    "an empty result rather than an error, so this is refused "
+                    "at load instead."
+                )
+            codes.append(code.upper())
+        return codes
+
+    @field_validator(
+        "language", "language_any", "language_not", "language_primary", mode="before"
+    )
+    @classmethod
+    def _must_be_language_codes(cls, value, info: ValidationInfo):
+        if value is None or not hasattr(value, "__iter__"):
+            return value
+        if isinstance(value, (Mapping, str, bytes)):
+            raise ValueError(
+                f"`{info.field_name}` takes IMDb's language codes as a list, "
+                "not a single value typed alone. IMDb pins no vocabulary and "
+                "answers a code it does not know with an empty result rather "
+                "than an error, so a value that cannot be one is refused at "
+                "load."
+            )
+        languages = []
+        for language in value:
+            folded = language.strip().casefold()
+            if not folded:
+                raise ValueError(
+                    f"`{info.field_name}` takes IMDb's language codes (`en`, "
+                    "`fr`, `ja`) and one of the values written here is blank. "
+                    "IMDb pins no language vocabulary and answers a code it "
+                    "does not know with an empty result rather than an error, "
+                    "so a value that cannot be one is refused at load."
+                )
+            languages.append(folded)
+        return languages
+
+    @field_validator("keyword", "keyword_any", "keyword_not", mode="before")
+    @classmethod
+    def _must_be_hyphenated_keywords(cls, value, info: ValidationInfo):
+        if value is None or not hasattr(value, "__iter__"):
+            return value
+        if isinstance(value, (Mapping, str, bytes)):
+            raise ValueError(
+                f"`{info.field_name}` takes IMDb keyword phrases as a list, "
+                "not a single value typed alone. Spaces are rewritten to "
+                "hyphens; a bare string here is not a list of keywords."
+            )
+        keywords = []
+        for keyword in value:
+            folded = keyword.strip().casefold().replace(" ", "-")
+            if not folded:
+                raise ValueError(
+                    f"`{info.field_name}` takes IMDb keyword phrases "
+                    "(`time-travel`, `heist`) and one of the values written "
+                    "here is blank. Spaces are rewritten to hyphens; a blank is "
+                    "not a keyword IMDb can match."
+                )
+            keywords.append(folded)
+        return keywords
 
     @model_validator(mode="after")
     def _windows_must_not_be_inside_out(self) -> "ImdbSearchParams":
@@ -428,6 +562,14 @@ def search_constraints(
         constraints["certificateConstraint"] = {
             "anyRegionCertificateRatings": params.content_rating
         }
+    for name, obj, field_name, wrap in _LIST_CONSTRAINTS:
+        values = getattr(params, name)
+        if values is None:
+            # Absent, never wide open: see this function's docstring.
+            continue
+        constraints.setdefault(obj, {})[field_name] = (
+            [{wrap: value} for value in values] if wrap else [*values]
+        )
     return constraints
 
 
