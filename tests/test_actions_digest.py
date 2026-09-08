@@ -1,7 +1,7 @@
 """Roadmap row 236's counting query: what a pass made actionable, by flag code.
 
 Against a real database rather than a mock session, for the reason
-``tests/test_run_history.py`` states: every line under test is SQL -- thirteen
+``tests/test_run_history.py`` states: every line under test is SQL -- fourteen
 conditional sums, a join and a half-open window predicate -- and a mocked
 session would verify the Python around SQL that was never executed.
 
@@ -95,8 +95,8 @@ async def test_a_row_scored_outside_the_window_is_not_counted(session, config):
 
 
 async def test_an_empty_window_reads_as_zero_for_every_registry_code(session, config):
-    """SUM over no rows is NULL, not 0. An empty window must read as thirteen
-    zeroes, never as thirteen Nones a consumer would render as blanks."""
+    """SUM over no rows is NULL, not 0. An empty window must read as fourteen
+    zeroes, never as fourteen Nones a consumer would render as blanks."""
     render = await _scored(session, source_mode="plex_generated")
     stamp = await _stamp(session, render)
 
@@ -127,21 +127,9 @@ async def test_the_counts_are_keyed_by_registry_code_and_carry_nothing_else(
         session, config, started_at, finished_at
     )
 
-    assert counts == {
-        "missing": 0,
-        "skipped": 0,
-        "truncated": 0,
-        "render_failed": 0,
-        "show_fallback": 0,
-        "plex_generated": 1,
-        "upload_failed": 0,
-        "language_miss": 0,
-        "provider_downgrade": 0,
-        "textless_miss": 0,
-        "logo_fallback": 0,
-        "unknown_provenance": 0,
-        "unscored": 0,
-    }
+    expected = {code: 0 for code in flags.FLAGS}
+    expected["plex_generated"] = 1
+    assert counts == expected
     assert list(counts) == list(flags.FLAGS), "registry order, so the chips read the same way"
 
 

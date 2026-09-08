@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 from sqlalchemy import func, select, text
 
+from autoposter.actions import flags
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
 from autoposter.config.schema import NotificationsConfig
@@ -928,9 +929,11 @@ async def _scored_render(session_factory, *, source_mode="plex_generated"):
 async def _run_until_closed(session_factory, scheduler, run_id):
     """Tick the real Scheduler until the full pass row closes, then stop it.
 
-    The row, never the clock (roadmap row 119). The scheduler is stopped and
-    awaited before anything is asserted, so a notification task cannot still be
-    in flight while the test reads the recorded calls.
+    The row, never the clock (roadmap row 119). Stopping the scheduler here
+    only ends its polling loop -- `_start_notification` is fire-and-forget and
+    can outlive it, so a positive test still awaits the notifier's call count
+    afterwards; a negative test has no such wait and relies on the loop's own
+    yields to have already run the notification task by the time it asserts.
     """
     stop = asyncio.Event()
     task = asyncio.create_task(scheduler.run(stop))
@@ -996,21 +999,10 @@ async def test_the_digest_detail_carries_flag_codes_and_counts_and_nothing_else(
     await _await_calls(notifier, 1)
 
     _, _, detail = notifier.calls[0]
-    assert detail == {
-        "missing": 0,
-        "skipped": 0,
-        "truncated": 0,
-        "render_failed": 0,
-        "show_fallback": 0,
-        "plex_generated": 1,
-        "upload_failed": 0,
-        "language_miss": 0,
-        "provider_downgrade": 0,
-        "textless_miss": 0,
-        "logo_fallback": 0,
-        "unknown_provenance": 0,
-        "unscored": 0,
-    }
+    expected = {code: 0 for code in flags.FLAGS}
+    expected["plex_generated"] = 1
+    assert detail == expected
+    assert list(detail) == list(flags.FLAGS), "registry order, so the chips read the same way"
     assert all(isinstance(value, int) for value in detail.values())
 
 

@@ -47,12 +47,12 @@ async def actionable_window_counts(
 
     ONE grouped round trip with a conditional sum per flag -- the shape
     ``api/action_center.py``'s ``/actions/summary`` already uses, for the same
-    reason: a query per chip would be fourteen sequential scans of one table to
+    reason: a query per chip would be fifteen sequential scans of one table to
     build one header. The predicates are applied in SQL and never in Python
     over fetched rows: a full pass's window holds thousands of renders (the
     operator's library scored 1828 in a single pass, of 18052 rows), and
-    pulling them into the process to test thirteen predicates apiece would
-    trade one indexed scan for a library walk inside the scheduler's poll loop.
+    pulling them into the process to test fourteen predicates apiece would
+    trade one sequential scan for a library walk inside the scheduler's poll loop.
 
     ``actionable`` is the DEFAULT population's size -- the rows any
     ``default_on`` flag fires on -- and it is deliberately NOT the sum of
@@ -105,7 +105,7 @@ async def actionable_window_counts(
     ).one()
 
     # SUM over no rows is NULL, not 0 -- /actions/summary's rule: an empty
-    # window must read as zeroes, never as fourteen nulls.
+    # window must read as zeroes, never as fifteen nulls.
     def count(name: str) -> int:
         return int(getattr(row, name) or 0)
 

@@ -215,7 +215,7 @@ class Scheduler:
         asset was refused for the reason row 19 refused a POST per changed
         collection: one measured pass produced 1828 actionable rows, against a
         webhook budget of roughly 5 requests / 2 seconds (notify/dispatch.py).
-        Per flag would be up to thirteen POSTs carrying what one embed's fields
+        Per flag would be up to fourteen POSTs carrying what one embed's fields
         carry for free.
 
         **Nothing is sent when the pass produced nothing actionable** -- not an
