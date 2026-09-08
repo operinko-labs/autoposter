@@ -976,6 +976,44 @@ async def test_a_refused_poster_url_reaches_neither_the_action_nor_the_log(
     assert message.strip()
 
 
+async def test_a_transport_failure_fetching_the_poster_url_reaches_neither_the_action_nor_the_log(
+    tmp_path, config_factory, session, caplog, public_resolver
+):
+    """Task 2 review I-2, the sibling of
+    `test_a_refused_poster_url_reaches_neither_the_action_nor_the_log` on the
+    OTHER except clause (`posters.py:539-549`, `except httpx.HTTPError`). That
+    branch's own comment names the danger: httpx's exception messages -- and
+    the traceback `exc_info` would attach -- can embed the full request URL.
+    Nothing exercised it: every fake elsewhere either returns a 200 or raises
+    `AssertionError` on a request the guard is expected never to make.
+
+    The `MockTransport` handler here raises `httpx.ConnectError` carrying the
+    URL in ITS OWN message, deliberately -- so a mutation that formats `exc`
+    into the returned string, or adds `exc_info=True` to the `logger.warning`
+    call, is exactly what turns this test red."""
+    config = config_factory(assets_root=str(tmp_path), library_folders=True)
+    record = await _record(session)
+    collection = _FakeCollection()
+
+    async def handler(request):
+        raise httpx.ConnectError("failed to connect to %s" % POSTER_URL)
+
+    with caplog.at_level("DEBUG"):
+        async with _client(handler) as http:
+            message = await apply_poster(
+                session, http, config, collection, record, LIBRARY, None, None,
+                dry_run=False, poster_url=POSTER_URL,
+            )
+
+    logged = "\n".join(record_.getMessage() for record_ in caplog.records)
+    for secret in ("posters.invalid", "dc-extended-universe"):
+        assert secret not in message, message
+        assert secret not in logged, logged
+    assert message.strip()
+    assert collection.uploaded_bytes == []
+    assert record.poster_sha256 is None
+
+
 async def test_an_unchanged_poster_url_image_uploads_nothing_on_a_second_pass(
     tmp_path, config_factory, session, public_resolver
 ):
