@@ -200,8 +200,20 @@ def test_a_genre_override_is_SYNC_and_not_an_add():
     assert plan["genres.removed"] == ["Romance"]
 
 
-def test_a_genre_override_matching_plex_writes_nothing():
+def test_a_genre_override_matching_plex_locks_the_genre_field():
+    """Roadmap row 246, and the rename is the point: this used to assert that
+    an override matching Plex wrote NOTHING. An equal list Plex does not
+    report locked now writes exactly one key -- the SINGULAR ``genre.locked``,
+    ``_PLEX_FIELD_NAMES``' one asymmetric entry -- and nothing else. Same
+    guarantee the four scalar branches below have carried since row 99."""
     item = FakeItem(genres=["Drama", "Crime"])
+    assert override_edits(item, {"genres": ["Crime", "Drama"]}) == {"genre.locked": 1}
+
+
+def test_a_genre_override_matching_an_already_locked_plex_writes_nothing():
+    """Steady state: Plex reports the genre field locked, so there is nothing
+    left to do and the second pass writes nothing."""
+    item = LockableItem(genres=["Drama", "Crime"], locks=[("genre", True)])
     assert override_edits(item, {"genres": ["Crime", "Drama"]}) == {}
 
 

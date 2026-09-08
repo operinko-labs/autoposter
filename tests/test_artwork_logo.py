@@ -215,7 +215,8 @@ async def test_updater_uploads_a_logo_and_records_the_marker(session, config, se
     ).run(session)
 
     assert (result.items, result.items_missing_logo) == (1, 1)
-    assert (result.uploaded, result.failed) == (1, 0)
+    assert (result.uploaded, result.unmarked) == (1, 0)
+    assert (result.no_logo_available, result.upload_failed) == (0, 0)
     assert item.uploaded == [LOGO_BYTES]
     # Locked, or Plex's agent reclaims the field -- the same reason
     # ``upload_artwork`` locks the poster.
@@ -260,7 +261,8 @@ async def test_updater_skips_an_item_that_already_has_a_logo(session, config, se
     ).run(session)
 
     assert (result.items, result.items_missing_logo) == (1, 0)
-    assert (result.uploaded, result.failed) == (0, 0)
+    assert (result.uploaded, result.unmarked) == (0, 0)
+    assert (result.no_logo_available, result.upload_failed) == (0, 0)
     assert item.uploaded == []
     assert provider.requests == []  # not even a provider call was spent
     assert await _marker(session, row.id) is None
@@ -311,6 +313,59 @@ async def test_updater_logs_a_missing_item_at_info_not_warning(
     assert summary[0].startswith("logo: ") and "1" in summary[0]
 
 
+async def test_updater_counts_a_probe_failure_in_the_dry_run_body(
+    session, config, serving, caplog
+):
+    """The operationally dangerous one. A probe that raises for an item drops it
+    from the candidate set, so a dry run against an unreachable Plex reports
+    ``items_missing_logo: 0`` -- "nothing to do" -- when the truth is "nothing
+    could be asked". ``probe_failed`` is therefore in the DRY-RUN body, not just
+    the applied one: it is the number that tells the two apart.
+
+    Delete the ``probe_failed += 1`` in ``LogoMode.run``'s ``except Exception``
+    and this reds on the count while every other counter stays exactly where it
+    is -- which is the mutation this test exists to catch.
+    """
+
+    class HalfBrokenClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-bad":
+                raise RuntimeError("connection reset by peer")
+            return self._items[rating_key]
+
+    await _add_item(session, rating_key="rk-good", tmdb_id=1)
+    await _add_item(session, rating_key="rk-bad", tmdb_id=2)
+    plex = HalfBrokenClient({"rk-good": FakeItem(logo=None)})
+
+    with caplog.at_level(logging.INFO):
+        result = await LogoMode(
+            config, plex, serving(), _headers(), [FakeProvider()], apply=False
+        ).run(session)
+
+    assert (result.items, result.items_missing_logo) == (2, 1)
+    assert (result.probe_failed, result.missing) == (1, 0)
+
+    response = result.as_response()
+    assert response["status"] == "dry run"
+    assert response["probe_failed"] == 1
+    # Still a dry run: the applied-only counts stay out of the body.
+    assert "uploaded" not in response
+
+    logo_records = [r for r in caplog.records if r.name == "autoposter.artwork_modes.logo"]
+    per_item = [r for r in logo_records if "rk-bad" in r.getMessage()]
+    assert len(per_item) == 1 and per_item[0].levelname == "WARNING"
+    # Row 213: the rating key and a traceback, never the exception's own text.
+    assert "connection reset" not in per_item[0].getMessage()
+    assert per_item[0].exc_info is not None
+
+    summary = [
+        r.getMessage() for r in logo_records
+        if r.levelname == "INFO" and "rk-bad" not in r.getMessage()
+    ]
+    assert summary == ["logo: could not probe 1 item(s)"]
+
+
 async def test_updater_dry_run_uploads_nothing(session, config, serving):
     """Dry run is the default posture: it reports how many items are missing a
     logo and never calls a provider, let alone Plex."""
@@ -331,7 +386,7 @@ async def test_updater_dry_run_uploads_nothing(session, config, serving):
     assert "uploaded" not in response
 
 
-async def test_updater_counts_an_item_with_no_logo_on_any_provider_as_failed(
+async def test_updater_counts_an_item_with_no_logo_on_any_provider_as_no_logo_available(
     session, config, serving
 ):
     """Nothing on the ladder: the item still has no logo, so nothing changed and
@@ -344,7 +399,8 @@ async def test_updater_counts_an_item_with_no_logo_on_any_provider_as_failed(
         config, plex, serving(), _headers(), [FakeProvider(url=None)], apply=True
     ).run(session)
 
-    assert (result.uploaded, result.failed) == (0, 1)
+    assert (result.uploaded, result.unmarked) == (0, 0)
+    assert (result.no_logo_available, result.upload_failed) == (1, 0)
     assert item.uploaded == []
     assert await _marker(session, row.id) is None
 
@@ -352,8 +408,8 @@ async def test_updater_counts_an_item_with_no_logo_on_any_provider_as_failed(
 async def test_updater_refuses_to_upload_an_svg_logo(session, config, serving):
     """The render pipeline can take an SVG logo because ImageMagick rasterises it
     while compositing. Plex's clearLogo field takes a raster image, so an SVG
-    pick is skipped rather than pushed -- counted as failed, because the item
-    still has no logo."""
+    pick is skipped rather than pushed -- counted as `no_logo_available`, because
+    the item still has no logo."""
     row = await _add_item(session, rating_key="rk1")
     item = FakeItem(logo=None)
     plex = FakePlexClient({"rk1": item})
@@ -362,7 +418,8 @@ async def test_updater_refuses_to_upload_an_svg_logo(session, config, serving):
         config, plex, serving(), _headers(), [FakeProvider(url=SVG_LOGO_URL)], apply=True
     ).run(session)
 
-    assert (result.uploaded, result.failed) == (0, 1)
+    assert (result.uploaded, result.unmarked) == (0, 0)
+    assert (result.no_logo_available, result.upload_failed) == (1, 0)
     assert item.uploaded == []
     assert await _marker(session, row.id) is None
 
@@ -387,7 +444,8 @@ async def test_updater_isolates_one_failing_item(session, config, serving):
         config, plex, serving(), _headers(), [PerItemProvider()], apply=True
     ).run(session)
 
-    assert (result.uploaded, result.failed) == (1, 1)
+    assert (result.uploaded, result.unmarked) == (1, 0)
+    assert (result.no_logo_available, result.upload_failed) == (0, 1)
     assert good_item.uploaded == [LOGO_BYTES] and bad_item.uploaded == []
     assert await _marker(session, good.id) == OUR_KEY
     assert await _marker(session, bad.id) is None
@@ -435,8 +493,11 @@ async def test_updater_commits_each_marker_before_the_next_upload(session, confi
 async def test_updater_survives_a_failed_marker_write(session, config, serving):
     """A database error on one item's marker is that item's own: the session is
     rolled back so the next item's write starts clean, and the run carries on.
-    The item still counts as uploaded, because its logo is on Plex -- the same
-    outcome as an upload Plex reported no key for."""
+    The item counts as ``unmarked``, not ``uploaded``: its logo is on Plex, but
+    nothing records which upload is ours, so Logo revert can never claim it
+    back. That is the same outcome as an upload Plex reported no key for, and
+    both land in the same bucket, because they are the same fact for the
+    operator."""
 
     class OneBadCommit:
         """The real session, with the first marker commit blowing up.
@@ -477,7 +538,8 @@ async def test_updater_survives_a_failed_marker_write(session, config, serving):
         config, plex, serving(), _headers(), [FakeProvider()], apply=True
     ).run(OneBadCommit(session))
 
-    assert (result.uploaded, result.failed) == (2, 0)
+    assert (result.uploaded, result.unmarked) == (1, 1)
+    assert (result.no_logo_available, result.upload_failed) == (0, 0)
     assert first.uploaded == [LOGO_BYTES] and second.uploaded == [LOGO_BYTES]
     assert await _marker(session, first_id) is None
     assert await _marker(session, second_id) == OUR_KEY
@@ -486,10 +548,11 @@ async def test_updater_survives_a_failed_marker_write(session, config, serving):
 async def test_updater_records_no_marker_when_plex_reports_no_upload_key(
     session, config, serving
 ):
-    """The logo is on the item -- that half succeeded and counts -- but Plex did
-    not report an ``upload://`` entry to key it by, so there is no marker to
-    record. The revert then leaves the item alone, which is the safe direction:
-    it would rather miss one of ours than clear one of theirs."""
+    """The logo is on the item -- that half succeeded and counts, as
+    ``unmarked`` -- but Plex did not report an ``upload://`` entry to key it
+    by, so there is no marker to record. The revert then leaves the item alone,
+    which is the safe direction: it would rather miss one of ours than clear
+    one of theirs."""
     row = await _add_item(session, rating_key="rk1")
     item = FakeItem(logo=None, upload_key=None)
     plex = FakePlexClient({"rk1": item})
@@ -498,9 +561,56 @@ async def test_updater_records_no_marker_when_plex_reports_no_upload_key(
         config, plex, serving(), _headers(), [FakeProvider()], apply=True
     ).run(session)
 
-    assert (result.uploaded, result.failed) == (1, 0)
+    assert (result.uploaded, result.unmarked) == (0, 1)
+    assert (result.no_logo_available, result.upload_failed) == (0, 0)
     assert item.uploaded == [LOGO_BYTES]
     assert await _marker(session, row.id) is None
+
+
+async def test_updater_serves_the_two_failure_causes_apart(session, config, serving):
+    """The whole point of the split, through ``LogoMode.run`` and its response
+    body rather than through ``_upload_one``: one item whose ladder offers
+    nothing usable and one whose download dies are two different operator
+    problems -- "no provider has a logo for this title" and "the upload did not
+    go through" -- and the old ``failed`` folded them into one number.
+
+    Fold them back into a single counter and this reds on both keys; serve the
+    old total as well and the ``"failed" not in response`` assertion reds,
+    because a coarse number beside its own summands reads as four failures
+    where there were two."""
+    none_row = await _add_item(session, rating_key="rk-none", tmdb_id=1)
+    dead_row = await _add_item(session, rating_key="rk-dead", tmdb_id=2)
+    none_item, dead_item = FakeItem(logo=None), FakeItem(logo=None)
+    plex = FakePlexClient({"rk-none": none_item, "rk-dead": dead_item})
+
+    class PerItemProvider(FakeProvider):
+        """Nothing at all for item one; a URL that 404s for item two."""
+
+        async def fetch(self, request):
+            self.requests.append(request)
+            if request.tmdb_id == 1:
+                return []
+            return [ArtCandidate(
+                provider=self.name, url="https://provider.example/gone.png",
+                language="en", width=800, height=310, score=8.0,
+            )]
+
+    result = await LogoMode(
+        config, plex, serving(), _headers(), [PerItemProvider()], apply=True
+    ).run(session)
+
+    assert (result.items, result.items_missing_logo) == (2, 2)
+    assert (result.uploaded, result.unmarked) == (0, 0)
+    assert (result.no_logo_available, result.upload_failed) == (1, 1)
+    assert none_item.uploaded == [] and dead_item.uploaded == []
+    assert await _marker(session, none_row.id) is None
+    assert await _marker(session, dead_row.id) is None
+
+    response = result.as_response()
+    assert response["status"] == "updated"
+    assert (response["no_logo_available"], response["upload_failed"]) == (1, 1)
+    assert (response["uploaded"], response["unmarked"]) == (0, 0)
+    assert "failed" not in response
 
 
 async def test_updater_only_considers_movies_and_shows(session, config, serving):
@@ -568,6 +678,7 @@ async def test_updater_refuses_an_empty_table(session, config, serving):
     assert result.as_response() == {
         "mode": "logo", "status": "refused", "reason": result.refused,
         "dry_run": False, "items": 0, "items_missing_logo": 0, "missing": 0,
+        "probe_failed": 0,
     }
 
 
@@ -744,6 +855,7 @@ async def test_revert_refuses_an_empty_table(session, config, serving):
     assert result.as_response() == {
         "mode": "logo_revert", "status": "refused", "reason": result.refused,
         "dry_run": False, "items": 0, "items_with_our_logo": 0, "missing": 0,
+        "probe_failed": 0,
     }
 
 
@@ -852,6 +964,51 @@ async def test_revert_logs_a_missing_item_at_apply_at_info_not_warning(
     assert warnings == []
 
 
+async def test_revert_counts_a_probe_failure_in_the_dry_run_body(
+    session, config, serving, caplog
+):
+    """The revert's probe drops an unaskable item too, and a marked item that
+    cannot be probed is not "not ours" -- it is unknown. Counted, and served in
+    the dry-run body for the same reason the updater's is."""
+
+    class HalfBrokenClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-bad":
+                raise RuntimeError("connection reset by peer")
+            return self._items[rating_key]
+
+    await _add_item(session, rating_key="rk-good", logo_upload_key=OUR_KEY)
+    await _add_item(session, rating_key="rk-bad", logo_upload_key=OUR_KEY, tmdb_id=2)
+    good = FakeItem(logo="/ours", logos=((OUR_KEY, True),))
+    plex = HalfBrokenClient({"rk-good": good})
+
+    with caplog.at_level(logging.INFO):
+        result = await LogoRevertMode(
+            config, plex, serving(), _headers(), apply=False
+        ).run(session)
+
+    assert (result.items, result.items_with_our_logo) == (2, 1)
+    assert (result.probe_failed, result.missing) == (1, 0)
+
+    response = result.as_response()
+    assert response["status"] == "dry run"
+    assert response["probe_failed"] == 1
+    assert "cleared" not in response
+    assert good.deleted == 0  # a dry run really did nothing
+
+    logo_records = [r for r in caplog.records if r.name == "autoposter.artwork_modes.logo"]
+    per_item = [r for r in logo_records if "rk-bad" in r.getMessage()]
+    assert len(per_item) == 1 and per_item[0].levelname == "WARNING"
+    assert "connection reset" not in per_item[0].getMessage()
+
+    summary = [
+        r.getMessage() for r in logo_records
+        if r.levelname == "INFO" and "rk-bad" not in r.getMessage()
+    ]
+    assert summary == ["logo revert: could not probe 1 item(s)"]
+
+
 # --- the clearlogo guard (the #153 follow-up) --------------------------------
 #
 # Production, 2026-09-04: TMDB served a 32000x18839 clearlogo (602,848,000px)
@@ -942,7 +1099,7 @@ async def test_a_bomb_by_metadata_is_skipped_without_being_downloaded(
         config, plex, http, _headers(), [provider], apply=True
     ).run(session)
 
-    assert (result.uploaded, result.failed) == (1, 0)
+    assert (result.uploaded, result.unmarked) == (1, 0)
     assert asked == ["/logo.png"]
     assert item.uploaded == [LOGO_BYTES]
     assert await _marker(session, row.id) == OUR_KEY
@@ -972,7 +1129,7 @@ async def test_a_candidate_that_does_not_decode_is_skipped_for_the_next(
         config, plex, http, _headers(), [provider], apply=True
     ).run(session)
 
-    assert (result.uploaded, result.failed) == (1, 0)
+    assert (result.uploaded, result.unmarked) == (1, 0)
     assert asked == ["/corrupt.png", "/logo.png"]
     assert item.uploaded == [LOGO_BYTES]
     assert await _marker(session, row.id) == OUR_KEY
@@ -999,7 +1156,7 @@ async def test_an_svg_candidate_is_skipped_for_the_next_raster_one(
         config, plex, http, _headers(), [provider], apply=True
     ).run(session)
 
-    assert (result.uploaded, result.failed) == (1, 0)
+    assert (result.uploaded, result.unmarked) == (1, 0)
     assert asked == ["/logo.svg", "/logo.png"]
     assert item.uploaded == [LOGO_BYTES]
     assert await _marker(session, row.id) == OUR_KEY
@@ -1033,7 +1190,8 @@ async def test_one_item_whose_every_candidate_fails_does_not_stop_the_run(
             config, plex, http, _headers(), [PerItemProvider([])], apply=True
         ).run(session)
 
-    assert (result.uploaded, result.failed) == (1, 1)
+    assert (result.uploaded, result.unmarked) == (1, 0)
+    assert (result.no_logo_available, result.upload_failed) == (1, 0)
     assert good_item.uploaded == [LOGO_BYTES] and bad_item.uploaded == []
     assert await _marker(session, good.id) == OUR_KEY
     assert await _marker(session, bad.id) is None
@@ -1063,7 +1221,7 @@ async def test_a_healthy_logo_is_uploaded_byte_identical_after_one_question(
         config, plex, http, _headers(), [provider], apply=True
     ).run(session)
 
-    assert (result.uploaded, result.failed) == (1, 0)
+    assert (result.uploaded, result.unmarked) == (1, 0)
     assert len(provider.requests) == 1
     assert asked == ["/logo.png"]
     assert item.uploaded == [LOGO_BYTES]

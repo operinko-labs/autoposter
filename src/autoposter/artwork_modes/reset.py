@@ -93,6 +93,11 @@ class ResetResult:
     applied run they split ``fields`` by outcome. A field Plex holds no agent
     art for counts as ``failed``, because what is displayed did not change even
     though the field was unlocked.
+
+    ``probe_failed`` counts candidates the probe could not fetch from Plex at
+    all, beside ``missing``: they never reach the provenance read, so they drop
+    out of ``items_with_our_art`` silently without it. Served on a dry run,
+    which is the run it matters on.
     """
 
     items: int
@@ -102,6 +107,7 @@ class ResetResult:
     failed: int
     dry_run: bool
     missing: int = 0
+    probe_failed: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -112,6 +118,7 @@ class ResetResult:
             "items_with_our_art": self.items_with_our_art,
             "fields": self.fields,
             "missing": self.missing,
+            "probe_failed": self.probe_failed,
         }
         if self.refused is not None:
             # No note: nothing was replaced, so nothing was orphaned.
@@ -184,6 +191,7 @@ class ResetMode:
         # default, never re-fetches at all.
         ours: dict[str, list[str]] = {}
         missing = 0
+        probe_failed = 0
         for row in rows:
             try:
                 plex_item = await self._plex.fetch_item(row.rating_key)
@@ -199,6 +207,7 @@ class ResetMode:
                 logger.warning(
                     "reset: could not fetch Plex item %s", row.rating_key, exc_info=True
                 )
+                probe_failed += 1
                 continue
             # None for artwork nobody stamped, for a field the item has nothing
             # in, and for a Plex that could not be asked -- all of which mean
@@ -227,16 +236,21 @@ class ResetMode:
         if refusal is not None:
             if missing:
                 logger.info("reset: skipped %d item(s) no longer in Plex", missing)
+            if probe_failed:
+                logger.info("reset: could not probe %d item(s)", probe_failed)
             return ResetResult(
                 total, items_with_our_art, fields, 0, 0, not self._apply,
-                refused=refusal, missing=missing,
+                refused=refusal, missing=missing, probe_failed=probe_failed,
             )
 
         if not self._apply:
             if missing:
                 logger.info("reset: skipped %d item(s) no longer in Plex", missing)
+            if probe_failed:
+                logger.info("reset: could not probe %d item(s)", probe_failed)
             return ResetResult(
-                total, items_with_our_art, fields, 0, 0, dry_run=True, missing=missing
+                total, items_with_our_art, fields, 0, 0, dry_run=True,
+                missing=missing, probe_failed=probe_failed,
             )
 
         reset = failed = 0
@@ -277,8 +291,10 @@ class ResetMode:
 
         if missing:
             logger.info("reset: skipped %d item(s) no longer in Plex", missing)
+        if probe_failed:
+            logger.info("reset: could not probe %d item(s)", probe_failed)
 
         return ResetResult(
             total, items_with_our_art, fields, reset, failed, dry_run=False,
-            missing=missing,
+            missing=missing, probe_failed=probe_failed,
         )
