@@ -445,7 +445,7 @@ async def test_reset_refuses_an_empty_table(session, config, serving):
     assert result.as_response() == {
         "mode": "reset", "status": "refused", "reason": result.refused,
         "dry_run": False, "items": 0, "items_with_our_art": 0, "fields": 0,
-        "missing": 0,
+        "missing": 0, "probe_failed": 0,
     }
 
 
@@ -539,3 +539,46 @@ async def test_reset_logs_a_missing_item_at_apply_at_info_not_warning(
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert warnings == []
     assert item.unlocked == []
+
+
+async def test_reset_counts_a_probe_failure_in_the_dry_run_body(
+    session, config, serving, caplog
+):
+    """The reset probe drops an unaskable item from ``ours`` exactly as the logo
+    modes' probes do, so a dry run against an unreachable Plex says "no artwork
+    of ours" when it means "nothing could be asked". Counted, and in the
+    dry-run body."""
+
+    class HalfBrokenClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-bad":
+                raise RuntimeError("connection reset by peer")
+            return self._items[rating_key]
+
+    await _add_item(session, rating_key="rk-good")
+    await _add_item(session, rating_key="rk-bad")
+    plex = HalfBrokenClient({"rk-good": FakeItem(thumb="/ours")})
+    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+
+    with caplog.at_level("INFO"):
+        result = await ResetMode(config, plex, http, _headers(), apply=False).run(session)
+
+    assert (result.items, result.items_with_our_art, result.fields) == (2, 1, 1)
+    assert (result.probe_failed, result.missing) == (1, 0)
+
+    response = result.as_response()
+    assert response["status"] == "dry run"
+    assert response["probe_failed"] == 1
+    assert "reset" not in response
+
+    reset_records = [r for r in caplog.records if r.name == "autoposter.artwork_modes.reset"]
+    per_item = [r for r in reset_records if "rk-bad" in r.getMessage()]
+    assert len(per_item) == 1 and per_item[0].levelname == "WARNING"
+    assert "connection reset" not in per_item[0].getMessage()
+
+    summary = [
+        r.getMessage() for r in reset_records
+        if r.levelname == "INFO" and "rk-bad" not in r.getMessage()
+    ]
+    assert summary == ["reset: could not probe 1 item(s)"]

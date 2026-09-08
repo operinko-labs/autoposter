@@ -311,6 +311,59 @@ async def test_updater_logs_a_missing_item_at_info_not_warning(
     assert summary[0].startswith("logo: ") and "1" in summary[0]
 
 
+async def test_updater_counts_a_probe_failure_in_the_dry_run_body(
+    session, config, serving, caplog
+):
+    """The operationally dangerous one. A probe that raises for an item drops it
+    from the candidate set, so a dry run against an unreachable Plex reports
+    ``items_missing_logo: 0`` -- "nothing to do" -- when the truth is "nothing
+    could be asked". ``probe_failed`` is therefore in the DRY-RUN body, not just
+    the applied one: it is the number that tells the two apart.
+
+    Delete the ``probe_failed += 1`` in ``LogoMode.run``'s ``except Exception``
+    and this reds on the count while every other counter stays exactly where it
+    is -- which is the mutation this test exists to catch.
+    """
+
+    class HalfBrokenClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-bad":
+                raise RuntimeError("connection reset by peer")
+            return self._items[rating_key]
+
+    await _add_item(session, rating_key="rk-good", tmdb_id=1)
+    await _add_item(session, rating_key="rk-bad", tmdb_id=2)
+    plex = HalfBrokenClient({"rk-good": FakeItem(logo=None)})
+
+    with caplog.at_level(logging.INFO):
+        result = await LogoMode(
+            config, plex, serving(), _headers(), [FakeProvider()], apply=False
+        ).run(session)
+
+    assert (result.items, result.items_missing_logo) == (2, 1)
+    assert (result.probe_failed, result.missing) == (1, 0)
+
+    response = result.as_response()
+    assert response["status"] == "dry run"
+    assert response["probe_failed"] == 1
+    # Still a dry run: the applied-only counts stay out of the body.
+    assert "uploaded" not in response
+
+    logo_records = [r for r in caplog.records if r.name == "autoposter.artwork_modes.logo"]
+    per_item = [r for r in logo_records if "rk-bad" in r.getMessage()]
+    assert len(per_item) == 1 and per_item[0].levelname == "WARNING"
+    # Row 213: the rating key and a traceback, never the exception's own text.
+    assert "connection reset" not in per_item[0].getMessage()
+    assert per_item[0].exc_info is not None
+
+    summary = [
+        r.getMessage() for r in logo_records
+        if r.levelname == "INFO" and "rk-bad" not in r.getMessage()
+    ]
+    assert summary == ["logo: could not probe 1 item(s)"]
+
+
 async def test_updater_dry_run_uploads_nothing(session, config, serving):
     """Dry run is the default posture: it reports how many items are missing a
     logo and never calls a provider, let alone Plex."""
@@ -568,6 +621,7 @@ async def test_updater_refuses_an_empty_table(session, config, serving):
     assert result.as_response() == {
         "mode": "logo", "status": "refused", "reason": result.refused,
         "dry_run": False, "items": 0, "items_missing_logo": 0, "missing": 0,
+        "probe_failed": 0,
     }
 
 
@@ -744,6 +798,7 @@ async def test_revert_refuses_an_empty_table(session, config, serving):
     assert result.as_response() == {
         "mode": "logo_revert", "status": "refused", "reason": result.refused,
         "dry_run": False, "items": 0, "items_with_our_logo": 0, "missing": 0,
+        "probe_failed": 0,
     }
 
 
@@ -850,6 +905,51 @@ async def test_revert_logs_a_missing_item_at_apply_at_info_not_warning(
 
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     assert warnings == []
+
+
+async def test_revert_counts_a_probe_failure_in_the_dry_run_body(
+    session, config, serving, caplog
+):
+    """The revert's probe drops an unaskable item too, and a marked item that
+    cannot be probed is not "not ours" -- it is unknown. Counted, and served in
+    the dry-run body for the same reason the updater's is."""
+
+    class HalfBrokenClient(FakePlexClient):
+        async def fetch_item(self, rating_key):
+            self.fetched.append(rating_key)
+            if rating_key == "rk-bad":
+                raise RuntimeError("connection reset by peer")
+            return self._items[rating_key]
+
+    await _add_item(session, rating_key="rk-good", logo_upload_key=OUR_KEY)
+    await _add_item(session, rating_key="rk-bad", logo_upload_key=OUR_KEY, tmdb_id=2)
+    good = FakeItem(logo="/ours", logos=((OUR_KEY, True),))
+    plex = HalfBrokenClient({"rk-good": good})
+
+    with caplog.at_level(logging.INFO):
+        result = await LogoRevertMode(
+            config, plex, serving(), _headers(), apply=False
+        ).run(session)
+
+    assert (result.items, result.items_with_our_logo) == (2, 1)
+    assert (result.probe_failed, result.missing) == (1, 0)
+
+    response = result.as_response()
+    assert response["status"] == "dry run"
+    assert response["probe_failed"] == 1
+    assert "cleared" not in response
+    assert good.deleted == 0  # a dry run really did nothing
+
+    logo_records = [r for r in caplog.records if r.name == "autoposter.artwork_modes.logo"]
+    per_item = [r for r in logo_records if "rk-bad" in r.getMessage()]
+    assert len(per_item) == 1 and per_item[0].levelname == "WARNING"
+    assert "connection reset" not in per_item[0].getMessage()
+
+    summary = [
+        r.getMessage() for r in logo_records
+        if r.levelname == "INFO" and "rk-bad" not in r.getMessage()
+    ]
+    assert summary == ["logo revert: could not probe 1 item(s)"]
 
 
 # --- the clearlogo guard (the #153 follow-up) --------------------------------

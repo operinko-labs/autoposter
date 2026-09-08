@@ -89,6 +89,12 @@ class LogoUpdateResult:
     every candidate the ladder offered was unusable (over the pixel ceiling,
     undecodable, or an SVG Plex's clearLogo field cannot take), or the upload
     itself did not go through.
+
+    ``probe_failed`` is the third whole-item bucket, beside ``missing``: an item
+    the probe could not ask Plex about at all. Unlike ``uploaded``/``failed`` it
+    is served on a DRY RUN too, because that is the run it matters on -- an
+    unreachable Plex would otherwise report ``items_missing_logo: 0`` and read
+    as "nothing to do" rather than "nothing could be asked".
     """
 
     items: int
@@ -97,6 +103,7 @@ class LogoUpdateResult:
     failed: int
     dry_run: bool
     missing: int = 0
+    probe_failed: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -106,6 +113,7 @@ class LogoUpdateResult:
             "items": self.items,
             "items_missing_logo": self.items_missing_logo,
             "missing": self.missing,
+            "probe_failed": self.probe_failed,
         }
         if self.refused is not None:
             body["status"] = "refused"
@@ -132,6 +140,11 @@ class LogoRevertResult:
 
     No ``note`` about an orphaned upload, unlike the reset mode: Plex exposes a
     DELETE for the clearlogo field, so this really does remove the image.
+
+    ``probe_failed`` counts marked items the probe could not ask Plex about at
+    all, beside ``missing``. A marked item that cannot be probed is not "not
+    ours" -- it is unknown -- and it is served on a dry run for the same reason
+    the updater's is.
     """
 
     items: int
@@ -140,6 +153,7 @@ class LogoRevertResult:
     failed: int
     dry_run: bool
     missing: int = 0
+    probe_failed: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -149,6 +163,7 @@ class LogoRevertResult:
             "items": self.items,
             "items_with_our_logo": self.items_with_our_logo,
             "missing": self.missing,
+            "probe_failed": self.probe_failed,
         }
         if self.refused is not None:
             body["status"] = "refused"
@@ -223,6 +238,7 @@ class LogoMode:
         # whole library to produce a number that changes nothing.
         missing = []
         missing_from_plex = 0
+        probe_failed = 0
         for row in rows:
             try:
                 plex_item = await self._plex.fetch_item(row.rating_key)
@@ -240,6 +256,7 @@ class LogoMode:
                 logger.warning(
                     "logo: could not probe Plex item %s", row.rating_key, exc_info=True
                 )
+                probe_failed += 1
 
         items_missing_logo = len(missing)
         refusal = refuse_if_implausible(
@@ -250,16 +267,21 @@ class LogoMode:
         if refusal is not None:
             if missing_from_plex:
                 logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+            if probe_failed:
+                logger.info("logo: could not probe %d item(s)", probe_failed)
             return LogoUpdateResult(
                 total, items_missing_logo, 0, 0, not self._apply,
-                refused=refusal, missing=missing_from_plex,
+                refused=refusal, missing=missing_from_plex, probe_failed=probe_failed,
             )
 
         if not self._apply:
             if missing_from_plex:
                 logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+            if probe_failed:
+                logger.info("logo: could not probe %d item(s)", probe_failed)
             return LogoUpdateResult(
-                total, items_missing_logo, 0, 0, dry_run=True, missing=missing_from_plex
+                total, items_missing_logo, 0, 0, dry_run=True,
+                missing=missing_from_plex, probe_failed=probe_failed,
             )
 
         uploaded = failed = 0
@@ -278,10 +300,12 @@ class LogoMode:
 
         if missing_from_plex:
             logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+        if probe_failed:
+            logger.info("logo: could not probe %d item(s)", probe_failed)
 
         return LogoUpdateResult(
             total, items_missing_logo, uploaded, failed, dry_run=False,
-            missing=missing_from_plex,
+            missing=missing_from_plex, probe_failed=probe_failed,
         )
 
     async def _record_marker(self, session: AsyncSession, row, marker: str | None) -> None:
@@ -441,6 +465,7 @@ class LogoRevertMode:
         # choice, and this mode does not undo the operator's choices.
         ours = []
         missing = 0
+        probe_failed = 0
         for row in marked:
             try:
                 plex_item = await self._plex.fetch_item(row.rating_key)
@@ -458,6 +483,7 @@ class LogoRevertMode:
                     "logo revert: could not probe Plex item %s",
                     row.rating_key, exc_info=True,
                 )
+                probe_failed += 1
                 continue
             if selected == row.logo_upload_key:
                 ours.append(row)
@@ -471,16 +497,21 @@ class LogoRevertMode:
         if refusal is not None:
             if missing:
                 logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+            if probe_failed:
+                logger.info("logo revert: could not probe %d item(s)", probe_failed)
             return LogoRevertResult(
                 total, items_with_our_logo, 0, 0, not self._apply,
-                refused=refusal, missing=missing,
+                refused=refusal, missing=missing, probe_failed=probe_failed,
             )
 
         if not self._apply:
             if missing:
                 logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+            if probe_failed:
+                logger.info("logo revert: could not probe %d item(s)", probe_failed)
             return LogoRevertResult(
-                total, items_with_our_logo, 0, 0, dry_run=True, missing=missing
+                total, items_with_our_logo, 0, 0, dry_run=True,
+                missing=missing, probe_failed=probe_failed,
             )
 
         cleared = failed = 0
@@ -512,7 +543,10 @@ class LogoRevertMode:
 
         if missing:
             logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+        if probe_failed:
+            logger.info("logo revert: could not probe %d item(s)", probe_failed)
 
         return LogoRevertResult(
-            total, items_with_our_logo, cleared, failed, dry_run=False, missing=missing
+            total, items_with_our_logo, cleared, failed, dry_run=False,
+            missing=missing, probe_failed=probe_failed,
         )
