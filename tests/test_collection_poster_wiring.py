@@ -21,7 +21,7 @@ from autoposter.collections import groups
 from autoposter.collections.buckets import Bucket
 from autoposter.collections.default_images import default_image_url
 from autoposter.collections.lists import _members_hash, reconcile_list_collection
-from autoposter.collections.posters import DEFAULT_IMAGES_BASE, hosted_poster_url
+from autoposter.collections.posters import DEFAULT_IMAGES_BASE, DEFINITION_POSTER_SOURCE, hosted_poster_url
 from autoposter.collections.reconcile import definition_hash, reconcile_content_ratings
 from autoposter.collections.smart import smart_definition_hash
 from autoposter.config.schema import CollectionDefinition
@@ -1416,3 +1416,126 @@ async def test_a_font_refusal_on_an_existing_poster_is_retried_once_the_font_res
     assert uploaded[1] != uploaded[0]
     row = (await session.execute(select(ManagedCollection))).scalars().one()
     assert row.poster_sha256 == hashlib.sha256(uploaded[1]).hexdigest()
+
+
+# --- row 222: a definition's own poster URL, through the list reconciler ----
+
+# Reserved by RFC 2606 and never resolvable; `resolve_host` is patched out
+# below so nothing ever asks. The credential-bearing variant is the one whose
+# fragments must appear in no action string and no log record.
+DEFINITION_POSTER_URL = "https://posters.invalid/dc-extended-universe.jpg"
+DEFINITION_POSTER_PUBLIC = "93.184.216.34"
+
+
+def _image_handler(data, seen):
+    """A 200 that is a real image and says so -- `net/guard.store_body`
+    refuses a body whose Content-Type is outside the allowlist."""
+
+    async def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(
+            200, content=data, headers={"content-type": "image/jpeg"}
+        )
+
+    return handler
+
+
+async def test_a_definitions_poster_url_reaches_the_list_reconcilers_poster_step(
+    session, config_factory, tmp_path, monkeypatch, caplog
+):
+    """Row 222 through the entry point the engine actually calls, not through
+    `apply_poster` alone: `engine.py` threads the `CollectionDefinition` into
+    `reconcile_list_collection` as `settings=`, and this is the wire that has
+    to carry the new field to the rung.
+
+    Row 213 is asserted here rather than only at the unit: this is the call
+    that produces the `actions` list `collections/service.py` serves and logs,
+    so it is the honest place to prove the operator's URL reaches neither.
+    """
+    monkeypatch.setattr(
+        "autoposter.net.guard.resolve_host",
+        lambda host, port: [DEFINITION_POSTER_PUBLIC],
+    )
+    section = ListSection()
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    data = _jpeg_bytes("green")
+    seen = []
+    definition = CollectionDefinition(
+        title="IMDb Top 250",
+        builder="plex_id",
+        params={"ids": ["1"]},
+        poster_url=DEFINITION_POSTER_URL,
+    )
+
+    # httpx logs its own "HTTP Request: GET <url> ..." at INFO on every
+    # response -- URL included -- which boot.py/main.py silence in production
+    # by pinning this logger to WARNING at startup. Nothing here calls that
+    # startup path, and lowering the root logger to DEBUG below would
+    # otherwise let httpx's own line back in and fail this test for a reason
+    # that has nothing to do with this rung's own logging discipline.
+    caplog.set_level("WARNING", logger="httpx")
+    with caplog.at_level("DEBUG"):
+        async with _client(_image_handler(data, seen)) as http:
+            actions = await reconcile_list_collection(
+                session, section, "Movies", "IMDb Top 250", [FakeItem("a")], LABEL,
+                dry_run=False, kind="chart", key="IMDb Top 250", http=http,
+                config=config, settings=definition,
+            )
+
+    collection = section._existing["IMDb Top 250"]
+    assert collection.uploaded_bytes == [data]
+    # The chart's own cached default was NOT fetched: the definition's URL
+    # outranks it.
+    assert seen == [DEFINITION_POSTER_URL]
+    assert any(DEFINITION_POSTER_SOURCE in action for action in actions)
+
+    logged = "\n".join(entry.getMessage() for entry in caplog.records)
+    assert "posters.invalid" not in "\n".join(actions)
+    assert "posters.invalid" not in logged
+    assert "dc-extended-universe" not in "\n".join(actions)
+    assert "dc-extended-universe" not in logged
+
+
+async def test_adopting_a_poster_url_re_reconciles_that_definition_exactly_once(
+    session, config_factory, tmp_path, monkeypatch
+):
+    """C4's property, end to end. `lists.py:314` returns before the poster
+    block whenever the membership hash is current and `poster_sha256` is set,
+    so a `poster_url` outside `_RIDE_ALONG_DEFAULTS` would be a setting that
+    reads as saved and silently never applies.
+
+    Three passes over an unchanged membership: the first sets the hosted
+    default, the second -- with the field newly adopted -- re-reconciles and
+    sets the operator's image, the third fetches nothing at all.
+    """
+    monkeypatch.setattr(
+        "autoposter.net.guard.resolve_host",
+        lambda host, port: [DEFINITION_POSTER_PUBLIC],
+    )
+    section = ListSection()
+    config = config_factory(assets_root=str(tmp_path))
+    config.collections.apply_to_plex = True
+    default_art = _jpeg_bytes("red")
+    mine = _jpeg_bytes("blue")
+    plain = CollectionDefinition(
+        title="IMDb Top 250", builder="plex_id", params={"ids": ["1"]}
+    )
+    adopted = plain.model_copy(update={"poster_url": DEFINITION_POSTER_URL})
+    seen = []
+
+    async def pass_with(definition, body):
+        async with _client(_image_handler(body, seen)) as http:
+            await reconcile_list_collection(
+                session, section, "Movies", "IMDb Top 250", [FakeItem("a")], LABEL,
+                dry_run=False, kind="chart", key="IMDb Top 250", http=http,
+                config=config, settings=definition,
+            )
+
+    await pass_with(plain, default_art)
+    await pass_with(adopted, mine)
+    await pass_with(adopted, mine)
+
+    collection = section._existing["IMDb Top 250"]
+    assert collection.uploaded_bytes == [default_art, mine]
+    assert seen == [default_image_url("chart", "IMDb Top 250"), DEFINITION_POSTER_URL]

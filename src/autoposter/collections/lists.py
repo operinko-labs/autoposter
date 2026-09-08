@@ -451,7 +451,13 @@ async def reconcile_list_collection(
 
     if posters_on and collection is not None and record is not None:
         message = await apply_poster(
-            session, http, config, collection, record, library, kind, key, dry_run=dry_run,
+            session, http, config, collection, record, library, kind, key,
+            dry_run=dry_run,
+            # Roadmap row 222. ``getattr`` rather than an attribute access:
+            # ``settings`` is optional here and is not always a
+            # ``CollectionDefinition`` -- several callers pass a stand-in with
+            # only the fields they exercise.
+            poster_url=getattr(settings, "poster_url", None),
         )
         if message:
             actions.append(message)

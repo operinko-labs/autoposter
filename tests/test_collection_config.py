@@ -878,7 +878,7 @@ def test_an_http_poster_url_is_accepted():
         ("https://operator:SECRET@posters.invalid/dceu.jpg", "user:password@"),
         ("https://", "names no host"),
         ("https://[SECRET-INTERNAL-HOST]/a.jpg", "not a parsable URL"),
-        ("http://[::1", "not a parsable URL"),
+        ("http://[::SECRET1", "not a parsable URL"),
     ],
 )
 def test_a_bad_poster_url_is_refused_without_echoing_it(value, fragment):
@@ -930,9 +930,9 @@ def test_an_over_long_poster_url_is_refused_without_echoing_it():
 @pytest.mark.parametrize(
     "value",
     [
-        "https://posters.invalid/a.jpg\n",
-        "https://po\tsters.invalid/a.jpg",
-        " https://posters.invalid/a.jpg",
+        "https://posters.invalid/SECRET.jpg\n",
+        "https://po\tsters.invalid/SECRET.jpg",
+        " https://posters.invalid/SECRET.jpg",
     ],
 )
 def test_a_poster_url_with_whitespace_anywhere_is_refused(value):
@@ -940,7 +940,12 @@ def test_a_poster_url_with_whitespace_anywhere_is_refused(value):
     embedded tab/CR/LF before checking the shape, but this validator must not
     store a different string than the one it checked -- so a value carrying
     whitespace anywhere is refused outright rather than silently rewritten.
-    The operator fixes the paste; nothing here strips it for them."""
+    The operator fixes the paste; nothing here strips it for them.
+
+    Each value carries the literal `SECRET`, so a validator that interpolated
+    `{value!r}` would put it straight back into `served`, the same
+    discriminating marker `test_a_bad_poster_url_is_refused_without_echoing_it`
+    uses above."""
     with pytest.raises(ValidationError) as error:
         CollectionDefinition.model_validate({
             "title": "Leaky",
@@ -950,6 +955,7 @@ def test_a_poster_url_with_whitespace_anywhere_is_refused(value):
         })
 
     served = "; ".join(item["msg"] for item in error.value.errors())
+    assert "SECRET" not in served, served
     assert "poster_url" in served
     assert "whitespace" in served
 
