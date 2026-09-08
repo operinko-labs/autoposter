@@ -103,7 +103,7 @@ YAML suffixes generate them.
 | # | Kometa YAML key(s) | GraphQL constraint object → field(s) | Value shape | Kometa validation | Cite (`imdb.py` unless noted) |
 |---|---|---|---|---|---|
 | 1 | `title` | `titleTextConstraint.searchTerm` | one string | free text, no vocabulary | `:653`; `builder.py:2410-2411` |
-| 2 | `type`, `type.not` | `titleTypeConstraint.anyTitleTypeIds`, `.excludeTitleTypeIds` | list of ids | 15-name table → id (`movie`, `tvSeries`, `tvEpisode`, `tvMiniSeries`, `tvMovie`, `tvSpecial`, `tvShort`, `short`, `videoGame`, `video`, `musicVideo`, `podcastSeries`, `podcastEpisode`) | `:647`, `:651`, `:172-186`; `builder.py:2412-2420` |
+| 2 | `type`, `type.not` | `titleTypeConstraint.anyTitleTypeIds`, `.excludeTitleTypeIds` | list of ids | 13-name table, snake_case key → id (`movie`, `tv_series`→`tvSeries`, `tv_episode`→`tvEpisode`, `tv_mini_series`→`tvMiniSeries`, `tv_movie`→`tvMovie`, `tv_special`→`tvSpecial`, `tv_short`→`tvShort`, `short`, `video_game`→`videoGame`, `video`, `music_video`→`musicVideo`, `podcast_series`→`podcastSeries`, `podcast_episode`→`podcastEpisode`); Kometa hard-errors on the id form — the operator must write the key | `:647`, `:651`, `:172-186`; `builder.py:2412-2420` |
 | 3 | `release.after`, `release.before` | `releaseDateConstraint.releaseDateRange.{start,end}` | `YYYY-MM-DD` strings | parsed as a date, re-emitted `%Y-%m-%d` | `:652`; `builder.py:2430-2438` |
 | 4 | `rating.gte`, `rating.lte`, `votes.gte`, `votes.lte` | `userRatingsConstraint.aggregateRatingRange.{min,max}`, `.ratingsCountRange.{min,max}` | floats 0.1–10; ints ≥ 0 | `float` with `minimum=0.1, maximum=10`; `int` with `minimum=0` | `:654`; `builder.py:2439-2450` |
 | 5 | `genre`, `genre.any`, `genre.not` | `genreConstraint.allGenreIds`, `.anyGenreIds`, `.excludeGenreIds` | list of IMDb genre spellings | 27-name table, lowercase key → IMDb's capitalisation | `:655`, `:187-218`; `builder.py:2451-2459` |
@@ -126,7 +126,7 @@ YAML suffixes generate them.
 | 22 | `keyword`, `.any`, `.not` | `keywordConstraint.allKeywords`, `.anyKeywords`, `.excludeKeywords` | list of lowercase strings, **spaces replaced by hyphens** | none; the space→hyphen rewrite is the whole normalisation | `:707`; `builder.py:2528-2541` |
 | 23 | `content_rating` | `certificateConstraint.anyRegionCertificateRatings` | list of `{"region": "US", "rating": "PG-13"}` objects | `rating` required; `region` optional, must be 2 characters, **defaults to `US`** with a warning | `:705`; `builder.py:2499-2518` |
 | 24 | `company` | `creditedCompanyConstraint.anyCompanyIds` | list of `co…` ids | 8 studio aliases expand to id lists (`disney` → six ids); otherwise a raw `co\d+` match, else a hard error | `:696-703`, `:445-454`; `builder.py:2486-2498` |
-| 25 | `event`, `event.winning` | `awardConstraint.allEventNominations` | list of `{"eventId": "ev…"}`, optionally plus `"searchAwardCategoryId"` and, for `.winning`, `"winnerFilter": "WINNER_ONLY"` | 13 aliases (`oscar`, `emmy`, `bafta`, `cannes`, `razzie`, `oscar_picture`, `oscar_director`, …), else a raw `ev\d+` match, else a hard error | `:667-676`, `:455-467`; `builder.py:2460-2472` |
+| 25 | `event`, `event.winning` | `awardConstraint.allEventNominations` | list of `{"eventId": "ev…"}`, optionally plus `"searchAwardCategoryId"` and, for `.winning`, `"winnerFilter": "WINNER_ONLY"` | 12 aliases (`oscar`, `emmy`, `bafta`, `cannes`, `razzie`, `oscar_picture`, `oscar_director`, …), else a raw `ev\d+` match, else a hard error | `:667-676`, `:455-468`; `builder.py:2460-2472` |
 | 26 | `imdb_top`, `imdb_bottom`, `popularity.gte`, `popularity.lte` | `rankedTitleListConstraint.allRankedTitleLists` | list of `{"rankRange": {"min"/"max": int}, "rankedTitleListType": …}` with type `TOP_RATED_MOVIES`, `LOWEST_RATED_MOVIES` or `TITLE_METER` | `int` with `minimum=0` | `:678-691`; `builder.py:2449-2450` |
 | 27 | `runtime.gte`, `runtime.lte` | `runtimeConstraint.runtimeRangeMinutes.{min,max}` | ints ≥ 0, **minutes** | `int` with `minimum=0` | `:711`; `builder.py:2449-2450` |
 | 28 | `adult` | `explicitContentConstraint.explicitContentFilter` | the single string `INCLUDE_ADULT` | boolean; the object is emitted **only when true** | `:713-714`; `builder.py:2572-2574` |
@@ -146,7 +146,7 @@ An empty `anyTitleTypeIds` list is therefore a normal payload for Kometa. This
 repo never sends one — `search_constraints` always fills it from the library type.
 
 **Row 25 — award.** `event` and `event.winning` merge into one list, and the same
-event may appear twice with different filters (`imdb.py:667-676`). Two of the 13
+event may appear twice with different filters (`imdb.py:667-676`). Two of the 12
 aliases carry a category as well as an event: `oscar_picture` is `{"eventId":
 "ev0000003", "searchAwardCategoryId": "bestPicture"}`.
 
@@ -195,7 +195,7 @@ if it worked.
 | `first` | `limit` | `data["limit"]` when `0 < limit < 250`, else `250` (`imdb.py:611-614`). The operator-facing default is **100** (`builder.py:2390-2400`, `default=100, minimum=0`); `limit: 0` means "no limit" and yields `first: 250` |
 | `sortBy` | `sort_by` | one of 8 enum values (below) |
 | `sortOrder` | `sort_by` | `ASC` or `DESC`, from the suffix, uppercased (`imdb.py:648-649`) |
-| `after` | paging | the previous page's `endCursor` (`imdb.py:786`) |
+| `after` | paging | the previous page's `endCursor` (`imdb.py:781`) |
 
 `sort_by` is written `<key>.<asc|desc>` and defaults to `popularity.asc`
 (`imdb.py:643`). The eight keys (`imdb.py:150-159`):
@@ -241,7 +241,7 @@ search is `imdb_chart` with extra steps.
 
 Kometa validates in three tiers, and the tier decides the failure mode:
 
-1. **Closed vocabulary, hard error on a miss** — `type` (15), `genre` (27),
+1. **Closed vocabulary, hard error on a miss** — `type` (13), `genre` (27),
    `topic` (11), `sort_by` (16 = 8 × 2). An unknown value raises before any
    request.
 2. **Pattern or alias, hard error on a miss** — `interests` (`in\d+`), `company`
@@ -256,7 +256,7 @@ Tier 3 is where the risk lives, and this repo has already measured why: IMDb
 validates a constraint's **shape** and not its **values** (probes P42 and P51 —
 `anyTitleTypeIds: ["zzzNotAType"]` and `allGenreIds: ["ZzzNotAGenre"]` both answer
 HTTP 200 with `total: 0` and no error;
-`builders/imdb_search.py:20-27` is the module docstring that records it). So a
+`builders/imdb_search.py:13-21` is the module docstring that records it). So a
 tier-3 typo is not an error, it is an **emptied collection** — and with
 `sync_mode: sync` an emptied collection is a collection that had its members
 removed.
@@ -265,12 +265,12 @@ Two vocabularies Kometa does pin are worth cross-checking against this repo's
 live-proven ones:
 
 - **Genres.** Kometa lists 27 (`imdb.py:187-218`). This repo's `GENRES`
-  (`builders/imdb_search.py:66-72`) lists 28 — Kometa's 27 plus `Adult` — and
+  (`builders/imdb_search.py:67-73`) lists 28 — Kometa's 27 plus `Adult` — and
   every one of the 28 returned a non-zero `total` live on 2026-08-25. Kometa's set
   is a strict subset of a set proven real. **Neither source contradicts the
   other.**
 - **Title types.** This repo pins three ids it needs (`movie`, `tvSeries`,
-  `tvMiniSeries`, `builders/imdb_search.py:82-85`). Kometa's table names 15,
+  `tvMiniSeries`, `builders/imdb_search.py:82-85`). Kometa's table names 13,
   including `tvEpisode`, which this repo deliberately excludes (9.5 million of
   IMDb's 31 million titles are episodes).
 - **Sorts.** Both agree on `POPULARITY`, `USER_RATING`, `USER_RATING_COUNT`,
@@ -290,9 +290,9 @@ This repo ships **4** of Kometa's 28 families. The roadmap's rows 258–265 own
 | # | Kometa constraint | This repo | Owner |
 |---|---|---|---|
 | 2 | `titleTypeConstraint` | **shipped** — always sent, from `ctx.library_type` via `TITLE_TYPE_IDS`; `search_constraints`, `builders/imdb_search.py:262` | — |
-| 5 | `genreConstraint` | **shipped** — `genres` param → `allGenreIds`, `builders/imdb_search.py:142`, `:265` | — |
-| 4 | `userRatingsConstraint` | **shipped** — `rating_gte`/`rating_lte` → `aggregateRatingRange`, `votes_gte` → `ratingsCountRange.min`; `:146-152`, `:267-276`. **`votes.lte` has no param** — Kometa sends `ratingsCountRange.max`, this repo cannot | partial gap, unowned |
-| 3 | `releaseDateConstraint` | **shipped** — `released_after`/`released_before` → `releaseDateRange.{start,end}`, `:153-154`, `:279-287` | — |
+| 5 | `genreConstraint` | **shipped** — `genres` param → `allGenreIds`, `builders/imdb_search.py:142`, `:268` | — |
+| 4 | `userRatingsConstraint` | **shipped** — `rating_gte`/`rating_lte` → `aggregateRatingRange`, `votes_gte` → `ratingsCountRange.min`; `:146-152`, `:269-280`. **`votes.lte` has no param** — Kometa sends `ratingsCountRange.max`, this repo cannot | partial gap, unowned |
+| 3 | `releaseDateConstraint` | **shipped** — `released_after`/`released_before` → `releaseDateRange.{start,end}`, `:153-154`, `:281-289` | — |
 | 27 | `runtimeConstraint` | missing | **row 258** |
 | 23 | `certificateConstraint` | missing | **row 259** |
 | 20 | `originCountryConstraint` | missing | **row 260** (which called it `countryConstraint`) |
@@ -387,7 +387,7 @@ names all four identically, field for field:
 | `userRatingsConstraint.ratingsCountRange.{min,max}` | same | `:654` |
 | `releaseDateConstraint.releaseDateRange.{start,end}` | same | `:652` |
 
-Eight field names, two independent derivations, no conflict. That is the reason
+Five field names, two independent derivations, no conflict. That is the reason
 to treat the other 24 as high-quality candidates — and it is still not evidence
 about IMDb, because Kometa's set and this repo's set could both have been read
 from the same web client.
