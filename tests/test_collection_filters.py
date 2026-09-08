@@ -505,12 +505,14 @@ def test_every_operator_maps_onto_plexapis_own_operator_table():
     # The deliberate gaps: "in the last N days" is a relative window and
     # plexapi's table is all absolute comparisons; `.count_*` (sub-phase
     # C2b) asks how MANY children the item has, which plexapi spells with no
-    # operator key at all.
+    # operator key at all; and roadmap row 157's `("date", "to")` has no
+    # SINGLE key because its answer depends on the row (`MOMENT_DATE_ROWS`
+    # or not) -- see the entry's own comment in `filters.py`.
     unmapped = [pair for pair, key in PLEXAPI_EQUIVALENT.items() if key is None]
     assert unmapped == [
         ("tag", "count_gt"), ("tag", "count_gte"),
         ("tag", "count_lt"), ("tag", "count_lte"),
-        ("date", "eq"), ("date", "not"),
+        ("date", "eq"), ("date", "not"), ("date", "to"),
     ]
 
 
@@ -931,6 +933,36 @@ def test_the_modifier_table_is_total_over_the_search_operators():
     for row in FILTER_ATTRIBUTES:
         for operator in row.search_operators:
             assert (row.type, operator) in SEARCH_MODIFIERS, (row.name, operator)
+
+
+def test_moment_date_rows_is_derived_from_the_same_search_field_suffix_it_documents():
+    """``MOMENT_DATE_ROWS``'s own comment says membership "is a property of
+    PLEX's storage, not of this table": the four rows whose ``search_field``
+    is ``addedAt`` / ``lastViewedAt`` (or the ``episode.`` rescope of one),
+    which plexapi hands back as a full datetime rather than a bare date.
+
+    Nothing enforced that claim before roadmap row 157's Important 2 review
+    finding: the set was held up only by three literal URL strings that
+    happen to name ``added`` and ``last_played``, so dropping
+    ``episode_added`` or ``episode_last_played`` from the frozenset left the
+    whole suite green while ``episode_added.to`` silently rendered the
+    date-only branch and dropped a day of episodes. This test derives the
+    expected set from the SAME suffix rule the module's own comment states,
+    so the two cannot drift apart -- and a future date row whose
+    ``search_field`` is ``addedAt``-shaped but is forgotten here now fails
+    structurally instead of shipping unpinned.
+    """
+    from autoposter.collections.filters import MOMENT_DATE_ROWS
+
+    derived = {
+        row.name for row in FILTER_ATTRIBUTES
+        if row.type == "date"
+        and (row.search_field or "").endswith(("addedAt", "lastViewedAt"))
+    }
+    assert MOMENT_DATE_ROWS == derived
+    assert MOMENT_DATE_ROWS == {
+        "added", "last_played", "episode_added", "episode_last_played",
+    }
 
 
 def test_resolution_has_no_negated_search():

@@ -656,11 +656,23 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
     ("date", "not"): None,
     ("date", "before"): "lt",
     ("date", "after"): "gt",
-    # Roadmap row 157. plexapi's own inclusive keys, which is what makes this
-    # pair expressible in that table where the two relative-window entries
-    # above are not.
+    # Roadmap row 157. ``.from`` is plexapi's own inclusive key on every date
+    # row -- Amendment 1 does not touch it, because the day's midnight is the
+    # boundary on both a date-only row and a ``MOMENT_DATE_ROWS`` row alike.
     ("date", "from"): "gte",
-    ("date", "to"): "lte",
+    # ``.to`` is NOT one key: Amendment 1 makes it "lte" on a date-only row
+    # but "lt" at day-after on a ``MOMENT_DATE_ROWS`` row (measured -- see
+    # ``SEARCH_MODIFIERS``'s ``("date", "to")`` entry above), and this table
+    # is keyed by ``(type, operator)`` with no room for a per-ROW answer. A
+    # translator that read "lte" here and issued it against a moment row
+    # would emit the exact silent-wrongness this row's own docstring opens
+    # on: ``addedAt<=A`` drops everything added during day A. ``None``, like
+    # the two relative-window entries above, keeps the table TOTAL over
+    # ``OPERATORS_BY_TYPE`` (the coverage test asserts that) without handing
+    # out a value that is wrong for four of this row's seven date rows.
+    # ``search_url._arguments`` is the one place that renders ``.to``, and it
+    # branches on ``MOMENT_DATE_ROWS`` rather than reading this table.
+    ("date", "to"): None,
 }
 
 # The negative operators, and the positive one each negates. Every negative is

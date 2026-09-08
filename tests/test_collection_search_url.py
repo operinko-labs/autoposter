@@ -303,6 +303,12 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_date_only_field
     returned 1862 and ``%3C=D`` returned 1864, the same two items. So an item
     dated exactly D is INCLUDED by both wire predicates, which is what the
     client evaluation below says too.
+
+    NOT covered here: ``.from: today`` disagrees between the two halves by up
+    to 24 hours, because the client compares against ``now`` (a moment) while
+    the wire compares against ``now.date()`` (a midnight) -- inherited from
+    the pre-existing ``_Today`` convention (``.after: today`` has the same
+    split) and out of scope for roadmap row 157 (review Important 3).
     """
     on_the_boundary = {"release": dt.date(2024, 1, 1)}
     the_day_before = {"release": dt.date(2023, 12, 31)}
@@ -354,6 +360,16 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_moment_field():
     comparison. The same day-after form was measured on the date field, where
     a same-day equality count exists to check it against: ``%3C%3C=D+1day``
     returned 1864 = ``%3C=D`` = ``%3C%3C=D`` (1862) + ``=D`` (2).
+
+    NOT covered here: ``.from: today`` disagrees between the two halves on a
+    moment field, by up to 24 hours -- the client compares against ``now`` (a
+    moment, time of day included) while the wire compares against
+    ``now.date()`` (that day's midnight). Amendment 1 happens to make ``.to:
+    today`` AGREE (both halves land on the same calendar day), which is what
+    this test exercises; the surviving asymmetry is on ``.from`` and is
+    inherited from the pre-existing ``_Today`` convention (``.after: today``
+    has the same split) -- out of scope for roadmap row 157 (review
+    Important 3).
     """
     at_midnight = {"added": dt.datetime(2026, 1, 10, 0, 0)}
     during_the_day = {"added": dt.datetime(2026, 1, 10, 9, 15)}
@@ -388,6 +404,57 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_moment_field():
     assert url({"added.to": "2026-01-10"}) == (
         "?type=1&sort=titleSort&addedAt%3C%3C=2026-01-11"
     )
+
+
+# Roadmap row 157's Important 2 review finding: `MOMENT_DATE_ROWS` was
+# referenced by no test, so two of its four members (`episode_added`,
+# `episode_last_played`) rendered `.to` unpinned -- dropping either from the
+# frozenset kept the whole suite green while the row silently fell onto the
+# date-only branch. Each entry here is a HARDCODED (row, libtype, term)
+# triple, not derived from `MOMENT_DATE_ROWS` -- so if a row is ever dropped
+# from that set, `search_url._arguments` renders it the date-only way
+# (`%3C=A` instead of `%3C%3C=A+1`) and the row's own case here goes red,
+# rather than silently disappearing from the parametrize. `added` and
+# `last_played` repeat the boundary already pinned above (kept for a single
+# per-row table a reader can scan); `episode_added` and `episode_last_played`
+# are the two the review found missing. `release` and `episode_air_date` are
+# the date-only rows with a search half -- `last_episode_aired` is date-only
+# too but `search_field=None` (facts tier), so it has no wire half to render.
+MOMENT_TO_RENDERS = [
+    ({"added.to": "2026-01-10"}, "movie", "addedAt%3C%3C=2026-01-11"),
+    ({"last_played.to": "2026-01-10"}, "movie", "lastViewedAt%3C%3C=2026-01-11"),
+    ({"episode_added.to": "2026-01-10"}, "show", "episode.addedAt%3C%3C=2026-01-11"),
+    (
+        {"episode_last_played.to": "2026-01-10"}, "show",
+        "episode.lastViewedAt%3C%3C=2026-01-11",
+    ),
+]
+
+DATE_ONLY_TO_RENDERS = [
+    ({"release.to": "2026-01-10"}, "movie", "originallyAvailableAt%3C=2026-01-10"),
+    (
+        {"episode_air_date.to": "2026-01-10"}, "show",
+        "episode.originallyAvailableAt%3C=2026-01-10",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("raw", "libtype", "term"), MOMENT_TO_RENDERS,
+    ids=[next(iter(raw)) for raw, _, _ in MOMENT_TO_RENDERS],
+)
+def test_every_moment_date_row_renders_to_as_strict_at_the_day_after(raw, libtype, term):
+    sort_type = "2" if libtype == "show" else "1"
+    assert url(raw, libtype=libtype) == f"?type={sort_type}&sort=titleSort&{term}"
+
+
+@pytest.mark.parametrize(
+    ("raw", "libtype", "term"), DATE_ONLY_TO_RENDERS,
+    ids=[next(iter(raw)) for raw, _, _ in DATE_ONLY_TO_RENDERS],
+)
+def test_every_date_only_row_renders_to_as_inclusive_lte(raw, libtype, term):
+    sort_type = "2" if libtype == "show" else "1"
+    assert url(raw, libtype=libtype) == f"?type={sort_type}&sort=titleSort&{term}"
 
 
 def test_an_existing_date_definitions_url_is_unchanged_by_the_inclusive_pair():
