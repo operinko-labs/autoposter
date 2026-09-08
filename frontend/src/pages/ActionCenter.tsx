@@ -331,6 +331,9 @@ export function ActionCenter() {
       if (response.matched === 0) {
         return `${row.title}: this row is no longer in the queue; nothing was rebuilt.`;
       }
+      if (response.cleared === 0 && response.enqueued === 0) {
+        return `${row.title}: already queued; nothing new to clear.`;
+      }
       if (response.enqueued === 0) {
         return `${row.title}: fingerprint cleared; a pass for this item is already queued.`;
       }

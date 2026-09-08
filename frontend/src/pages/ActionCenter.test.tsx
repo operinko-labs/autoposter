@@ -647,6 +647,29 @@ describe("ActionCenter", () => {
     expect(after.some((path) => path.startsWith("/api/actions/summary"))).toBe(true);
   });
 
+  it("says nothing was cleared when a row rebuild press is idempotent", async () => {
+    // The endpoint's own idempotence case -- a render already cleared and
+    // queued, so a second press matches the row but clears and queues
+    // nothing (`cleared: 0, enqueued: 0`). The old wording read "fingerprint
+    // cleared" here even though nothing was: the same honesty rule as the
+    // dry-run sentence, but for the row press.
+    const fetchMock = stubFetch({
+      rebuild: {
+        status: "enqueued", matched: 1, selected: 1, cleared: 0,
+        items: 1, enqueued: 0, rating_keys: ["7"],
+      },
+    });
+    renderPage();
+    await screen.findByText("Dune: Part Two");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Rebuild" })[0]);
+
+    expect(
+      await screen.findByText("Dune: Part Two: already queued; nothing new to clear."),
+    ).toBeInTheDocument();
+    expect(paths(fetchMock).filter((path) => path === "/api/actions/rebuild")).toHaveLength(1);
+  });
+
   it("counts what a bulk rebuild would clear without clearing anything", async () => {
     // `cleared` and `items` are the endpoint's honest preview -- one of the
     // two matched rows already has no fingerprint to clear -- so the
