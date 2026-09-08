@@ -31,7 +31,13 @@ from pydantic import ValidationError
 
 from autoposter.collections.builders import REGISTRY, BuilderContext, SourceClients
 from autoposter.collections.builders.base import LibraryTypeMismatch
-from autoposter.collections.builders.imdb_search import GENRES, SORTS
+from autoposter.collections.builders.imdb_search import (
+    GENRES,
+    SORTS,
+    _LIST_CONSTRAINTS,
+    ImdbSearchParams,
+    search_constraints,
+)
 from autoposter.collections.imdb_graphql import (
     MAX_PAGES,
     PAGE_SIZE,
@@ -629,3 +635,784 @@ async def test_a_library_that_is_neither_movie_nor_show_is_refused():
 
 def test_the_builder_is_registered_under_its_own_name():
     assert REGISTRY["imdb_search"].type_name == "imdb_search"
+
+
+# --- rows 258-265: the eight probe-gated families -----------------------------
+#
+# Session 4 of ``.superpowers/sdd/p258_imdb_probe.log`` (2026-09-08) is the only
+# evidence here: sessions 1-3 are the probe script's own wrapper bug and are
+# void. Each ``PROBED_*`` literal below is the exact constraint object session 4
+# put on the wire, beside the total IMDb answered with. A sibling field the
+# document transcribes for the same family (``excludeKeywords``,
+# ``notInAnyList``, ``winnerFilter``, ...) is the SAME GraphQL input type and
+# ships on the transcription's authority, never on the wire's -- the tests say
+# which is which.
+
+PROBED_RUNTIME = {"runtimeConstraint": {"runtimeRangeMinutes": {"min": 80, "max": 90}}}
+PROBED_CERTIFICATE = {
+    "certificateConstraint": {
+        "anyRegionCertificateRatings": [{"region": "US", "rating": "PG-13"}]
+    }
+}
+
+
+async def _constraints(**params):
+    """The ``constraints`` variable one build put on the wire.
+
+    Every family test below asserts on the REQUEST, so the recorded two-page
+    transport is the only answer any of them wants and none of them needs to
+    pass one in.
+    """
+    seen: list = []
+    async with httpx.AsyncClient(transport=_paged(seen)) as http:
+        await _build(http, **params)
+    return _body(seen[0])["variables"]["constraints"]
+
+
+def _messages(caught) -> list:
+    """The validator sentences, without pydantic's ``input_value=`` tail.
+
+    ``str(ValidationError)`` appends the offending input; ``errors()[i]["msg"]``
+    is the sentence this repository wrote and nothing else, which is what the
+    row 213 "never echoes the operator's value" rule is asserted against.
+    """
+    return [error["msg"] for error in caught.value.errors()]
+
+
+async def test_the_probed_runtime_shape_reaches_the_wire():
+    """Row 258, session 4: 15,589 titles against a control of 78,732. Byte-equal
+    against the object that was on the wire, not a containment check."""
+    assert await _constraints(runtime_gte=80, runtime_lte=90) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_RUNTIME,
+    }
+
+
+@pytest.mark.parametrize(
+    "params,window",
+    [
+        ({"runtime_gte": 80}, {"min": 80}),
+        ({"runtime_lte": 90}, {"max": 90}),
+    ],
+)
+async def test_a_one_sided_runtime_window_sends_only_that_bound(params, window):
+    """Transcription-only: session 4 probed both bounds together. The one-sided
+    forms are the same ``runtimeRangeMinutes`` input object with one key, which
+    is how the shipped ``aggregateRatingRange`` already behaves."""
+    assert await _constraints(**params) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "runtimeConstraint": {"runtimeRangeMinutes": window},
+    }
+
+
+@pytest.mark.parametrize("field", ["runtime_gte", "runtime_lte"])
+async def test_a_runtime_bound_below_one_minute_is_refused(field):
+    """A bound of zero filters nothing while still satisfying the one-constraint
+    guard -- the hole ``votes_gte``'s ``ge=1`` floor already closes."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{field: 0})
+
+    assert any("whole minutes and must be at least 1" in m for m in _messages(caught))
+
+
+async def test_a_runtime_window_that_excludes_everything_is_refused():
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, runtime_gte=200, runtime_lte=90)
+
+    messages = _messages(caught)
+    assert any("`runtime_gte` is above `runtime_lte`" in m for m in messages)
+    assert not any("200" in m for m in messages), (
+        "row 213: the sentence names the two keys, never the operator's numbers"
+    )
+
+
+async def test_runtime_alone_satisfies_the_one_constraint_guard():
+    async with httpx.AsyncClient(transport=_paged()) as http:
+        result = await _build(http, runtime_gte=80)
+
+    assert result.ids
+
+
+async def test_the_probed_certificate_shape_reaches_the_wire():
+    """Row 259, session 4: 1,790 titles. The region is carried PER VALUE, paired
+    with the rating in one object -- not a top-level field and not a
+    constraint-wide setting (the document's §2 row 23, §5.1)."""
+    assert await _constraints(
+        content_rating=[{"region": "US", "rating": "PG-13"}]
+    ) == {"titleTypeConstraint": {"anyTitleTypeIds": ["movie"]}, **PROBED_CERTIFICATE}
+
+
+async def test_a_bare_content_rating_means_the_us_region():
+    """Kometa's own default (``modules/builder.py:2502-2506``): a bare string
+    becomes ``{region: US, rating: <the string>}``. Written as its own test
+    because it is the shape most operators will actually write, and it must
+    produce the byte the probe proved."""
+    assert await _constraints(content_rating=["PG-13"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_CERTIFICATE,
+    }
+
+
+async def test_a_content_rating_region_other_than_us_is_sent_as_written():
+    """Transcription-only: session 4 probed ``US``. The region is upper-cased,
+    because IMDb matches these case-sensitively and answers one it does not know
+    with an empty result rather than an error."""
+    assert await _constraints(content_rating=[{"region": "gb", "rating": "15"}]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "certificateConstraint": {
+            "anyRegionCertificateRatings": [{"region": "GB", "rating": "15"}]
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "value,sentence,echo",
+    [
+        ([99], "either a rating on its own", "99"),
+        ([{"region": "GB"}], "need a `rating:` key", "GB"),
+        ([{"rating": "Qq99", "region": "Zzz"}], "2-letter country code", "Zzz"),
+        ([{"rating": "", "region": "GB"}], "need a `rating:` key", "GB"),
+        (
+            {"region": "GB", "rating": "TV-MA"},
+            "either a rating on its own",
+            "TV-MA",
+        ),
+        (
+            {"region": "GB", "rating": "TV-MA"},
+            "either a rating on its own",
+            "GB",
+        ),
+        ("TV-MA", "either a rating on its own", "TV-MA"),
+        (
+            [{"reigon": "GB", "rating": "15"}],
+            "either a rating on its own",
+            "reigon",
+        ),
+    ],
+)
+async def test_a_malformed_content_rating_is_refused_without_echoing_it(
+    value, sentence, echo
+):
+    """Config-LOAD refusals with fixed sentences (C1/row 213): the sentence names
+    the key and the shape, and the operator's own text never appears in it."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, content_rating=value)
+
+    messages = _messages(caught)
+    assert any(sentence in m for m in messages)
+    assert not any(echo in m for m in messages)
+
+
+async def test_content_rating_alone_satisfies_the_one_constraint_guard():
+    async with httpx.AsyncClient(transport=_paged()) as http:
+        result = await _build(http, content_rating=["PG-13"])
+
+    assert result.ids
+
+
+async def test_a_padded_rating_is_stripped_before_it_reaches_the_wire():
+    """Mutation gap: dropping the ``.strip()`` (while keeping the emptiness
+    check) would ship whitespace to IMDb and return zero titles -- so this
+    asserts the exact byte on the wire rather than just that the field loads."""
+    assert await _constraints(content_rating=[" PG-13 "]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_CERTIFICATE,
+    }
+
+
+# --- country, language and keyword (rows 260, 261, 262) -----------------------
+
+
+PROBED_COUNTRY = {"originCountryConstraint": {"anyCountries": ["US"]}}
+PROBED_LANGUAGE = {"languageConstraint": {"anyLanguages": ["en"]}}
+PROBED_KEYWORD = {"keywordConstraint": {"anyKeywords": ["time-travel"]}}
+
+
+@pytest.mark.parametrize(
+    "params,probed",
+    [
+        ({"country_any": ["US"]}, PROBED_COUNTRY),
+        ({"language_any": ["en"]}, PROBED_LANGUAGE),
+        ({"keyword_any": ["time-travel"]}, PROBED_KEYWORD),
+    ],
+)
+async def test_the_probed_shape_reaches_the_wire_for_each_of_these_families(
+    params, probed
+):
+    """Rows 260, 261 and 262, session 4 -- 24,320, 34,699 and 188 titles against
+    a control of 78,732. One probed field per family; every sibling below is the
+    same GraphQL input object on the transcription's authority."""
+    assert await _constraints(**params) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **probed,
+    }
+
+
+@pytest.mark.parametrize(
+    "param,value,obj,field",
+    [
+        ("country", "US", "originCountryConstraint", "allCountries"),
+        ("country_any", "US", "originCountryConstraint", "anyCountries"),
+        ("country_not", "US", "originCountryConstraint", "excludeCountries"),
+        ("country_origin", "US", "originCountryConstraint", "anyPrimaryCountries"),
+        ("language", "en", "languageConstraint", "allLanguages"),
+        ("language_any", "en", "languageConstraint", "anyLanguages"),
+        ("language_not", "en", "languageConstraint", "excludeLanguages"),
+        ("language_primary", "en", "languageConstraint", "anyPrimaryLanguages"),
+        ("keyword", "heist", "keywordConstraint", "allKeywords"),
+        ("keyword_any", "heist", "keywordConstraint", "anyKeywords"),
+        ("keyword_not", "heist", "keywordConstraint", "excludeKeywords"),
+    ],
+)
+async def test_each_suffix_reaches_the_graphql_field_the_document_names(
+    param, value, obj, field
+):
+    """The `.not` forms are real here. Kometa DROPS `.not` for its eight
+    text-matching families (the document's §2.1) and none of these three is
+    among them, so ``excludeCountries``/``excludeLanguages``/``excludeKeywords``
+    are sent rather than silently swallowed."""
+    assert await _constraints(**{param: [value]}) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        obj: {field: [value.upper() if obj == "originCountryConstraint" else value]},
+    }
+
+
+@pytest.mark.parametrize(
+    "param", ["country", "country_any", "country_not", "country_origin"]
+)
+async def test_a_country_code_that_is_not_two_letters_is_refused(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["Zzland"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb's 2-letter country codes" in m for m in messages)
+    assert not any("Zzland" in m for m in messages)
+
+
+@pytest.mark.parametrize(
+    "param", ["language", "language_any", "language_not", "language_primary"]
+)
+async def test_a_blank_language_is_refused(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["\t"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb's language codes" in m for m in messages)
+    assert not any("\t" in m for m in messages)
+
+
+@pytest.mark.parametrize("param", ["keyword", "keyword_any", "keyword_not"])
+async def test_a_blank_keyword_is_refused(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["\t"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb keyword phrases" in m for m in messages)
+    assert not any("\t" in m for m in messages)
+
+
+async def test_country_codes_are_upper_cased_and_languages_are_lower_cased():
+    """IMDb matches both case-sensitively and answers a value it does not know
+    with ``total: 0`` and no error, so the case fold happens here rather than
+    producing a collection that looks like it works."""
+    assert await _constraints(country_any=["us"], language_any=["EN"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_COUNTRY,
+        **PROBED_LANGUAGE,
+    }
+
+
+async def test_keyword_spaces_become_hyphens():
+    """Kometa's whole normalisation for this family (the document's §2 row 22),
+    and the reason ``time travel`` and ``time-travel`` are the same search."""
+    assert await _constraints(keyword_any=["Time Travel"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_KEYWORD,
+    }
+
+
+@pytest.mark.parametrize(
+    "param,value",
+    [
+        ("country", "US"), ("country_any", "US"), ("country_not", "US"),
+        ("country_origin", "US"),
+        ("language", "en"), ("language_any", "en"), ("language_not", "en"),
+        ("language_primary", "en"),
+        ("keyword", "heist"), ("keyword_any", "heist"), ("keyword_not", "heist"),
+    ],
+)
+async def test_each_of_these_families_alone_satisfies_the_one_constraint_guard(
+    param, value
+):
+    """``_needs_at_least_one_constraint`` derives its filtering set from
+    ``model_fields`` and excludes only ``type`` and ``sort``, so a new param is
+    a filter for free -- this is the assertion that it stayed that way."""
+    async with httpx.AsyncClient(transport=_paged()) as http:
+        result = await _build(http, **{param: [value]})
+
+    assert result.ids
+
+
+@pytest.mark.parametrize(
+    "param,value,sentence",
+    [
+        ("country", "US", "takes IMDb's 2-letter country codes"),
+        ("language", "en", "takes IMDb's language codes"),
+        ("keyword", "time-travel", "takes IMDb keyword phrases"),
+        ("cast", "nm0000138", "takes IMDb person ids"),
+        ("event", "oscars", "takes an IMDb event id"),
+        ("list", "ls539646485", "takes IMDb list ids"),
+    ],
+)
+async def test_a_bare_string_where_the_list_belongs_is_refused_not_iterated(
+    param, value, sentence
+):
+    """A ``str`` is iterable too: unguarded, ``country: US`` would walk its
+    characters and build ``["U", "S"]`` rather than refusing the shape -- the
+    same trap ``_must_be_a_rating_or_a_region_and_rating`` guards against for
+    ``content_rating`` (Task 2's fix round). Row 213: the sentence names the
+    key, never the operator's value."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: value})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` {sentence}" in m for m in messages)
+    assert not any(value in m for m in messages)
+
+
+# --- fix round 1: non-string elements, country whitespace, the registry -------
+
+
+@pytest.mark.parametrize(
+    "param,value,sentence,forbidden",
+    [
+        # YAML 1.1 makes Norway's `NO` into `False`; the element must be
+        # refused rather than handed to `re.match`/`.strip()`, which raise a
+        # raw TypeError/AttributeError instead of a clean ValidationError.
+        ("country", [False], "takes IMDb's 2-letter country codes", "False"),
+        ("language", [False], "takes IMDb's language codes", "False"),
+        ("keyword", [3], "takes IMDb keyword phrases", "3"),
+        ("country", [["US"]], "takes IMDb's 2-letter country codes", "['US']"),
+        ("cast", [False], "takes IMDb person ids", "False"),
+        ("event", [False], "takes an IMDb event id", "False"),
+        ("list", [3], "takes IMDb list ids", "3"),
+    ],
+)
+async def test_a_non_string_element_is_refused_not_matched_or_stripped(
+    param, value, sentence, forbidden
+):
+    """Task 3 review, Important: a non-``str`` element inside an otherwise
+    list-shaped value escaped as a raw traceback rather than a ValidationError,
+    because it reached ``re.match``/``.strip()`` before any type check. Row 213:
+    the family's existing fixed sentence, never the operator's value."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: value})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` {sentence}" in m for m in messages)
+    assert not any(forbidden in m for m in messages)
+
+
+async def test_a_trailing_newline_in_a_country_code_is_stripped_before_matching():
+    """Task 3 review, Minor: `us\\n` (a YAML block scalar) matched
+    `^[A-Za-z]{2}$` because `$` also matches just before a trailing newline --
+    the exact silent-empty failure the module's docstring exists to prevent, so
+    this asserts the exact byte reaching the wire rather than just that the
+    field loads."""
+    assert await _constraints(country_any=["us\n"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_COUNTRY,
+    }
+
+
+def test_the_list_constraints_table_matches_the_family_params_on_the_model():
+    """Task 3 review, Minor: the table was never checked against the model or
+    against what the parametrised family tests above cover, so a typo'd row
+    would stay invisible until ``search_constraints``'s ``getattr`` raised at
+    build time for every collection using that family."""
+    table_params = {row[0] for row in _LIST_CONSTRAINTS}
+    assert table_params <= set(ImdbSearchParams.model_fields)
+    family_params = {
+        name
+        for name in ImdbSearchParams.model_fields
+        if name.startswith(("country", "language", "keyword", "cast", "list"))
+    }
+    assert table_params == family_params
+
+
+async def test_two_params_in_the_same_family_are_merged_not_overwritten():
+    """Task 3 review, mutation gap: replacing the ``setdefault`` merge in
+    ``search_constraints`` with a plain overwrite (``constraints[obj] = ...``)
+    passes every other test in this file -- none of them writes two params of
+    the SAME family together, only across families -- and would silently drop
+    ``allCountries`` whenever ``country`` and ``country_not`` are both
+    written."""
+    assert await _constraints(country=["us"], country_not=["gb"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "originCountryConstraint": {
+            "allCountries": ["US"],
+            "excludeCountries": ["GB"],
+        },
+    }
+
+
+# --- Task 4: cast, event and list ----------------------------------------------
+
+PROBED_CAST = {"titleCreditsConstraint": {"anyCredits": [{"nameId": "nm0000138"}]}}
+PROBED_EVENT = {"awardConstraint": {"allEventNominations": [{"eventId": "ev0000003"}]}}
+PROBED_LIST = {"listConstraint": {"inAnyList": ["ls539646485"]}}
+
+
+async def test_the_probed_cast_shape_reaches_the_wire():
+    """Row 263, session 4: 22 titles. Elements are ``{nameId: nm…}`` objects,
+    not bare ids -- the one family here whose list is wrapped."""
+    assert await _constraints(cast_any=["nm0000138"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_CAST,
+    }
+
+
+async def test_two_cast_ids_stay_in_order_both_wrapped():
+    """Task 4 review: ``cast``'s elements are wrapped ``{nameId: ...}`` objects,
+    and the probed shape above only ever passed one -- so a wrapper applied to
+    the first element and dropped for the rest would still pass it. Two ids,
+    order preserved, both wrapped."""
+    assert await _constraints(cast=["nm0000138", "nm0000123"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "titleCreditsConstraint": {
+            "allCredits": [{"nameId": "nm0000138"}, {"nameId": "nm0000123"}]
+        },
+    }
+
+
+async def test_the_probed_event_shape_reaches_the_wire():
+    """Row 264, session 4: 400 titles. ``ev0000003`` is the Oscars, and it is
+    reached here by writing the ceremony name this service already builds award
+    collections under."""
+    assert await _constraints(event=["oscars"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_EVENT,
+    }
+
+
+async def test_the_probed_list_shape_reaches_the_wire():
+    """Row 265, session 4: 2 titles."""
+    assert await _constraints(list_any=["ls539646485"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_LIST,
+    }
+
+
+@pytest.mark.parametrize(
+    "param,value,obj,field,expected",
+    [
+        ("cast", "nm0000138", "titleCreditsConstraint", "allCredits",
+         [{"nameId": "nm0000138"}]),
+        ("cast_any", "nm0000138", "titleCreditsConstraint", "anyCredits",
+         [{"nameId": "nm0000138"}]),
+        ("cast_not", "nm0000138", "titleCreditsConstraint", "excludeCredits",
+         [{"nameId": "nm0000138"}]),
+        ("list", "ls539646485", "listConstraint", "inAllLists", ["ls539646485"]),
+        ("list_any", "ls539646485", "listConstraint", "inAnyList", ["ls539646485"]),
+        ("list_not", "ls539646485", "listConstraint", "notInAnyList",
+         ["ls539646485"]),
+    ],
+)
+async def test_each_credit_and_list_suffix_reaches_its_documented_field(
+    param, value, obj, field, expected
+):
+    """``list``'s bare key is ``inAllLists`` and not ``inAnyList``: the family's
+    field names do not follow the ``all*``/``any*``/``exclude*`` spelling the
+    other four use, so a table row copied from a neighbour would be wrong in a
+    way only this assertion catches."""
+    assert await _constraints(**{param: [value]}) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        obj: {field: expected},
+    }
+
+
+async def test_event_winning_adds_the_winner_filter():
+    """TRANSCRIPTION-ONLY (facts A3). Session 4 probed a bare ``eventId``; the
+    ``winnerFilter`` key is the document's §2 row 25 and Kometa's
+    ``imdb.py:667-676``, never this project's wire."""
+    assert await _constraints(event_winning=["oscars"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "awardConstraint": {
+            "allEventNominations": [
+                {"eventId": "ev0000003", "winnerFilter": "WINNER_ONLY"}
+            ]
+        },
+    }
+
+
+async def test_event_and_event_winning_merge_into_one_nomination_list():
+    """Kometa's own behaviour: the two keys are one list, and the SAME event may
+    appear twice with different filters (``imdb.py:667-676``). Two constraint
+    objects would be a GraphQL duplicate-key error, not a wider search."""
+    assert await _constraints(event=["oscars"], event_winning=["cannes"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "awardConstraint": {
+            "allEventNominations": [
+                {"eventId": "ev0000003"},
+                {"eventId": "ev0000147", "winnerFilter": "WINNER_ONLY"},
+            ]
+        },
+    }
+
+
+async def test_the_same_ceremony_named_twice_produces_two_distinct_nominations():
+    """Task 4 review: ``event`` and ``event_winning`` naming the SAME ceremony
+    must still produce two list entries, one plain and one with
+    ``winnerFilter`` -- a merge keyed on the event id rather than appended
+    would silently drop one of them. The id is derived from the registry, not
+    a literal, so a renumbered ceremony cannot make this pass for the wrong
+    reason."""
+    from autoposter.collections.builders.imdb_award import EVENTS
+
+    oscars = EVENTS["oscars"].event_id
+    assert await _constraints(event=["oscars"], event_winning=["oscars"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "awardConstraint": {
+            "allEventNominations": [
+                {"eventId": oscars},
+                {"eventId": oscars, "winnerFilter": "WINNER_ONLY"},
+            ]
+        },
+    }
+
+
+async def test_a_raw_event_id_is_accepted_as_written():
+    assert await _constraints(event=["ev0000003"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_EVENT,
+    }
+
+
+def test_the_event_vocabulary_is_the_award_builders_registry():
+    """Derived from the registry, never spelled out: ``imdb_award`` is where the
+    sixteen ceremonies and their ids already live (its ``EVENTS`` table), and a
+    seventeenth added there must be writable here the same day. The Oscars id is
+    the one ``collections/awards.py`` has always carried."""
+    from autoposter.collections.awards import EVENT_ID
+    from autoposter.collections.builders.imdb_award import EVENTS
+    from autoposter.collections.builders.imdb_search import _EVENT_IDS
+
+    assert _EVENT_IDS == {key: event.event_id for key, event in EVENTS.items()}
+    assert _EVENT_IDS["oscars"] == EVENT_ID
+
+
+@pytest.mark.parametrize("param", ["cast", "cast_any", "cast_not"])
+async def test_a_cast_value_that_is_not_a_name_id_is_refused(param):
+    """IMDb has no name lookup on this root and Kometa's own operators write ids
+    (``modules/builder.py:2542-2551``), so a person's name is refused at load
+    rather than sent and silently matching nothing."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["Humphrey Bogart"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb person ids" in m for m in messages)
+    assert not any("Humphrey Bogart" in m for m in messages)
+
+
+@pytest.mark.parametrize("param", ["list", "list_any", "list_not"])
+async def test_a_list_value_that_is_not_a_list_id_is_refused(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["zzz9999"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb list ids" in m for m in messages)
+    assert not any("zzz9999" in m for m in messages)
+
+
+@pytest.mark.parametrize(
+    "param,value,sentence",
+    [
+        ("cast", "nmBogart", "takes IMDb person ids"),
+        ("list", "lsabc", "takes IMDb list ids"),
+    ],
+)
+async def test_a_value_with_the_right_prefix_but_no_digits_is_still_refused(
+    param, value, sentence
+):
+    """Task 4 review: ``nmBogart`` and ``lsabc`` both start with the family's
+    prefix, so a validator that only checked ``str.startswith`` would let them
+    through. ``_NAME_ID``/``_LIST_ID`` require digits after the prefix, and this
+    is what proves it rather than a value with no prefix at all."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: [value]})
+
+    messages = _messages(caught)
+    assert any(sentence in m for m in messages)
+    assert not any(value in m for m in messages)
+
+
+@pytest.mark.parametrize("param", ["event", "event_winning"])
+async def test_an_unknown_ceremony_is_refused_naming_the_known_ones(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["zzznotaceremony"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes an IMDb event id" in m for m in messages)
+    assert any("oscars" in m for m in messages), "the vocabulary is named"
+    assert not any("zzznotaceremony" in m for m in messages)
+
+
+@pytest.mark.parametrize(
+    "param,value",
+    [
+        ("cast", "nm0000138"), ("cast_any", "nm0000138"), ("cast_not", "nm0000138"),
+        ("event", "oscars"), ("event_winning", "oscars"),
+        ("list", "ls539646485"), ("list_any", "ls539646485"),
+        ("list_not", "ls539646485"),
+    ],
+)
+async def test_each_of_the_new_families_alone_satisfies_the_one_constraint_guard(
+    param, value
+):
+    """Named distinctly from Task 3's same-purpose test above: reusing that
+    name would silently shadow it in the module namespace and drop its eleven
+    cases from collection rather than adding these eight."""
+    async with httpx.AsyncClient(transport=_paged()) as http:
+        result = await _build(http, **{param: [value]})
+
+    assert result.ids
+
+
+# --- the twelve families, and what must not have moved -------------------------
+
+EVERY_FAMILY = {
+    "type": "movie",
+    "genres": ["Film-Noir"],
+    "rating_gte": 7.0,
+    "rating_lte": 9.5,
+    "votes_gte": 1000,
+    "released_after": "1940-01-01",
+    "released_before": "1959-12-31",
+    "runtime_gte": 80,
+    "runtime_lte": 90,
+    "content_rating": ["PG-13"],
+    "country": ["US"],
+    "country_any": ["GB"],
+    "country_not": ["FR"],
+    "country_origin": ["JP"],
+    "language": ["en"],
+    "language_any": ["fr"],
+    "language_not": ["de"],
+    "language_primary": ["ja"],
+    "keyword": ["time-travel"],
+    "keyword_any": ["heist"],
+    "keyword_not": ["remake"],
+    "cast": ["nm0000138"],
+    "cast_any": ["nm0000158"],
+    "cast_not": ["nm0000148"],
+    "event": ["oscars"],
+    "event_winning": ["cannes"],
+    "sort": "popularity.desc",
+    "list": ["ls539646485"],
+    "list_any": ["ls000000001"],
+    "list_not": ["ls000000002"],
+}
+
+
+def test_the_search_query_text_is_byte_identical_to_the_one_that_shipped():
+    """The transport does not change for any of the eight families: every
+    constraint object rides inside the ``$constraints`` VARIABLE the query
+    already declares (the row-148 recon §(1)). Asserted whole rather than by
+    keyword -- a query that still says ``advancedTitleSearch`` but lost its
+    ``pageInfo`` would pass a substring check and silently stop paging."""
+    assert SEARCH_QUERY == (
+        "query AdvancedTitleSearch($constraints: AdvancedTitleSearchConstraints!,"
+        " $sort: AdvancedTitleSearchSort!, $first: Int!, $after: String) {"
+        " advancedTitleSearch(constraints: $constraints, sort: $sort, first: $first,"
+        " after: $after) { total pageInfo { hasNextPage endCursor }"
+        " edges { node { title { id } } } } }"
+    )
+
+
+def test_the_four_shipped_families_build_exactly_what_they_always_did():
+    """``RECORDED_CONSTRAINTS`` is a recording of a real 2026-08-25 request. The
+    eight new families must not have moved a byte of it -- a stray
+    ``setdefault`` or a reordered block here would rewrite live collections'
+    filter signatures for nothing."""
+    params = ImdbSearchParams.model_validate(RECORDED_PARAMS)
+
+    assert search_constraints(params, ("movie",)) == RECORDED_CONSTRAINTS
+
+
+def test_a_definition_that_names_no_new_family_adds_no_key(): # C4
+    """The storm guard. ``definition_hash`` folds the BUILT constraints, and no
+    config that loads today can name a key that did not parse yesterday -- so
+    the only way a stored hash could move is a new family emitting something
+    when the operator wrote nothing. One assertion, over every new field."""
+    params = ImdbSearchParams.model_validate(RECORDED_PARAMS)
+    new_fields = set(ImdbSearchParams.model_fields) - set(RECORDED_PARAMS)
+
+    assert new_fields, "this pin is vacuous if the new fields are already set"
+    assert all(getattr(params, name) is None for name in new_fields)
+    assert set(search_constraints(params, ("movie",))) == {
+        "titleTypeConstraint",
+        "genreConstraint",
+        "userRatingsConstraint",
+        "releaseDateConstraint",
+    }
+
+
+async def test_all_twelve_constraint_objects_are_reachable_from_params():
+    """One definition that writes every key of every family, and the twelve
+    objects it produces. A deliberate literal: these names are the contract with
+    IMDb, not a registry, so a thirteenth family edits this test on purpose."""
+    assert set(await _constraints(**EVERY_FAMILY)) == {
+        "titleTypeConstraint",
+        "genreConstraint",
+        "userRatingsConstraint",
+        "releaseDateConstraint",
+        "runtimeConstraint",
+        "certificateConstraint",
+        "originCountryConstraint",
+        "languageConstraint",
+        "keywordConstraint",
+        "titleCreditsConstraint",
+        "awardConstraint",
+        "listConstraint",
+    }
+
+
+def test_the_dispatch_table_and_the_params_model_agree():
+    """Derived, not spelled out: every row of the table is a real field, and
+    every field of the five list-valued families has a row. A family added later
+    with no table row would validate fine and send NOTHING, which is the failure
+    this catches."""
+    from autoposter.collections.builders.imdb_search import _LIST_CONSTRAINTS
+
+    table = {name for name, _, _, _ in _LIST_CONSTRAINTS}
+    families = ("country", "language", "keyword", "cast", "list")
+    expected = {
+        name
+        for name in ImdbSearchParams.model_fields
+        if name.split("_")[0] in families
+    }
+
+    assert table == expected
+    assert len(table) == 17
+
+
+def test_the_one_constraint_guard_names_every_filtering_param():
+    """The guard's sentence used to hand-list six names, which was already one
+    edit behind by row 258. It is derived from ``model_fields`` now, like the
+    set it guards -- so a family added later is named in the refusal for free."""
+    with pytest.raises(ValidationError) as caught:
+        ImdbSearchParams.model_validate({})
+
+    message = "\n".join(error["msg"] for error in caught.value.errors())
+    for name in ImdbSearchParams.model_fields:
+        if name in ("type", "sort"):
+            assert name not in message.split(":")[1]
+        else:
+            assert name in message
+
+
+def test_the_params_model_carries_thirty_fields():
+    """Eight from row 81, twenty-two from rows 258-265. A count rather than a
+    list: the names are pinned one family at a time above, and what this adds is
+    that nothing was quietly dropped between them."""
+    assert len(ImdbSearchParams.model_fields) == 30

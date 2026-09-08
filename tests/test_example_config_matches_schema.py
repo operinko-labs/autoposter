@@ -99,3 +99,29 @@ def test_the_charts_comment_says_the_three_titles_move_together():
 
     assert "all three" in line
     assert "imdb_chart" in line
+
+
+def test_the_commented_imdb_search_example_names_every_family():
+    """Roadmap rows 258-265 (facts A2). ``imdb_search`` was documented nowhere
+    in this file, and its twelve constraint families are the largest params
+    surface any builder has -- so the example carries one definition writing
+    every key once, and this parses it back to prove it is real config rather
+    than prose. Derived from the model, so a family added later reddens here
+    until the example shows it.
+    """
+    from autoposter.collections.builders.imdb_search import ImdbSearchParams
+
+    lines = EXAMPLE.read_text(encoding="utf-8").splitlines()
+    start = next(
+        i for i, line in enumerate(lines) if line.strip() == "#     - title: Film Noir"
+    )
+    end = next(
+        i for i in range(start + 1, len(lines)) if not lines[i].lstrip().startswith("#")
+    )
+    block = "\n".join(line.replace("#", " ", 1) for line in lines[start:end])
+    definition = yaml.safe_load(block)[0]
+
+    assert definition["builder"] == "imdb_search"
+    params = definition["params"]
+    assert set(params) == set(ImdbSearchParams.model_fields)
+    ImdbSearchParams.model_validate(params)
