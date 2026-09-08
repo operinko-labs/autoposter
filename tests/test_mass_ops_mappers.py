@@ -67,7 +67,11 @@ def test_the_genre_mapper_normalises_before_the_diff():
     item = FakeItem(genres=["Sci-Fi", "Drama"])
     operations = OperationsConfig(genre_mapper={"Sci-Fi & Fantasy": "Sci-Fi"})
     facts = GatheredFacts(genres=["Sci-Fi & Fantasy", "Drama"])
-    assert plan_edits(item, facts, operations) == {}
+    # Plex already holds the MAPPED list, so no add and no removal is planned
+    # -- which is what proves the mapping runs before the comparison and not
+    # after it. The one key written is roadmap row 246's equal-list lock, and
+    # a lock is not a genre CHANGE: no ``genres.added``/``genres.removed``.
+    assert plan_edits(item, facts, operations) == {"genre.locked": 1}
 
 
 def test_the_genre_mapper_writes_the_mapped_genre():
@@ -75,7 +79,11 @@ def test_the_genre_mapper_writes_the_mapped_genre():
     operations = OperationsConfig(genre_mapper={"Sci-Fi & Fantasy": "Sci-Fi"})
     facts = GatheredFacts(genres=["Sci-Fi & Fantasy", "Drama"])
     edits = plan_edits(item, facts, operations)
-    assert edits == {"genres.added": ["Sci-Fi"], "genres.locked": 1}
+    # No lock key in the plan: roadmap row 246 deleted the dead plural
+    # ``genres.locked``, which ``apply_facts`` stripped out of every payload it
+    # ever built. A real change locks through ``locked=True`` on the
+    # ``addGenre``/``removeGenre`` calls instead.
+    assert edits == {"genres.added": ["Sci-Fi"]}
 
 
 def test_no_mapper_configured_is_byte_identical_to_no_operations_at_all():

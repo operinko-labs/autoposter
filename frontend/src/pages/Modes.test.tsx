@@ -6,12 +6,14 @@
  * is not merely "confirming applies" -- it is that pressing Apply on its own
  * fires **no** request at all. Delete the gate and that assertion reds.
  *
- * The second is the honest copy. The counters these endpoints return are
- * coarser than they look (`uploaded` includes items whose marker write failed;
- * `reset` counts fields, not items) and two of the modes have consequences the
+ * The second is the honest copy. Two of these modes have consequences the
  * numbers never mention (restore idles the worker pool; reset cannot delete the
- * upload it replaces). Those sentences are the feature as much as the buttons
- * are, so they are asserted rather than left to drift.
+ * upload it replaces), and `reset` counts fields, not items. Those sentences are
+ * the feature as much as the buttons are, so they are asserted rather than left
+ * to drift. The logo updater's two coarseness disclosures are gone from that
+ * list on purpose: roadmap row 127 made the response say in numbers what those
+ * sentences used to say in prose, and the label assertions below are what
+ * replaced them.
  */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -191,9 +193,6 @@ describe("the honest copy each mode carries", () => {
     expect(text).toContain("plausibility cap");
     expect(text).toContain("not a failure");
     expect(text).toContain("Raise the cap or narrow the filters");
-    // The two coarse counters, said plainly rather than implied.
-    expect(text).toContain("including any whose marker write afterwards failed");
-    expect(text).toContain("no provider had one, the only candidate was an SVG");
   });
 
   it("says the logo revert touches only logos it set and Plex still shows", async () => {
@@ -250,6 +249,44 @@ describe("dry run", () => {
     expect(within(result).getByText("2")).toBeInTheDocument();
     expect(within(result).getByText("no longer in Plex")).toBeInTheDocument();
     expect(result.textContent).toContain("Nothing was changed");
+  });
+
+  it("labels every counter the logo updater now returns", async () => {
+    const fetchMock = stubFetch(async () =>
+      json({
+        mode: "logo",
+        status: "updated",
+        dry_run: false,
+        items: 40,
+        items_missing_logo: 9,
+        missing: 1,
+        probe_failed: 3,
+        uploaded: 4,
+        unmarked: 1,
+        no_logo_available: 2,
+        upload_failed: 2,
+      }),
+    );
+
+    await renderModes();
+    const logo = await card("Logo updater");
+    fireEvent.click(within(logo).getByRole("button", { name: "Dry run" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const result = within(logo).getByRole("status");
+
+    // Every new counter reads as English rather than as its raw key. The
+    // probe count is the one that changes an operator's conclusion: without
+    // it, "9 items missing a logo" out of 40 looks complete.
+    expect(within(result).getByText("items Plex could not be asked about")).toBeInTheDocument();
+    expect(
+      within(result).getByText("logos uploaded but unmarked — Logo revert cannot claim these"),
+    ).toBeInTheDocument();
+    expect(within(result).getByText("no usable logo on any provider")).toBeInTheDocument();
+    expect(within(result).getByText("uploads that did not go through")).toBeInTheDocument();
+    // The raw keys are what an unmapped count falls through to.
+    expect(result.textContent).not.toContain("probe_failed");
+    expect(result.textContent).not.toContain("no_logo_available");
   });
 
   it("sends the filters the operator chose", async () => {
