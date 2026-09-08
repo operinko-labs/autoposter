@@ -294,6 +294,47 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     assert plex_item.saved == 1
 
 
+@pytest.mark.asyncio
+async def test_the_genre_lock_reaches_plex_through_the_real_entry_point(
+    session, media_item_id, config
+):
+    """Roadmap row 246, through ``apply_metadata`` -- the real seam that
+    gathers, persists, checks the row-35 exemption and calls ``apply_facts`` --
+    and not through ``plan_edits``. The same three assertions, in the order the
+    law states them. What plays the gate here is ``plan_edits``' ``and genres``
+    term: an item no provider has genres for is not touched (row 246 C3).
+    """
+    # (a) GATE OFF. No provider genres for this item, so nothing about its
+    # genre list is this service's to own and nothing at all is written.
+    plex_item = RecordingPlexItem(genres=["Crime", "Drama"], locks=[])
+    await apply_metadata(
+        session, config, media_item_id, _item(), plex_item,
+        FakeTMDB(GatheredFacts()), NullMDBListClient(),
+    )
+    assert plex_item.edits == []
+
+    # (b) GATE ON. The provider's genres equal Plex's and Plex has never said
+    # the genre field is locked, so exactly one lock edit is written -- the
+    # SINGULAR key, which is what survives apply_facts' plural filter -- and
+    # no add and no removal alongside it.
+    await apply_metadata(
+        session, config, media_item_id, _item(), plex_item,
+        FakeTMDB(GatheredFacts(genres=["Drama", "Crime"])), NullMDBListClient(),
+    )
+    assert plex_item.edits == [{"genre.locked": 1}]
+    assert plex_item.saved == 1
+
+    # (c) SECOND PASS: steady state. saveEdits above put ("genre", True) into
+    # what this item reports about its locks, so _locked_in_plex answers True
+    # and the pass writes nothing. This is the one-time cost, ending.
+    await apply_metadata(
+        session, config, media_item_id, _item(), plex_item,
+        FakeTMDB(GatheredFacts(genres=["Drama", "Crime"])), NullMDBListClient(),
+    )
+    assert plex_item.edits == [{"genre.locked": 1}]
+    assert plex_item.saved == 1
+
+
 # --- I2: pipeline.py:1137's `p.name == "TVDB"` lookup, driven end to end ----
 #
 # Not through gather_facts directly (test_facts_gather.py already covers the
