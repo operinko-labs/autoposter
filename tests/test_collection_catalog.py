@@ -1721,6 +1721,18 @@ def test_every_people_pack_discloses_the_two_things_it_cannot_promise():
         assert "credits_scan_days" in description, preset.key
 
 
+def test_every_people_pack_says_the_cap_is_filled_from_searchable_people():
+    """Roadmap row 224, disclosed where the operator picks the pack. `limit:`
+    now caps the people this library can actually be SEARCHED for, not the
+    people with the highest raw counts -- so the row an operator reads has to
+    say that the cap is filled from the tag vocabulary, or "the 25
+    most-credited" reads as a promise about the counts alone."""
+    for preset, _collection, _params in _credits_family_rows():
+        description = preset.description
+        assert "vocabulary" in description, preset.key
+        assert "searched" in description, preset.key
+
+
 def test_every_gated_key_is_refused_at_load_naming_its_row():
     """The refusal the picker's disabled state is backed by, over every gated
     row rather than one injected double: a key copied out of the picker by hand

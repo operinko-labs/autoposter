@@ -99,6 +99,13 @@ _REMOVABLE_FIELDS = frozenset(
 # absent from the config validator too (schema.py's ``_known_fields_and_verbs``
 # checks membership in this set), so ``{field: reset}`` is a load-time error
 # rather than a setting that loads and silently does nothing.
+#
+# Roadmap row 230 CLOSED this as won't-do on 2026-09-08, and ``verb_edits``
+# therefore carries no ``reset`` branch: the load-time refusal above is the
+# whole implementation, and a defensive ``if verb == "reset": continue`` in the
+# loop could only ever be reached by a config that had already been refused.
+# "Restore from the metadata backup" is a DIFFERENT promise -- the value at
+# backup time, not the agent's -- and is filed as its own row under row 86.
 FIELD_VERBS = frozenset({"lock", "unlock", "remove"})
 
 
@@ -175,9 +182,6 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
                 getattr(item, "ratingKey", None), field, verb,
             )
             continue
-        if verb == "reset":
-            # STOP-and-filed: see the module's _REMOVABLE_FIELDS comment.
-            continue
         if verb == "remove" and field not in _REMOVABLE_FIELDS:
             # Row 87's I1, applied to a set that row 99 just widened: an
             # accepted-but-ignored verb is indistinguishable from a working
@@ -186,7 +190,9 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
             # has loaded and quietly done nothing since row 87 shipped, and
             # turning a config that boots today into one that refuses to is a
             # deployment risk this row has no mandate to take. The question is
-            # filed beside rows 229/230, which already own that family.
+            # filed beside row 229, which already owns that family; row 230
+            # (the sibling question, for ``reset``) closed as won't-do, and
+            # restore-from-backup is refiled as roadmap row 256 under row 86.
             #
             # INFO, not WARNING (task-2 fix round 1, I-2): this fires once
             # PER ITEM per pass, the same per-item volume as the sibling

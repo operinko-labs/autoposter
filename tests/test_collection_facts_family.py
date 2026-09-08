@@ -359,6 +359,51 @@ async def test_an_over_cap_family_creates_nothing_and_says_both_numbers(session)
     assert "5" in note and "3" in note
 
 
+async def test_the_over_cap_refusal_reaches_the_logs_page(session, caplog):
+    """Roadmap row 223's real finding. This module had NO logger at all, so the
+    franchise family's cap refusal existed only as a string in a run report --
+    invisible on the logs page, which is where an operator looks when a family
+    stops updating. ``builders/dynamic._refused`` has warned since it shipped;
+    this is the same line, on the same branch, in the sibling builder that
+    actually hit the incident. ONE record, naming the library and the
+    definition, and the reported string is byte-for-byte the one it replaced.
+    """
+    import logging
+
+    for index in range(5):
+        await _item(session, str(index), tmdb_origin_country=["C%d" % index])
+    definition = _definition(params={"type": "origin_country", "max_collections": 3})
+    ctx = _ctx(session, definition)
+
+    with caplog.at_level(logging.WARNING):
+        units = await FactsFamilyBuilder().expand(ctx)
+
+    assert units == []
+    warnings = [
+        record for record in caplog.records
+        if record.levelno == logging.WARNING
+        and record.name == "autoposter.collections.builders.facts_family"
+    ]
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+    message = warnings[0].getMessage()
+    # The reason string already embeds the library (``%r`` of ``ctx.library``
+    # inside ``why``), so a bare "Movies" in message` substring check passes
+    # even if ``ctx.library`` were dropped from the outer ``%s`` in
+    # ``logger.warning("%s: %r was not built: %s", ...)``. Only the record's
+    # own shape -- library, then ``: ``, then the quoted title -- pins that
+    # argument.
+    assert message.startswith("Movies: 'Countries of origin' was not built:")
+    assert "`max_collections` is 3" in message
+    note = " ".join(ctx.run_cache.get("facts_family:notes", []))
+    assert note == (
+        "'Countries of origin' built nothing: this would create 5 collections "
+        "in 'Movies' -- 'origin_country' reports 5 value(s) there, which "
+        "`include:`, `exclude:` and `addons:` narrow to that many buckets -- "
+        "and `max_collections` is 3. Narrow the family, or raise "
+        "`max_collections` past 5 if that is really what you want"
+    )
+
+
 async def test_a_library_type_the_field_cannot_carry_is_refused_before_any_query(session):
     """A movie-only family on a show library costs zero database work and says
     why -- ``require_library_type``, above the enumeration deliberately."""

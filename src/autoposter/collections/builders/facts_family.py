@@ -43,7 +43,21 @@ in the config already manages are all reported rather than raised.
 ``expand`` returning ``[]`` is a family that built nothing, and
 ``generated_titles`` answering ``None`` is what stops the sweep treating that as
 narrowing.
+
+**A family-level refusal freezes its existing members, deliberately** (roadmap
+row 223, answered 2026-09-08: the coupling is KEPT). This is the builder the
+franchise-cap incident actually ran on -- ``packs.FRANCHISE_PARAMS`` is
+``builder: facts_family``, not ``dynamic`` -- and every refusal above returns
+before the record seed, so a refused family's collections keep stale sort
+prefixes and take no poster updates. The other half is protection:
+``engine.py:1418-1421`` reads an absent record as fail-closed, so the same
+return also guarantees the sweep will not delete the family. The over-cap
+refusal is now LOGGED as well as reported, ``builders/dynamic._refused``'s line
+verbatim -- the incident's real cost was that this module had no logger at all,
+so the refusal never reached the logs page.
 """
+import logging
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from autoposter.collections.builders.base import (
@@ -64,6 +78,8 @@ from autoposter.collections.facts_family import (
     FACTS_FAMILY_TYPES,
 )
 from autoposter.config.schema import CollectionDefinition
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "FAMILY_LABEL_PREFIX", "FactsFamilyBuilder", "FactsFamilyParams",
@@ -384,15 +400,28 @@ class FactsFamilyBuilder:
             )
             return []
         if len(titled) > params.max_collections:
-            report.append(
-                "%r built nothing: this would create %d collections in %r -- "
-                "%r reports %d value(s) there, which `include:`, `exclude:` and "
-                "`addons:` narrow to that many buckets -- and `max_collections` "
-                "is %d. Narrow the family, or raise `max_collections` past %d "
-                "if that is really what you want"
-                % (definition.title, len(titled), ctx.library, params.type,
-                   len(enumerated), params.max_collections, len(titled))
+            # Roadmap row 223. LOGGED as well as reported, in
+            # ``builders/dynamic._refused``'s exact shape and for its exact
+            # reason: the action string reaches a run report an operator may not
+            # read, and the logs page is where they look when a family stops
+            # updating. This branch is the one that most needs it -- it is the
+            # branch the franchise-cap incident sat on for weeks, invisible,
+            # because this module had no logger at all. The reported string is
+            # unchanged; only its prefix is split out so the log line and the
+            # report can share the reason.
+            why = (
+                "this would create %d collections in %r -- %r reports %d "
+                "value(s) there, which `include:`, `exclude:` and `addons:` "
+                "narrow to that many buckets -- and `max_collections` is %d. "
+                "Narrow the family, or raise `max_collections` past %d if that "
+                "is really what you want"
+                % (len(titled), ctx.library, params.type, len(enumerated),
+                   params.max_collections, len(titled))
             )
+            logger.warning(
+                "%s: %r was not built: %s", ctx.library, definition.title, why
+            )
+            report.append("%r built nothing: %s" % (definition.title, why))
             return []
 
         # Curated wins. Two independent presets may name one real-world

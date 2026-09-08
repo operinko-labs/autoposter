@@ -31,6 +31,19 @@ the gap.
 Joins the delete sweep through ``family_label``/``generated_titles``, the
 protocol ``builders/dynamic.py`` names. The label prefix differs from both
 sibling families' so the three sweeps cannot enumerate each other's members.
+
+**A family-level refusal freezes its existing members, deliberately** (roadmap
+row 223, answered 2026-09-08: the coupling is KEPT). The over-cap branch returns
+before the record seed at ``ctx.run_cache[_generated_key(...)]``, so a refused
+family's collections keep stale sort prefixes and take no poster updates -- and,
+by the same return, are guaranteed not to be swept, because
+``engine.py:1418-1421`` reads an absent record as the fail-closed state. The
+refusal is logged as well as reported, ``builders/dynamic._refused``'s line
+verbatim, so a family that stops updating says so on the logs page.
+
+A single person's collection is the opposite case, not frozen but silently
+dropped: see the row-224 comment at the record seed below for how a vocabulary
+narrowing becomes a delete.
 """
 import logging
 
@@ -326,8 +339,7 @@ class CreditsFamilyBuilder:
         eligible = [
             (person, count) for person, count in counted if count >= params.depth
         ]
-        capped = eligible[: params.limit]
-        if not capped:
+        if not eligible:
             return [
                 "%r built nothing: no %s has %d appearance(s) in %r yet. The "
                 "credits scan has visited %d of %d item(s) there; the family "
@@ -337,12 +349,72 @@ class CreditsFamilyBuilder:
                 % (definition.title, params.type, params.depth, ctx.library,
                    attempted, total)
             ]
-        if len(eligible) > len(capped):
+
+        # Roadmap row 224. The cap decides who this family BUILDS, so it has to
+        # be applied to the people this library can actually be searched for --
+        # not to the raw counts, which let a person whose tag the vocabulary
+        # does not know take a slot and then refuse inside the loop below,
+        # wasting it instead of backfilling from the next-most-credited person
+        # who would have searched cleanly. Measured on the live deployment at
+        # the ruling: 29 of 75 slots across three person packs produced no
+        # collection, against 1,878 eligible people to backfill from.
+        #
+        # It costs no extra Plex round trip: ``LibraryTagResolver`` memoises one
+        # ``listFilterChoices`` per (library, libtype-scope, field) per pass on
+        # ``ctx.run_cache``, and this builder already pays for that exact call
+        # inside the loop. The construction moved up here from below the cap for
+        # the same reason -- it is the same object, asked earlier.
+        resolver = LibraryTagResolver(ctx, ctx.section, libtype)
+        try:
+            searchable = [
+                (person, count) for person, count in eligible
+                if resolver.known(params.type, person)
+            ]
+        except PlexSearchUnavailable as refusal:
+            # ``engine.py:1158``'s own clause, for its reason. This is the
+            # resolver's ONLY memoised failure -- "Plex has no such filter for
+            # this library", or "Plex would not answer at all" -- and both are
+            # already class-name-only inside it, so the message carries no Plex
+            # URL and is safe to log whole (row 213). Uncaught it would escape
+            # the engine's unwrapped smart dispatch and cost the library its
+            # whole reconcile, which is exactly what the per-person catches
+            # below exist to prevent; so the ranking falls back to counts alone
+            # and those catches stay the fallback they always were.
+            logger.warning(
+                "%s: %r: could not read this library's %s vocabulary (%s), so "
+                "the ranking was capped on the counts alone",
+                ctx.library, definition.title, params.type, refusal,
+            )
+            searchable = eligible
+        if not searchable:
+            # NOT the sentence above: that one says the SCAN has not found
+            # anybody yet, and it would be false here -- people cleared the
+            # floor and this library's own tag vocabulary knows none of them.
+            # Numbers and the library, never a person: naming every one of them
+            # is not a report.
+            return [
+                "%r built nothing: %d %s(s) have %d appearance(s) or more in "
+                "%r, but the %s tag vocabulary of %r knows none of them, so "
+                "none can be searched for. A Plex library scan is what "
+                "reconciles the credits cache with the tags Plex will answer on"
+                % (definition.title, len(eligible), params.type, params.depth,
+                   ctx.library, params.type, ctx.library)
+            ]
+        capped = searchable[: params.limit]
+        if len(searchable) > len(capped):
             actions.append(
                 "%r: %d %s(s) meet depth %d; built the %d most-credited "
                 "(`limit`)"
                 % (definition.title, len(eligible), params.type, params.depth,
                    len(capped))
+            )
+        if len(searchable) < len(eligible):
+            actions.append(
+                "%r: %d of the %d %s(s) that met depth %d are not in the tag "
+                "vocabulary of %r and were dropped before `limit:`, so the cap "
+                "was filled from the next-most-credited people instead"
+                % (definition.title, len(eligible) - len(searchable),
+                   len(eligible), params.type, params.depth, ctx.library)
             )
 
         # The key IS the person's name here, unlike ``dynamic``'s Plex-keyed
@@ -376,14 +448,23 @@ class CreditsFamilyBuilder:
                 % (definition.title, params.type)
             ]
         if len(titled) > params.max_collections:
-            return actions + [
-                "%r built nothing: this would create %d collections in %r and "
-                "`max_collections` is %d. Narrow with `depth:`/`limit:`/"
-                "`exclude:`, or raise `max_collections` past %d if that is "
-                "really what you want"
-                % (definition.title, len(titled), ctx.library,
-                   params.max_collections, len(titled))
-            ]
+            # Roadmap row 223, this builder's half of the same line
+            # ``builders/dynamic._refused`` has carried since it shipped: a
+            # family-level refusal freezes every existing member out of its own
+            # re-sort and poster updates until the operator acts, and an
+            # operator who never opens the run report has no other way to learn
+            # that happened. The reported string is unchanged.
+            why = (
+                "this would create %d collections in %r and `max_collections` "
+                "is %d. Narrow with `depth:`/`limit:`/`exclude:`, or raise "
+                "`max_collections` past %d if that is really what you want"
+                % (len(titled), ctx.library, params.max_collections,
+                   len(titled))
+            )
+            logger.warning(
+                "%s: %r was not built: %s", ctx.library, definition.title, why
+            )
+            return actions + ["%r built nothing: %s" % (definition.title, why)]
 
         # The narrowing between the cap and the built family, reported rather
         # than left to be inferred from a short list (review F13).
@@ -400,6 +481,16 @@ class CreditsFamilyBuilder:
         # Never ``set()``: the engine reads absence and emptiness as opposites,
         # and an empty record would silently delete the family. Every refusal
         # that could leave ``titled`` empty has already returned.
+        #
+        # Row 224 makes this record SHRINK as well as grow: a person whose tag
+        # has left the library's vocabulary is absent from ``searchable`` and
+        # therefore from ``titled`` and this record, even though their own
+        # collection still exists in Plex -- so the sweep treats it as
+        # unmanaged and deletes it (gated by ``collections.delete_unconfigured``,
+        # capped by ``max_deletes``). The same semantics as the dynamic
+        # families' vanished values, accepted for row 224 on 2026-09-08. A
+        # narrowing of ``resolver.known()`` is therefore a delete-path change
+        # and must be reviewed as one.
         generated: set[str] = {unit.title for unit in titled}
         ctx.run_cache[_generated_key(family_label(definition))] = generated
 
@@ -412,7 +503,6 @@ class CreditsFamilyBuilder:
         # The pass's one listing, fetched here rather than at context
         # construction so a definition that refuses above costs nothing.
         listing = ctx.listing() if ctx.listing is not None else None
-        resolver = LibraryTagResolver(ctx, ctx.section, libtype)
         collections = ctx.config.collections
 
         for unit in titled:

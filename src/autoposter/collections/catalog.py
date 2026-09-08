@@ -2111,7 +2111,11 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
             "whose every appearance is in a large cast can be missing from "
             "this family altogether. \"Most-credited\" here means "
             "most-credited of what Plex answered, which is not the same claim "
-            "as most-credited in the library." % what
+            "as most-credited in the library. `limit:` is filled from the "
+            "people this library's own tag vocabulary can be searched for "
+            "(roadmap row 224): somebody the credits cache counted but Plex "
+            "will not answer a tag search on does not take one of the slots, "
+            "and the next-most-credited person takes it instead." % what
         ),
         kometa_source=source,
         library_types=library_types,
