@@ -40,6 +40,10 @@ by the same return, are guaranteed not to be swept, because
 ``engine.py:1418-1421`` reads an absent record as the fail-closed state. The
 refusal is logged as well as reported, ``builders/dynamic._refused``'s line
 verbatim, so a family that stops updating says so on the logs page.
+
+A single person's collection is the opposite case, not frozen but silently
+dropped: see the row-224 comment at the record seed below for how a vocabulary
+narrowing becomes a delete.
 """
 import logging
 
@@ -477,6 +481,16 @@ class CreditsFamilyBuilder:
         # Never ``set()``: the engine reads absence and emptiness as opposites,
         # and an empty record would silently delete the family. Every refusal
         # that could leave ``titled`` empty has already returned.
+        #
+        # Row 224 makes this record SHRINK as well as grow: a person whose tag
+        # has left the library's vocabulary is absent from ``searchable`` and
+        # therefore from ``titled`` and this record, even though their own
+        # collection still exists in Plex -- so the sweep treats it as
+        # unmanaged and deletes it (gated by ``collections.delete_unconfigured``,
+        # capped by ``max_deletes``). The same semantics as the dynamic
+        # families' vanished values, accepted for row 224 on 2026-09-08. A
+        # narrowing of ``resolver.known()`` is therefore a delete-path change
+        # and must be reviewed as one.
         generated: set[str] = {unit.title for unit in titled}
         ctx.run_cache[_generated_key(family_label(definition))] = generated
 
