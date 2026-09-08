@@ -66,6 +66,19 @@ HEARTBEAT_SECONDS = 15.0
 # a miss costs a credential. Note also that the value class excludes quotes,
 # so a Python repr in a traceback (auth='bearer', the shape
 # api/setup_checks.py's rows would print) matches nothing at all.
+#
+# Known residual (row 248, same status as row 212's %253A): because the match
+# is anchored on the SUFFIX of the param name, ?authorization=, secret_key=,
+# password_hash= and access_key= are none of them redacted -- "authorization"
+# does not end in "auth", "secret_key"/"access_key" do not end in "secret" or
+# "api_key", and "password_hash" does not end in "password". A prefix rule
+# alone cannot close this: the existing prefix ([-\w]*) is deliberately open
+# so that client_secret= and user_pass= -- shapes an operator URL plausibly
+# carries -- already redact. Closing the suffix side too needs a
+# prefix-AND-suffix rule (matching a keyword anywhere in the name, not just at
+# an end), which reopens the over-match question above for a different shape
+# and was not adjudicated here. Accepted as a documented gap, not fixed by
+# widening this pattern.
 _CREDENTIAL_PARAM = re.compile(
     r"(?i)([-\w]*(?:api[-_]?key|token|secret|password|pass|auth))(=|%3D)[^&\s'\"]+"
 )
