@@ -1,16 +1,24 @@
 """Row 87 -- lock/unlock/remove as a mass op's SOURCE.
 
-Two STOP-and-file cells are deliberately absent and must stay absent:
-``remove`` on the list-shaped ``genres`` (the row records no semantics for a
-verb-as-source with no items supplied) and ``reset`` on any type (this project
-holds no agent value to restore and has never called a Plex refresh). Both are
-REFUSED at config load time (``OperationsConfig`` raises) rather than accepted
-and silently doing nothing -- see the branch review's I1: an accepted-but-
-ignored verb was previously indistinguishable from a working field write that
-had just been switched off, with no log line anywhere.
+``reset`` on any type is deliberately absent and must stay absent: this
+project holds no agent value to restore and has never called a Plex refresh
+(roadmap row 230, closed as won't-do). It is REFUSED at config load time
+(``OperationsConfig`` raises) rather than accepted and silently doing nothing
+-- see the branch review's I1: an accepted-but-ignored verb was previously
+indistinguishable from a working field write that had just been switched off,
+with no log line anywhere.
 
-The last test in this file is the gated-feature entry-point test the memory's
-law requires: gate-off byte-identical, gate-on fires, second pass steady.
+``remove`` on the list-shaped ``genres`` was the second such absence, until
+roadmap row 229 closed on Kometa's own transcription (kometa.wiki
+``config/operations``, read 2026-09-08): ``remove`` = "Remove all genres and
+lock the genre field". It now LOADS and fires -- clearing every held genre
+through ``removeGenre(..., locked=True)``, whose lock plexapi supplies itself,
+and locking an already-empty field through the SINGULAR ``genre.locked`` key
+rather than an empty mixin call (row 246).
+
+The last tests in this file are the gated-feature entry-point tests the
+memory's law requires: gate-off byte-identical, gate-on fires through the real
+seam, second pass steady.
 """
 import logging
 from pathlib import Path
@@ -109,11 +117,74 @@ def test_removing_a_field_this_service_does_not_clear_logs_info_naming_it(caplog
     assert "tagline" in caplog.text
 
 
-def test_remove_on_genres_is_a_config_load_error():
-    # I1 fix: previously loaded and silently no-opped. Now refused at load
-    # time, matching the STOP-and-file posture instead of a silent switch-off.
-    with pytest.raises(ValueError, match="genres.*remove"):
-        OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
+def test_remove_on_genres_now_loads():
+    # Roadmap row 229. This replaces test_remove_on_genres_is_a_config_load_
+    # error: that refusal was a STOP-and-file placeholder, and Kometa's own
+    # transcription (kometa.wiki config/operations, read 2026-09-08) settled
+    # the semantics -- "Remove all genres and lock the genre field".
+    operations = OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
+    assert operations.field_verbs == {"genres": "remove"}
+
+
+def test_remove_on_genres_clears_every_held_genre_and_emits_no_lock_key():
+    # The removal itself carries the lock: _apply_genre_edits sends
+    # removeGenre(removals, locked=True) and plexapi's own _tagHelper puts
+    # genre.locked=1 on that same batched request (pinned against the real
+    # classes in tests/test_plex_writer.py). So no lock key is emitted here --
+    # row 246's rule for the provider and override genre paths, applied to
+    # the verb path. And no "genre.value" key: Plex has no meaning for an
+    # empty scalar on a tag field, so the scalar remove shape must not be
+    # reused.
+    item = LockableItem(genres=["Crime", "Drama"], locks=[("genre", False)])
+    operations = OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
+    assert verb_edits(item, operations) == {"genres.removed": ["Crime", "Drama"]}
+
+
+def test_remove_on_genres_clears_them_even_when_the_field_is_already_locked():
+    # Task 1 review finding I1: locked is not empty. Every item this service
+    # has previously written genres to already reports genre.locked=1 --
+    # _apply_genre_edits calls addGenre(..., locked=True) and row 246's
+    # _ensure_locked locks even the equal-value case -- so this is the most
+    # common shape on a managed library, not an edge case. The verb must not
+    # be gated on lock state when genres are present: a mutant reading
+    # "if current_genres and _locked_in_plex(item, plex_field) is not True:"
+    # into writer.py's remove/genres arm would leave every other test green
+    # while silently no-opping on almost every real item -- this is the one
+    # test that turns red under that mutant.
+    item = LockableItem(genres=["Crime", "Drama"], locks=[("genre", True)])
+    operations = OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
+    assert verb_edits(item, operations) == {"genres.removed": ["Crime", "Drama"]}
+
+
+def test_remove_on_genres_locks_an_already_empty_field_through_the_singular_key():
+    # Nothing to remove, so NO mixin call is made: removeGenre([], locked=True)
+    # would send genre[].tag.tag-='', a removal directive for the empty tag
+    # name (row 246's finding). The lock rides the SINGULAR genre.locked key
+    # instead -- the one key that survives apply_facts' plural "genres."
+    # filter, and the exact wire shape {genres: lock} has sent since row 87.
+    item = LockableItem(genres=[], locks=[("genre", False)])
+    operations = OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
+    assert verb_edits(item, operations) == {"genre.locked": 1}
+
+
+def test_remove_on_genres_is_steady_on_an_empty_locked_field():
+    # The second pass, in miniature: no genres left and Plex reports the field
+    # locked, so the verb has nothing to do and writes nothing.
+    item = LockableItem(genres=[], locks=[("genre", True)])
+    operations = OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
+    assert verb_edits(item, operations) == {}
+
+
+def test_remove_on_genres_with_the_apply_flag_off_writes_nothing(caplog):
+    # Dry-run-by-default, per verb -- and row 213: the line names the field and
+    # the item label, never a genre value.
+    item = LockableItem(genres=["Crime", "Drama"], locks=[("genre", False)])
+    operations = OperationsConfig(field_verbs={"genres": "remove"})
+    with caplog.at_level(logging.INFO):
+        assert verb_edits(item, operations) == {}
+    assert "would remove genres" in caplog.text
+    assert "Crime" not in caplog.text
+    assert "Drama" not in caplog.text
 
 
 def test_lock_on_genres_uses_plexs_singular_lock_field_name():
@@ -250,7 +321,18 @@ class RecordingPlexItem(LockableItem):
                     setattr(self, name, value)
 
     def removeGenre(self, tags, locked=True):  # noqa: N802 - plexapi name
-        pass
+        # Models plexapi's EditTagsMixin._tagHelper, which is what row 229's
+        # clear-and-lock actually rides: ONE indexed removal directive for the
+        # comma-joined tags, plus genre.locked on the same batched request.
+        # Recorded rather than dropped so the verb's wire payload is
+        # assertable, and the held genres go with it so the second pass sees
+        # an item that really has none.
+        assert tags, "removeGenre([]) would send genre[].tag.tag-='' (row 246)"
+        removed = set(tags)
+        self.genres = [g for g in self.genres if g.tag not in removed]
+        self.edits.append(
+            {"genre[].tag.tag-": ",".join(tags), "genre.locked": 1 if locked else 0}
+        )
 
     def addGenre(self, tags, locked=True):  # noqa: N802 - plexapi name
         pass
@@ -339,6 +421,55 @@ async def test_the_genre_lock_reaches_plex_through_the_real_entry_point(
         FakeTMDB(GatheredFacts(genres=["Drama", "Crime"])), NullMDBListClient(),
     )
     assert plex_item.edits == [{"genre.locked": 1}]
+    assert plex_item.saved == 1
+
+
+@pytest.mark.asyncio
+async def test_the_genres_remove_verb_through_the_real_entry_point(
+    session, media_item_id, config
+):
+    """Roadmap row 229, through ``apply_metadata`` -- the real seam that
+    gathers, persists, checks the row-35 exemption and calls ``apply_facts`` --
+    and not through ``plan_edits``. The three assertions in the order the law
+    states them. Every leg carries a ``studio`` fact equal to Plex's own value,
+    so ``apply_metadata``'s ``facts.is_empty()`` short-circuit is never what
+    keeps a leg green and the studio itself still writes nothing.
+    """
+    # (a) GATE OFF. field_verbs unset: the item keeps its genres and nothing is
+    # written. The provider has no genres either, so plan_edits' "and genres"
+    # term is what leaves the field alone (row 246 C3).
+    plex_item = RecordingPlexItem(studio="Warner", genres=["Crime", "Drama"], locks=[])
+    await apply_metadata(
+        session, config, media_item_id, _item(), plex_item,
+        FakeTMDB(GatheredFacts(studio="Warner")), NullMDBListClient(),
+    )
+    assert plex_item.edits == []
+    assert [g.tag for g in plex_item.genres] == ["Crime", "Drama"]
+
+    # (b) GATE ON: one batched request carrying the indexed removal directive
+    # for BOTH held genres and plexapi's own genre.locked alongside it. No
+    # item.edit() call at all -- apply_facts filters the plural "genres." key
+    # out of the field payload, and that key is the only thing the verb emitted.
+    config.operations.field_verbs = {"genres": "remove"}
+    config.operations.remove_apply = True
+    await apply_metadata(
+        session, config, media_item_id, _item(), plex_item,
+        FakeTMDB(GatheredFacts(studio="Warner")), NullMDBListClient(),
+    )
+    assert plex_item.edits == [{"genre[].tag.tag-": "Crime,Drama", "genre.locked": 1}]
+    assert plex_item.saved == 1
+    assert [g.tag for g in plex_item.genres] == []
+
+    # (c) SECOND PASS: steady state. The item now holds no genres and saveEdits
+    # put ("genre", True) into what it reports about its locks, so there is
+    # nothing to remove and nothing to lock. No empty removeGenre call is made
+    # -- that would send genre[].tag.tag-='' (row 246), and the double asserts
+    # against it.
+    await apply_metadata(
+        session, config, media_item_id, _item(), plex_item,
+        FakeTMDB(GatheredFacts(studio="Warner")), NullMDBListClient(),
+    )
+    assert plex_item.edits == [{"genre[].tag.tag-": "Crime,Drama", "genre.locked": 1}]
     assert plex_item.saved == 1
 
 

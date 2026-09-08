@@ -967,16 +967,6 @@ def _validate_field_verbs(value: dict[str, str]) -> dict[str, str]:
                 f"operations.field_verbs[{field!r}] is {verb!r}; the verbs "
                 f"are {', '.join(sorted(FIELD_VERBS))}"
             )
-        # Row 87's STOP-and-file: ``remove`` on the list-shaped ``genres``
-        # has no defined semantics (a verb-as-source with no items
-        # supplied) -- refused here rather than accepted and silently
-        # doing nothing. lock/unlock on genres are unaffected.
-        if field == "genres" and verb == "remove":
-            raise ValueError(
-                "operations.field_verbs['genres'] cannot be 'remove': "
-                "removing a list-shaped field has no defined semantics "
-                "(row 87 STOP-and-file); 'lock' and 'unlock' are valid"
-            )
     return value
 
 
@@ -1101,7 +1091,9 @@ class OperationsConfig(BaseModel):
             "A verb to apply to a metadata field instead of writing a "
             "provider's value into it: 'lock', 'unlock' or 'remove'. Keyed by "
             "field name, e.g. 'studio'. A field not named here is written from "
-            "its provider source as usual."
+            "its provider source as usual. 'remove' on 'genres' clears EVERY "
+            "genre on the item and locks the field (roadmap row 229, Kometa's "
+            "own semantics), and this service has no verb that puts them back."
         ),
     )
     lock_apply: bool = Field(
