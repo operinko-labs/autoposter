@@ -36,6 +36,7 @@ class FakeItem:
         self.studio = attrs.pop("studio", None)
         self.originallyAvailableAt = attrs.pop("originallyAvailableAt", None)  # noqa: N815
         self.originalTitle = attrs.pop("originalTitle", None)  # noqa: N815
+        self.addedAt = attrs.pop("addedAt", None)  # noqa: N815
         # Roadmap row 99's four override-only text fields, plus the rating key
         # the verb-collision log names. This double's attribute list is CLOSED
         # -- it ends in ``assert not attrs, attrs`` -- so a field it does not

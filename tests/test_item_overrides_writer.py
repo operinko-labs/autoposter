@@ -47,7 +47,10 @@ def test_the_four_text_fields_are_writable_where_plexapi_says_they_are():
 def test_the_writable_sets_are_exactly_these_sizes():
     """A count rather than a membership test, so that a field added by
     accident is caught here rather than discovered in a backup file."""
-    assert len(WRITABLE_BY_KIND["movie"]) == 12
+    # 13 since roadmap row 227 added ``added_at`` to the movie set (and to no
+    # other kind), which is exactly the deliberate change this count exists to
+    # make someone state out loud.
+    assert len(WRITABLE_BY_KIND["movie"]) == 13
     assert len(WRITABLE_BY_KIND["show"]) == 11
     assert len(WRITABLE_BY_KIND["season"]) == 5
     assert len(WRITABLE_BY_KIND["episode"]) == 8
