@@ -140,6 +140,22 @@ def test_remove_on_genres_clears_every_held_genre_and_emits_no_lock_key():
     assert verb_edits(item, operations) == {"genres.removed": ["Crime", "Drama"]}
 
 
+def test_remove_on_genres_clears_them_even_when_the_field_is_already_locked():
+    # Task 1 review finding I1: locked is not empty. Every item this service
+    # has previously written genres to already reports genre.locked=1 --
+    # _apply_genre_edits calls addGenre(..., locked=True) and row 246's
+    # _ensure_locked locks even the equal-value case -- so this is the most
+    # common shape on a managed library, not an edge case. The verb must not
+    # be gated on lock state when genres are present: a mutant reading
+    # "if current_genres and _locked_in_plex(item, plex_field) is not True:"
+    # into writer.py's remove/genres arm would leave every other test green
+    # while silently no-opping on almost every real item -- this is the one
+    # test that turns red under that mutant.
+    item = LockableItem(genres=["Crime", "Drama"], locks=[("genre", True)])
+    operations = OperationsConfig(field_verbs={"genres": "remove"}, remove_apply=True)
+    assert verb_edits(item, operations) == {"genres.removed": ["Crime", "Drama"]}
+
+
 def test_remove_on_genres_locks_an_already_empty_field_through_the_singular_key():
     # Nothing to remove, so NO mixin call is made: removeGenre([], locked=True)
     # would send genre[].tag.tag-='', a removal directive for the empty tag
