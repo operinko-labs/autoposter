@@ -751,7 +751,11 @@ async def test_apply_logo_uploads_with_the_pool_paused(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["dry_run"] is False and body["uploaded"] == 1 and body["failed"] == 0
+    assert body["dry_run"] is False and body["uploaded"] == 1
+    assert body["unmarked"] == 0
+    assert (body["no_logo_available"], body["upload_failed"]) == (0, 0)
+    # The fold is gone: no total beside its own summands.
+    assert "failed" not in body
     assert ("logo", LOGO_BYTES) in item.uploaded
     assert item.locked == ["logo"]
     assert item.paused_during_write == [True]
