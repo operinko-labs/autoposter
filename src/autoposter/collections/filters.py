@@ -158,6 +158,7 @@ __all__ = [
     "ITEM_KINDS",
     "LANGUAGE_FOLD_ATTRIBUTES",
     "MATCHES_NOTHING",
+    "MOMENT_DATE_ROWS",
     "OPERATORS_BY_TYPE",
     "PLEXAPI_EQUIVALENT",
     "RELATIVE_UNITS",
@@ -317,9 +318,39 @@ OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     # made ``release.gte: 2000-01-01`` a different membership under the same
     # name in the two systems, which is the same-name-different-filter class
     # the plan's item_facts adjudication already ruled out. Refusing at load
-    # says so; silently disagreeing would not. A tier-2 row is filed for a
-    # real inclusive-boundary date operator under a name Kometa does not use.
-    "date": ("eq", "not", "before", "after"),
+    # says so; silently disagreeing would not. The tier-2 row that was filed
+    # for a real inclusive-boundary date operator under a name Kometa does not
+    # use is row 157, and it is DELIVERED -- as the pair below.
+    #
+    # ROADMAP ROW 157, and it is the answer to the paragraph above rather than
+    # an addition to it. ``.from`` ("at or after") and ``.to`` ("at or before")
+    # are the inclusive-boundary pair, under a spelling Kometa does not have:
+    # ``Plex.split`` knows ``.gt``/``.gte``/``.lt``/``.lte`` and nothing called
+    # ``.from`` or ``.to``, so neither key can mean one membership here and a
+    # different one there -- which is the property the four refused modifiers
+    # could not have. Both live in the SEARCH vocabulary too (see
+    # ``SEARCH_OPERATORS_BY_TYPE``), because a spelling present in one block
+    # and absent from the other is the same defect one level along.
+    #
+    # THE TWO EDGES SIT AT DIFFERENT KINDS OF BOUNDARY, deliberately, and this
+    # is the one place that says so. Every date comparison in this module is
+    # made at the MOMENT (``_as_moment``, and SETTLED-BY-ORACLE). On a field
+    # Plex stores as a bare date (``release``) both sides are midnight anyway
+    # and the pair reads as whole days with nothing to decide. On a field that
+    # carries a time of day -- ``MOMENT_DATE_ROWS``: ``added``,
+    # ``last_played``, ``episode_added``, ``episode_last_played`` --
+    # ``.from: A`` is inclusive at the MOMENT ``A 00:00``, which keeps
+    # everything added during day A, and ``.to: A`` is inclusive at the
+    # calendar DAY A: it keeps an item added at 09:15 on day A and stops at
+    # ``(A+1) 00:00``. That is a ruling, not an accident. An operator reading
+    # ``.to`` expects the day itself to be in, and a midnight-exclusive ``.to``
+    # on exactly the rows people most often date would BE the off-by-one this
+    # pair exists to remove; the strict, moment-symmetric reading already has
+    # a spelling, and it is ``.before``. Written as a pair, ``.from: A`` +
+    # ``.to: B`` is the closed range "start of day A through end of day B".
+    # The wire half is rendered to land on the same two boundaries -- see
+    # ``SEARCH_MODIFIERS`` and ``search_url._arguments``.
+    "date": ("eq", "not", "before", "after", "from", "to"),
     # Search-only in practice -- every ``bool`` row is ``filterable=False`` --
     # but the type has to have an entry or ``FilterAttribute.operators`` raises
     # a KeyError for a row nothing was ever going to evaluate.
@@ -387,7 +418,16 @@ SEARCH_OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     # (builder.py:4234) exactly as the client-side view divides by it, so
     # ``duration.gt: 90`` is ninety minutes in both.
     "duration": ("gt", "gte", "lt", "lte"),
-    "date": ("eq", "not", "before", "after"),
+    # ``.from``/``.to`` are roadmap row 157's pair and are NOT Kometa search
+    # names -- the one place this vocabulary deliberately exceeds Kometa's
+    # rather than transcribing it, which is why the row exists at all. Plex
+    # itself answers them: a read-only probe of the production server on
+    # 2026-09-08 measured the single angles ``%3E=``/``%3C=`` honoured and
+    # inclusive AT THE DATE LEVEL, and measured a bare date on a moment field
+    # reading as that day's midnight -- which is why ``.to`` on a moment row
+    # is rendered at the day after instead. See ``SEARCH_MODIFIERS`` and
+    # ``search_url._arguments``.
+    "date": ("eq", "not", "before", "after", "from", "to"),
     "bool": ("eq",),
 }
 
@@ -490,8 +530,60 @@ SEARCH_MODIFIERS: dict[tuple[str, str], str] = {
     ("date", "not"): "%3C%3C",
     ("date", "before"): "%3C%3C",
     ("date", "after"): "%3E%3E",
+    # ROADMAP ROW 157. The SINGLE angles, and the choice was measured rather
+    # than assumed: Plex silently ignores a parameter it does not understand
+    # and answers with the whole library (the probe's own nonsense control),
+    # so an unhonoured modifier here would be the silent wrongness
+    # ``search_url``'s docstring names as this phase's entire risk.
+    #
+    # The read-only probe of the production server (2026-09-08, a 1963-item
+    # movie section) with boundary ``D = 2025-09-04`` on a DATE-ONLY field:
+    # ``originallyAvailableAt=D`` -> 2, ``%3E%3E=D`` -> 99, ``%3E=D`` -> 101
+    # (= 99 + 2). ``%3C%3C=D`` -> 1862, ``%3C=D`` -> 1864 (= 1862 + 2). Both
+    # single angles are honoured and inclusive at the date level.
+    #
+    # And with ``A = 2026-01-10`` on a MOMENT field: ``addedAt%3E=A`` ->
+    # 101 = ``%3E%3E=A`` = ``%3E%3E=A-1day``, and ``addedAt%3C=A`` -> 1862 =
+    # ``%3C%3C=A``. Plex reads a bare date on a moment field as that day's
+    # MIDNIGHT. For ``.from`` that is the client comparison exactly:
+    # ``%3E=A`` is "at or after A 00:00", which is ``when >= moment``.
+    #
+    # FOR ``.to`` IT IS NOT, and this table cannot say so, which is the one
+    # thing to know about the row below. ``.to`` is inclusive at the calendar
+    # DAY on a moment row (see ``OPERATORS_BY_TYPE``), and the probe shows
+    # ``%3C=A`` and ``%3C%3C=A`` returning the same 1862 -- both EXCLUDE
+    # everything added during day A. The rendering that matches the client
+    # half is the strict form at the day after, ``%3C%3C=A+1``, and this
+    # table's key is ``(type, operator)`` with no room for a per-ROW answer.
+    # So ``("date", "to")`` holds the DATE-ONLY rendering and
+    # ``search_url._arguments`` overrides it for a ``MOMENT_DATE_ROWS`` row.
+    # The override is one branch, it is the only place a rendering is not a
+    # table lookup, and
+    # ``test_the_from_to_boundary_agrees_between_the_two_halves_on_a_*_field``
+    # is what holds the two halves to the same boundary.
+    ("date", "from"): "%3E",
+    ("date", "to"): "%3C",
     ("bool", "eq"): "",
 }
+
+# ROADMAP ROW 157. The date rows Plex stores with a TIME OF DAY, as opposed to
+# the ones it stores as a bare date (``release``, ``episode_air_date``,
+# ``last_episode_aired``). Every other date-typed decision in this module is
+# keyed by ``(type, operator)`` and needs no such split, because the two kinds
+# of row behave identically once ``_as_moment`` has made both sides a datetime.
+# ``.to`` is the exception and the ONLY one: it is inclusive at the calendar
+# day, so on a row whose value carries a time it has to compare against the
+# START OF THE NEXT DAY -- in ``_matches_one`` and, identically, in
+# ``search_url._arguments``, which is the whole reason this set is module-level
+# and exported rather than a local in either of them. Two implementations of
+# one boundary that read the same row-set cannot drift apart by row.
+#
+# The membership is a property of PLEX's storage, not of this table: these four
+# are the rows whose ``search_field`` is ``addedAt`` / ``lastViewedAt`` (or the
+# ``episode.`` rescope of one), which plexapi hands back as a full datetime.
+MOMENT_DATE_ROWS: frozenset[str] = frozenset(
+    {"added", "last_played", "episode_added", "episode_last_played"}
+)
 
 # Kometa's ``date_sub_mods`` (modules/plex.py:307), which is both the legal
 # unit set for a relative window and the name each unit reads as. ``o`` is
@@ -564,6 +656,11 @@ PLEXAPI_EQUIVALENT: dict[tuple[str, str], str | None] = {
     ("date", "not"): None,
     ("date", "before"): "lt",
     ("date", "after"): "gt",
+    # Roadmap row 157. plexapi's own inclusive keys, which is what makes this
+    # pair expressible in that table where the two relative-window entries
+    # above are not.
+    ("date", "from"): "gte",
+    ("date", "to"): "lte",
 }
 
 # The negative operators, and the positive one each negates. Every negative is
@@ -2528,7 +2625,8 @@ def _as_days(value: object, field: str) -> int:
     if not isinstance(value, int):
         raise ValueError(
             f"{field}: {value!r} is not a number of days -- a bare `{field.rsplit('.', 1)[-1]}:` "
-            "is a window in days (30 means the last 30 days); for a fixed date use .before/.after"
+            "is a window in days (30 means the last 30 days); for a fixed date use "
+            ".before/.after (strict) or .from/.to (inclusive)"
         )
     if value < 0:
         raise ValueError(f"{field}: {value!r} is a negative number of days")
@@ -2726,10 +2824,17 @@ def _split_key(key: str, field: str, *, searching: bool) -> tuple[FilterAttribut
             # to the STRICT form (plex.py:2735-2747). Refusing without saying
             # so would look like a gap; the point is that the spelling means
             # something different from what it says, in Kometa as much as here.
+            #
+            # And since roadmap row 157 the inclusive reading an operator
+            # writing `.gte` actually wanted HAS a spelling here, so the
+            # message names it -- the right edge of the pair, not both.
+            inclusive = "from" if modifier in ("gt", "gte") else "to"
             message += (
                 f". Kometa accepts .{modifier} on a date but silently rewrites it to "
                 ".after/.before, which are strict -- write the strict one you mean, so "
-                "the config says what it does"
+                f"the config says what it does. If you meant the INCLUSIVE boundary, "
+                f"write `{name}.{inclusive}`: a spelling Kometa does not have, so it "
+                "cannot mean one thing here and another there"
             )
         if name == "resolution" and modifier == "not":
             message += (
@@ -3162,9 +3267,52 @@ def _matches_one(
             # over an item Plex dates next March keeps it, in both systems.
             return when >= now - dt.timedelta(days=want)
         moment = now if isinstance(want, _Today) else _as_moment(want, attribute.name)
+        # EVERY date operator is named here and the tail refuses, which is
+        # roadmap row 157's own safety property rather than defensive padding.
+        # This branch used to end on an unguarded ``return when > moment`` --
+        # "after" by exhaustion -- so the fifth and sixth date operators would
+        # both have been silently ``.after``: a filter that loads, runs, and
+        # produces a full, plausible, wrong collection, which is the exact
+        # failure class this module's docstring opens on. The refusal is
+        # unreachable through ``parse_filters`` (``_split_key`` rejects an
+        # operator the type does not have); it is what the NEXT date operator
+        # hits if it is added to ``OPERATORS_BY_TYPE`` and forgotten here.
         if operator == "before":
             return when < moment
-        return when > moment
+        if operator == "after":
+            return when > moment
+        # ``.from``: inclusive at the boundary MOMENT, which on every row is
+        # the written day's midnight (``_as_moment``) or ``now`` for ``today``.
+        if operator == "from":
+            return when >= moment
+        # ``.to``: inclusive at the boundary DAY. On a date-only row the
+        # item's own value is already that day's midnight, so ``<=`` at the
+        # written moment IS the whole day and there is nothing to add. On a
+        # ``MOMENT_DATE_ROWS`` row the value carries a time, so the whole day
+        # means "strictly before the start of the NEXT day" -- an item added at
+        # 09:15 on the written day passes, one added at the next midnight does
+        # not. See ``OPERATORS_BY_TYPE`` for why that is the reading, and
+        # ``search_url._arguments`` for the wire half, which renders this exact
+        # boundary as ``%3C%3C=`` at ``moment.date() + 1``.
+        #
+        # The next day's midnight is built with ``_as_moment`` over a DATE, the
+        # same construction that made ``moment`` -- never ``moment +
+        # timedelta(days=1)`` on the datetime. Two reasons, and both are why
+        # the two halves cannot drift: adding 24 h to a wall clock is not
+        # "the next midnight" across a DST step, and for ``.to: today``
+        # ``moment`` is ``now`` with a time of day on it, which has to be
+        # truncated to a day before the day after it means anything.
+        if operator == "to":
+            if attribute.name in MOMENT_DATE_ROWS:
+                next_day = _as_moment(moment.date() + dt.timedelta(days=1), attribute.name)
+                return when < next_day
+            return when <= moment
+        raise ValueError(
+            f"{attribute.name}: no date comparison for .{operator} -- every operator in "
+            "OPERATORS_BY_TYPE['date'] needs a branch here, and one arriving at an "
+            "unguarded tail would silently mean whichever operator the tail spelled "
+            "(roadmap row 157)"
+        )
 
     number = _as_number(have, attribute.name)
     target = now.year - want.offset if isinstance(want, _CurrentYear) else want
