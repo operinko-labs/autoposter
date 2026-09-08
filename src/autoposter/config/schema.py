@@ -4049,6 +4049,27 @@ class Config(BaseModel):
         default_factory=NotificationsConfig,
         description="Outbound run-completion webhooks: one POST to url per event.",
     )
+    # Roadmap row 236's "newly actionable" digest: one POST when a full pass
+    # closes, carrying the registry flag codes and integer counts of the rows
+    # that pass scored. Deliberately NOT a field on NotificationsConfig even
+    # though it enables a notification: config/live.py freezes the whole
+    # `notifications` prefix because the notifier object is built once at
+    # startup, so a knob there would be reported to the operator as "restart to
+    # apply" while the emitter in fact re-reads it off the config holder on
+    # every scheduler tick -- a false promise the settings editor would make on
+    # its own. `public_url` above is the shipped precedent for a top-level
+    # setting nothing built at startup reads. Off by default because row 19's
+    # rule for `changes` applies here too: an event the shipped integration did
+    # not sign up for is opt-in, never a volume change it discovers.
+    actionable_digest_enabled: bool = Field(
+        default=False,
+        description=(
+            "Send a notification when a full pass finishes, counting the "
+            "renders that pass scored which the Action Center would flag, "
+            "grouped by flag code. Off by default. Nothing is sent when the "
+            "pass produced nothing actionable."
+        ),
+    )
     # Not a release number: the hash of every setting that changes what a
     # render produces, computed by config/loader.py's render_version and
     # stored on each Render row so a settings change can be detected as

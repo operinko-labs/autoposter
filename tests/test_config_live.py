@@ -247,3 +247,26 @@ def test_the_deployment_url_is_not_frozen():
     assert "public_url" not in FROZEN_SECTIONS
     assert frozen_reason("public_url") is None
     assert is_inert("public_url") is False
+
+
+def test_the_actionable_digest_knob_is_not_frozen():
+    """Roadmap row 236's knob is a top-level setting, not a `notifications`
+    field, precisely so the editor does not put a restart pill on it: the
+    emitter re-reads it off the config holder on every scheduler tick, so a
+    saved change applies at the next tick. A knob under `notifications` would
+    be reported as "restart to apply" -- true of the notifier object, false of
+    this switch -- which is a promise the code does not make."""
+    from autoposter.config.live import frozen_reason, is_inert
+    from autoposter.config.schema import Config
+
+    # First, because `frozen_reason` is a prefix map over strings and would
+    # answer None for a key that does not exist at all: this asserts the knob
+    # is a real top-level field before asserting anything about how the editor
+    # classifies it.
+    assert "actionable_digest_enabled" in Config.model_fields
+    assert frozen_reason("actionable_digest_enabled") is None
+    assert is_inert("actionable_digest_enabled") is False
+    assert frozen_reason("notifications") is not None, (
+        "precondition: the notifications prefix IS frozen, which is why this "
+        "knob is not in it"
+    )

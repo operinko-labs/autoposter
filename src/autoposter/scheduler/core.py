@@ -20,11 +20,13 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.actions.digest import actionable_window_counts
 from autoposter.db.models import ScheduledRun
 from autoposter.notify.dispatch import NullNotifier
 from autoposter.scheduler.run_history import (
@@ -127,7 +129,8 @@ class Scheduler:
     """Runs jobs on their intervals until the stop event is set."""
 
     def __init__(
-        self, session_factory, jobs: list[Job], poll_seconds: float = 60, notifier=None
+        self, session_factory, jobs: list[Job], poll_seconds: float = 60, notifier=None,
+        config_holder=None,
     ):
         self._session_factory = session_factory
         self._jobs = jobs
@@ -136,6 +139,14 @@ class Scheduler:
         # notifier -- the app._build_mdblist precedent -- so _maybe_run
         # notifies unconditionally.
         self._notifier = notifier if notifier is not None else NullNotifier()
+        # The config HOLDER, never a Config: roadmap row 236's digest knob is a
+        # live setting, so the emitter must deref on every tick rather than
+        # capture the generation the scheduler was built with -- the reason
+        # scheduler/jobs.py's factories take a holder too. Optional, like the
+        # notifier: a Scheduler built without one still does its bookkeeping
+        # and simply never emits the digest, so no existing construction site
+        # has to change to keep working.
+        self._config_holder = config_holder
         # Strong references to in-flight notification tasks: asyncio holds
         # only a weak reference to a created task, so a fire-and-forget send
         # nothing else references could be garbage-collected mid-flight. The
@@ -176,15 +187,83 @@ class Scheduler:
         Contained exactly like `_maybe_run`: bookkeeping must never take the
         scheduler down.
         """
+        windows: list[tuple[datetime, datetime]] = []
         try:
             async with self._session_factory() as session:
-                closed = await close_drained_full_passes(session)
+                closed = await close_drained_full_passes(
+                    session, closed_windows=windows
+                )
                 await session.commit()
         except Exception:
             logger.warning("scheduler: could not close drained full passes", exc_info=True)
             return
         if closed:
             logger.info("scheduler: closed %d drained full pass(es)", closed)
+            await self._notify_newly_actionable(windows)
+
+    async def _notify_newly_actionable(
+        self, windows: list[tuple[datetime, datetime]]
+    ) -> None:
+        """Roadmap row 236's digest: what each pass that just closed made
+        actionable, as registry flag codes and integer counts.
+
+        Here rather than in ``run_history`` because a flag predicate needs a
+        ``Config`` and that module is deliberately config-free, and because
+        this object already holds the notifier and the fire-and-forget seam.
+
+        **One POST per closed pass**, never per asset and never per flag. Per
+        asset was refused for the reason row 19 refused a POST per changed
+        collection: one measured pass produced 1828 actionable rows, against a
+        webhook budget of roughly 5 requests / 2 seconds (notify/dispatch.py).
+        Per flag would be up to thirteen POSTs carrying what one embed's fields
+        carry for free.
+
+        **Nothing is sent when the pass produced nothing actionable** -- not an
+        empty digest, not a "nothing new" POST. The gate is the DEFAULT
+        population, not "any flag non-zero": ``skipped``,
+        ``unknown_provenance`` and ``unscored`` are ``default_on=False`` as
+        deliberate flood-avoidance, and a digest that fired because a disabled
+        art kind produced three thousand ``skipped`` rows would be exactly that
+        flood.
+
+        There is no "emit on increase" comparison because there is nothing to
+        compare against: every count is taken over ONE pass's own window, never
+        as a running total, so a prune that deletes rows can only shrink a
+        later window and can never announce a deletion as news. That is what
+        this design buys over a stored high-water mark.
+
+        Read-only -- no commit -- and contained exactly like the bookkeeping
+        above: a counting query that fails must not take the scheduler down,
+        and must not un-close a pass that is already closed and committed.
+        """
+        if self._config_holder is None:
+            return
+        # Deref per tick, not per process: an operator who turns the digest on
+        # in the settings editor gets it on the next pass that closes.
+        config = self._config_holder.current
+        if not config.actionable_digest_enabled:
+            return
+        try:
+            async with self._session_factory() as session:
+                for started_at, finished_at in windows:
+                    total, counts = await actionable_window_counts(
+                        session, config, started_at, finished_at
+                    )
+                    if not total:
+                        continue
+                    # Fire-and-forget for the completion send's reason: one
+                    # send's worst case is tens of seconds against a target
+                    # answering 429, and this runs on the poll loop every job
+                    # in this process waits behind.
+                    self._start_notification(
+                        "newly_actionable",
+                        f"{total} newly actionable after a full pass",
+                        counts,
+                    )
+        except Exception:
+            logger.warning(
+                "scheduler: could not count newly actionable renders", exc_info=True
+            )
 
     async def _maybe_run(self, job: Job) -> None:
         """Run one job if due. Never raises -- a failure is recorded and the

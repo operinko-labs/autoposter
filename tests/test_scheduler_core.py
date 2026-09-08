@@ -6,12 +6,12 @@ import logging
 from pathlib import Path
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
 from autoposter.config.schema import NotificationsConfig
-from autoposter.db.models import Run, ScheduledRun
+from autoposter.db.models import MediaItem, Render, Run, ScheduledRun
 from autoposter.notify.dispatch import build_notifier
 from autoposter.scheduler.core import Job, Scheduler, claim_due
 from autoposter.scheduler.jobs import make_drift_job
@@ -877,3 +877,195 @@ async def test_the_counts_stay_null_for_a_scheduled_run(session_factory, session
     assert row.failed is None
     assert row.deferred is None
     assert row.rendered_poster is None
+
+
+async def _open_backdated_pass(session_factory) -> int:
+    """An open full_pass row whose window already began an hour ago.
+
+    The backdate is not cosmetic. This host's container clock steps BACKWARDS
+    by a couple of seconds every half-minute, so a window built from two
+    `now()` readings taken milliseconds apart is not reliably ordered, and a
+    test that seeded a render "just after" the run opened would fail whenever
+    the step landed in between. An hour of slack makes the window contain the
+    seeded row no matter which way the clock moved. The `UPDATE ... interval`
+    idiom is the one this file already uses at
+    `test_a_job_is_claimable_once_its_interval_has_passed`.
+
+    An hour is also comfortably inside FULL_PASS_CEILING_SECONDS (24 h), so the
+    row still closes as `ok` and not as `timed_out`.
+    """
+    async with session_factory() as session:
+        run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+        await session.execute(
+            text("UPDATE runs SET started_at = now() - interval '1 hour' WHERE id = :id"),
+            {"id": run_id},
+        )
+        await session.commit()
+    return run_id
+
+
+async def _scored_render(session_factory, *, source_mode="plex_generated"):
+    """One media item and a render the database has just scored, so it lands
+    inside the backdated window above."""
+    async with session_factory() as session:
+        item = MediaItem(
+            rating_key=f"rk-digest-{source_mode}", library="Movies",
+            kind="movie", title="Dune",
+        )
+        session.add(item)
+        await session.flush()
+        session.add(
+            Render(
+                item_id=item.id, art_kind="poster", asset_path="/x.jpg",
+                status="rendered", source_mode=source_mode,
+                quality_scored_at=func.now(),
+            )
+        )
+        await session.commit()
+
+
+async def _run_until_closed(session_factory, scheduler, run_id):
+    """Tick the real Scheduler until the full pass row closes, then stop it.
+
+    The row, never the clock (roadmap row 119). The scheduler is stopped and
+    awaited before anything is asserted, so a notification task cannot still be
+    in flight while the test reads the recorded calls.
+    """
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler.run(stop))
+
+    async def _closed():
+        async with session_factory() as probe:
+            row = (await probe.execute(select(Run).where(Run.id == run_id))).scalar_one()
+            return row.finished_at is not None
+
+    try:
+        async with asyncio.timeout(60):
+            while not await _closed():
+                await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+
+def _digest_config(enabled: bool):
+    return ConfigHolder(
+        load_config(EXAMPLE).model_copy(update={"actionable_digest_enabled": enabled})
+    )
+
+
+async def test_a_closed_full_pass_sends_one_digest_with_per_flag_counts(session_factory):
+    """Roadmap row 236, through the wired loop rather than the helper: the
+    repository's own recorded defect class is a green helper test beside a
+    wired path that differs, so this drives a real Scheduler over a real open
+    `full_pass` row and reads what the notifier was actually handed."""
+    run_id = await _open_backdated_pass(session_factory)
+    await _scored_render(session_factory)
+
+    notifier = _RecordingNotifier()
+    scheduler = Scheduler(
+        session_factory, [], poll_seconds=0.01, notifier=notifier,
+        config_holder=_digest_config(True),
+    )
+    await _run_until_closed(session_factory, scheduler, run_id)
+    await _await_calls(notifier, 1)
+
+    assert [event for event, _, _ in notifier.calls] == ["newly_actionable"]
+    event, summary, detail = notifier.calls[0]
+    assert summary == "1 newly actionable after a full pass"
+    assert detail["plex_generated"] == 1
+
+
+async def test_the_digest_detail_carries_flag_codes_and_counts_and_nothing_else(
+    session_factory,
+):
+    """Row 213 over the whole payload, as an equality: an asset_path, a
+    source_url, a stored detail string or a run id fails this by existing. The
+    codes are the server's own vocabulary and the values are integers, which is
+    the entire permitted alphabet for this event."""
+    run_id = await _open_backdated_pass(session_factory)
+    await _scored_render(session_factory)
+
+    notifier = _RecordingNotifier()
+    scheduler = Scheduler(
+        session_factory, [], poll_seconds=0.01, notifier=notifier,
+        config_holder=_digest_config(True),
+    )
+    await _run_until_closed(session_factory, scheduler, run_id)
+    await _await_calls(notifier, 1)
+
+    _, _, detail = notifier.calls[0]
+    assert detail == {
+        "missing": 0,
+        "skipped": 0,
+        "truncated": 0,
+        "render_failed": 0,
+        "show_fallback": 0,
+        "plex_generated": 1,
+        "upload_failed": 0,
+        "language_miss": 0,
+        "provider_downgrade": 0,
+        "textless_miss": 0,
+        "logo_fallback": 0,
+        "unknown_provenance": 0,
+        "unscored": 0,
+    }
+    assert all(isinstance(value, int) for value in detail.values())
+
+
+async def test_the_digest_is_not_sent_when_the_knob_is_off(session_factory):
+    """Opt-in, and off by default. The same fixture as the sending test, one
+    boolean apart -- so a gate that was never wired fails here and passes
+    everywhere else."""
+    run_id = await _open_backdated_pass(session_factory)
+    await _scored_render(session_factory)
+
+    notifier = _RecordingNotifier()
+    scheduler = Scheduler(
+        session_factory, [], poll_seconds=0.01, notifier=notifier,
+        config_holder=_digest_config(False),
+    )
+    await _run_until_closed(session_factory, scheduler, run_id)
+
+    assert notifier.calls == []
+
+
+async def test_a_pass_that_produced_nothing_actionable_sends_no_digest(session_factory):
+    """The suppression half of the dedupe rule: nothing is sent rather than an
+    empty digest or a "nothing new" POST. A pass that scored a clean row -- and
+    a pass that scored nothing at all -- is silent.
+
+    `generate` is the ordinary source_mode (`db/models.py:88`'s own default),
+    and a rendered row with no upload failure, no textless fallback, no logo
+    fallback and no provider ladder recorded trips no default_on flag at all --
+    which is what makes it the right negative here."""
+    run_id = await _open_backdated_pass(session_factory)
+    await _scored_render(session_factory, source_mode="generate")
+
+    notifier = _RecordingNotifier()
+    scheduler = Scheduler(
+        session_factory, [], poll_seconds=0.01, notifier=notifier,
+        config_holder=_digest_config(True),
+    )
+    await _run_until_closed(session_factory, scheduler, run_id)
+
+    assert notifier.calls == []
+
+
+async def test_a_scheduler_with_no_config_holder_still_closes_the_pass(session_factory):
+    """The holder is optional for the reason the notifier is: every existing
+    construction site and every test that builds a bare Scheduler must keep
+    working, and the bookkeeping half of `_close_drained_runs` must never
+    depend on the notification half."""
+    async with session_factory() as session:
+        run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+        await session.commit()
+
+    notifier = _RecordingNotifier()
+    scheduler = Scheduler(session_factory, [], poll_seconds=0.01, notifier=notifier)
+    await _run_until_closed(session_factory, scheduler, run_id)
+
+    async with session_factory() as session:
+        row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.status == "ok"
+    assert notifier.calls == []
