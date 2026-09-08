@@ -405,6 +405,55 @@ the image sets to `/config/autoposter.yaml` — so mount `autoposter.yaml`
 else without also setting the variable means the app fails at startup
 looking for a file that is not there.
 
+### Overlay and font files (the Files page)
+
+`overlays_root` and `fonts_root` — `/app/assets/overlays` and `/app/assets/fonts` in the
+shipped `autoposter.yaml` — are managed from the **Files** page: list what is there, upload
+a `.png` overlay or a `.ttf`/`.otf` face, delete one you added.
+
+**These two paths must be writable and must persist**, which is a change from how the
+deployment started. The image copies its bundled assets in at build time and runs as uid
+568, so the directories are root-owned and read-only to the process; and mounting the four
+shipped files individually with `subPath` makes any sibling written next to them live in
+the container's writable layer, where it dies with the pod. Mount one PVC at the two paths
+instead — the same `autoposter-state` claim the first-start setup section above describes,
+with `subPath: overlays` and `subPath: fonts` — and seed it once from the ConfigMap that
+used to be mounted directly, with an init container that copies a file in only when it is
+not already there.
+
+**The paths themselves must not move.** `fonts_root` and `overlays_root` are hashed as
+strings into every art kind's render version, so pointing them at a fresh directory would
+re-render the whole library. **And the seed must come from the ConfigMap rather than from
+the image**: where the two disagree about a file's bytes, the ConfigMap's are the ones every
+stored fingerprint was computed against, and seeding the other copy re-renders everything
+drawn with it.
+
+A second thing the same mount fixes: a `url:` overlay source caches its download in a
+`.cache/` subdirectory of `overlays_root`, and that `mkdir` could not succeed under a
+root-owned parent. No shipped configuration uses a `url:` source, so it had never fired.
+
+Three rules the page enforces, each for a reason worth knowing:
+
+- **Some files cannot be deleted.** `Comfortaa-Medium.ttf`, `OFL.txt` and `PROVENANCE.md`
+  are refused. The font is not merely bundled: separator-collection art reads that exact
+  file directly, past `fonts_root`, and deleting it breaks that art with a font error. The
+  other two are the licence and the provenance the OFL Reserved Font Name clause hangs on.
+- **A file the running configuration names cannot be deleted.** The page shows which config
+  value names each file, and the server refuses the delete. A missing input does not fail a
+  render; it hashes as empty and quietly changes the fingerprint instead.
+- **Uploading over an existing name is refused; delete it first.** This is the important
+  one. Replacing a file in place means two different things to the two stages that read it.
+  The artwork stage hashes the overlay's and the fonts' *bytes* into every render
+  fingerprint, so an in-place replacement re-renders and re-uploads every item drawn with
+  it. The badge stage does not — it hashes the shipped badge manifest and the definitions'
+  fields — so an in-place replacement there leaves every already-badged item on the old
+  artwork while new items get the new one, with nothing anywhere to say the library has
+  diverged. Neither behaviour is right for the other, so the service refuses to guess:
+  delete, then upload, and the re-render you get is the one you asked for.
+
+Uploading under a **new** name moves nothing. The file takes effect when a config value
+names it, and then only that art kind re-renders.
+
 ## Config overrides (the Settings editor)
 
 The Settings page can edit configuration. Edits do NOT touch the mounted

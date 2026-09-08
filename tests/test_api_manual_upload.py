@@ -387,17 +387,26 @@ async def test_an_empty_file_part_is_refused_with_the_same_sentence(
     assert list(manual_root.rglob("*")) == []
 
 
+@pytest.mark.parametrize(
+    "extra_headers",
+    [None, {"Content-Type": "multipart/form-data"}],
+    ids=["a-boundary-the-body-contradicts", "no-boundary-at-all"],
+)
 async def test_a_malformed_multipart_body_is_refused_with_a_fixed_sentence(
-    client, auth_headers, session, manual_root
+    client, auth_headers, session, manual_root, extra_headers
 ):
-    """The parser's own message names sizes and part counts; the served
-    sentence is fixed instead."""
+    """Two shapes, and they come out of two different libraries. Without a
+    boundary, Starlette's own parser raises `MultiPartException` and
+    `Request._get_form` re-raises it as `HTTPException(400, exc.message)`
+    (`starlette/requests.py:292`). WITH a boundary the body then contradicts,
+    the error comes from `python_multipart` instead, which Starlette does not
+    convert at all -- an unhandled 500 unless the handler catches it itself.
+    Both messages name sizes and part counts; both are answered with the
+    fixed sentence instead."""
     item_id = await _item(session)
 
-    response = await client.post(
-        f"/api/items/{item_id}/renders/poster/manual/upload",
-        content=b"not multipart at all",
-        headers={**auth_headers, "Content-Type": "multipart/form-data"},
+    response = await _upload(
+        client, item_id, "poster", auth_headers, b"not multipart at all", extra_headers
     )
 
     assert response.status_code == 422

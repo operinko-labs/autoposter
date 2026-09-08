@@ -6,6 +6,7 @@ import { ActionCenter } from "./pages/ActionCenter";
 import { Collections } from "./pages/Collections";
 import { Dashboard } from "./pages/Dashboard";
 import { Failures } from "./pages/Failures";
+import { Files } from "./pages/Files";
 import { ItemDetail } from "./pages/ItemDetail";
 import { Jobs } from "./pages/Jobs";
 import { Library } from "./pages/Library";
@@ -32,6 +33,7 @@ function AuthenticatedApp() {
           <Route path="/collections" element={<Collections />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/failures" element={<Failures />} />
+          <Route path="/files" element={<Files />} />
           <Route path="/mismatches" element={<Mismatches />} />
           <Route path="/modes" element={<Modes />} />
           <Route path="/logs" element={<Logs />} />

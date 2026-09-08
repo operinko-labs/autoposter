@@ -20,6 +20,8 @@ const ICONS: Record<string, string> = {
     "M4 6H2v14a2 2 0 0 0 2 2h14v-2H4V6zm16-4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2z",
   failures:
     "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z",
+  files:
+    "M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm8 1.5V8h4.5L14 3.5zM8 13h8v2H8v-2zm0 4h8v2H8v-2z",
   jobs:
     "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z",
   logs: "M3 4h18v2H3V4zm0 4h12v2H3V8zm0 4h18v2H3v-2zm0 4h12v2H3v-2zm0 4h18v2H3v-2z",
@@ -56,6 +58,10 @@ const NAV = [
   { to: "/modes", label: "Run modes", icon: "modes", end: false },
   { to: "/logs", label: "Logs", icon: "logs", end: false },
   { to: "/testing", label: "Testing", icon: "testing", end: false },
+  // After Testing and before Settings: this is where the files a config value
+  // NAMES are managed, and Settings is where the naming happens. Reaching for
+  // one usually means reaching for the other next.
+  { to: "/files", label: "Files", icon: "files", end: false },
   { to: "/settings", label: "Settings", icon: "settings", end: false },
 ];
 
