@@ -39,8 +39,17 @@ its title and summary belong to the definition. That is the same call
 ``imdb_list`` and ``tmdb_discover`` make.
 """
 import datetime
+import re
+from collections.abc import Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from autoposter.collections.builders.base import (
     BuilderContext,
@@ -122,6 +131,42 @@ SORTS: dict[str, tuple[str, str]] = {
 # and the guard cannot silently forget it.
 _NON_FILTERING = frozenset({"type", "sort"})
 
+# ``list`` is one of Kometa's operator keys (the document's §2 row 19), so the
+# params model below has a field named ``list`` -- and a name bound in a class
+# body shadows the builtin for every annotation written after it, validators'
+# signatures included ("TypeError: 'FieldInfo' object is not subscriptable", at
+# import). These two aliases are what every annotation inside
+# ``ImdbSearchParams`` uses instead, so the shadowing is one named constant
+# rather than an ordering trap the next field steps on. Method *bodies* are
+# unaffected: a class namespace is not an enclosing scope for a function, which
+# is why the shipped ``type`` field and ``type(self).model_fields`` already
+# coexist two screens apart.
+_Strings = list[str]
+_Certificates = list[dict[str, str]]
+
+# Kometa's default region for a bare ``content_rating`` value
+# (``modules/builder.py:2502-2506``).
+_DEFAULT_REGION = "US"
+
+_CONTENT_RATING_SHAPE = (
+    "`content_rating` takes either a rating on its own -- `PG-13`, which means "
+    "the rating in the US -- or a mapping with a `rating:` and an optional "
+    "2-letter `region:`. One of the values written here is neither."
+)
+_CONTENT_RATING_NEEDS_RATING = (
+    "`content_rating` mappings need a `rating:` key naming an IMDb certificate. "
+    "One of the values written here has none, or has an empty one."
+)
+_CONTENT_RATING_REGION = (
+    "`content_rating`'s `region:` is a 2-letter country code and one of the "
+    "values written here is not two letters. Kometa warns and falls back to the "
+    "US region here; this refuses instead, because a certificate filtered in "
+    "the wrong region matches nothing, and an empty result one layer down means "
+    "'remove every member'."
+)
+
+_REGION_CODE = re.compile(r"^[A-Za-z]{2}$")
+
 
 class ImdbSearchParams(BaseModel):
     """``imdb_search``'s params: the minimal constraint tier.
@@ -139,7 +184,7 @@ class ImdbSearchParams(BaseModel):
     # (see ``build``'s cross-check). Shadows the builtin as an attribute name
     # only, and ``type:`` is what IMDb's own advanced-search form calls this.
     type: str | None = None
-    genres: list[str] | None = Field(default=None, min_length=1)
+    genres: _Strings | None = Field(default=None, min_length=1)
     # IMDb's user rating is 1.0-10.0. A ``rating_gte: 0`` is a filter that
     # filters nothing while still satisfying the one-constraint guard, so the
     # floor is IMDb's floor rather than zero.
@@ -152,6 +197,19 @@ class ImdbSearchParams(BaseModel):
     votes_gte: int | None = Field(default=None, ge=1)
     released_after: datetime.date | None = None
     released_before: datetime.date | None = None
+    # Row 258 (``runtime.gte``/``runtime.lte``, the document's §2 row 27).
+    # Whole minutes. The floor is 1 rather than Kometa's 0 for ``votes_gte``'s
+    # reason: a bound of zero filters nothing while still satisfying the
+    # one-constraint guard. Not a bare ``ge=1``, because pydantic's own
+    # constraint message carries the operator's number and row 213's sentences
+    # do not.
+    runtime_gte: int | None = None
+    runtime_lte: int | None = None
+    # Row 259 (``content_rating``, the document's §2 row 23). Each value is
+    # either a bare rating -- the US one -- or a ``{region, rating}`` mapping;
+    # both normalise to the pair ``anyRegionCertificateRatings`` takes, because
+    # the region is carried PER VALUE and is not a constraint-wide setting.
+    content_rating: _Certificates | None = Field(default=None, min_length=1)
     sort: str = "popularity.desc"
 
     @field_validator("type")
@@ -167,7 +225,7 @@ class ImdbSearchParams(BaseModel):
 
     @field_validator("genres")
     @classmethod
-    def _must_be_known_genres(cls, value: list[str] | None) -> list[str] | None:
+    def _must_be_known_genres(cls, value: _Strings | None) -> _Strings | None:
         """Case-folded to IMDb's spelling, or refused naming the vocabulary.
 
         Not a passthrough, deliberately: IMDb matches genre ids case-sensitively
@@ -199,6 +257,52 @@ class ImdbSearchParams(BaseModel):
             )
         return value
 
+    @field_validator("runtime_gte", "runtime_lte")
+    @classmethod
+    def _must_be_a_whole_minute_count(
+        cls, value: int | None, info: ValidationInfo
+    ) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError(
+                f"`{info.field_name}` is a runtime in whole minutes and must be "
+                "at least 1: a bound of zero filters nothing while still "
+                "satisfying the one-constraint guard, which is the hole "
+                "`votes_gte`'s floor closes for the same reason."
+            )
+        return value
+
+    @field_validator("content_rating", mode="before")
+    @classmethod
+    def _must_be_a_rating_or_a_region_and_rating(cls, value):
+        """Kometa's own shape, normalised to one: ``{region, rating}``.
+
+        ``mode="before"`` because the operator may write a bare string where the
+        field's type says mapping -- that is Kometa's documented input and the
+        shape most definitions will carry.
+
+        Kometa warns and falls back to ``US`` when a region is not two
+        characters (``modules/builder.py:2511-2515``). This refuses instead:
+        IMDb validates a constraint's shape and not its values, so a certificate
+        filtered in the wrong region is an HTTP 200 with ``total: 0``, and an
+        empty result one layer down means "remove every member".
+        """
+        if value is None or isinstance(value, str) or not hasattr(value, "__iter__"):
+            return value
+        certificates = []
+        for entry in value:
+            if isinstance(entry, str):
+                entry = {"rating": entry}
+            if not isinstance(entry, Mapping):
+                raise ValueError(_CONTENT_RATING_SHAPE)
+            rating = entry.get("rating")
+            if not isinstance(rating, str) or not rating.strip():
+                raise ValueError(_CONTENT_RATING_NEEDS_RATING)
+            region = entry.get("region", _DEFAULT_REGION)
+            if not isinstance(region, str) or not _REGION_CODE.match(region):
+                raise ValueError(_CONTENT_RATING_REGION)
+            certificates.append({"region": region.upper(), "rating": rating.strip()})
+        return certificates
+
     @model_validator(mode="after")
     def _windows_must_not_be_inside_out(self) -> "ImdbSearchParams":
         if (
@@ -219,6 +323,18 @@ class ImdbSearchParams(BaseModel):
             raise ValueError(
                 f"released_after ({self.released_after}) is after "
                 f"released_before ({self.released_before}), so no title can match "
+                "and the collection would empty itself"
+            )
+        if (
+            self.runtime_gte is not None
+            and self.runtime_lte is not None
+            and self.runtime_gte > self.runtime_lte
+        ):
+            # Its two neighbours above interpolate their values; this one does
+            # not, because C1/row 213 postdates them and binds every sentence
+            # this row writes. The two keys are the whole diagnosis anyway.
+            raise ValueError(
+                "`runtime_gte` is above `runtime_lte`, so no title can match "
                 "and the collection would empty itself"
             )
         return self
@@ -287,6 +403,19 @@ def search_constraints(
         if params.released_before is not None:
             window["end"] = params.released_before.isoformat()
         constraints["releaseDateConstraint"] = {"releaseDateRange": window}
+    if params.runtime_gte is not None or params.runtime_lte is not None:
+        window = {}
+        if params.runtime_gte is not None:
+            window["min"] = params.runtime_gte
+        if params.runtime_lte is not None:
+            window["max"] = params.runtime_lte
+        constraints["runtimeConstraint"] = {"runtimeRangeMinutes": window}
+    if params.content_rating is not None:
+        # Already normalised to ``{region, rating}`` pairs by the validator, so
+        # this is a placement and not a transformation.
+        constraints["certificateConstraint"] = {
+            "anyRegionCertificateRatings": params.content_rating
+        }
     return constraints
 
 

@@ -629,3 +629,160 @@ async def test_a_library_that_is_neither_movie_nor_show_is_refused():
 
 def test_the_builder_is_registered_under_its_own_name():
     assert REGISTRY["imdb_search"].type_name == "imdb_search"
+
+
+# --- rows 258-265: the eight probe-gated families -----------------------------
+#
+# Session 4 of ``.superpowers/sdd/p258_imdb_probe.log`` (2026-09-08) is the only
+# evidence here: sessions 1-3 are the probe script's own wrapper bug and are
+# void. Each ``PROBED_*`` literal below is the exact constraint object session 4
+# put on the wire, beside the total IMDb answered with. A sibling field the
+# document transcribes for the same family (``excludeKeywords``,
+# ``notInAnyList``, ``winnerFilter``, ...) is the SAME GraphQL input type and
+# ships on the transcription's authority, never on the wire's -- the tests say
+# which is which.
+
+PROBED_RUNTIME = {"runtimeConstraint": {"runtimeRangeMinutes": {"min": 80, "max": 90}}}
+PROBED_CERTIFICATE = {
+    "certificateConstraint": {
+        "anyRegionCertificateRatings": [{"region": "US", "rating": "PG-13"}]
+    }
+}
+
+
+async def _constraints(**params):
+    """The ``constraints`` variable one build put on the wire.
+
+    Every family test below asserts on the REQUEST, so the recorded two-page
+    transport is the only answer any of them wants and none of them needs to
+    pass one in.
+    """
+    seen: list = []
+    async with httpx.AsyncClient(transport=_paged(seen)) as http:
+        await _build(http, **params)
+    return _body(seen[0])["variables"]["constraints"]
+
+
+def _messages(caught) -> list:
+    """The validator sentences, without pydantic's ``input_value=`` tail.
+
+    ``str(ValidationError)`` appends the offending input; ``errors()[i]["msg"]``
+    is the sentence this repository wrote and nothing else, which is what the
+    row 213 "never echoes the operator's value" rule is asserted against.
+    """
+    return [error["msg"] for error in caught.value.errors()]
+
+
+async def test_the_probed_runtime_shape_reaches_the_wire():
+    """Row 258, session 4: 15,589 titles against a control of 78,732. Byte-equal
+    against the object that was on the wire, not a containment check."""
+    assert await _constraints(runtime_gte=80, runtime_lte=90) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_RUNTIME,
+    }
+
+
+@pytest.mark.parametrize(
+    "params,window",
+    [
+        ({"runtime_gte": 80}, {"min": 80}),
+        ({"runtime_lte": 90}, {"max": 90}),
+    ],
+)
+async def test_a_one_sided_runtime_window_sends_only_that_bound(params, window):
+    """Transcription-only: session 4 probed both bounds together. The one-sided
+    forms are the same ``runtimeRangeMinutes`` input object with one key, which
+    is how the shipped ``aggregateRatingRange`` already behaves."""
+    assert await _constraints(**params) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "runtimeConstraint": {"runtimeRangeMinutes": window},
+    }
+
+
+@pytest.mark.parametrize("field", ["runtime_gte", "runtime_lte"])
+async def test_a_runtime_bound_below_one_minute_is_refused(field):
+    """A bound of zero filters nothing while still satisfying the one-constraint
+    guard -- the hole ``votes_gte``'s ``ge=1`` floor already closes."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{field: 0})
+
+    assert any("whole minutes and must be at least 1" in m for m in _messages(caught))
+
+
+async def test_a_runtime_window_that_excludes_everything_is_refused():
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, runtime_gte=200, runtime_lte=90)
+
+    messages = _messages(caught)
+    assert any("`runtime_gte` is above `runtime_lte`" in m for m in messages)
+    assert not any("200" in m for m in messages), (
+        "row 213: the sentence names the two keys, never the operator's numbers"
+    )
+
+
+async def test_runtime_alone_satisfies_the_one_constraint_guard():
+    async with httpx.AsyncClient(transport=_paged()) as http:
+        result = await _build(http, runtime_gte=80)
+
+    assert result.ids
+
+
+async def test_the_probed_certificate_shape_reaches_the_wire():
+    """Row 259, session 4: 1,790 titles. The region is carried PER VALUE, paired
+    with the rating in one object -- not a top-level field and not a
+    constraint-wide setting (the document's §2 row 23, §5.1)."""
+    assert await _constraints(
+        content_rating=[{"region": "US", "rating": "PG-13"}]
+    ) == {"titleTypeConstraint": {"anyTitleTypeIds": ["movie"]}, **PROBED_CERTIFICATE}
+
+
+async def test_a_bare_content_rating_means_the_us_region():
+    """Kometa's own default (``modules/builder.py:2502-2506``): a bare string
+    becomes ``{region: US, rating: <the string>}``. Written as its own test
+    because it is the shape most operators will actually write, and it must
+    produce the byte the probe proved."""
+    assert await _constraints(content_rating=["PG-13"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_CERTIFICATE,
+    }
+
+
+async def test_a_content_rating_region_other_than_us_is_sent_as_written():
+    """Transcription-only: session 4 probed ``US``. The region is upper-cased,
+    because IMDb matches these case-sensitively and answers one it does not know
+    with an empty result rather than an error."""
+    assert await _constraints(content_rating=[{"region": "gb", "rating": "15"}]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "certificateConstraint": {
+            "anyRegionCertificateRatings": [{"region": "GB", "rating": "15"}]
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "value,sentence,echo",
+    [
+        ([99], "either a rating on its own", "99"),
+        ([{"region": "GB"}], "need a `rating:` key", "GB"),
+        ([{"rating": "Qq99", "region": "Zzz"}], "2-letter country code", "Zzz"),
+        ([{"rating": "", "region": "GB"}], "need a `rating:` key", "GB"),
+    ],
+)
+async def test_a_malformed_content_rating_is_refused_without_echoing_it(
+    value, sentence, echo
+):
+    """Config-LOAD refusals with fixed sentences (C1/row 213): the sentence names
+    the key and the shape, and the operator's own text never appears in it."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, content_rating=value)
+
+    messages = _messages(caught)
+    assert any(sentence in m for m in messages)
+    assert not any(echo in m for m in messages)
+
+
+async def test_content_rating_alone_satisfies_the_one_constraint_guard():
+    async with httpx.AsyncClient(transport=_paged()) as http:
+        result = await _build(http, content_rating=["PG-13"])
+
+    assert result.ids
