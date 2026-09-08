@@ -83,20 +83,43 @@ class LogoUpdateResult:
 
     There is no ``fields``/``files`` count as the reset and revert modes have:
     an item has exactly one clearlogo, so the per-item and per-field tallies
-    would be the same number twice. On an applied run ``uploaded`` and
-    ``failed`` split ``items_missing_logo`` by outcome, and ``failed`` means
-    "the item still has no logo" whatever the cause -- no provider had one,
-    every candidate the ladder offered was unusable (over the pixel ceiling,
-    undecodable, or an SVG Plex's clearLogo field cannot take), or the upload
-    itself did not go through.
+    would be the same number twice. On an applied run four counters split
+    ``items_missing_logo`` by outcome, and the split is by the question the
+    operator actually asks next:
+
+    * ``uploaded`` -- the logo is on Plex AND a marker records which upload is
+      ours, so Logo revert can claim it back;
+    * ``unmarked`` -- the logo is on Plex but nothing records it, so the revert
+      never will. Both ways there is no marker count here: the marker write
+      failed, and Plex reported no ``upload://`` key to record. They are the
+      same fact for the operator, because the revert's first condition is a
+      non-null ``logo_upload_key``;
+    * ``no_logo_available`` -- the ladder offered nothing usable: no provider
+      had a logo, or every candidate was over the pixel ceiling, undecodable,
+      or an SVG Plex's clearLogo field cannot take;
+    * ``upload_failed`` -- a candidate was picked and the fetch or the upload
+      itself did not go through.
+
+    There is deliberately no ``failed`` total: a coarse number served beside
+    its own summands reads, on the Modes page, as more failures than there
+    were.
+
+    ``probe_failed`` is the third whole-item bucket, beside ``missing``: an item
+    the probe could not ask Plex about at all. Unlike the applied-run counters
+    it is served on a DRY RUN too, because that is the run it matters on -- an
+    unreachable Plex would otherwise report ``items_missing_logo: 0`` and read
+    as "nothing to do" rather than "nothing could be asked".
     """
 
     items: int
     items_missing_logo: int
     uploaded: int
-    failed: int
+    unmarked: int
+    no_logo_available: int
+    upload_failed: int
     dry_run: bool
     missing: int = 0
+    probe_failed: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -106,6 +129,7 @@ class LogoUpdateResult:
             "items": self.items,
             "items_missing_logo": self.items_missing_logo,
             "missing": self.missing,
+            "probe_failed": self.probe_failed,
         }
         if self.refused is not None:
             body["status"] = "refused"
@@ -116,7 +140,9 @@ class LogoUpdateResult:
         else:
             body["status"] = "updated"
             body["uploaded"] = self.uploaded
-            body["failed"] = self.failed
+            body["unmarked"] = self.unmarked
+            body["no_logo_available"] = self.no_logo_available
+            body["upload_failed"] = self.upload_failed
         return body
 
 
@@ -132,6 +158,11 @@ class LogoRevertResult:
 
     No ``note`` about an orphaned upload, unlike the reset mode: Plex exposes a
     DELETE for the clearlogo field, so this really does remove the image.
+
+    ``probe_failed`` counts marked items the probe could not ask Plex about at
+    all, beside ``missing``. A marked item that cannot be probed is not "not
+    ours" -- it is unknown -- and it is served on a dry run for the same reason
+    the updater's is.
     """
 
     items: int
@@ -140,6 +171,7 @@ class LogoRevertResult:
     failed: int
     dry_run: bool
     missing: int = 0
+    probe_failed: int = 0
     refused: str | None = None
 
     def as_response(self) -> dict:
@@ -149,6 +181,7 @@ class LogoRevertResult:
             "items": self.items,
             "items_with_our_logo": self.items_with_our_logo,
             "missing": self.missing,
+            "probe_failed": self.probe_failed,
         }
         if self.refused is not None:
             body["status"] = "refused"
@@ -197,7 +230,9 @@ class LogoMode:
         if empty is not None:
             # dry_run mirrors the success paths below (True iff apply was not
             # requested), not just self._apply -- see restore.py.
-            return LogoUpdateResult(0, 0, 0, 0, not self._apply, refused=empty)
+            return LogoUpdateResult(
+                0, 0, 0, 0, 0, 0, not self._apply, refused=empty
+            )
 
         rows = (
             await session.execute(
@@ -223,6 +258,7 @@ class LogoMode:
         # whole library to produce a number that changes nothing.
         missing = []
         missing_from_plex = 0
+        probe_failed = 0
         for row in rows:
             try:
                 plex_item = await self._plex.fetch_item(row.rating_key)
@@ -240,6 +276,7 @@ class LogoMode:
                 logger.warning(
                     "logo: could not probe Plex item %s", row.rating_key, exc_info=True
                 )
+                probe_failed += 1
 
         items_missing_logo = len(missing)
         refusal = refuse_if_implausible(
@@ -250,41 +287,56 @@ class LogoMode:
         if refusal is not None:
             if missing_from_plex:
                 logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+            if probe_failed:
+                logger.info("logo: could not probe %d item(s)", probe_failed)
             return LogoUpdateResult(
-                total, items_missing_logo, 0, 0, not self._apply,
-                refused=refusal, missing=missing_from_plex,
+                total, items_missing_logo, 0, 0, 0, 0, not self._apply,
+                refused=refusal, missing=missing_from_plex, probe_failed=probe_failed,
             )
 
         if not self._apply:
             if missing_from_plex:
                 logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+            if probe_failed:
+                logger.info("logo: could not probe %d item(s)", probe_failed)
             return LogoUpdateResult(
-                total, items_missing_logo, 0, 0, dry_run=True, missing=missing_from_plex
+                total, items_missing_logo, 0, 0, 0, 0, dry_run=True,
+                missing=missing_from_plex, probe_failed=probe_failed,
             )
 
-        uploaded = failed = 0
+        uploaded = unmarked = no_logo_available = upload_failed = 0
         for row in missing:
-            # A tuple rather than "the marker or a sentinel", because ``None``
-            # is a real *success* outcome here: the logo is on the item, but
-            # Plex reported no uploaded logo selected, so there is nothing to
-            # record. The upload still counts -- the item has its logo -- and
-            # the revert simply will not claim it later.
-            ok, marker = await self._upload_one(row)
-            if not ok:
-                failed += 1
+            # An outcome name rather than a bool, because "it did not work" is
+            # two different operator problems here: nothing usable was on the
+            # ladder, and the upload did not go through.
+            outcome, marker = await self._upload_one(row)
+            if outcome == "no_logo_available":
+                no_logo_available += 1
                 continue
-            await self._record_marker(session, row, marker)
-            uploaded += 1
+            if outcome == "upload_failed":
+                upload_failed += 1
+                continue
+            # The logo is on the item either way. What splits the two buckets
+            # is whether a marker records it: without one the revert's first
+            # condition can never hold, so the operator has to be told which
+            # of these it can claim back.
+            if await self._record_marker(session, row, marker):
+                uploaded += 1
+            else:
+                unmarked += 1
 
         if missing_from_plex:
             logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+        if probe_failed:
+            logger.info("logo: could not probe %d item(s)", probe_failed)
 
         return LogoUpdateResult(
-            total, items_missing_logo, uploaded, failed, dry_run=False,
-            missing=missing_from_plex,
+            total, items_missing_logo, uploaded, unmarked, no_logo_available,
+            upload_failed, dry_run=False, missing=missing_from_plex,
+            probe_failed=probe_failed,
         )
 
-    async def _record_marker(self, session: AsyncSession, row, marker: str | None) -> None:
+    async def _record_marker(self, session: AsyncSession, row, marker: str | None) -> bool:
         """Commit this item's marker before the next item's upload starts.
 
         Per item, not once at the end of the run, because the Plex side of this
@@ -301,9 +353,10 @@ class LogoMode:
 
         A database error is this item's own, like every failure in
         ``_upload_one``: the session is rolled back so the next item's write
-        starts clean. The item still counts as uploaded, because it *is* --
-        the logo is on it. That is the same outcome as a successful upload
-        Plex reported no key for: a logo the revert will not claim later.
+        starts clean. Returns whether the item ends up with a marker the revert
+        can find -- False both when the write failed and when Plex reported no
+        ``upload://`` key to record, because those are the same fact for the
+        operator: the logo is on Plex and the revert will not claim it.
         """
         try:
             await session.execute(
@@ -318,13 +371,21 @@ class LogoMode:
                 "logo: uploaded a clearlogo for %s but could not record its "
                 "marker -- the revert will not claim it", row.rating_key, exc_info=True,
             )
+            return False
+        # The write itself is still made when ``marker`` is None: it clears any
+        # stale key an earlier run left on an item whose logo has since gone.
+        return marker is not None
 
-    async def _upload_one(self, row) -> tuple[bool, str | None]:
-        """Fetch and push one item's logo: ``(succeeded, marker to record)``.
+    async def _upload_one(self, row) -> tuple[str, str | None]:
+        """Fetch and push one item's logo: ``(outcome, marker to record)``.
 
-        Every failure is this item's own: a provider that had nothing, a set of
-        picks Plex cannot use, a download that did not arrive, an upload that
-        did not go through. None of them may abort a run over a whole library.
+        The outcome is ``"uploaded"``, ``"no_logo_available"`` (the ladder
+        offered nothing this field can take) or ``"upload_failed"`` (a pick was
+        made and the fetch or the upload threw). Every failure is this item's
+        own: a provider that had nothing, a set of picks Plex cannot use, a
+        download that did not arrive, an upload that did not go through. None
+        of them may abort a run over a whole library -- and the caller counts
+        the two apart, because they are two different operator problems.
 
         The fetch goes through ``render/artwork_fetch.pick_guarded_logo``, the
         same guarded walk the render path uses, rather than the bare
@@ -374,7 +435,7 @@ class LogoMode:
                         "logo: no usable clearlogo for %s -- %d candidate(s) skipped",
                         row.rating_key, skipped,
                     )
-                    return False, None
+                    return "no_logo_available", None
                 # Read inside the temporary directory's scope: it is removed on
                 # the way out of this `with`, and `upload_logo` wants bytes.
                 data = logo_path.read_bytes()
@@ -386,8 +447,8 @@ class LogoMode:
             logger.warning(
                 "logo: could not upload a clearlogo for %s", row.rating_key, exc_info=True
             )
-            return False, None
-        return True, marker
+            return "upload_failed", None
+        return "uploaded", marker
 
 
 class LogoRevertMode:
@@ -441,6 +502,7 @@ class LogoRevertMode:
         # choice, and this mode does not undo the operator's choices.
         ours = []
         missing = 0
+        probe_failed = 0
         for row in marked:
             try:
                 plex_item = await self._plex.fetch_item(row.rating_key)
@@ -458,6 +520,7 @@ class LogoRevertMode:
                     "logo revert: could not probe Plex item %s",
                     row.rating_key, exc_info=True,
                 )
+                probe_failed += 1
                 continue
             if selected == row.logo_upload_key:
                 ours.append(row)
@@ -471,16 +534,21 @@ class LogoRevertMode:
         if refusal is not None:
             if missing:
                 logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+            if probe_failed:
+                logger.info("logo revert: could not probe %d item(s)", probe_failed)
             return LogoRevertResult(
                 total, items_with_our_logo, 0, 0, not self._apply,
-                refused=refusal, missing=missing,
+                refused=refusal, missing=missing, probe_failed=probe_failed,
             )
 
         if not self._apply:
             if missing:
                 logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+            if probe_failed:
+                logger.info("logo revert: could not probe %d item(s)", probe_failed)
             return LogoRevertResult(
-                total, items_with_our_logo, 0, 0, dry_run=True, missing=missing
+                total, items_with_our_logo, 0, 0, dry_run=True,
+                missing=missing, probe_failed=probe_failed,
             )
 
         cleared = failed = 0
@@ -512,7 +580,10 @@ class LogoRevertMode:
 
         if missing:
             logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+        if probe_failed:
+            logger.info("logo revert: could not probe %d item(s)", probe_failed)
 
         return LogoRevertResult(
-            total, items_with_our_logo, cleared, failed, dry_run=False, missing=missing
+            total, items_with_our_logo, cleared, failed, dry_run=False,
+            missing=missing, probe_failed=probe_failed,
         )

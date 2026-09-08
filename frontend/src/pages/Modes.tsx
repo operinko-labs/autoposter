@@ -188,12 +188,6 @@ const MODES: ModeSpec[] = [
         "cap asking whether thousands of changes are really what you meant. " +
         "Raise the cap or narrow the filters below, then run it again.",
       PAUSES_PIPELINE,
-      "uploaded counts logos that reached Plex, including any whose marker write " +
-        "afterwards failed. Logo revert will not claim those back — nothing in " +
-        "this response can tell them apart, only the server log can.",
-      "failed means the item still has no logo, whatever the cause: no provider " +
-        "had one, the only candidate was an SVG, or the upload itself did not go " +
-        "through. The three are folded into one number.",
       "A dry run spends no provider call at all. It counts the items missing a " +
         "logo; it does not look up which logo each would get.",
     ],
@@ -242,10 +236,14 @@ const COUNT_LABELS: Record<string, string> = {
   reset: "fields reset",
   cleared: "logos cleared",
   uploaded: "logos uploaded",
+  unmarked: "logos uploaded but unmarked — Logo revert cannot claim these",
+  no_logo_available: "no usable logo on any provider",
+  upload_failed: "uploads that did not go through",
   written: "artwork files written",
   skipped: "skipped",
   failed: "failed",
   missing: "no longer in Plex",
+  probe_failed: "items Plex could not be asked about",
 };
 
 /** The envelope keys that are not counts. */
