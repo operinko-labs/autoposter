@@ -386,7 +386,7 @@ async def test_updater_dry_run_uploads_nothing(session, config, serving):
     assert "uploaded" not in response
 
 
-async def test_updater_counts_an_item_with_no_logo_on_any_provider_as_failed(
+async def test_updater_counts_an_item_with_no_logo_on_any_provider_as_no_logo_available(
     session, config, serving
 ):
     """Nothing on the ladder: the item still has no logo, so nothing changed and
@@ -408,8 +408,8 @@ async def test_updater_counts_an_item_with_no_logo_on_any_provider_as_failed(
 async def test_updater_refuses_to_upload_an_svg_logo(session, config, serving):
     """The render pipeline can take an SVG logo because ImageMagick rasterises it
     while compositing. Plex's clearLogo field takes a raster image, so an SVG
-    pick is skipped rather than pushed -- counted as failed, because the item
-    still has no logo."""
+    pick is skipped rather than pushed -- counted as `no_logo_available`, because
+    the item still has no logo."""
     row = await _add_item(session, rating_key="rk1")
     item = FakeItem(logo=None)
     plex = FakePlexClient({"rk1": item})
