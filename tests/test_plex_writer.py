@@ -30,6 +30,9 @@ class FakeItem:
         self.studio = attrs.get("studio")
         self.originallyAvailableAt = attrs.get("originallyAvailableAt")
         self.genres = [type("G", (), {"tag": g})() for g in attrs.get("genres", [])]
+        # What Plex reports about per-field locks (plexapi's `item.fields`).
+        # Absent by default, which is the honest "Plex has never said" case.
+        self.fields = attrs.get("fields", [])
         self.batched = False
         self.saved = False
         self.edits = {}
@@ -193,10 +196,18 @@ async def test_apply_does_nothing_when_there_is_nothing_to_write():
 
 
 async def test_genres_are_applied_through_addgenre():
+    """Roadmap row 246 corrected the lock assertion here. The plan carries NO
+    ``genres.locked`` key: that key was dead from the day it was written --
+    ``apply_facts`` filters every ``"genres."``-prefixed key out of the payload
+    it builds -- and the lock a real genre change needs has always ridden
+    ``locked=True`` on the ``addGenre``/``removeGenre`` mixin calls themselves,
+    which is what the ``item.edits`` assertion below proves reaches the wire.
+    """
     item = FakeItem(genres=["Horror"])
     written = await apply_facts(item, GatheredFacts(genres=["Horror", "Drama"]))
     assert written["genres.added"] == ["Drama"]
-    assert written["genres.locked"] == 1
+    assert "genres.locked" not in written
+    assert item.edits["genre.locked"] == 1
     assert "genres.removed" not in written
     # addGenre's documented merge reads the *current* genres live; re-listing
     # "Horror" (unchanged) would create a duplicate tag on the server, since
@@ -362,3 +373,32 @@ def test_no_refresh_calls_project_wide():
         "locked fields and the artwork this project uploaded, and is never an "
         "acceptable recovery action" % ", ".join(offenders)
     )
+
+
+async def test_an_equal_genre_list_locks_the_field_plex_does_not_report_locked():
+    """Roadmap row 246. The provider branch's equal-list case now carries the
+    same equal-value guarantee every scalar field has had since row 99: a list
+    Plex already agrees with is exactly the one Plex's own agent is free to
+    rewrite on its next refresh. The key is the SINGULAR ``genre.locked`` --
+    ``apply_facts`` strips the PLURAL ``"genres."`` prefix, so this one
+    survives into ``item.edit()``. Nothing else is written: no add, no removal.
+    """
+    item = FakeItem(genres=["Horror", "Drama"])
+    written = await apply_facts(item, GatheredFacts(genres=["Drama", "Horror"]))
+    assert written == {"genre.locked": 1}
+    assert item.edits == {"genre.locked": 1}
+    # The tag list itself is untouched -- no addGenre, no removeGenre.
+    assert [g.tag for g in item.genres] == ["Horror", "Drama"]
+
+
+async def test_an_equal_genre_list_writes_nothing_when_plex_reports_it_locked():
+    """The other half of row 246's steady state: once Plex reports the field
+    locked, the second pass writes nothing at all. This is what keeps the fix
+    a one-time cost per item rather than a write every pass."""
+    item = FakeItem(
+        genres=["Horror", "Drama"],
+        fields=[type("F", (), {"name": "genre", "locked": True})()],
+    )
+    written = await apply_facts(item, GatheredFacts(genres=["Drama", "Horror"]))
+    assert written == {}
+    assert item.batched is False

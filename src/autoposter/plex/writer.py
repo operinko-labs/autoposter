@@ -284,6 +284,14 @@ def _genre_plan(current: list[str], target: list[str]) -> dict[str, object]:
     them to decide what to pass to `addGenre`/`removeGenre` and strips them
     before building the plain-field edit call.
 
+    There is no lock key here, and that is roadmap row 246's other half: a
+    `genres.locked` entry lived in this dict until then and never once reached
+    Plex, because `apply_facts` strips exactly the PLURAL `"genres."` prefix it
+    carried. The lock a real change needs rides `locked=True` on the
+    `addGenre`/`removeGenre` calls `_apply_genre_edits` makes. The equal-list
+    case never reaches this function at all, and locks through the SINGULAR
+    `genre.locked` key in `plan_edits`/`override_edits` instead.
+
     Why not just call `item.addGenre(missing)`: verified offline against the
     real plexapi `Movie`/`GenreMixin` classes (constructing a `Movie` from a
     minimal XML element and running `batchEdits()`, which performs no
@@ -312,8 +320,6 @@ def _genre_plan(current: list[str], target: list[str]) -> dict[str, object]:
         plan["genres.added"] = additions
     if removals:
         plan["genres.removed"] = removals
-    # Locked so Plex's own agent does not revert a value this tool owns.
-    plan["genres.locked"] = 1
     return plan
 
 
@@ -456,18 +462,21 @@ def override_edits(item, overrides: dict) -> dict[str, object]:
         if field == "genres":
             # SYNC semantics: the override IS the list, so the plan is
             # whatever additions and removals make Plex's genres exactly this.
-            # No ``_ensure_locked`` call here, unlike the scalar branches
-            # below: ``_genre_plan`` already computes a ``genres.locked`` key
-            # on every real change, but that key is pre-existing-broken --
-            # ``apply_facts`` filters every ``"genres."``-prefixed key out of
-            # the payload it sends, so the lock has never actually reached
-            # Plex, on the provider path or this one. That is a separate,
-            # already-disclosed bug (rows 32/33) outside this fix's mandate;
-            # adding a lock-only write here would paper over it rather than
-            # fix it.
+            #
+            # Roadmap row 246: the equal-list case locks, like every scalar
+            # branch below. ``plex_field`` here is ``genre``, SINGULAR --
+            # ``_PLEX_FIELD_NAMES``' one asymmetric entry -- and that is what
+            # makes this work where the old ``genres.locked`` key never did:
+            # ``apply_facts`` filters the PLURAL ``"genres."`` prefix out of
+            # the payload, so the singular key flows into ``item.edit()``, the
+            # exact wire shape ``operations.field_verbs: {genres: lock}`` has
+            # sent since row 87. A real CHANGE needs no lock key of its own:
+            # ``_apply_genre_edits`` sends ``locked=True`` on the mixin calls.
             current_genres = _current_genres(item)
             if sorted(current_genres) != sorted(value):
                 edits.update(_genre_plan(current_genres, value))
+            else:
+                _ensure_locked(edits, item, plex_field)
             continue
         if field == "audience_rating":
             if format_audience(getattr(item, attribute, None)) != format_audience(value):
@@ -587,6 +596,16 @@ def plan_edits(
         current_genres = _current_genres(item)
         if sorted(current_genres) != sorted(genres):
             edits.update(_genre_plan(current_genres, genres))
+        else:
+            # Roadmap row 246, the provider half of the same equal-value
+            # guarantee ``override_edits`` gets above. The key is the SINGULAR
+            # ``genre.locked``; ``apply_facts`` strips the PLURAL prefix
+            # ``"genres."``, so this one reaches ``item.edit()``.
+            #
+            # INSIDE the ``and genres`` gate on purpose (row 246 C3): an item
+            # no provider has genres for is not one this service owns the
+            # genre list of, and it stays untouched exactly as it does today.
+            _ensure_locked(edits, item, "genre")
 
     edits.update(verb_edits(item, operations, overridden=frozenset(overrides)))
     edits.update(override_edits(item, overrides))
