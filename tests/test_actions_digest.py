@@ -181,6 +181,37 @@ async def test_a_non_default_flag_is_counted_but_does_not_raise_the_total(
     assert total == 0
 
 
+async def test_two_rows_that_trip_the_same_flag_inside_the_window_count_as_two(
+    session, config
+):
+    """Review finding I1: every other test in this file seeds exactly one row,
+    so `func.sum` is never discriminated from `func.max`/`bool_or` -- all of
+    them still pass under that mutation. Counting N is the entire purpose of
+    this function, and this is the one test that seeds two rows tripping the
+    same flag inside one window and asserts the count is 2, not 1."""
+    first = await _scored(session, source_mode="plex_generated")
+    second = await _scored(session, source_mode="plex_generated")
+    first_id, second_id = first.id, second.id
+    session.expire_all()
+    stamps = (
+        await session.execute(
+            select(Render.id, Render.quality_scored_at).where(
+                Render.id.in_([first_id, second_id])
+            )
+        )
+    ).all()
+    by_id = {row.id: row.quality_scored_at for row in stamps}
+    started_at = min(by_id.values())
+    finished_at = max(by_id.values()) + timedelta(seconds=1)
+
+    total, counts = await actionable_window_counts(
+        session, config, started_at, finished_at
+    )
+
+    assert counts["plex_generated"] == 2
+    assert total == 2
+
+
 async def test_a_row_in_an_excluded_library_is_not_counted(session, config):
     """``excluded_library_predicate`` leads the conditions for the reason
     ``api/action_center.py::_scope`` leads with it: nothing can re-render a row

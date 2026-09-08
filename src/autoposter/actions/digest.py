@@ -73,13 +73,15 @@ async def actionable_window_counts(
     of the queue at all, and a digest that counted it would announce work
     nothing can do.
 
-    Dismissals are deliberately not subtracted. ``_dismissal_join`` lives in
-    ``api/action_center.py`` and ``actions/`` must not import ``api/``; and a
-    dismissal is keyed on an evidence hash that MOVES when the row's facts
-    move, so a row this pass just re-scored has, by construction, almost never
-    got a live dismissal against its new evidence. Counting the population
-    rather than the undismissed remainder can only ever overstate, never
-    understate, which is the safe direction for a notification.
+    Dismissals are deliberately not subtracted -- plan decision D5. If that
+    changes, the way to do it is an anti-join over ``flags.evidence_expression()``
+    (``flags.py:512-541``) and ``db.models.ActionDismissal``, both already
+    reachable from here with no ``api/`` import. The known consequence of not
+    doing it: a whole-library re-stamp -- an artwork-settings edit, which
+    changes ``render_version_for`` and re-renders the library with provenance
+    unchanged -- re-stamps ``quality_scored_at`` on every row inside the
+    pass's window while leaving each row's live dismissal untouched, so the
+    digest can announce rows the operator has already dismissed.
     """
     counters = [
         func.sum(case((entry.predicate(config), 1), else_=0)).label(f"n_{code}")
