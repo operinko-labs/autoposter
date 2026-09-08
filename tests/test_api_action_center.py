@@ -185,6 +185,47 @@ async def test_the_summary_counts_every_flag_and_totals_the_default_population(
     assert next(e for e in body["flags"] if e["code"] == "unknown_provenance")["default_on"] is False
 
 
+# --- near_miss, roadmap row 235 -----------------------------------------------
+
+
+async def test_near_miss_is_counted_in_the_summary_and_named_in_the_list(
+    client, auth_headers, session
+):
+    """Task 1 review I2: gated features need one test through the real entry
+    point, because a helper-level pass (`tests/test_action_flags.py`'s seven
+    `flags.predicate_for`/`flags.detail_for` calls) can pass while the wired
+    path differs. `api/action_center.py`'s summary and list routes are
+    registry-driven loops with no per-flag branch, so this exercises them
+    exactly as a browser would: the flag off by default still has a count in
+    the summary, and asking for it by name in the list surfaces the fixed
+    detail sentence -- the example config's poster floor is 83
+    (`config/autoposter.example.yaml:733`), so a render at exactly that
+    point size is the floor case. `quality_scored_at` is stamped so the row
+    does not also read as `unscored` and the assertion below stays isolated
+    to the one flag under test."""
+    from datetime import datetime, timezone
+
+    item, _ = await _seed(
+        session,
+        rating_key="1",
+        art_kind="poster",
+        text_point_size=83,
+        quality_scored_at=datetime.now(timezone.utc),
+    )
+
+    summary = (await client.get("/api/actions/summary", headers=auth_headers)).json()
+    counts = {entry["code"]: entry["count"] for entry in summary["flags"]}
+    assert counts["near_miss"] == 1
+    assert next(e for e in summary["flags"] if e["code"] == "near_miss")["default_on"] is False
+
+    body = (await client.get("/api/actions?flag=near_miss", headers=auth_headers)).json()
+    assert body["total"] == 1
+    row = body["items"][0]
+    assert row["item_id"] == item.id
+    assert row["flags"] == ["near_miss"]
+    assert row["details"] == ["fitted at 83 pt, at or below this kind's floor"]
+
+
 # --- the derived-not-stored property, through the real endpoint --------------
 
 

@@ -399,6 +399,45 @@ function Renders({
  * logo browse for anything else. */
 const LOGO_BROWSABLE_KINDS = ["movie", "show"];
 
+/** The mark a tile carries between a pick and its queued re-render landing.
+ *
+ * Deliberately not "in use", which is a claim only the landed render can make.
+ * A pick writes the override file and nulls the render row's two fingerprints
+ * (api/candidates.py), but `provider="manual"` is stamped by the RENDER
+ * (render/pipeline.py:1250) -- so the browse endpoint, which reads `current`
+ * off the Render row, keeps answering the pre-pick provenance until then. */
+const PICKED_PENDING = "picked · re-render pending";
+
+/** Why an SVG tile carries no Pick.
+ *
+ * Ours and fixed (roadmap row 213): never built from the provider's URL, a
+ * Content-Type header, or an exception message. A pick downloads and re-files
+ * the image, and `PICK_CONTENT_TYPES` (api/candidates.py) admits only
+ * jpeg/png/webp because Pillow has no SVG decoder (render/artwork_fetch.py's
+ * `_looks_like_svg` comment). The COMPOSITOR is a different story --
+ * `build_logo_argv`'s `-density 300` branch (render/compositor.py) rasterises
+ * an SVG clearlogo, and render/pipeline.py leaves `raster_only` off for exactly
+ * that reason -- which is why the tile is MARKED rather than filtered: the
+ * automatic ladder may already be using the very image a filter would hide. */
+const SVG_UNPICKABLE =
+  "SVG — cannot be picked: Pillow has no SVG decoder. The render composites SVG logos itself.";
+
+/** Whether a candidate URL's path ends in `.svg`.
+ *
+ * Deliberately a suffix heuristic, and deliberately NOT a security check. The
+ * repo's standing ruling (render/artwork_fetch.py) is that SVG-ness of
+ * DOWNLOADED BYTES must be sniffed from the bytes, because a suffix is the
+ * provider's own claim, forgeable by whatever answers that URL. This decision
+ * is made in the browser BEFORE any download, where the URL is the only
+ * material there is, and it only removes an affordance -- the server-side
+ * Content-Type allowlist stays the real gate, so an SVG that slips past this
+ * still 502s exactly as it does today.
+ *
+ * Read off `url`, the full-size string a pick would post, not off `thumb_url`. */
+function isSvgCandidate(url: string): boolean {
+  return url.split("?")[0].split("#")[0].toLowerCase().endsWith(".svg");
+}
+
 /** Which section has a panel open, and what that panel is browsing.
  *
  * The two are not the same: a logo is browsed from the poster section, because
@@ -427,10 +466,18 @@ function CandidatePanel({
   itemId,
   artKind,
   onPicked,
+  pickedUrl,
+  onPickedUrl,
 }: {
   itemId: number;
   artKind: string;
   onPicked: () => Promise<void>;
+  /** The candidate URL picked for this art kind during this visit to the page,
+   * or null. Owned by ItemDetail: this component is unmounted whenever the
+   * panel is closed, so it cannot remember its own picks. */
+  pickedUrl: string | null;
+  /** Reports a successful pick back to ItemDetail, which outlives this panel. */
+  onPickedUrl: (url: string) => void;
 }) {
   const [state, setState] = useState<PanelState>({ status: "loading" });
   /** True while a pick is in flight. A pick overwrites a file outright, so two
@@ -471,10 +518,28 @@ function CandidatePanel({
           body: JSON.stringify({ provider: candidate.provider, url: candidate.url }),
         },
       );
-      // Re-read before reporting: the row's provider has just become "manual"
-      // and its fingerprints were nulled server-side, so both the item (the
-      // Renders table) and this panel's own candidates (the is-current tile
-      // and the replaces-override warning) are stale the moment this returns.
+      // The pick has already landed on the mount here: the POST above resolved,
+      // so the override file is written and the render row's two fingerprints
+      // are nulled (api/candidates.py). Mark it picked NOW, before the re-read
+      // below, rather than after it resolves -- the re-read re-runs the whole
+      // provider fan-out, and if it rejects while this call sits after it, the
+      // panel would show a raw error with no pending mark and no
+      // replaces-override warning, and a second pick would silently overwrite
+      // the file this one just wrote. The mark and the warning describe the
+      // file on the mount, not the freshness of the re-read.
+      onPickedUrl(candidate.url);
+      // Re-read before reporting: the render row's two fingerprints were nulled
+      // server-side, so the Renders table is stale the moment this returns, and
+      // this panel's own errors list is worth refreshing with it.
+      //
+      // What the re-read canNOT fix. The row's provider does NOT become
+      // "manual" here: that is stamped by the RENDER (render/pipeline.py:1250),
+      // and a pick writes only the two fingerprint columns (api/candidates.py).
+      // The browse endpoint derives `current` from the Render row, so until the
+      // queued re-render lands this second read answers the SAME pre-pick
+      // provenance as the first -- which is why the tile mark and the
+      // replaces-override warning are driven by the picked-this-visit URL
+      // instead of by `current`.
       const [, refreshed] = await Promise.all([
         onPicked(),
         apiFetch<CandidatesResponse>(`/api/items/${itemId}/candidates/${artKind}`),
@@ -498,9 +563,14 @@ function CandidatePanel({
   const current = state.status === "ready" ? state.response.current : null;
   /** A pick overwrites an existing override with no backup kept -- deliberately:
    * the mount is the operator's, not this service's to version. The control has
-   * to say so before it is clicked, because nothing afterwards can. */
+   * to say so before it is clicked, because nothing afterwards can.
+   *
+   * `pickedUrl !== null` is the second way an override is known to exist: this
+   * visit put one there, and the server cannot say so until the queued
+   * re-render lands. Without it, a SECOND pick in that window carries no
+   * warning at all although a file is about to be destroyed. */
   const pickTitle =
-    current?.provider === "manual"
+    pickedUrl !== null || current?.provider === "manual"
       ? "Picking replaces the current override — the previous file is not kept."
       : undefined;
 
@@ -530,12 +600,24 @@ function CandidatePanel({
           ) : (
             <ul className="candidate-grid">
               {state.response.candidates.map((candidate) => {
+                const isPicked = pickedUrl === candidate.url;
+                // Suppressed for the whole grid once anything has been picked
+                // this visit: `current` is the pre-pick render row, so leaving
+                // the mark on would have the OLD tile claiming "in use" while
+                // the file on the mount is already the new one.
                 const isCurrent =
-                  current !== null && current.source_url === candidate.url;
+                  pickedUrl === null &&
+                  current !== null &&
+                  current.source_url === candidate.url;
+                const unpickable = isSvgCandidate(candidate.url);
+                const classes = ["candidate-tile"];
+                if (isCurrent) classes.push("is-current");
+                if (isPicked) classes.push("is-picked");
+                if (unpickable) classes.push("is-unpickable");
                 return (
                   <li
                     key={`${candidate.provider} ${candidate.url}`}
-                    className={isCurrent ? "candidate-tile is-current" : "candidate-tile"}
+                    className={classes.join(" ")}
                   >
                     {/* A plain <img src>, and the only place on this page where
                       * that is correct: provider image URLs are public and
@@ -563,11 +645,15 @@ function CandidatePanel({
                       )}
                     </p>
                     {isCurrent && <p className="candidate-current">in use</p>}
+                    {isPicked && <p className="candidate-picked">{PICKED_PENDING}</p>}
+                    {unpickable && (
+                      <p className="candidate-unpickable">{SVG_UNPICKABLE}</p>
+                    )}
                     <button
                       type="button"
                       className="pick"
-                      disabled={picking}
-                      title={pickTitle}
+                      disabled={picking || unpickable}
+                      title={unpickable ? SVG_UNPICKABLE : pickTitle}
                       onClick={() => void pick(candidate)}
                     >
                       Pick
@@ -793,6 +879,16 @@ export function ItemDetail() {
   /** The one open candidate panel, or null. One at a time: each open panel
    * costs a fan-out across every provider for this item. */
   const [browsing, setBrowsing] = useState<Browsing | null>(null);
+  /** The candidate URL picked for each art kind during this visit, keyed by the
+   * art kind that was browsed (so a logo's pick stays separate from the
+   * poster's).
+   *
+   * Held HERE rather than in CandidatePanel because that component is keyed on
+   * `browsing.artKind` and unmounted by `toggleBrowse` -- a flag kept there
+   * dies on the close/reopen an operator actually performs. It dies on a full
+   * page reload instead, which is honest: by then the queued re-render has
+   * usually landed and the server can answer for itself. */
+  const [pickedUrls, setPickedUrls] = useState<Record<string, string>>({});
   /** The one open manual-source panel, or null. Keyed the same way as
    * `browsing` -- a logo is installed from the poster section, as it is
    * browsed from there. */
@@ -808,6 +904,9 @@ export function ItemDetail() {
     // candidates; left open it would offer a pick against this one.
     setBrowsing(null);
     setManualing(null);
+    // A pick belongs to the item it was made on. Carried across, it would mark
+    // a tile of the NEW item pending a re-render nobody queued.
+    setPickedUrls({});
     // Cleared here, not only on success: navigating from a failed item to a
     // good one must not show the previous item's error while loading.
     setError(null);
@@ -918,9 +1017,13 @@ export function ItemDetail() {
     );
   }
 
-  /** Re-reads the item after a pick: the row's provider becomes "manual" and
-   * its fingerprints are nulled server-side, so nothing on screen is true
-   * until it is read again. */
+  /** Re-reads the item after a pick or a manual install: the render row's two
+   * fingerprints are nulled server-side, so the Renders table on screen is
+   * stale the moment the call returns.
+   *
+   * Not the provider: `provider="manual"` is stamped by the RENDER
+   * (render/pipeline.py:1250), so that column keeps its pre-pick value until
+   * the queued re-render lands. */
   async function reloadItem() {
     setItem(await apiFetch<ItemDetailResponse>(`/api/items/${itemId}`));
   }
@@ -1054,6 +1157,10 @@ export function ItemDetail() {
               itemId={item.id}
               artKind={browsing.artKind}
               onPicked={reloadItem}
+              pickedUrl={pickedUrls[browsing.artKind] ?? null}
+              onPickedUrl={(url) =>
+                setPickedUrls((picked) => ({ ...picked, [browsing.artKind]: url }))
+              }
             />
           )}
           {manualing !== null && manualing.section === kind && (

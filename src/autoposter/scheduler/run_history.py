@@ -259,7 +259,11 @@ async def window_counts(
     return counts
 
 
-async def close_drained_full_passes(session: AsyncSession) -> int:
+async def close_drained_full_passes(
+    session: AsyncSession,
+    *,
+    closed_windows: list[tuple[datetime, datetime]] | None = None,
+) -> int:
     """Close every open full pass that has drained, or run out of time.
 
     C2's drain-watcher. "Drained" is: no ``process_item`` job created at or
@@ -291,6 +295,17 @@ async def close_drained_full_passes(session: AsyncSession) -> int:
     ``api/routes.py``'s docstring promises a second press does. A row past
     its own ceiling still closes as ``timed_out`` even while older siblings
     are draining, since it is not waiting on anything at that point.
+
+    ``closed_windows``, when given, is appended one ``(started_at,
+    finished_at)`` pair per row THIS call closed, in the order it closed them,
+    so ``len(closed_windows)`` always equals the return value. An
+    out-parameter rather than a widened return type because the return value is
+    a documented count with twelve assertions against it in
+    ``tests/test_run_history.py`` and this function's contract is "how many did
+    you close". Roadmap row 236's digest needs the windows so that it counts
+    the SAME interval the seven attribution columns above were taken over;
+    re-deriving them with a second SELECT would be guessing at which rows this
+    call closed rather than being told.
 
     Returns how many rows it closed. Does not commit.
     """
@@ -348,6 +363,11 @@ async def close_drained_full_passes(session: AsyncSession) -> int:
             )
         )
         closed += 1
+        if closed_windows is not None:
+            # The same two instants window_counts was just handed, so the
+            # digest and the stored columns can never describe two different
+            # intervals for one pass.
+            closed_windows.append((started_at, now))
 
     if closed:
         # The bound holds for full-pass rows here rather than through the

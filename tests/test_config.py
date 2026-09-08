@@ -574,3 +574,20 @@ def test_public_url_defaults_to_empty_and_round_trips():
 
     document["public_url"] = "https://autoposter.example.test"
     assert build_config(document).public_url == "https://autoposter.example.test"
+
+
+def test_the_actionable_digest_knob_does_not_move_the_render_version():
+    """Storm-guard for roadmap row 236 (facts C8). `render_version` hashes
+    `config.artwork` wholesale plus `library_folders` and the four roots, and
+    a stored fingerprint carries `render_version_for`'s per-kind projection of
+    the same inputs. A notification switch is in neither payload, so turning
+    the digest on must not strand a single fingerprint -- and this is the test
+    that says so rather than the reasoning that assumes it."""
+    before = load_config(EXAMPLE)
+    after = before.model_copy(update={"actionable_digest_enabled": True})
+
+    assert before.actionable_digest_enabled is False, "precondition: opt-in, off by default"
+    assert after.actionable_digest_enabled is True
+    assert render_version(after) == render_version(before)
+    for kind in RENDER_ART_KINDS:
+        assert render_version_for(kind, after) == render_version_for(kind, before), kind

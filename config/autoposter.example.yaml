@@ -60,6 +60,8 @@ operations:
   # originally_available_source: tvdb
   # Roadmap row 87 -- a verb applied to a field INSTEAD of writing a
   # provider's value into it. Each verb has its own apply flag, off by default.
+  # Roadmap row 229: 'remove' on `genres` clears EVERY genre on the item and
+  # locks the field -- there is no verb in this service that puts them back.
   # field_verbs:
   #   studio: unlock
   # lock_apply: false
@@ -684,6 +686,12 @@ notifications:
   mode: apprise-json
   timeout_seconds: 10 # per-attempt HTTP timeout
   retry_count: 3 # attempts before giving up; notification failure never fails the run it reports on
+
+# Roadmap row 236 -- one notification when a full pass closes, counting the
+# renders that pass scored which the Action Center would flag, by flag code.
+# Off by default; top-level rather than under the notifications: block above,
+# because it is read live on every scheduler tick rather than at startup.
+actionable_digest_enabled: false
 
 artwork:
   use_logo: true

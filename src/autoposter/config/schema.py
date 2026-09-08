@@ -968,16 +968,6 @@ def _validate_field_verbs(value: dict[str, str]) -> dict[str, str]:
                 f"operations.field_verbs[{field!r}] is {verb!r}; the verbs "
                 f"are {', '.join(sorted(FIELD_VERBS))}"
             )
-        # Row 87's STOP-and-file: ``remove`` on the list-shaped ``genres``
-        # has no defined semantics (a verb-as-source with no items
-        # supplied) -- refused here rather than accepted and silently
-        # doing nothing. lock/unlock on genres are unaffected.
-        if field == "genres" and verb == "remove":
-            raise ValueError(
-                "operations.field_verbs['genres'] cannot be 'remove': "
-                "removing a list-shaped field has no defined semantics "
-                "(row 87 STOP-and-file); 'lock' and 'unlock' are valid"
-            )
     return value
 
 
@@ -1102,7 +1092,9 @@ class OperationsConfig(BaseModel):
             "A verb to apply to a metadata field instead of writing a "
             "provider's value into it: 'lock', 'unlock' or 'remove'. Keyed by "
             "field name, e.g. 'studio'. A field not named here is written from "
-            "its provider source as usual."
+            "its provider source as usual. 'remove' on 'genres' clears EVERY "
+            "genre on the item and locks the field (roadmap row 229, Kometa's "
+            "own semantics), and this service has no verb that puts them back."
         ),
     )
     lock_apply: bool = Field(
@@ -4127,6 +4119,29 @@ class Config(BaseModel):
     notifications: NotificationsConfig = Field(
         default_factory=NotificationsConfig,
         description="Outbound run-completion webhooks: one POST to url per event.",
+    )
+    # Roadmap row 236's "newly actionable" digest: one POST when a full pass
+    # closes, carrying the registry flag codes and integer counts of the rows
+    # that pass scored. Deliberately NOT a field on NotificationsConfig even
+    # though it enables a notification: config/live.py freezes the whole
+    # `notifications` prefix because the notifier object is built once at
+    # startup, so a knob there would be reported to the operator as "restart to
+    # apply" while the emitter in fact re-reads it off the config holder on
+    # every scheduler tick -- a false promise the settings editor would make on
+    # its own. `public_url` above is the shipped precedent for a top-level
+    # setting nothing built at startup reads. Off by default because row 19's
+    # rule for `changes` applies here too: an event the shipped integration did
+    # not sign up for is opt-in, never a volume change it discovers.
+    actionable_digest_enabled: bool = Field(
+        default=False,
+        description=(
+            "Send a notification when a full pass finishes, counting the "
+            "renders that pass scored which the Action Center would flag, "
+            "grouped by flag code. Off by default. Nothing is sent when the "
+            "pass produced nothing actionable. Also requires "
+            "notifications.enabled and a configured notifications.url -- "
+            "this switch alone sends nothing."
+        ),
     )
     # Not a release number: the hash of every setting that changes what a
     # render produces, computed by config/loader.py's render_version and
