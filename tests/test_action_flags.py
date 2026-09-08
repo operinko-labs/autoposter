@@ -526,6 +526,7 @@ def test_every_flag_declares_a_label_a_description_and_a_detail(config):
         "missing", "skipped", "truncated", "render_failed", "show_fallback",
         "plex_generated", "upload_failed", "unknown_provenance", "language_miss",
         "provider_downgrade", "textless_miss", "logo_fallback", "unscored",
+        "near_miss",
     }
     for code, flag in flags.FLAGS.items():
         assert flag.code == code
@@ -542,3 +543,181 @@ def test_every_flag_declares_a_label_a_description_and_a_detail(config):
     # of its rows -- the same flood argument that keeps `unknown_provenance`
     # off by default.
     assert flags.FLAGS["skipped"].default_on is False
+    # Roadmap row 235. The population depends entirely on the configured box
+    # and floor and is unmeasured until an operator has seen the count, so it
+    # ships behind the chip rather than in the default queue.
+    assert flags.FLAGS["near_miss"].default_on is False
+
+
+# --- the near-miss fit, roadmap row 235 --------------------------------------
+
+
+async def test_near_miss_fires_at_the_floor_and_is_silent_one_point_above(session, config):
+    """The whole judgement in one test. `fit_point_size`
+    (`render/textfit.py:154-172`) clamps a raw fit BELOW the floor to the
+    floor and reports `truncated=True`, and a truncated render returns at
+    `render/pipeline.py:1471` before the write-back -- so a stored
+    `text_point_size` equal to the floor means the raw fit landed exactly
+    there, which is "fitted only by dropping to the minimum".
+
+    Both directions, because a predicate that fires on everything and one
+    that fires on nothing both pass a one-directional test.
+    """
+    at_the_floor = await _seed(session, art_kind="poster", text_point_size=83)
+    one_above = await _seed(session, art_kind="poster", text_point_size=84)
+
+    fired = await _fires_on(session, config, "near_miss")
+
+    assert at_the_floor.id in fired
+    assert one_above.id not in fired
+
+
+async def test_near_miss_is_silent_on_a_row_that_drew_no_text(session, config):
+    """C4. NULL is a logo poster, a verbatim source, a suppressed title, or a
+    row rendered before the column was captured. None of those is a near
+    miss, and `<=` against NULL is NULL rather than TRUE -- the explicit
+    `IS NOT NULL` gate says so rather than relying on it."""
+    no_text = await _seed(session, art_kind="poster", text_point_size=None)
+
+    assert no_text.id not in await _fires_on(session, config, "near_miss")
+
+
+async def test_near_miss_uses_each_art_kinds_own_floor(session, config):
+    """Two kinds, two floors. The example config puts the poster floor at 83
+    and the background floor at 95, so a background row at 95 is a near miss
+    and a poster row at 95 is twelve points clear of its own floor. A
+    predicate that used one floor for every kind passes the test above and
+    fails this one."""
+    background_at_its_floor = await _seed(session, art_kind="background", text_point_size=95)
+    background_one_above = await _seed(session, art_kind="background", text_point_size=96)
+    poster_well_clear = await _seed(session, art_kind="poster", text_point_size=95)
+
+    fired = await _fires_on(session, config, "near_miss")
+
+    assert background_at_its_floor.id in fired
+    assert background_one_above.id not in fired
+    assert poster_well_clear.id not in fired
+
+
+async def test_raising_the_floor_brings_a_row_into_the_queue_with_no_row_write(
+    session, config
+):
+    """The derived-not-stored property, for this flag -- the same shape as
+    `test_editing_the_language_order_flips_the_flag_with_no_row_write`
+    (`:313`) and `test_editing_the_provider_order_...` (`:342`). An operator
+    who raises `min_point_size` must see the queue change on the next
+    request, with no backfill and the row's own facts exactly as the render
+    left them. `<=` rather than `==` is what makes the raise retroactive.
+    """
+    render = await _seed(session, art_kind="poster", text_point_size=90)
+
+    assert render.id not in await _fires_on(session, config, "near_miss")
+
+    config.artwork.poster.text.min_point_size = 90
+
+    assert render.id in await _fires_on(session, config, "near_miss")
+
+    # Nothing was written. Re-read from the database rather than trusting the
+    # identity map: a predicate that "worked" by quietly updating the row
+    # would pass both assertions above and fail here. The id is held before
+    # the expiry -- reading it afterwards is a lazy load off an expired
+    # instance, which under asyncio is a MissingGreenlet rather than a query.
+    render_id = render.id
+    session.expire_all()
+    reread = (
+        await session.execute(select(Render).where(Render.id == render_id))
+    ).scalar_one()
+    assert reread.text_point_size == 90
+
+
+async def test_near_miss_is_off_by_default_and_names_one_integer(session, config):
+    """Off by default because the population is unmeasured: a library of long
+    titles under a tight `max_width` could put thousands of rows on the
+    floor, which is the flood argument that already keeps `skipped` and
+    `unknown_provenance` out of the default queue (`flags.py`'s own
+    `skipped` and `unknown_provenance` registry rows). Non-instant because
+    the column only exists on rows the Action Center phase's write-back has
+    filled -- what `unscored` is for.
+
+    The detail sentence names the fitted size and nothing else -- one
+    integer, fixed words, never `render.detail`, never a path (roadmap row
+    213). Never the floor either: `Flag.detail` stays
+    `Callable[[Render], str]`, unwidened, so this callable has no config to
+    read a floor from.
+    """
+    assert flags.FLAGS["near_miss"].default_on is False
+    assert flags.FLAGS["near_miss"].instant is False
+
+    render = await _seed(session, art_kind="poster", text_point_size=83)
+
+    rows = await session.execute(
+        select(Render.id)
+        .join(MediaItem, Render.item_id == MediaItem.id)
+        .where(flags.default_predicate(config))
+    )
+    assert render.id not in set(rows.scalars().all())
+
+    assert render.id in await _fires_on(session, config, "near_miss")
+    assert (
+        flags.detail_for("near_miss", render)
+        == "fitted at 83 pt, at or below this kind's floor"
+    )
+
+
+async def test_the_evidence_hash_moves_when_the_fitted_point_size_changes(session, config):
+    """C2's pin, and the reason the one-time dismissal reset is worth paying
+    for. A dismissal made while a title sat on the floor must not survive the
+    re-render that fitted it at 180 -- so `text_point_size` is part of what a
+    dismissal is a dismissal OF. Removing it again would be a visible change,
+    which is the point of pinning it here."""
+    render = await _seed(session, art_kind="poster", text_point_size=83)
+
+    async def evidence() -> str:
+        return (
+            await session.execute(
+                select(flags.evidence_expression()).where(Render.id == render.id)
+            )
+        ).scalar_one()
+
+    before = await evidence()
+    assert len(before) == 64
+
+    render.text_point_size = 180
+    await session.commit()
+
+    assert await evidence() != before
+
+
+def test_the_near_miss_flag_moves_no_render_version(config):
+    """C3's storm guard. `render_version` (`config/loader.py:71`) hashes
+    `config.artwork` WHOLESALE and `render_version_for` (`:188`) hashes
+    `artwork.<art_kind>`; both are allow-lists, so a threshold field placed
+    under either would move every stored fingerprint and re-render the whole
+    library through the provider ladder to add a chip.
+
+    Two assertions, because the hazard has two shapes. First: this flag reads
+    the operator's EXISTING `min_point_size` rather than a key of its own --
+    a future refactor that introduced `artwork.<kind>.near_miss_margin` would
+    fail here. Second: evaluating the predicate and the detail leaves every
+    fingerprint digit-for-digit identical -- a predicate that mutated the
+    config it was handed (normalising a floor, say) would move them.
+    """
+    # `Render`, `select` and `MediaItem` are already module-level imports in
+    # this file (`:15`, `:19`); re-importing `Render` here would be an F811.
+    from autoposter.config.loader import RENDER_ART_KINDS, render_version, render_version_for
+
+    for art_kind in flags.ART_KINDS:
+        assert flags._min_point_size(config, art_kind) == (
+            getattr(config.artwork, art_kind).text.min_point_size
+        )
+
+    before = render_version(config)
+    before_per_kind = {kind: render_version_for(kind, config) for kind in RENDER_ART_KINDS}
+
+    flags.predicate_for("near_miss", config)
+    flags._near_miss_detail(Render(art_kind="poster", text_point_size=83))
+
+    assert render_version(config) == before
+    assert {kind: render_version_for(kind, config) for kind in RENDER_ART_KINDS} == (
+        before_per_kind
+    )
