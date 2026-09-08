@@ -2,7 +2,7 @@
  * makes it safe.
  *
  * The rule is that an edited entry is `{...storedEntry, ...curatedEdits}` --
- * the eleven curated fields are the only keys the form may add, change or
+ * the twelve curated fields are the only keys the form may add, change or
  * delete, and every other key of the stored entry rides through untouched.
  * The seven-field listing is never a source; the stored overrides array is.
  *
@@ -234,6 +234,31 @@ describe("the definition editor", () => {
       params: { id: 10 },
     });
     expect(Object.keys(onSave.mock.calls[0][0])).not.toContain("poster_url");
+  });
+
+  it("writes a typed poster URL into the payload byte-for-byte", () => {
+    // Task 3 review I-1: the sibling case above only ever proves the DELETE
+    // direction (the entry already carries the key). Nothing typed a URL into
+    // a definition that had none and clicked Save -- so a dropped write, a
+    // wrong value, or a silent `new URL(value).href` normalisation all stayed
+    // green. This types into an entry with no `poster_url` at all.
+    const onSave = renderEditor({
+      title: "DC Extended Universe",
+      builder: "tmdb_collection",
+      params: { id: 10 },
+    });
+
+    fireEvent.change(screen.getByLabelText("Poster URL"), {
+      target: { value: "https://posters.invalid/dceu.jpg" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      title: "DC Extended Universe",
+      builder: "tmdb_collection",
+      params: { id: 10 },
+      poster_url: "https://posters.invalid/dceu.jpg",
+    });
   });
 
   it("refuses to save a poster URL the schema would reject, naming the rule", () => {
