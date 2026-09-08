@@ -281,6 +281,7 @@ async def test_a_failed_rename_is_503_and_changes_nothing(
     assert response.json()["detail"] == "could not write to the override mount"
     assert any(
         str(override) in record.getMessage()
+        and "Read-only file system" in record.getMessage()
         and record.getMessage() != "could not write to the override mount"
         for record in caplog.records
         if record.levelname == "WARNING"
