@@ -2,7 +2,7 @@
  * 138, at its literal scope.
  *
  * One rule makes this safe, and it is the whole component: the edited entry is
- * `{...storedEntry, ...curatedEdits}`. The eleven fields below are the only
+ * `{...storedEntry, ...curatedEdits}`. The twelve fields below are the only
  * keys this form may add, change or delete; every other key of the stored
  * entry — `schedule`, `filters`, `params`, `changes_webhook`, the `visible_*`
  * flags, the ten others — rides through untouched. That is why an edit here
@@ -25,7 +25,13 @@
  * the discipline `notifications.url` gets; it is not editable because a value
  * the page was never shown cannot honestly be edited, and the keep-sentinel
  * that solves that for `notifications.url` refuses to resolve inside a list by
- * design. */
+ * design.
+ *
+ * `poster_url` (roadmap row 222) is edited like any other text field, and is
+ * shown in full rather than host-only: unlike `changes_webhook` it is refused
+ * at config load if it carries userinfo, so there is no credential in it to
+ * hide, and an operator cannot check the artwork they pointed at without
+ * seeing the address. */
 import { useState } from "react";
 
 /** Which curated field a kind's form may add, change or delete.
@@ -45,7 +51,8 @@ export type DraftField =
   | "label_sync"
   | "item_label"
   | "sort_title"
-  | "collection_mode";
+  | "collection_mode"
+  | "poster_url";
 
 /** One config section this form edits. */
 export interface DefinitionKind {
@@ -56,9 +63,10 @@ export interface DefinitionKind {
   fields: readonly DraftField[];
 }
 
-/** `collections.definitions` — the nine fields row 138 shipped, unchanged.
- * Listed here rather than left implicit so the parameterisation is provably
- * behaviour-preserving for the section that already had this form. */
+/** `collections.definitions` — row 138's nine fields, plus row 222's
+ * `poster_url` as the tenth. Listed here rather than left implicit so the
+ * parameterisation is provably behaviour-preserving for the section that
+ * already had this form. */
 export const COLLECTION_DEFINITIONS: DefinitionKind = {
   descriptionPrefix: "collections.definitions[].",
   fields: [
@@ -71,6 +79,7 @@ export const COLLECTION_DEFINITIONS: DefinitionKind = {
     "item_label",
     "sort_title",
     "collection_mode",
+    "poster_url",
   ],
 };
 
@@ -103,6 +112,11 @@ const EMPTY_SCOPE_NOTE =
   "An empty scope means no library at all, which builds nothing — check a " +
   "library, or turn on every configured library.";
 
+const POSTER_URL_NOTE =
+  "A poster URL has to be an http:// or https:// address with no " +
+  "user:password@ credential in it, and under 2048 characters — the same " +
+  "rule the config file itself applies.";
+
 export interface Draft {
   title: string;
   everyLibrary: boolean;
@@ -117,6 +131,7 @@ export interface Draft {
   item_label: string[];
   sort_title: string;
   collection_mode: string;
+  poster_url: string;
 }
 
 function stringList(value: unknown): string[] {
@@ -169,6 +184,7 @@ export function draftFrom(
     item_label: stringList(entry.item_label),
     sort_title: text(entry.sort_title),
     collection_mode: text(entry.collection_mode),
+    poster_url: text(entry.poster_url),
   };
 }
 
@@ -211,6 +227,8 @@ export function entryFromDraft(
   put("item_label", itemLabels, itemLabels.length === 0);
   put("sort_title", draft.sort_title, draft.sort_title === "");
   put("collection_mode", draft.collection_mode, draft.collection_mode === "");
+  const posterUrl = draft.poster_url.trim();
+  put("poster_url", posterUrl, posterUrl === "");
 
   return next;
 }
@@ -225,6 +243,25 @@ export function hostOnly(value: string): string {
     return host === "" ? "(unreadable URL)" : host;
   } catch {
     return "(unreadable URL)";
+  }
+}
+
+/** Whether a poster URL is one `config/schema.py`'s own validator would
+ * accept: `http`/`https` only, no `user:password@` userinfo, bounded length.
+ * Mirrored here — not duplicated authority — so the operator learns before the
+ * round trip instead of from a 422; the server's copy is the one that decides.
+ * The empty string is fine: it is how the key is cleared. */
+export function posterUrlOk(value: string): boolean {
+  const trimmed = value.trim();
+  if (trimmed === "") return true;
+  if (trimmed.length > 2048) return false;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    if (url.hostname === "") return false;
+    return url.username === "" && url.password === "";
+  } catch {
+    return false;
   }
 }
 
@@ -299,7 +336,8 @@ export function DefinitionEditor({
 
   const scopeEmpty =
     !draft.everyLibrary && roster.every((name) => !draft.libraries[name]);
-  const ready = draft.title.trim() !== "" && !scopeEmpty;
+  const posterUrlBad = shows("poster_url") && !posterUrlOk(draft.poster_url);
+  const ready = draft.title.trim() !== "" && !scopeEmpty && !posterUrlBad;
 
   const webhook = text(entry.changes_webhook);
 
@@ -477,6 +515,19 @@ export function DefinitionEditor({
           />
         </div>
       )}
+
+      {shows("poster_url") && (
+        <label className="definition-field" title={hint("poster_url")}>
+          <span>Poster URL</span>
+          <input
+            type="text"
+            aria-label="Poster URL"
+            value={draft.poster_url}
+            onChange={(event) => set({ poster_url: event.target.value })}
+          />
+        </label>
+      )}
+      {posterUrlBad && <p className="definition-refusal">{POSTER_URL_NOTE}</p>}
 
       <dl className="definition-readonly">
         <dt title={hint("builder")}>Builder</dt>

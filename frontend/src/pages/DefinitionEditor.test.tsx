@@ -211,6 +211,50 @@ describe("the definition editor", () => {
 
     expect(onSave.mock.calls[0][0].labels).toEqual(["Space, Opera", "Sci-Fi"]);
   });
+
+  it("writes poster_url, and drops the key again when it is cleared", () => {
+    const onSave = renderEditor({
+      title: "DC Extended Universe",
+      builder: "tmdb_collection",
+      params: { id: 10 },
+      poster_url: "https://posters.invalid/dceu.jpg",
+    });
+
+    expect(screen.getByLabelText("Poster URL")).toHaveValue(
+      "https://posters.invalid/dceu.jpg",
+    );
+
+    fireEvent.change(screen.getByLabelText("Poster URL"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Absence is the overrides document's revert; `null` is a value.
+    expect(onSave).toHaveBeenCalledWith({
+      title: "DC Extended Universe",
+      builder: "tmdb_collection",
+      params: { id: 10 },
+    });
+    expect(Object.keys(onSave.mock.calls[0][0])).not.toContain("poster_url");
+  });
+
+  it("refuses to save a poster URL the schema would reject, naming the rule", () => {
+    renderEditor({ title: "Star Wars", builder: "tmdb_collection", params: { id: 10 } });
+
+    // `user:password@` userinfo: refused at config load so a credential never
+    // reaches the stored document, and refused here so the operator learns it
+    // before the round trip rather than from a 422.
+    fireEvent.change(screen.getByLabelText("Poster URL"), {
+      target: { value: "https://operator:hunter2@posters.invalid/dceu.jpg" },
+    });
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.getByText(/http:\/\/ or https:\/\//)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Poster URL"), {
+      target: { value: "https://posters.invalid/dceu.jpg" },
+    });
+
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
 });
 
 describe("the editor's pure halves", () => {
@@ -282,6 +326,10 @@ describe("the playlist kind", () => {
     expect(screen.queryByLabelText("Sort title")).toBeNull();
     expect(screen.queryByLabelText("Collection mode")).toBeNull();
     expect(screen.queryByLabelText("Label sync")).toBeNull();
+    // `poster_url` is in `_REFUSED_PLAYLIST_FIELDS`: this service applies no
+    // poster to a playlist, so the control would offer an edit config load is
+    // bound to reject.
+    expect(screen.queryByLabelText("Poster URL")).toBeNull();
   });
 
   it("writes builder_level, and drops the key again at its default", () => {
