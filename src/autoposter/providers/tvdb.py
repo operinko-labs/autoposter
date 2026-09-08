@@ -87,6 +87,12 @@ def _first_company(companies, categories: tuple[str, ...]) -> str | None:
     establish that TVDb orders ``production`` by studio-ness -- see the
     roadmap row filed for it. An empty ``studio`` bucket reads as "TVDb has
     no studio for this title", same as an absent key.
+
+    Roadmap row 229's sibling, row 228, closed on that as ANSWERED: an empty
+    bucket is a provenance statement and not a blank field, because
+    ``facts/gather.py:157-165`` overlays a TVDb value only when it is truthy
+    while the TMDb payload is fetched unconditionally (``gather.py:124-130``),
+    so such a movie simply keeps TMDb's studio.
     """
     if not isinstance(companies, dict):
         return None
