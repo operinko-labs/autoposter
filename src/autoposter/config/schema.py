@@ -4067,7 +4067,9 @@ class Config(BaseModel):
             "Send a notification when a full pass finishes, counting the "
             "renders that pass scored which the Action Center would flag, "
             "grouped by flag code. Off by default. Nothing is sent when the "
-            "pass produced nothing actionable."
+            "pass produced nothing actionable. Also requires "
+            "notifications.enabled and a configured notifications.url -- "
+            "this switch alone sends nothing."
         ),
     )
     # Not a release number: the hash of every setting that changes what a

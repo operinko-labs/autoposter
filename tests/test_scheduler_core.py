@@ -13,6 +13,7 @@ from autoposter.config.loader import load_config
 from autoposter.config.schema import NotificationsConfig
 from autoposter.db.models import MediaItem, Render, Run, ScheduledRun
 from autoposter.notify.dispatch import build_notifier
+from autoposter.scheduler import core
 from autoposter.scheduler.core import Job, Scheduler, claim_due
 from autoposter.scheduler.jobs import make_drift_job
 from autoposter.scheduler.run_history import FULL_PASS_NAME, open_run
@@ -1069,3 +1070,204 @@ async def test_a_scheduler_with_no_config_holder_still_closes_the_pass(session_f
         row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
     assert row.status == "ok"
     assert notifier.calls == []
+
+
+async def test_the_digest_fires_only_after_the_closers_own_commit(
+    session_factory, monkeypatch
+):
+    """task-2-review.md I1 (part 1): the post-commit ordering is not pinned
+    by any existing test. This spies on ``actionable_window_counts`` --
+    which ``_notify_newly_actionable`` awaits directly, not through the
+    fire-and-forget notification seam, so its call is genuinely sequenced
+    rather than racing a concurrently scheduled task -- and has the spy open
+    its OWN fresh session to read the ``Run`` row at the exact moment
+    counting starts. Postgres' own isolation, not timing, is what makes this
+    deterministic: a fresh session cannot see another session's uncommitted
+    write no matter how the event loop happens to schedule things.
+
+    Moving ``await self._notify_newly_actionable(windows)`` above ``await
+    session.commit()`` in ``_close_drained_runs`` must turn this red: the
+    spy's fresh session would then read the row from OUTSIDE the closer's
+    still-open transaction and see it not yet finished."""
+    run_id = await _open_backdated_pass(session_factory)
+    await _scored_render(session_factory)
+
+    real_actionable_window_counts = core.actionable_window_counts
+    observed: list[tuple[str, bool]] = []
+
+    async def _spy(session, config, started_at, finished_at):
+        async with session_factory() as probe:
+            row = (
+                await probe.execute(select(Run).where(Run.id == run_id))
+            ).scalar_one()
+        observed.append((row.status, row.finished_at is not None))
+        return await real_actionable_window_counts(session, config, started_at, finished_at)
+
+    monkeypatch.setattr(core, "actionable_window_counts", _spy)
+
+    notifier = _RecordingNotifier()
+    scheduler = Scheduler(
+        session_factory, [], poll_seconds=0.01, notifier=notifier,
+        config_holder=_digest_config(True),
+    )
+    await _run_until_closed(session_factory, scheduler, run_id)
+
+    assert observed == [("ok", True)]
+
+
+async def test_a_failing_digest_leaves_the_run_closed_and_the_scheduler_alive(
+    session_factory, monkeypatch, caplog
+):
+    """task-2-review.md I1 (part 2): the digest's own containment. Deleting
+    the inner ``try``/``except`` in ``_notify_newly_actionable`` must turn
+    this red -- an uncontained counting-query failure would propagate out of
+    ``_close_drained_runs``, past its own already-exited ``try``, into
+    ``Scheduler.run``, which has no handler of its own and would take the
+    scheduler task down with it, breaking the method's own docstring promise
+    ("bookkeeping must never take the scheduler down")."""
+    run_id = await _open_backdated_pass(session_factory)
+    await _scored_render(session_factory)
+
+    async def _boom(session, config, started_at, finished_at):
+        raise RuntimeError("counting query blew up")
+
+    monkeypatch.setattr(core, "actionable_window_counts", _boom)
+
+    notifier = _RecordingNotifier()
+    scheduler = Scheduler(
+        session_factory, [], poll_seconds=0.01, notifier=notifier,
+        config_holder=_digest_config(True),
+    )
+    with caplog.at_level(logging.WARNING, logger="autoposter.scheduler.core"):
+        await _run_until_closed(session_factory, scheduler, run_id)
+
+    async with session_factory() as session:
+        row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.status == "ok"
+    assert row.finished_at is not None
+    assert notifier.calls == []
+    warnings = [
+        record.getMessage() for record in caplog.records
+        if record.levelno == logging.WARNING
+        and record.message == "scheduler: could not count newly actionable renders"
+    ]
+    assert warnings == ["scheduler: could not count newly actionable renders"]
+
+
+async def _open_backdated_pass_hours(session_factory, hours_ago: int) -> int:
+    """An open full_pass row backdated by a whole number of hours, for the
+    two-rows-close-together test: hour-scale offsets so this host's clock
+    (which steps backwards a couple of seconds every half-minute) can never
+    reorder the two rows relative to each other or to the render stamps
+    below."""
+    async with session_factory() as session:
+        run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+        await session.execute(
+            text(
+                "UPDATE runs SET started_at = now() - make_interval(hours => :h) "
+                "WHERE id = :id"
+            ),
+            {"h": hours_ago, "id": run_id},
+        )
+        await session.commit()
+    return run_id
+
+
+async def _scored_render_minutes_ago(
+    session_factory, *, rating_key: str, minutes_ago: int, source_mode="plex_generated"
+):
+    """A render stamped as scored a fixed number of minutes in the past,
+    rather than at ``now()``, so it can be placed inside one closing row's
+    window and outside another's."""
+    async with session_factory() as session:
+        item = MediaItem(
+            rating_key=rating_key, library="Movies", kind="movie", title="Dune",
+        )
+        session.add(item)
+        await session.flush()
+        render = Render(
+            item_id=item.id, art_kind="poster", asset_path="/x.jpg",
+            status="rendered", source_mode=source_mode,
+        )
+        session.add(render)
+        await session.flush()
+        await session.execute(
+            text(
+                "UPDATE renders SET quality_scored_at = "
+                "now() - make_interval(mins => :m) WHERE id = :id"
+            ),
+            {"m": minutes_ago, "id": render.id},
+        )
+        await session.commit()
+
+
+async def test_a_drain_that_closes_two_full_passes_sends_two_digests_each_over_its_own_window(
+    session_factory,
+):
+    """task-2-review.md I2: the one behaviour the plan spells out at length
+    and the suite could not see -- a second ``POST /api/full-pass`` while the
+    first pass is still draining opens a second ``full_pass`` row, and both
+    close together on the same drain (``run_history.py``'s own docstring).
+    Plan D4: each closed row gets its own POST over its own window, so the
+    younger row's window is a sub-interval of the older's and a render can be
+    counted in both.
+
+    The older row's window starts 3 hours ago; the younger's starts 1 hour
+    ago; both end at the same close-time ``now()``. One render is scored 2
+    hours ago -- inside the older window, before the younger one even opens
+    -- and counts only for the older row. A second render is scored 10
+    minutes ago -- inside both windows -- and counts for both. That makes
+    the older digest's count (2) and the younger digest's count (1) differ,
+    so a collector or emitter mutation that collapses the two windows into
+    one (``windows[0]``-only, a stray ``break``, or appending the same pair
+    twice) changes what this test observes instead of passing unnoticed."""
+    older_id = await _open_backdated_pass_hours(session_factory, 3)
+    younger_id = await _open_backdated_pass_hours(session_factory, 1)
+    await _scored_render_minutes_ago(
+        session_factory, rating_key="rk-digest-two-older", minutes_ago=120
+    )
+    await _scored_render_minutes_ago(
+        session_factory, rating_key="rk-digest-two-both", minutes_ago=10
+    )
+
+    notifier = _RecordingNotifier()
+    scheduler = Scheduler(
+        session_factory, [], poll_seconds=0.01, notifier=notifier,
+        config_holder=_digest_config(True),
+    )
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler.run(stop))
+
+    async def _both_closed():
+        async with session_factory() as probe:
+            rows = (
+                await probe.execute(
+                    select(Run).where(Run.id.in_([older_id, younger_id]))
+                )
+            ).scalars().all()
+            return len(rows) == 2 and all(row.finished_at is not None for row in rows)
+
+    try:
+        async with asyncio.timeout(60):
+            while not await _both_closed():
+                await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    await _await_calls(notifier, 2)
+
+    assert [event for event, _, _ in notifier.calls] == [
+        "newly_actionable", "newly_actionable",
+    ]
+    counts = [detail["plex_generated"] for _, _, detail in notifier.calls]
+    assert counts == [2, 1], (
+        "the older row's window (3h) must count both renders and the "
+        "younger row's window (1h) must count only the one inside it"
+    )
+    summaries = [summary for _, summary, _ in notifier.calls]
+    assert summaries == [
+        "2 newly actionable after a full pass",
+        "1 newly actionable after a full pass",
+    ]
