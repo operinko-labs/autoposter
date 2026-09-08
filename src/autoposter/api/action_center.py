@@ -594,6 +594,215 @@ async def bulk_rerender_action(
     }
 
 
+class RebuildRow(BaseModel):
+    """One render row, keyed the way the queue keys them.
+
+    ``UNIQUE(item_id, art_kind)`` on ``renders`` is what makes this pair an
+    identity rather than a filter, which is why the row button can send it and
+    mean exactly one asset.
+    """
+
+    item_id: int
+    art_kind: str
+
+
+class RebuildBody(BaseModel):
+    """Either one named row, or the filter the bulk bar is showing.
+
+    Both forms share ONE body and one endpoint because they are one action
+    with one contract: the same predicate vocabulary, the same
+    ``scheduler.drift_batch_size`` cap, the same response, the same auth. Two
+    endpoints would be two contracts to keep in step, which is the reasoning
+    ``_reprocess_entries`` already records for the two enqueue paths.
+
+    ``row`` set means the operator pressed a row. ``row`` unset means the
+    filter fields below describe the batch, field-for-field as
+    ``BulkRerenderBody`` does.
+    """
+
+    row: RebuildRow | None = None
+    flag: str | None = None
+    library: str | None = None
+    art_kind: str | None = None
+    include_dismissed: bool = False
+    #: False is the unguarded offer -- it writes nothing and answers with the
+    #: numbers. True is what the page's two-step arm sends. A single-row press
+    #: sends True with no arm: one row is what the operator clicked, and the
+    #: action is reversible by construction.
+    apply: bool = False
+
+
+@router.post("/actions/rebuild")
+async def rebuild_action(
+    body: RebuildBody, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Rebuild the selected render(s): clear the fingerprints, queue the items.
+
+    Roadmap row 233, ruled 2026-09-08 -- **delete means REBUILD**. Nothing is
+    unlinked from the asset tree and nothing is asked of Plex. The published
+    asset is replaced only when the new render lands, and ``_publish``
+    (``render/pipeline.py``) keeps the outgoing generation as the backup copy,
+    so this action is reversible by construction. An unlink would not be: the
+    uploaded copy in Plex cannot be reclaimed, and unlinking first means the
+    next render finds no target and writes no backup at all.
+
+    Clearing the fingerprint is the substance, and it is the same move
+    ``POST /actions/backfill`` already makes for the same reason -- the
+    pipeline's unchanged-fingerprint short-circuit returns ABOVE the
+    write-back (``render/pipeline.py:1448``), so an enqueue on its own
+    re-renders nothing when the ladder picks the same artwork. That gap is
+    precisely what this action exists to serve; ``/actions/rerender`` already
+    covers the case where the inputs moved. ``badge_fingerprint`` goes with
+    it, exactly as ``/items/{id}/renders/{kind}/clear-override`` clears both.
+
+    Dismissals are NOT touched. A dismissal is scoped by the row's FACTS
+    (``flags._EVIDENCE_COLUMNS``) and ``fingerprint`` is not one of them, so
+    the hiding rule survives the clear by construction -- and that is right:
+    the day the rebuild LANDS and moves any fact, ``_dismissal_join()`` stops
+    matching and the row returns on its own. Deleting the dismissal here would
+    be a second invalidation path competing with the self-expiring one.
+
+    Always a 200 with a ``status``. ``dry run``, ``enqueued`` and ``complete``
+    are all answers to an honest question, not errors for the client to style
+    as failures. A second press on a row already cleared is a no-op that still
+    reports (``cleared: 0``) rather than a 409: the state the operator asked
+    for is the state the row is in. A press on a row that is no longer in the
+    queue answers ``complete`` with zeroes rather than
+    ``/actions/rerender``'s 404 -- one endpoint serves both forms, and the
+    bulk form must answer 200 to an empty filter.
+
+    Row 213: the body carries counts and Plex rating keys and nothing else --
+    no asset path, no host, no free text. ``status`` is one of three fixed
+    literals, and the ``events_log`` outcome is a fixed sentence with numbers.
+    """
+    config = request.app.state.config_holder.current
+    batch_size = config.scheduler.drift_batch_size
+
+    if body.row is not None:
+        # The excluded-library predicate leads here too, for `_scope`'s own
+        # stated reason: a row in an excluded library is not a narrower view
+        # of the queue, it is not in the queue at all -- nothing can
+        # re-render it, so clearing its fingerprint would strand it cleared.
+        conditions = [
+            flags.excluded_library_predicate(config),
+            Render.item_id == body.row.item_id,
+            Render.art_kind == body.row.art_kind,
+        ]
+    else:
+        conditions = [_flag_predicate(config, body.flag)]
+        conditions.extend(
+            _scope(config, body.library, body.art_kind, body.include_dismissed)
+        )
+
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        matched = (
+            await session.execute(
+                select(func.count())
+                .select_from(Render)
+                .join(MediaItem, Render.item_id == MediaItem.id)
+                .outerjoin(ActionDismissal, _dismissal_join())
+                .where(*conditions)
+            )
+        ).scalar_one()
+
+        # The ROWS, not just their item ids: this endpoint's write is on the
+        # render row, so the cap has to bound the rows it clears. Ordered by
+        # `id` so a second press over an unchanged filter takes the same batch.
+        batch = (
+            (
+                await session.execute(
+                    select(Render)
+                    .join(MediaItem, Render.item_id == MediaItem.id)
+                    .outerjoin(ActionDismissal, _dismissal_join())
+                    .where(*conditions)
+                    .order_by(Render.id)
+                    .limit(batch_size)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        if not body.apply:
+            # Returned BEFORE any assignment below: a dry run that had already
+            # NULLed the ORM objects would clear a batch's worth on whatever
+            # flush this session made next.
+            return {
+                "status": "dry run",
+                "matched": matched,
+                "selected": len(batch),
+                "cleared": 0,
+                "items": 0,
+                "enqueued": 0,
+                "rating_keys": [],
+            }
+
+        cleared = 0
+        item_ids: list[int] = []
+        for render in batch:
+            if render.fingerprint is not None or render.badge_fingerprint is not None:
+                cleared += 1
+            render.fingerprint = None
+            render.badge_fingerprint = None
+            if render.item_id not in item_ids:
+                item_ids.append(render.item_id)
+
+        items = (
+            (
+                (await session.execute(select(MediaItem).where(MediaItem.id.in_(item_ids))))
+                .scalars()
+                .all()
+            )
+            if item_ids
+            else []
+        )
+        # `enqueue_batch` rather than one awaited `enqueue()` per item, for
+        # `bulk_rerender_action`'s reason: the cap is `drift_batch_size`, and
+        # a batch that size would otherwise hold the request open for that
+        # many sequential commits. The fingerprint clears ride the same
+        # transaction -- the INSERT autoflushes them in and its commit lands
+        # them -- so a batch that fails partway clears nothing rather than
+        # clearing a batch's worth with nothing queued behind it.
+        enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
+        rating_keys = sorted(item.rating_key for item in items)
+
+        if batch:
+            # The ops rule: a write nobody can find afterwards is not an
+            # operator action, it is a mystery. Counts only, and an outcome
+            # sentence made of fixed words and numbers -- `/api/events` serves
+            # `outcome` (it never selects `payload`), so row 213 applies to it.
+            session.add(
+                EventLog(
+                    source="actions",
+                    event_type="action_center_rebuild",
+                    payload={
+                        "matched": matched,
+                        "selected": len(batch),
+                        "cleared": cleared,
+                        "items": len(item_ids),
+                        "enqueued": enqueued,
+                    },
+                    outcome=(
+                        f"action center rebuild: {len(batch)} render row(s) selected, "
+                        f"{cleared} fingerprint(s) cleared, {enqueued} job(s) queued "
+                        f"for {len(item_ids)} item(s)"
+                    ),
+                )
+            )
+        await session.commit()
+
+    return {
+        "status": "complete" if not batch else "enqueued",
+        "matched": matched,
+        "selected": len(batch),
+        "cleared": cleared,
+        "items": len(item_ids),
+        "enqueued": enqueued,
+        "rating_keys": rating_keys,
+    }
+
+
 # --- the quality backfill ----------------------------------------------------
 #
 # Roadmap 11a's "backfill job scoring the existing library", in the

@@ -45,6 +45,7 @@ from autoposter.db.base import Base
 DEEP_SUITES = frozenset(
     {
         "test_api_action_center.py",
+        "test_api_action_center_rebuild.py",
         "test_api_actions.py",
         "test_api_artwork.py",
         "test_api_artwork_modes.py",
