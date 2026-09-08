@@ -2001,9 +2001,10 @@ class CollectionDefinition(BaseModel):
     )
     # Row 30: take the summary from TMDB instead of writing one by hand -- the
     # id of the TMDB *collection* whose overview this collection borrows.
-    # ``summary`` above still wins when both are set: a summary written out in
-    # the config is an explicit choice, and a pull that silently overrode it
-    # would be a setting that reads as applied and is not.
+    # ``summary`` above and a builder's own derived summary (charts, awards,
+    # tracearr, the person builders) both still win when set, matching
+    # Kometa's own precedence -- on such a definition ``tmdb_summary`` is
+    # accepted but does nothing, since the pull never runs.
     tmdb_summary: int | None = Field(
         default=None, gt=0,
         description="The id of the TMDB collection whose overview this collection's summary is pulled from.",
