@@ -381,14 +381,14 @@ class CreditsFamilyBuilder:
             # is not a report.
             return [
                 "%r built nothing: %d %s(s) have %d appearance(s) or more in "
-                "%r, but %r's %s tag vocabulary knows none of them, so none "
-                "can be searched for. A Plex library scan is what reconciles "
-                "the credits cache with the tags Plex will answer on"
+                "%r, but the %s tag vocabulary of %r knows none of them, so "
+                "none can be searched for. A Plex library scan is what "
+                "reconciles the credits cache with the tags Plex will answer on"
                 % (definition.title, len(eligible), params.type, params.depth,
-                   ctx.library, ctx.library, params.type)
+                   ctx.library, params.type, ctx.library)
             ]
         capped = searchable[: params.limit]
-        if len(eligible) > len(capped):
+        if len(searchable) > len(capped):
             actions.append(
                 "%r: %d %s(s) meet depth %d; built the %d most-credited "
                 "(`limit`)"
@@ -397,9 +397,9 @@ class CreditsFamilyBuilder:
             )
         if len(searchable) < len(eligible):
             actions.append(
-                "%r: %d of the %d %s(s) that met depth %d are not in %r's tag "
-                "vocabulary and were dropped before `limit:`, so the cap was "
-                "filled from the next-most-credited people instead"
+                "%r: %d of the %d %s(s) that met depth %d are not in the tag "
+                "vocabulary of %r and were dropped before `limit:`, so the cap "
+                "was filled from the next-most-credited people instead"
                 % (definition.title, len(eligible) - len(searchable),
                    len(eligible), params.type, params.depth, ctx.library)
             )

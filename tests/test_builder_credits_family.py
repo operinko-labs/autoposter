@@ -806,3 +806,32 @@ async def test_an_unreadable_vocabulary_falls_back_to_the_in_loop_drop_paths(ses
         "(NotFound), so its values cannot be resolved",
     ], actions
     assert generated_titles(ctx.run_cache, definition) == {"Ann", "Bob"}
+
+
+async def test_the_limit_sentence_does_not_fire_when_the_vocabulary_narrowed_alone(session):
+    """Row 224 review, Important 1. ``capped`` is ``searchable[: limit]``, not
+    ``eligible[: limit]``, so the ``(`limit`)`` sentence must fire only when
+    ``limit`` itself did the cutting -- ``len(searchable) > len(capped)`` --
+    not merely because the vocabulary filter above it already shortened the
+    family below ``limit``.
+
+    Two eligible, one searchable, ``limit`` left at its default 25: the
+    vocabulary sentence is the only narrowing that happened, and it is the
+    only one reported. An operator must not be pointed at raising `limit:`
+    when `limit` was never what dropped anybody.
+    """
+    await _seed(session, {"Ann": 3, "Zed": 3})
+    section = FakeSection(people=("Ann",))
+    definition = _definition(params={"type": "actor", "depth": 1})
+    ctx = _ctx(session, section, definition)
+
+    actions = await REGISTRY["credits_family"].apply(ctx)
+
+    assert list(section._existing) == ["Ann"]
+    assert any(
+        "1 of the 2 actor(s) that met depth 1" in one and "vocabulary" in one
+        for one in actions
+    ), actions
+    assert not any(
+        "most-credited" in one and "(`limit`)" in one for one in actions
+    ), actions
