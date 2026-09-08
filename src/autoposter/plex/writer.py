@@ -83,14 +83,19 @@ _PLEX_FIELD_NAMES: dict[str, tuple[str, str]] = {
     "tagline": ("tagline", "tagline"),
 }
 
-# Roadmap row 87's ``remove`` ships for these four and no others. A scalar's
-# "remove" is unambiguous -- clear the value. ``genres`` is list-shaped and the
-# row records no semantics for a verb used AS THE SOURCE with no items
-# supplied, so it is STOP-and-filed rather than guessed. The three rating
-# fields are excluded for a different reason: Plex has no empty rating, and
-# writing "" into one is a shape this project has never sent.
+# Roadmap row 87's ``remove`` ships for these five and no others. A scalar's
+# "remove" is unambiguous -- clear the value. ``genres`` joined the set when
+# roadmap row 229 closed on Kometa's own transcription (kometa.wiki
+# ``config/operations``, read 2026-09-08): ``remove`` = "Remove all genres and
+# lock the genre field". Its arm in ``verb_edits`` is genre-shaped rather than
+# scalar-shaped -- a tag list is cleared through ``_genre_plan`` and the
+# ``removeGenre`` mixin, never through a ``genre.value = ""`` key Plex has no
+# meaning for. The three rating fields are excluded for a different reason:
+# Plex has no empty rating, and writing "" into one is a shape this project has
+# never sent.
 _REMOVABLE_FIELDS = frozenset(
-    {"content_rating", "studio", "originally_available", "original_title"}
+    {"content_rating", "studio", "originally_available", "original_title",
+     "genres"}
 )
 
 # ``reset`` is absent on purpose -- see the STOP-and-file row. It would mean
@@ -220,7 +225,31 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
             if _locked_in_plex(item, plex_field) is not False:
                 edits[f"{plex_field}.locked"] = 0
         elif verb == "remove":
-            if getattr(item, attribute, None) not in (None, ""):
+            if field == "genres":
+                # Roadmap row 229, Kometa's transcribed semantics: clear every
+                # genre and lock the field. The removal carries its own lock --
+                # ``_apply_genre_edits`` sends ``removeGenre(removals,
+                # locked=True)`` and plexapi's ``_tagHelper`` puts
+                # ``genre.locked=1`` on that same batched request -- so no lock
+                # key is emitted beside it, exactly as row 246 established for
+                # the provider and override genre paths.
+                #
+                # An item that already holds no genres emits NO mixin call:
+                # ``removeGenre([], locked=True)`` would send
+                # ``genre[].tag.tag-=''``, a removal directive for the empty tag
+                # name (row 246, read against the installed plexapi). The lock
+                # such an item still needs rides the SINGULAR ``genre.locked``
+                # key -- ``plex_field`` here, ``_PLEX_FIELD_NAMES``' one
+                # asymmetric entry -- which is the key that survives
+                # ``apply_facts``' plural ``"genres."`` filter. Routing through
+                # ``_genre_plan`` is what makes the empty call structurally
+                # impossible: it returns ``{}`` when there is nothing to change.
+                current_genres = _current_genres(item)
+                if current_genres:
+                    edits.update(_genre_plan(current_genres, []))
+                else:
+                    _ensure_locked(edits, item, plex_field)
+            elif getattr(item, attribute, None) not in (None, ""):
                 edits[f"{plex_field}.value"] = ""
                 # Locked after clearing: an unlocked empty field is refilled by
                 # Plex's own agent on its next refresh, which would make this

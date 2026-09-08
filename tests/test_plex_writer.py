@@ -294,6 +294,48 @@ def test_genre_payload_has_no_conflicting_directives_against_real_plexapi():
     assert isinstance(item._edits, dict)
 
 
+def test_a_full_clear_sends_one_removal_directive_and_the_lock_against_real_plexapi():
+    """Roadmap row 229's wire payload, against plexapi's *real*
+    ``Movie``/``GenreMixin`` -- no server connection is made or needed, since
+    ``batchEdits()`` accumulates every subsequent edit into ``item._edits``
+    without network I/O and only ``saveEdits()`` would perform a request, which
+    this test never calls.
+
+    What it pins: clearing every genre is ONE indexed removal directive
+    carrying every held tag, plus ``genre.locked=1`` that plexapi's own
+    ``_tagHelper`` supplies on the same request -- which is why ``verb_edits``
+    emits no lock key of its own for this case. And no add directive of any
+    kind: ``_apply_genre_edits`` is handed an empty ``additions`` list and
+    makes no ``addGenre`` call, because ``addGenre([], locked=True)`` would
+    re-emit the whole held list as explicit adds (row 246, read against the
+    installed plexapi).
+    """
+    import xml.etree.ElementTree as ET
+
+    from plexapi.video import Movie
+
+    from autoposter.plex.writer import _apply_genre_edits, _genre_plan
+
+    xml = (
+        '<Video ratingKey="1" key="/library/metadata/1" type="movie" title="T">'
+        '<Genre tag="Horror" /><Genre tag="Comedy" /></Video>'
+    )
+    item = Movie(server=None, data=ET.fromstring(xml))
+
+    plan = _genre_plan([g.tag for g in item.genres], [])
+    assert plan == {"genres.removed": ["Horror", "Comedy"]}
+
+    item.batchEdits()
+    _apply_genre_edits(
+        item, additions=plan.get("genres.added", []), removals=plan["genres.removed"],
+    )
+
+    edits = item._edits
+    assert set(edits["genre[].tag.tag-"].split(",")) == {"Horror", "Comedy"}
+    assert edits["genre.locked"] == 1
+    assert not [k for k in edits if k.startswith("genre[") and k.endswith("].tag.tag")]
+
+
 async def test_apply_restores_item_genres_snapshot_after_addgenre():
     """The snapshot of item.genres must be restored after addGenre completes,
     so the caller's object is not left in the temporary state used to avoid
