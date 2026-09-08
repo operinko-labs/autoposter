@@ -79,7 +79,12 @@ def test_render_version_hashes_exactly_six_named_inputs(config_factory):
     # A widened payload -- a 7th key added alongside the six above -- would
     # still satisfy every assert above, since none of them is removed by an
     # addition. The literal pin is what a widening cannot survive.
-    assert render_version(config) == "386ea7cf4844f52e"
+    # Re-measured 2026-09-08 for roadmap row 219, which removed
+    # `ArtKindConfig.min_width`/`min_height`. `artwork` is dumped WHOLESALE
+    # into this payload, so a field removed from an art kind's model moves this
+    # value by design; the six-key literal above is unchanged, which is what
+    # this test is actually about.
+    assert render_version(config) == "01b443ab8dfcfbd2"
     # And the value is stable across two calls on one config, so the
     # assertions above are about the thing the rest of this row leans on.
     assert render_version(config) == render_version(config)
@@ -104,12 +109,16 @@ def test_no_per_kind_version_reads_anything_outside_artwork_and_the_roots(
 
     # Pinned literally, not just shape-checked: a widened per-kind payload
     # would still be a 16-char string, so only the exact value catches it.
+    # Re-measured 2026-09-08 for roadmap row 219: all four moved together
+    # because the removed fields lived on `ArtKindConfig` itself, which every
+    # art kind is or subclasses. That is the row's accepted full-library
+    # re-render, not a widening of the payload.
     versions = {kind: render_version_for(kind, config) for kind in RENDER_ART_KINDS}
     assert versions == {
-        "poster": "4ac64b5874ce0ff3",
-        "background": "9ae9ab3b95ae68ec",
-        "title_card": "31f00cfe0ef31fba",
-        "season_poster": "14f86f656d6fa935",
+        "poster": "23fb7b54d7766a00",
+        "background": "8221f72c1d0467e9",
+        "title_card": "84750d93008ca70b",
+        "season_poster": "dfb71d9935c64fb8",
     }
 
 

@@ -473,21 +473,22 @@ def test_render_version_for_is_stable_across_two_loads_of_identical_content(tmp_
 # The four values the shipped example config hashes to, captured from the tree
 # in the test container. Linux path spelling: `_shared_render_inputs` dumps the
 # roots through `str(Path)`, which is what the pod and CI compute.
+#
+# Re-measured 2026-09-08 for roadmap row 219. All FOUR moved together, which is
+# the one shape this pin is meant to catch -- and here it is correct: row 219
+# removed `min_width`/`min_height` from `ArtKindConfig`, the model every art
+# kind is or subclasses, so the field came out of all four payloads at once.
+# The re-render that follows moves every one of the ~16,000 fingerprints, each of which
+# re-composites and re-uploads; the ~3.5 h figure was measured on a pass with zero composites,
+# so the real pass is bounded by ImageMagick and ~3.5 h is a floor, not an estimate. That
+# re-render is the accepted cost of that row, stated in its PR body and proved as a MOVE by
+# tests/test_orphan_posterizarr_keys.py rather than left to this comment. The
+# values below are the post-removal measurement.
 EXAMPLE_PER_KIND_VERSIONS = {
-    "poster": "4ac64b5874ce0ff3",
-    # Moved THREE times, on purpose, by roadmap row 78: artwork.season_poster
-    # gained its show_title block, render_version_for then gained a second,
-    # unconditional projection of artwork.title_card.season_name_overrides
-    # into this kind's payload (row 43's gap, co-delivered), and the task-2
-    # fix round's I2 correction shipped show_title.text_offset at "+120"
-    # instead of "+300" so it visibly differs from the season block's own
-    # offset (its own value is ignored by the stacking rule either way). The
-    # other three did not move -- that is the partition doing its job, and
-    # tests/test_season_show_title.py pins them against the values measured
-    # before the key existed.
-    "season_poster": "14f86f656d6fa935",
-    "background": "9ae9ab3b95ae68ec",
-    "title_card": "31f00cfe0ef31fba",
+    "poster": "23fb7b54d7766a00",
+    "season_poster": "dfb71d9935c64fb8",
+    "background": "8221f72c1d0467e9",
+    "title_card": "84750d93008ca70b",
 }
 
 

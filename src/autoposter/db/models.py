@@ -187,10 +187,13 @@ class Render(Base):
         Boolean, default=False, server_default=text("false")
     )
     # The base image's pixel dimensions as the provider reported them.
-    # CAPTURED, ENFORCED NOWHERE: artwork.min_width/min_height stay inert and
-    # the resolution floor stays roadmap row 219's open decision. Capturing
-    # them now is what makes 219 a small later change instead of a re-backfill
-    # of the whole library -- which is 11a's own named risk.
+    # CAPTURED, ENFORCED NOWHERE, and no longer waiting on a decision: roadmap
+    # row 219 CLOSED on 2026-09-08 by REMOVING artwork.min_width/min_height
+    # rather than wiring them, so there is no inert setting left to name here.
+    # The columns stay because the Action Center reads them and because a
+    # future resolution floor, if one is ever wanted, is then a small change
+    # against data already on file instead of a re-backfill of the whole
+    # library -- which is 11a's own named risk.
     base_width: Mapped[int | None] = mapped_column(SmallInteger)
     base_height: Mapped[int | None] = mapped_column(SmallInteger)
     # The point size the primary title block finally fitted at, from

@@ -453,20 +453,6 @@ class ArtKindConfig(BaseModel):
             "frame is drawn back on. Only used when add_border is on."
         ),
     )
-    min_width: int = Field(
-        default=0,
-        description=(
-            "Accepted for Posterizarr-config compatibility (the minimum-width "
-            "gate); not currently enforced by any code path."
-        ),
-    )
-    min_height: int = Field(
-        default=0,
-        description=(
-            "Accepted for Posterizarr-config compatibility (the minimum-height "
-            "gate); not currently enforced by any code path."
-        ),
-    )
     text: TextStyle | None = Field(
         default=None,
         description=(
@@ -590,11 +576,11 @@ class CollectionPosterTitleConfig(BaseModel):
     would strand roughly 16,000 of them at its own default value.
 
     **A sibling of ``ArtKindConfig``, not a subclass.** ``language_order``,
-    ``min_width``/``min_height``, ``skip_local_text_add``,
-    ``disable_online_asset_fetch`` and ``skip_add_text_when_with_text`` mean
-    nothing for a collection poster, and this model is walked by
-    ``config/descriptions.py`` into the map the Settings page renders -- so
-    subclassing would advertise six settings that do nothing.
+    ``skip_local_text_add``, ``disable_online_asset_fetch`` and
+    ``skip_add_text_when_with_text`` mean nothing for a collection poster, and
+    this model is walked by ``config/descriptions.py`` into the map the
+    Settings page renders -- so subclassing would advertise four settings that
+    do nothing.
 
     **Styled after Posterizarr's parts, not byte-matched to them.** The
     defaults are the operator's own Posterizarr values
@@ -915,20 +901,6 @@ class ProvidersConfig(BaseModel):
             "The providers tried, in order, when selecting artwork; the first "
             "to return usable art for the requested language wins. A name with "
             "no implementation is skipped."
-        ),
-    )
-    favourite: str = Field(
-        default="TMDB",
-        description=(
-            "Accepted for Posterizarr-config compatibility (the "
-            "preferred-provider key); not currently read by any code path."
-        ),
-    )
-    tmdb_vote_sorting: str = Field(
-        default="vote_average",
-        description=(
-            "Accepted for Posterizarr-config compatibility (Posterizarr's TMDb "
-            "vote-sorting key); not currently read by any code path."
         ),
     )
     cache_ttl_seconds: int = Field(

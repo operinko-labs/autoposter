@@ -7,13 +7,21 @@ or over a config hash. So NOTHING here carries ``@pytest.mark.imagemagick`` --
 CI's main pytest run deselects that marker on a runner with no binary, and a
 marked non-compositing test would fail there and nowhere else (#149).
 
-The three version literals below were measured on ``origin/main`` BEFORE the
-``artwork.season_poster.show_title`` key existed, from the shipped example
-config. They are the storm proof: a new key under one art kind's subsection
-must move THAT kind's render version and no other's. If one of them moves, the
-partition in ``config/loader.py::render_version_for`` has stopped confining an
-edit and the whole point of roadmap row 111 has been lost -- do not re-measure
-and paste a new value.
+The three version literals below are the storm proof for this row: a new key
+under one art kind's subsection must move THAT kind's render version and no
+other's. If one of them moves for a key that lives under
+``artwork.season_poster``, the partition in
+``config/loader.py::render_version_for`` has stopped confining an edit and the
+whole point of roadmap row 111 has been lost -- do not re-measure and paste a
+new value for THAT.
+
+They were re-measured exactly once, on 2026-09-08, for roadmap row 219, which
+removed ``min_width``/``min_height`` from ``ArtKindConfig`` -- the model every
+art kind is or subclasses. A field removed from the SHARED BASE moves all four
+kinds by construction and says nothing about the partition, which is why that
+re-measurement was legitimate and why the constant is no longer named for
+row 78. ``PRE_ROW_78_WHOLESALE`` below is untouched: it is still a genuine
+pre-row-78 value and the assertion that reads it is still an inequality.
 """
 from pathlib import Path
 
@@ -33,18 +41,22 @@ from autoposter.render.textfit import FitResult
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
-# Measured on origin/main before this row's key existed. See the module
-# docstring.
-PRE_ROW_78_VERSIONS = {
-    "poster": "4ac64b5874ce0ff3",
-    "background": "9ae9ab3b95ae68ec",
-    "title_card": "31f00cfe0ef31fba",
+# The three kinds `artwork.season_poster.show_title` must not reach. Values
+# re-measured 2026-09-08 for roadmap row 219 (see the module docstring); the
+# constant is no longer named for row 78 because these are no longer that
+# row's pre-change values.
+THE_OTHER_THREE_VERSIONS = {
+    "poster": "23fb7b54d7766a00",
+    "background": "8221f72c1d0467e9",
+    "title_card": "84750d93008ca70b",
 }
 
-# The WHOLESALE hash -- config.version -- as it stood before the key existed,
-# from the same measurement. Pinned so the disclosure is proven rather than
-# asserted: the claim the PR body and deploy/README.md make is that the SCHEMA
-# ADDITION moved this value, and only a pre-change literal can show that.
+# The WHOLESALE hash -- config.version -- as it stood before row 78's
+# show_title key existed. Untouched by the 2026-09-08 row-219 re-measurement
+# above: it is a genuine pre-row-78 value from a different, earlier
+# measurement. Pinned so the disclosure is proven rather than asserted: the
+# claim the PR body and deploy/README.md make is that the SCHEMA ADDITION
+# moved this value, and only a pre-change literal can show that.
 PRE_ROW_78_WHOLESALE = "d66ab041c795004a"
 
 
@@ -129,16 +141,18 @@ def test_the_example_config_ships_the_upstream_values_with_the_gate_off():
 
 
 def test_only_the_season_posters_version_moves(config):
-    """The storm proof (facts C2), against literals measured before the key
-    existed.
+    """The storm proof (facts C2), against the other three kinds' render
+    versions.
 
     Roadmap row 111 confines a render version to the art kind whose settings
     the edit touched. ``artwork.season_poster.show_title`` is a member of
     exactly one kind's payload, so exactly one kind's version may move. The
-    three digests below are what ``origin/main`` produced for the shipped
-    example config before this row; they must still be produced now.
+    three digests below were re-measured on 2026-09-08, after roadmap row 219
+    removed ``min_width``/``min_height`` from ``ArtKindConfig`` (see the
+    module docstring); this test still proves that only the season-posters
+    version moves when a season-only key changes.
     """
-    for art_kind, digest in PRE_ROW_78_VERSIONS.items():
+    for art_kind, digest in THE_OTHER_THREE_VERSIONS.items():
         assert render_version_for(art_kind, config) == digest, (
             f"{art_kind}'s render version moved for a key that is not in its "
             "payload -- row 111's partition has stopped confining an edit"
@@ -178,14 +192,16 @@ def test_the_wholesale_render_version_moves_and_that_is_expected(config):
         "claim the PR body and deploy/README.md make, and it is the half a "
         "value-change assertion cannot prove"
     )
-    # The post-row-78 wholesale hash, pinned absolutely rather than merely
-    # proven to differ: measured on this branch with the show_title block
-    # added and the gate off, exactly as the shipped example ships it.
-    # Moved a SECOND time (e987fc3d42d6bac9 -> 386ea7cf4844f52e) by the task-2
-    # fix round's I2 correction: the example's show_title.text_offset changed
-    # from "+300" to "+120" so the seam test can tell which block's offset
-    # the stacking rule actually reads (its own value is otherwise ignored).
-    assert render_version(config) == "386ea7cf4844f52e"
+    # The wholesale hash, pinned absolutely rather than merely proven to
+    # differ. It has now moved three times: by row 78's show_title block, by
+    # the task-2 fix round's I2 correction (e987fc3d42d6bac9 ->
+    # 386ea7cf4844f52e, the example's show_title.text_offset changing from
+    # "+300" to "+120" so the seam test can tell which block's offset the
+    # stacking rule actually reads), and on 2026-09-08 by roadmap row 219's
+    # removal of ArtKindConfig.min_width/min_height, which took a field out of
+    # the wholesale `artwork` dump. The value below is the post-row-219
+    # measurement.
+    assert render_version(config) == "01b443ab8dfcfbd2"
 
     off = render_version(config)
     on = load_config(EXAMPLE)
