@@ -286,13 +286,25 @@ class ImdbSearchParams(BaseModel):
         filtered in the wrong region is an HTTP 200 with ``total: 0``, and an
         empty result one layer down means "remove every member".
         """
-        if value is None or isinstance(value, str) or not hasattr(value, "__iter__"):
+        if value is None or not hasattr(value, "__iter__"):
             return value
+        # A mapping (or a bare string) is iterable too: unguarded, the loop
+        # below would walk a mapping's KEYS -- or a string's characters -- as
+        # if they were list entries, producing nonsense certificates rather
+        # than refusing the wrong shape.
+        if isinstance(value, (Mapping, str, bytes)):
+            raise ValueError(_CONTENT_RATING_SHAPE)
         certificates = []
         for entry in value:
             if isinstance(entry, str):
                 entry = {"rating": entry}
             if not isinstance(entry, Mapping):
+                raise ValueError(_CONTENT_RATING_SHAPE)
+            # An unknown key inside an entry (a typo'd ``region:``, say) would
+            # otherwise be dropped silently and the entry would fall back to
+            # the US region -- exactly the wrong-region emptiness
+            # ``_CONTENT_RATING_REGION`` exists to refuse.
+            if not set(entry) <= {"rating", "region"}:
                 raise ValueError(_CONTENT_RATING_SHAPE)
             rating = entry.get("rating")
             if not isinstance(rating, str) or not rating.strip():

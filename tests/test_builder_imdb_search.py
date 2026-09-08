@@ -766,6 +766,22 @@ async def test_a_content_rating_region_other_than_us_is_sent_as_written():
         ([{"region": "GB"}], "need a `rating:` key", "GB"),
         ([{"rating": "Qq99", "region": "Zzz"}], "2-letter country code", "Zzz"),
         ([{"rating": "", "region": "GB"}], "need a `rating:` key", "GB"),
+        (
+            {"region": "GB", "rating": "TV-MA"},
+            "either a rating on its own",
+            "TV-MA",
+        ),
+        (
+            {"region": "GB", "rating": "TV-MA"},
+            "either a rating on its own",
+            "GB",
+        ),
+        ("TV-MA", "either a rating on its own", "TV-MA"),
+        (
+            [{"reigon": "GB", "rating": "15"}],
+            "either a rating on its own",
+            "reigon",
+        ),
     ],
 )
 async def test_a_malformed_content_rating_is_refused_without_echoing_it(
@@ -786,3 +802,13 @@ async def test_content_rating_alone_satisfies_the_one_constraint_guard():
         result = await _build(http, content_rating=["PG-13"])
 
     assert result.ids
+
+
+async def test_a_padded_rating_is_stripped_before_it_reaches_the_wire():
+    """Mutation gap: dropping the ``.strip()`` (while keeping the emptiness
+    check) would ship whitespace to IMDb and return zero titles -- so this
+    asserts the exact byte on the wire rather than just that the field loads."""
+    assert await _constraints(content_rating=[" PG-13 "]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_CERTIFICATE,
+    }
