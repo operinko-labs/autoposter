@@ -56,6 +56,7 @@ from autoposter.collections.builders.base import (
     BuilderResult,
     require_library_type,
 )
+from autoposter.collections.builders.imdb_award import EVENTS
 from autoposter.collections.imdb_graphql import fetch_search
 
 __all__ = [
@@ -195,7 +196,34 @@ _LIST_CONSTRAINTS: tuple[tuple[str, str, str, str | None], ...] = (
     ("keyword", "keywordConstraint", "allKeywords", None),
     ("keyword_any", "keywordConstraint", "anyKeywords", None),
     ("keyword_not", "keywordConstraint", "excludeKeywords", None),
+    ("cast", "titleCreditsConstraint", "allCredits", "nameId"),
+    ("cast_any", "titleCreditsConstraint", "anyCredits", "nameId"),
+    ("cast_not", "titleCreditsConstraint", "excludeCredits", "nameId"),
+    # ``list``'s three fields do NOT follow the all*/any*/exclude* spelling the
+    # other four families use -- they are ``inAllLists``, ``inAnyList`` (note
+    # the singular) and ``notInAnyList`` (the document's §2 row 19).
+    ("list", "listConstraint", "inAllLists", None),
+    ("list_any", "listConstraint", "inAnyList", None),
+    ("list_not", "listConstraint", "notInAnyList", None),
 )
+
+_NAME_ID = re.compile(r"^nm\d+\Z")
+_EVENT_ID = re.compile(r"^ev\d+\Z")
+_LIST_ID = re.compile(r"^ls\d+\Z")
+
+# The ceremony vocabulary, DERIVED from the award builder's own registry rather
+# than re-spelled here: ``imdb_award.EVENTS`` is where the sixteen ceremonies
+# and their event ids already live, and ``EVENTS["oscars"].event_id`` is the
+# ``ev0000003`` that ``collections/awards.py`` has always carried. A seventeenth
+# ceremony added there is writable here the same day, with no edit.
+#
+# Kometa's own aliases are its own: four of the ones the document names
+# (``emmy``, ``bafta``, ``cannes``, ``razzie``) already match a key here
+# exactly, and its ``oscar`` is this repository's ``oscars``. Kometa's two
+# category-carrying aliases (``oscar_picture``, ``oscar_director``) are NOT
+# ported -- their ``searchAwardCategoryId`` is transcription-only, and
+# ``imdb_award`` already builds both collections deliberately.
+_EVENT_IDS: dict[str, str] = {key: event.event_id for key, event in EVENTS.items()}
 
 
 class ImdbSearchParams(BaseModel):
@@ -259,7 +287,24 @@ class ImdbSearchParams(BaseModel):
     keyword: _Strings | None = Field(default=None, min_length=1)
     keyword_any: _Strings | None = Field(default=None, min_length=1)
     keyword_not: _Strings | None = Field(default=None, min_length=1)
+    # Row 263 (``cast``/``.any``/``.not``, the document's §2 row 17). IMDb
+    # person ids: this root has no name lookup, and neither does Kometa.
+    cast: _Strings | None = Field(default=None, min_length=1)
+    cast_any: _Strings | None = Field(default=None, min_length=1)
+    cast_not: _Strings | None = Field(default=None, min_length=1)
+    # Row 264 (``event``/``.winning``, §2 row 25). The two keys MERGE into one
+    # ``allEventNominations`` list, which is Kometa's own behaviour and the only
+    # thing GraphQL will accept -- one constraint object, one field.
+    event: _Strings | None = Field(default=None, min_length=1)
+    event_winning: _Strings | None = Field(default=None, min_length=1)
     sort: str = "popularity.desc"
+    # Row 265 (``list``/``.any``/``.not``, §2 row 19). ``list`` shadows the
+    # builtin inside this class body, which is why every annotation here reads
+    # ``_Strings``; declared last as well, so the shadowing has nothing left to
+    # break even if the alias is ever removed.
+    list: _Strings | None = Field(default=None, min_length=1)
+    list_any: _Strings | None = Field(default=None, min_length=1)
+    list_not: _Strings | None = Field(default=None, min_length=1)
 
     @field_validator("type")
     @classmethod
@@ -457,6 +502,96 @@ class ImdbSearchParams(BaseModel):
             keywords.append(folded)
         return keywords
 
+    @field_validator("cast", "cast_any", "cast_not", mode="before")
+    @classmethod
+    def _must_be_imdb_name_ids(cls, value, info: ValidationInfo):
+        """``mode="before"``, matching the country/language/keyword families: a
+        bare string is iterable too, and a non-``str`` element (YAML 1.1 makes
+        ``NO`` into ``False``) must be refused rather than handed to
+        ``re.match``/``.strip()``, which raise a raw exception instead of a
+        clean ``ValidationError``."""
+        if value is None or not hasattr(value, "__iter__"):
+            return value
+        if isinstance(value, (Mapping, str, bytes)):
+            raise ValueError(
+                f"`{info.field_name}` takes IMDb person ids as a list, not a "
+                "single value typed alone. This search root has no name "
+                "lookup, and Kometa's operators write ids here too, so a "
+                "person's name cannot be accepted."
+            )
+        not_a_name_id = (
+            f"`{info.field_name}` takes IMDb person ids -- `nm` followed by "
+            "digits, the id in the person's own URL -- and one of the values "
+            "written here is not one. This search root has no name lookup, "
+            "and Kometa's operators write ids here too, so a person's name "
+            "cannot be accepted."
+        )
+        name_ids = []
+        for name_id in value:
+            if not isinstance(name_id, str):
+                raise ValueError(not_a_name_id)
+            stripped = name_id.strip()
+            if not _NAME_ID.match(stripped):
+                raise ValueError(not_a_name_id)
+            name_ids.append(stripped)
+        return name_ids
+
+    @field_validator("event", "event_winning", mode="before")
+    @classmethod
+    def _must_be_a_known_ceremony_or_an_event_id(cls, value, info: ValidationInfo):
+        """``mode="before"``, for the same reason as ``_must_be_imdb_name_ids``."""
+        if value is None or not hasattr(value, "__iter__"):
+            return value
+        if isinstance(value, (Mapping, str, bytes)):
+            raise ValueError(
+                f"`{info.field_name}` takes an IMDb event id or a known "
+                "ceremony name as a list, not a single value typed alone."
+            )
+        unknown_ceremony = (
+            f"`{info.field_name}` takes an IMDb event id -- `ev` followed by "
+            "digits -- or one of the ceremonies this service already builds "
+            "award collections for: " + ", ".join(sorted(_EVENT_IDS))
+        )
+        events = []
+        for event in value:
+            if not isinstance(event, str):
+                raise ValueError(unknown_ceremony)
+            stripped = event.strip()
+            if _EVENT_ID.match(stripped):
+                events.append(stripped)
+                continue
+            event_id = _EVENT_IDS.get(stripped.casefold())
+            if event_id is None:
+                raise ValueError(unknown_ceremony)
+            events.append(event_id)
+        return events
+
+    @field_validator("list", "list_any", "list_not", mode="before")
+    @classmethod
+    def _must_be_imdb_list_ids(cls, value, info: ValidationInfo):
+        """``mode="before"``, for the same reason as ``_must_be_imdb_name_ids``."""
+        if value is None or not hasattr(value, "__iter__"):
+            return value
+        if isinstance(value, (Mapping, str, bytes)):
+            raise ValueError(
+                f"`{info.field_name}` takes IMDb list ids as a list, not a "
+                "single value typed alone."
+            )
+        not_a_list_id = (
+            f"`{info.field_name}` takes IMDb list ids -- `ls` followed by "
+            "digits, the id in the list's own URL -- and one of the values "
+            "written here is not one."
+        )
+        list_ids = []
+        for list_id in value:
+            if not isinstance(list_id, str):
+                raise ValueError(not_a_list_id)
+            stripped = list_id.strip()
+            if not _LIST_ID.match(stripped):
+                raise ValueError(not_a_list_id)
+            list_ids.append(stripped)
+        return list_ids
+
     @model_validator(mode="after")
     def _windows_must_not_be_inside_out(self) -> "ImdbSearchParams":
         if (
@@ -578,6 +713,20 @@ def search_constraints(
         constraints.setdefault(obj, {})[field_name] = (
             [{wrap: value} for value in values] if wrap else [*values]
         )
+    # ``event`` and ``event.winning`` are ONE field of one constraint object, so
+    # they merge rather than each writing their own -- Kometa's own behaviour
+    # (``imdb.py:667-676``), and the same event may legitimately appear twice
+    # with different filters.
+    nominations = []
+    if params.event is not None:
+        nominations += [{"eventId": event_id} for event_id in params.event]
+    if params.event_winning is not None:
+        nominations += [
+            {"eventId": event_id, "winnerFilter": "WINNER_ONLY"}
+            for event_id in params.event_winning
+        ]
+    if nominations:
+        constraints["awardConstraint"] = {"allEventNominations": nominations}
     return constraints
 
 

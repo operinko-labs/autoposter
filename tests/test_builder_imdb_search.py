@@ -958,6 +958,9 @@ async def test_each_of_these_families_alone_satisfies_the_one_constraint_guard(
         ("country", "US", "takes IMDb's 2-letter country codes"),
         ("language", "en", "takes IMDb's language codes"),
         ("keyword", "time-travel", "takes IMDb keyword phrases"),
+        ("cast", "nm0000138", "takes IMDb person ids"),
+        ("event", "oscars", "takes an IMDb event id"),
+        ("list", "ls539646485", "takes IMDb list ids"),
     ],
 )
 async def test_a_bare_string_where_the_list_belongs_is_refused_not_iterated(
@@ -989,6 +992,9 @@ async def test_a_bare_string_where_the_list_belongs_is_refused_not_iterated(
         ("language", [False], "takes IMDb's language codes", "False"),
         ("keyword", [3], "takes IMDb keyword phrases", "3"),
         ("country", [["US"]], "takes IMDb's 2-letter country codes", "['US']"),
+        ("cast", [False], "takes IMDb person ids", "False"),
+        ("event", [False], "takes an IMDb event id", "False"),
+        ("list", [3], "takes IMDb list ids", "3"),
     ],
 )
 async def test_a_non_string_element_is_refused_not_matched_or_stripped(
@@ -1028,7 +1034,7 @@ def test_the_list_constraints_table_matches_the_family_params_on_the_model():
     family_params = {
         name
         for name in ImdbSearchParams.model_fields
-        if name.startswith(("country", "language", "keyword"))
+        if name.startswith(("country", "language", "keyword", "cast", "list"))
     }
     assert table_params == family_params
 
@@ -1047,3 +1053,169 @@ async def test_two_params_in_the_same_family_are_merged_not_overwritten():
             "excludeCountries": ["GB"],
         },
     }
+
+
+# --- Task 4: cast, event and list ----------------------------------------------
+
+PROBED_CAST = {"titleCreditsConstraint": {"anyCredits": [{"nameId": "nm0000138"}]}}
+PROBED_EVENT = {"awardConstraint": {"allEventNominations": [{"eventId": "ev0000003"}]}}
+PROBED_LIST = {"listConstraint": {"inAnyList": ["ls539646485"]}}
+
+
+async def test_the_probed_cast_shape_reaches_the_wire():
+    """Row 263, session 4: 22 titles. Elements are ``{nameId: nm…}`` objects,
+    not bare ids -- the one family here whose list is wrapped."""
+    assert await _constraints(cast_any=["nm0000138"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_CAST,
+    }
+
+
+async def test_the_probed_event_shape_reaches_the_wire():
+    """Row 264, session 4: 400 titles. ``ev0000003`` is the Oscars, and it is
+    reached here by writing the ceremony name this service already builds award
+    collections under."""
+    assert await _constraints(event=["oscars"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_EVENT,
+    }
+
+
+async def test_the_probed_list_shape_reaches_the_wire():
+    """Row 265, session 4: 2 titles."""
+    assert await _constraints(list_any=["ls539646485"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_LIST,
+    }
+
+
+@pytest.mark.parametrize(
+    "param,value,obj,field,expected",
+    [
+        ("cast", "nm0000138", "titleCreditsConstraint", "allCredits",
+         [{"nameId": "nm0000138"}]),
+        ("cast_any", "nm0000138", "titleCreditsConstraint", "anyCredits",
+         [{"nameId": "nm0000138"}]),
+        ("cast_not", "nm0000138", "titleCreditsConstraint", "excludeCredits",
+         [{"nameId": "nm0000138"}]),
+        ("list", "ls539646485", "listConstraint", "inAllLists", ["ls539646485"]),
+        ("list_any", "ls539646485", "listConstraint", "inAnyList", ["ls539646485"]),
+        ("list_not", "ls539646485", "listConstraint", "notInAnyList",
+         ["ls539646485"]),
+    ],
+)
+async def test_each_credit_and_list_suffix_reaches_its_documented_field(
+    param, value, obj, field, expected
+):
+    """``list``'s bare key is ``inAllLists`` and not ``inAnyList``: the family's
+    field names do not follow the ``all*``/``any*``/``exclude*`` spelling the
+    other four use, so a table row copied from a neighbour would be wrong in a
+    way only this assertion catches."""
+    assert await _constraints(**{param: [value]}) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        obj: {field: expected},
+    }
+
+
+async def test_event_winning_adds_the_winner_filter():
+    """TRANSCRIPTION-ONLY (facts A3). Session 4 probed a bare ``eventId``; the
+    ``winnerFilter`` key is the document's §2 row 25 and Kometa's
+    ``imdb.py:667-676``, never this project's wire."""
+    assert await _constraints(event_winning=["oscars"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "awardConstraint": {
+            "allEventNominations": [
+                {"eventId": "ev0000003", "winnerFilter": "WINNER_ONLY"}
+            ]
+        },
+    }
+
+
+async def test_event_and_event_winning_merge_into_one_nomination_list():
+    """Kometa's own behaviour: the two keys are one list, and the SAME event may
+    appear twice with different filters (``imdb.py:667-676``). Two constraint
+    objects would be a GraphQL duplicate-key error, not a wider search."""
+    assert await _constraints(event=["oscars"], event_winning=["cannes"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "awardConstraint": {
+            "allEventNominations": [
+                {"eventId": "ev0000003"},
+                {"eventId": "ev0000147", "winnerFilter": "WINNER_ONLY"},
+            ]
+        },
+    }
+
+
+async def test_a_raw_event_id_is_accepted_as_written():
+    assert await _constraints(event=["ev0000003"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        **PROBED_EVENT,
+    }
+
+
+def test_the_event_vocabulary_is_the_award_builders_registry():
+    """Derived from the registry, never spelled out: ``imdb_award`` is where the
+    sixteen ceremonies and their ids already live (its ``EVENTS`` table), and a
+    seventeenth added there must be writable here the same day. The Oscars id is
+    the one ``collections/awards.py`` has always carried."""
+    from autoposter.collections.awards import EVENT_ID
+    from autoposter.collections.builders.imdb_award import EVENTS
+    from autoposter.collections.builders.imdb_search import _EVENT_IDS
+
+    assert _EVENT_IDS == {key: event.event_id for key, event in EVENTS.items()}
+    assert _EVENT_IDS["oscars"] == EVENT_ID
+
+
+@pytest.mark.parametrize("param", ["cast", "cast_any", "cast_not"])
+async def test_a_cast_value_that_is_not_a_name_id_is_refused(param):
+    """IMDb has no name lookup on this root and Kometa's own operators write ids
+    (``modules/builder.py:2542-2551``), so a person's name is refused at load
+    rather than sent and silently matching nothing."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["Humphrey Bogart"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb person ids" in m for m in messages)
+    assert not any("Humphrey Bogart" in m for m in messages)
+
+
+@pytest.mark.parametrize("param", ["list", "list_any", "list_not"])
+async def test_a_list_value_that_is_not_a_list_id_is_refused(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["zzz9999"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes IMDb list ids" in m for m in messages)
+    assert not any("zzz9999" in m for m in messages)
+
+
+@pytest.mark.parametrize("param", ["event", "event_winning"])
+async def test_an_unknown_ceremony_is_refused_naming_the_known_ones(param):
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: ["zzznotaceremony"]})
+
+    messages = _messages(caught)
+    assert any(f"`{param}` takes an IMDb event id" in m for m in messages)
+    assert any("oscars" in m for m in messages), "the vocabulary is named"
+    assert not any("zzznotaceremony" in m for m in messages)
+
+
+@pytest.mark.parametrize(
+    "param,value",
+    [
+        ("cast", "nm0000138"), ("cast_any", "nm0000138"), ("cast_not", "nm0000138"),
+        ("event", "oscars"), ("event_winning", "oscars"),
+        ("list", "ls539646485"), ("list_any", "ls539646485"),
+        ("list_not", "ls539646485"),
+    ],
+)
+async def test_each_of_the_new_families_alone_satisfies_the_one_constraint_guard(
+    param, value
+):
+    """Named distinctly from Task 3's same-purpose test above: reusing that
+    name would silently shadow it in the module namespace and drop its eleven
+    cases from collection rather than adding these eight."""
+    async with httpx.AsyncClient(transport=_paged()) as http:
+        result = await _build(http, **{param: [value]})
+
+    assert result.ids
