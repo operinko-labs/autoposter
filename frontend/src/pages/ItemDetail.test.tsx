@@ -863,12 +863,17 @@ describe("ItemDetail", () => {
     ).toBe(renderRow("poster"));
   });
 
-  it("surfaces the 503 rename failure verbatim, mount path and all", async () => {
-    // The detail is the OS error, which names the absolute path on the mount.
-    // Behind auth, that is the only thing that tells an operator which file to
-    // go and look at -- a generic "could not clear" would strand them.
-    const detail =
-      "[Errno 30] Read-only file system: '/manualassets/Movies/Ghostbusters (1984)/poster.png'";
+  it("surfaces the 503 rename failure as the endpoint's fixed sentence", async () => {
+    // A contract MIRROR, not an independent pin: this test stubs the response
+    // body itself, and the page renders whatever detail it is given, so it
+    // cannot go red when the endpoint's wording changes. What it is for is
+    // recording which wording the endpoint sends -- and roadmap row 248
+    // changed that from the OS error (errno plus the absolute path on the
+    // mount) to the fixed sentence api/routes.py now serves, byte-identical
+    // to api/manual.py's and api/candidates.py's for the same mount. The
+    // sentence that actually goes red on a backend change is
+    // tests/test_api_clear_override.py::test_a_failed_rename_is_503_and_changes_nothing.
+    const detail = "could not write to the override mount";
     stubFetch(
       bothKindRoutes({
         "/api/items/3/renders/poster/clear-override": () => json({ detail }, 503),
