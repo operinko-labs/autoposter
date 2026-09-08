@@ -36,6 +36,7 @@ from autoposter.collections.builders.imdb_search import (
     SORTS,
     _LIST_CONSTRAINTS,
     ImdbSearchParams,
+    search_constraints,
 )
 from autoposter.collections.imdb_graphql import (
     MAX_PAGES,
@@ -1071,6 +1072,19 @@ async def test_the_probed_cast_shape_reaches_the_wire():
     }
 
 
+async def test_two_cast_ids_stay_in_order_both_wrapped():
+    """Task 4 review: ``cast``'s elements are wrapped ``{nameId: ...}`` objects,
+    and the probed shape above only ever passed one -- so a wrapper applied to
+    the first element and dropped for the rest would still pass it. Two ids,
+    order preserved, both wrapped."""
+    assert await _constraints(cast=["nm0000138", "nm0000123"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "titleCreditsConstraint": {
+            "allCredits": [{"nameId": "nm0000138"}, {"nameId": "nm0000123"}]
+        },
+    }
+
+
 async def test_the_probed_event_shape_reaches_the_wire():
     """Row 264, session 4: 400 titles. ``ev0000003`` is the Oscars, and it is
     reached here by writing the ceremony name this service already builds award
@@ -1146,6 +1160,27 @@ async def test_event_and_event_winning_merge_into_one_nomination_list():
     }
 
 
+async def test_the_same_ceremony_named_twice_produces_two_distinct_nominations():
+    """Task 4 review: ``event`` and ``event_winning`` naming the SAME ceremony
+    must still produce two list entries, one plain and one with
+    ``winnerFilter`` -- a merge keyed on the event id rather than appended
+    would silently drop one of them. The id is derived from the registry, not
+    a literal, so a renumbered ceremony cannot make this pass for the wrong
+    reason."""
+    from autoposter.collections.builders.imdb_award import EVENTS
+
+    oscars = EVENTS["oscars"].event_id
+    assert await _constraints(event=["oscars"], event_winning=["oscars"]) == {
+        "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+        "awardConstraint": {
+            "allEventNominations": [
+                {"eventId": oscars},
+                {"eventId": oscars, "winnerFilter": "WINNER_ONLY"},
+            ]
+        },
+    }
+
+
 async def test_a_raw_event_id_is_accepted_as_written():
     assert await _constraints(event=["ev0000003"]) == {
         "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
@@ -1189,6 +1224,28 @@ async def test_a_list_value_that_is_not_a_list_id_is_refused(param):
     assert not any("zzz9999" in m for m in messages)
 
 
+@pytest.mark.parametrize(
+    "param,value,sentence",
+    [
+        ("cast", "nmBogart", "takes IMDb person ids"),
+        ("list", "lsabc", "takes IMDb list ids"),
+    ],
+)
+async def test_a_value_with_the_right_prefix_but_no_digits_is_still_refused(
+    param, value, sentence
+):
+    """Task 4 review: ``nmBogart`` and ``lsabc`` both start with the family's
+    prefix, so a validator that only checked ``str.startswith`` would let them
+    through. ``_NAME_ID``/``_LIST_ID`` require digits after the prefix, and this
+    is what proves it rather than a value with no prefix at all."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, **{param: [value]})
+
+    messages = _messages(caught)
+    assert any(sentence in m for m in messages)
+    assert not any(value in m for m in messages)
+
+
 @pytest.mark.parametrize("param", ["event", "event_winning"])
 async def test_an_unknown_ceremony_is_refused_naming_the_known_ones(param):
     with pytest.raises(ValidationError) as caught:
@@ -1219,3 +1276,143 @@ async def test_each_of_the_new_families_alone_satisfies_the_one_constraint_guard
         result = await _build(http, **{param: [value]})
 
     assert result.ids
+
+
+# --- the twelve families, and what must not have moved -------------------------
+
+EVERY_FAMILY = {
+    "type": "movie",
+    "genres": ["Film-Noir"],
+    "rating_gte": 7.0,
+    "rating_lte": 9.5,
+    "votes_gte": 1000,
+    "released_after": "1940-01-01",
+    "released_before": "1959-12-31",
+    "runtime_gte": 80,
+    "runtime_lte": 90,
+    "content_rating": ["PG-13"],
+    "country": ["US"],
+    "country_any": ["GB"],
+    "country_not": ["FR"],
+    "country_origin": ["JP"],
+    "language": ["en"],
+    "language_any": ["fr"],
+    "language_not": ["de"],
+    "language_primary": ["ja"],
+    "keyword": ["time-travel"],
+    "keyword_any": ["heist"],
+    "keyword_not": ["remake"],
+    "cast": ["nm0000138"],
+    "cast_any": ["nm0000158"],
+    "cast_not": ["nm0000148"],
+    "event": ["oscars"],
+    "event_winning": ["cannes"],
+    "sort": "popularity.desc",
+    "list": ["ls539646485"],
+    "list_any": ["ls000000001"],
+    "list_not": ["ls000000002"],
+}
+
+
+def test_the_search_query_text_is_byte_identical_to_the_one_that_shipped():
+    """The transport does not change for any of the eight families: every
+    constraint object rides inside the ``$constraints`` VARIABLE the query
+    already declares (the row-148 recon §(1)). Asserted whole rather than by
+    keyword -- a query that still says ``advancedTitleSearch`` but lost its
+    ``pageInfo`` would pass a substring check and silently stop paging."""
+    assert SEARCH_QUERY == (
+        "query AdvancedTitleSearch($constraints: AdvancedTitleSearchConstraints!,"
+        " $sort: AdvancedTitleSearchSort!, $first: Int!, $after: String) {"
+        " advancedTitleSearch(constraints: $constraints, sort: $sort, first: $first,"
+        " after: $after) { total pageInfo { hasNextPage endCursor }"
+        " edges { node { title { id } } } } }"
+    )
+
+
+def test_the_four_shipped_families_build_exactly_what_they_always_did():
+    """``RECORDED_CONSTRAINTS`` is a recording of a real 2026-08-25 request. The
+    eight new families must not have moved a byte of it -- a stray
+    ``setdefault`` or a reordered block here would rewrite live collections'
+    filter signatures for nothing."""
+    params = ImdbSearchParams.model_validate(RECORDED_PARAMS)
+
+    assert search_constraints(params, ("movie",)) == RECORDED_CONSTRAINTS
+
+
+def test_a_definition_that_names_no_new_family_adds_no_key(): # C4
+    """The storm guard. ``definition_hash`` folds the BUILT constraints, and no
+    config that loads today can name a key that did not parse yesterday -- so
+    the only way a stored hash could move is a new family emitting something
+    when the operator wrote nothing. One assertion, over every new field."""
+    params = ImdbSearchParams.model_validate(RECORDED_PARAMS)
+    new_fields = set(ImdbSearchParams.model_fields) - set(RECORDED_PARAMS)
+
+    assert new_fields, "this pin is vacuous if the new fields are already set"
+    assert all(getattr(params, name) is None for name in new_fields)
+    assert set(search_constraints(params, ("movie",))) == {
+        "titleTypeConstraint",
+        "genreConstraint",
+        "userRatingsConstraint",
+        "releaseDateConstraint",
+    }
+
+
+async def test_all_twelve_constraint_objects_are_reachable_from_params():
+    """One definition that writes every key of every family, and the twelve
+    objects it produces. A deliberate literal: these names are the contract with
+    IMDb, not a registry, so a thirteenth family edits this test on purpose."""
+    assert set(await _constraints(**EVERY_FAMILY)) == {
+        "titleTypeConstraint",
+        "genreConstraint",
+        "userRatingsConstraint",
+        "releaseDateConstraint",
+        "runtimeConstraint",
+        "certificateConstraint",
+        "originCountryConstraint",
+        "languageConstraint",
+        "keywordConstraint",
+        "titleCreditsConstraint",
+        "awardConstraint",
+        "listConstraint",
+    }
+
+
+def test_the_dispatch_table_and_the_params_model_agree():
+    """Derived, not spelled out: every row of the table is a real field, and
+    every field of the five list-valued families has a row. A family added later
+    with no table row would validate fine and send NOTHING, which is the failure
+    this catches."""
+    from autoposter.collections.builders.imdb_search import _LIST_CONSTRAINTS
+
+    table = {name for name, _, _, _ in _LIST_CONSTRAINTS}
+    families = ("country", "language", "keyword", "cast", "list")
+    expected = {
+        name
+        for name in ImdbSearchParams.model_fields
+        if name.split("_")[0] in families
+    }
+
+    assert table == expected
+    assert len(table) == 17
+
+
+def test_the_one_constraint_guard_names_every_filtering_param():
+    """The guard's sentence used to hand-list six names, which was already one
+    edit behind by row 258. It is derived from ``model_fields`` now, like the
+    set it guards -- so a family added later is named in the refusal for free."""
+    with pytest.raises(ValidationError) as caught:
+        ImdbSearchParams.model_validate({})
+
+    message = "\n".join(error["msg"] for error in caught.value.errors())
+    for name in ImdbSearchParams.model_fields:
+        if name in ("type", "sort"):
+            assert name not in message.split(":")[1]
+        else:
+            assert name in message
+
+
+def test_the_params_model_carries_thirty_fields():
+    """Eight from row 81, twenty-two from rows 258-265. A count rather than a
+    list: the names are pinned one family at a time above, and what this adds is
+    that nothing was quietly dropped between them."""
+    assert len(ImdbSearchParams.model_fields) == 30

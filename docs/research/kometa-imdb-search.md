@@ -284,8 +284,8 @@ live-proven ones:
 
 ## 5. The map to this repository
 
-This repo ships **4** of Kometa's 28 families. The roadmap's rows 258–265 own
-**8** more. **16** are owned by no row at all.
+This repo ships **12** of Kometa's 28 families — row 81's four, and the eight
+rows 258–265 delivered on 2026-09-08. **16** are owned by no row at all.
 
 | # | Kometa constraint | This repo | Owner |
 |---|---|---|---|
@@ -293,14 +293,14 @@ This repo ships **4** of Kometa's 28 families. The roadmap's rows 258–265 own
 | 5 | `genreConstraint` | **shipped** — `genres` param → `allGenreIds`, `builders/imdb_search.py:142`, `:268` | — |
 | 4 | `userRatingsConstraint` | **shipped** — `rating_gte`/`rating_lte` → `aggregateRatingRange`, `votes_gte` → `ratingsCountRange.min`; `:146-152`, `:269-280`. **`votes.lte` has no param** — Kometa sends `ratingsCountRange.max`, this repo cannot | partial gap, unowned |
 | 3 | `releaseDateConstraint` | **shipped** — `released_after`/`released_before` → `releaseDateRange.{start,end}`, `:153-154`, `:281-289` | — |
-| 27 | `runtimeConstraint` | missing | **row 258** |
-| 23 | `certificateConstraint` | missing | **row 259** |
-| 20 | `originCountryConstraint` | missing | **row 260** (which called it `countryConstraint`) |
-| 21 | `languageConstraint` | missing | **row 261** |
-| 22 | `keywordConstraint` | missing | **row 262** |
-| 17 | `titleCreditsConstraint` | missing | **row 263** (which called it `creditConstraint`) |
-| 25 | `awardConstraint` | missing | **row 264** |
-| 19 | `listConstraint` | missing | **row 265** |
+| 27 | `runtimeConstraint` | **shipped** — `runtime_gte`/`runtime_lte` → `runtimeRangeMinutes.{min,max}`; `search_constraints`, `builders/imdb_search.py` | row 258, closed 2026-09-08 |
+| 23 | `certificateConstraint` | **shipped** — `content_rating` → `anyRegionCertificateRatings`, region carried per value, `US` default | row 259, closed 2026-09-08 |
+| 20 | `originCountryConstraint` | **shipped** — `country`/`_any`/`_not`/`_origin` → `allCountries`/`anyCountries`/`excludeCountries`/`anyPrimaryCountries` | row 260, closed 2026-09-08 |
+| 21 | `languageConstraint` | **shipped** — `language`/`_any`/`_not`/`_primary` → `allLanguages`/`anyLanguages`/`excludeLanguages`/`anyPrimaryLanguages` | row 261, closed 2026-09-08 |
+| 22 | `keywordConstraint` | **shipped** — `keyword`/`_any`/`_not` → `allKeywords`/`anyKeywords`/`excludeKeywords`, spaces hyphenated | row 262, closed 2026-09-08 |
+| 17 | `titleCreditsConstraint` | **shipped** — `cast`/`_any`/`_not` → `allCredits`/`anyCredits`/`excludeCredits`, elements `{nameId}` | row 263, closed 2026-09-08 |
+| 25 | `awardConstraint` | **shipped** — `event`/`event_winning` merge into `allEventNominations`; vocabulary from `imdb_award.EVENTS` | row 264, closed 2026-09-08 |
+| 19 | `listConstraint` | **shipped** — `list`/`_any`/`_not` → `inAllLists`/`inAnyList`/`notInAnyList` | row 265, closed 2026-09-08 |
 | 1 | `titleTextConstraint` | missing | none |
 | 6 | `interestConstraint` | missing | none |
 | 7 | `withTitleDataConstraint` | missing | none |

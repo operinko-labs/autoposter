@@ -475,6 +475,49 @@ collections:
   #         sort_by: episode_added.desc
   #         limit: 25
   #       libraries: [TV Shows]
+  #     # `imdb_search` is IMDb's own advanced title search, and its params are
+  #     # Kometa's `imdb_search` keys with the dots this repo already spells as
+  #     # underscores (`rating.gte` is `rating_gte`). Twelve constraint
+  #     # families; every key of all twelve is written once below, which is not
+  #     # a sensible collection, only a complete reference. IMDb validates a
+  #     # constraint's SHAPE and not its VALUES -- an unknown genre, country or
+  #     # keyword is HTTP 200 with nothing matched -- so every value here is
+  #     # checked when the config loads and a bad one is a startup error rather
+  #     # than a collection that empties itself.
+  #     - title: Film Noir
+  #       builder: imdb_search
+  #       params:
+  #         type: movie # narrows which libraries this may run against; the ids sent come from the library
+  #         genres: [Film-Noir] # IMDb's own spellings, case-folded for you
+  #         rating_gte: 7.0 # IMDb user rating, 1.0-10.0
+  #         rating_lte: 9.5
+  #         votes_gte: 1000 # rating count floor
+  #         released_after: 1940-01-01 # YYYY-MM-DD
+  #         released_before: 1959-12-31
+  #         runtime_gte: 80 # whole minutes
+  #         runtime_lte: 90
+  #         content_rating: [PG-13] # or [{region: GB, rating: "15"}]; a bare rating means the US one
+  #         country: [US] # every listed country (2-letter codes)
+  #         country_any: [GB] # any one of them
+  #         country_not: [FR] # none of them
+  #         country_origin: [JP] # primary production country
+  #         language: [en] # every listed language
+  #         language_any: [fr]
+  #         language_not: [de]
+  #         language_primary: [ja] # primary spoken language
+  #         keyword: [time-travel] # IMDb keywords; spaces become hyphens
+  #         keyword_any: [heist]
+  #         keyword_not: [remake]
+  #         cast: [nm0000138] # IMDb person ids -- there is no name lookup on this root
+  #         cast_any: [nm0000158]
+  #         cast_not: [nm0000148]
+  #         event: [oscars] # nominated at this ceremony; a raw ev… id works too
+  #         event_winning: [cannes] # ...and won it
+  #         sort: popularity.desc # the default; popularity, rating, votes, release_date or runtime
+  #         list: [ls539646485] # on every listed IMDb list
+  #         list_any: [ls000000001]
+  #         list_not: [ls000000002]
+  #       libraries: [Movies]
   definitions: []
 
 playlists:

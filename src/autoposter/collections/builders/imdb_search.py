@@ -27,12 +27,46 @@ the full probe log is in ``.superpowers/sdd/archive/p8c-task-3-report.md`` and t
 under ``tests/fixtures/collections/imdb_search_*.json`` are recordings of what
 the endpoint answered. Nothing here is recalled.
 
-**The minimal tier, deliberately.** Title type, genre, user rating, vote count,
-release-date window and sort -- the constraint set Phase 8c's plan bounds this
-row to. ``AdvancedTitleSearchConstraints`` carries a great deal more (keywords,
-credits, countries, languages, certificates, runtime, awards, list membership),
-and matching Kometa's full ``imdb_search`` surface is a follow-up row, not
-something to grow here one field at a time.
+**Twelve of Kometa's twenty-eight families.** Title type, genre, user rating,
+vote count and release-date window were row 81's minimal tier; runtime,
+certificate, origin country, language, keyword, title credits, award and list
+membership are rows 258-265, each proved on the wire by a read-only probe on
+2026-09-08 before it was written. ``AdvancedTitleSearchConstraints`` carries
+sixteen more that no roadmap row owns -- title text, interests, data
+availability, the eight text-matching families, character, episodic, company,
+ranked lists and adult content -- catalogued in
+``docs/research/kometa-imdb-search.md`` §5, which is also where the Kometa
+source citation for every field below lives.
+
+**The operator keys are Kometa's, with its dots as underscores.** ``rating.gte``
+is ``rating_gte`` and ``release.after`` is ``released_after``, and the eight new
+families follow the same rule, so an operator porting a Kometa ``imdb_search``
+definition maps them one for one:
+
+    runtime.gte/.lte  -> runtime_gte / runtime_lte
+    content_rating    -> content_rating   (a bare rating means the US one)
+    country[.any/.not/.origin]   -> country / country_any / country_not /
+                                    country_origin
+    language[.any/.not/.primary] -> language / language_any / language_not /
+                                    language_primary
+    keyword[.any/.not]           -> keyword / keyword_any / keyword_not
+    cast[.any/.not]              -> cast / cast_any / cast_not
+    event[.winning]              -> event / event_winning
+    list[.any/.not]              -> list / list_any / list_not
+
+One difference worth knowing when porting: Kometa's ceremony alias for the
+Academy Awards is ``oscar``; here it is ``oscars``, because the vocabulary is
+``builders/imdb_award.py``'s own ``EVENTS`` registry rather than a second copy.
+A raw ``ev…`` id is accepted either way.
+
+**Only one field per new family has been on the wire.** The 2026-09-08 probe
+sent ``runtimeRangeMinutes``, ``anyRegionCertificateRatings``, ``anyCountries``,
+``anyLanguages``, ``anyKeywords``, ``anyCredits``, ``allEventNominations`` and
+``inAnyList``, each answering HTTP 200 with a total below the control's 78,732.
+Their siblings -- every ``all*``/``exclude*`` form, ``anyPrimaryCountries``,
+``anyPrimaryLanguages``, ``inAllLists``, ``notInAnyList`` and
+``winnerFilter`` -- are the same GraphQL input objects and ship on the
+transcription's authority, not the wire's.
 
 No summary and no poster: an advanced search is the operator's own question, so
 its title and summary belong to the definition. That is the same call
@@ -227,11 +261,19 @@ _EVENT_IDS: dict[str, str] = {key: event.event_id for key, event in EVENTS.items
 
 
 class ImdbSearchParams(BaseModel):
-    """``imdb_search``'s params: the minimal constraint tier.
+    """``imdb_search``'s params: twelve constraint families.
 
     ``extra="forbid"`` is what makes a mis-spelled constraint a load error
     rather than a filter that quietly never applies, and it is load-enforced for
-    free through ``CollectionDefinition``'s params check.
+    free through ``CollectionDefinition``'s params check. It is also why the
+    keys here are snake_case and not Kometa's dotted spellings: a dotted
+    attribute name is not a pydantic field.
+
+    Every field's refusal is a FIXED sentence naming the key and the shape it
+    wanted, and never the value the operator wrote (roadmap row 213). The
+    reason each vocabulary is checked at all is in the module docstring: IMDb
+    validates a constraint's shape and not its values, so a typo is an emptied
+    collection rather than an error.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -645,10 +687,14 @@ class ImdbSearchParams(BaseModel):
             for name in type(self).model_fields
         ):
             raise ValueError(
-                "imdb_search needs at least one constraint (genres, rating_gte, "
-                "rating_lte, votes_gte, released_after, released_before): an "
-                "unconstrained IMDb search is the popularity chart, which "
-                "`imdb_chart` already builds"
+                "imdb_search needs at least one constraint ("
+                + ", ".join(
+                    name
+                    for name in type(self).model_fields
+                    if name not in _NON_FILTERING
+                )
+                + "): an unconstrained IMDb search is the popularity chart, "
+                "which `imdb_chart` already builds"
             )
         return self
 
