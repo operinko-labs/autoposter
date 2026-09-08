@@ -1638,6 +1638,114 @@ describe("ItemDetail candidate picker", () => {
     ).toBe(true);
   });
 
+  it("marks the pick pending and warns immediately even when the post-pick re-read fails", async () => {
+    // The POST above has already written the override file and nulled the
+    // render row's two fingerprints before this second call ever runs -- so a
+    // failure here must not undo the pending mark or the warning. The re-read
+    // is not a cheap call (it re-runs the whole provider fan-out), so a
+    // timeout here is the ordinary failure, not an exotic one. Moving
+    // `onPickedUrl` back to after the `Promise.all` reddens the first two
+    // assertions below.
+    let candidateCalls = 0;
+    stubFetch(
+      movieRoutes({
+        "/api/items/3/candidates/poster": () => {
+          candidateCalls += 1;
+          if (candidateCalls === 1) return json(CANDIDATES);
+          throw new Error("network error");
+        },
+        "/api/items/3/candidates/poster/pick": () =>
+          json({ status: "picked", queued: true }),
+      }),
+    );
+
+    await renderItem();
+    await openPanel("Browse candidates");
+
+    fireEvent.click(within(tiles()[0]).getByRole("button", { name: "Pick" }));
+
+    await waitFor(() =>
+      expect(candidatePanel().querySelector(".candidate-error")).not.toBeNull(),
+    );
+
+    // The mark and the warning describe the file on the mount, not the
+    // freshness of the re-read -- both are on although the re-read rejected.
+    expect(tiles()[0].classList.contains("is-picked")).toBe(true);
+    expect(tiles()[0].textContent).toContain("picked · re-render pending");
+    for (const tile of tiles()) {
+      expect(tile.querySelector("button")!.getAttribute("title")).toContain(
+        "the previous file is not kept",
+      );
+    }
+    // The error is still surfaced -- the fix does not paper over the failure,
+    // it only stops the failure from erasing the pick's own honesty.
+    expect(candidatePanel().querySelector(".candidate-error")!.textContent).toBe(
+      "network error",
+    );
+    expect(document.querySelector(".candidate-note")).toBeNull();
+  });
+
+  it("clears the picked-this-visit map when the item changes", async () => {
+    // The map is keyed by art kind, not by item -- so the leak this case pins
+    // only shows up when item B is browsed under the SAME art kind item A was
+    // picked under. Both items use "title_card" here for exactly that reason;
+    // a second item that happened to use "poster" instead would pass whether
+    // or not the reset exists, which is no test at all. The episode's own art
+    // kind is picked, then the parent-show link -- the navigation an operator
+    // actually performs, staying inside the same ItemDetail instance rather
+    // than a fresh mount -- carries the page to item B. Deleting
+    // `setPickedUrls({})` from the `[itemId]` effect must turn exactly this
+    // case red.
+    const OTHER_ITEM = {
+      ...MOVIE,
+      id: 42,
+      title: "Firefly",
+      rating_key: "42042",
+      renders: [{ ...MOVIE.renders[0], art_kind: "title_card" }],
+    };
+    stubFetch({
+      "/api/items/154245": () => json(EPISODE_WITH_PARENT),
+      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+      "/api/items/154245/candidates/title_card": () => json(CANDIDATES),
+      "/api/items/154245/candidates/title_card/pick": () =>
+        json({ status: "picked", queued: true }),
+      "/api/items/42": () => json(OTHER_ITEM),
+      "/api/items/42/artwork/title_card": () => imageBytes("base-image-bytes"),
+      "/api/items/42/artwork/title_card/live": () => imageBytes("live-image-bytes"),
+      "/api/items/42/candidates/title_card": () => json(CANDIDATES),
+    });
+
+    await renderItem(154245);
+    await openPanel("Browse candidates");
+
+    fireEvent.click(within(tiles()[0]).getByRole("button", { name: "Pick" }));
+    await waitFor(() =>
+      expect(document.querySelector(".candidate-note")).not.toBeNull(),
+    );
+    expect(tiles()[0].classList.contains("is-picked")).toBe(true);
+
+    const showLink = within(screen.getByRole("heading", { level: 1 })).getByRole(
+      "link",
+      { name: "Firefly" },
+    );
+    fireEvent.click(showLink);
+
+    await screen.findByRole("heading", { level: 1, name: "Firefly" });
+    await act(async () => {});
+
+    await openPanel("Browse candidates");
+    // Item B's tiles carry no pending mark for a re-render nobody queued on
+    // item B.
+    expect(tiles().some((tile) => tile.classList.contains("is-picked"))).toBe(false);
+    expect(candidatePanel().textContent).not.toContain("picked · re-render pending");
+    for (const tile of tiles()) {
+      expect(tile.querySelector("button")!.getAttribute("title") ?? "").not.toContain(
+        "the previous file is not kept",
+      );
+    }
+  });
+
   it("closes the panel when Browse candidates is clicked a second time", async () => {
     stubFetch(movieRoutes({ "/api/items/3/candidates/poster": () => json(CANDIDATES) }));
 

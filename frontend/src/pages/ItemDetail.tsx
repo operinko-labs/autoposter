@@ -518,24 +518,33 @@ function CandidatePanel({
           body: JSON.stringify({ provider: candidate.provider, url: candidate.url }),
         },
       );
+      // The pick has already landed on the mount here: the POST above resolved,
+      // so the override file is written and the render row's two fingerprints
+      // are nulled (api/candidates.py). Mark it picked NOW, before the re-read
+      // below, rather than after it resolves -- the re-read re-runs the whole
+      // provider fan-out, and if it rejects while this call sits after it, the
+      // panel would show a raw error with no pending mark and no
+      // replaces-override warning, and a second pick would silently overwrite
+      // the file this one just wrote. The mark and the warning describe the
+      // file on the mount, not the freshness of the re-read.
+      onPickedUrl(candidate.url);
       // Re-read before reporting: the render row's two fingerprints were nulled
       // server-side, so the Renders table is stale the moment this returns, and
       // this panel's own errors list is worth refreshing with it.
       //
-      // What the re-read canNOT fix, and why `onPickedUrl` exists below. The
-      // row's provider does NOT become "manual" here: that is stamped by the
-      // RENDER (render/pipeline.py:1250), and a pick writes only the two
-      // fingerprint columns (api/candidates.py). The browse endpoint derives
-      // `current` from the Render row, so until the queued re-render lands this
-      // second read answers the SAME pre-pick provenance as the first -- which
-      // is why the tile mark and the replaces-override warning are driven by
-      // the picked-this-visit URL instead of by `current`.
+      // What the re-read canNOT fix. The row's provider does NOT become
+      // "manual" here: that is stamped by the RENDER (render/pipeline.py:1250),
+      // and a pick writes only the two fingerprint columns (api/candidates.py).
+      // The browse endpoint derives `current` from the Render row, so until the
+      // queued re-render lands this second read answers the SAME pre-pick
+      // provenance as the first -- which is why the tile mark and the
+      // replaces-override warning are driven by the picked-this-visit URL
+      // instead of by `current`.
       const [, refreshed] = await Promise.all([
         onPicked(),
         apiFetch<CandidatesResponse>(`/api/items/${itemId}/candidates/${artKind}`),
       ]);
       setState({ status: "ready", response: refreshed });
-      onPickedUrl(candidate.url);
       setNote(
         response.queued
           ? "Picked. The image was written to the mount and a re-render was queued."
