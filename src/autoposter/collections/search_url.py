@@ -38,12 +38,14 @@ mechanism under the same spelling, transcribed in its own branch below.
   its only use is ``LibrarySection.totalViewSize(includeCollections=True)``
   (library.py:505-518), and ``totalSize`` asks for it as ``False`` (:463).
 """
+import datetime as dt
 from collections.abc import Sequence
 from typing import Protocol
 from urllib.parse import quote
 
 from autoposter.collections.filters import (
     DISCOVERED,
+    MOMENT_DATE_ROWS,
     SEARCH_MODIFIERS,
     FilterGroup,
     FilterPredicate,
@@ -349,6 +351,35 @@ def _arguments(
     # An absolute date, ISO, whichever spelling it was written in.
     # builder.py:4441-4445.
     if row.type == "date":
+        # ROADMAP ROW 157, and the ONE rendering in this module that is not a
+        # straight table lookup. ``.to`` is inclusive at the calendar DAY. On a
+        # row Plex stores as a bare date that is already what ``%3C=`` means
+        # (measured: ``originallyAvailableAt%3C=D`` -> 1864 = the strict
+        # ``%3C%3C=D`` at 1862 plus the two items dated D). On a
+        # ``MOMENT_DATE_ROWS`` row it is NOT: Plex reads a bare date on
+        # ``addedAt`` as that day's MIDNIGHT, and the probe measured
+        # ``addedAt%3C=A`` and ``addedAt%3C%3C=A`` at the same 1862 -- both
+        # forms drop everything added during day A, including the 09:15 item
+        # ``filters._matches_one`` keeps. The form that means the same as the
+        # client half is the STRICT one at the day after: ``%3C%3C=A+1`` is
+        # "strictly before (A+1) 00:00", which is ``when < next_day`` exactly.
+        # (The same day-after form was measured on the date field, where a
+        # same-day count exists to check it against: ``%3C%3C=D+1day`` -> 1864
+        # = ``%3C=D``.)
+        #
+        # It lives here rather than in ``SEARCH_MODIFIERS`` because that table
+        # is keyed by ``(type, operator)`` and this is a per-ROW answer; and
+        # the row-set is imported from ``filters`` rather than restated,
+        # because the client half reads the same set and a second copy is the
+        # thing that drifts. ``value`` is a ``dt.date`` here -- ``_as_date``
+        # produces one and ``resolve_search_values`` has already turned any
+        # ``today`` into one -- so the arithmetic is calendar arithmetic and
+        # carries across month and year ends by construction.
+        if operator == "to" and row.name in MOMENT_DATE_ROWS:
+            return [
+                ("%3C%3C", (value + dt.timedelta(days=1)).isoformat())
+                for value in predicate.values
+            ]
         return [(modifier, value.isoformat()) for value in predicate.values]
 
     # A tag: the library's KEY, never the written word, and possibly several

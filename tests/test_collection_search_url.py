@@ -4,9 +4,11 @@ These are unit tests over Kometa's branches, not the oracle. The oracle
 (``tests/test_collection_search_oracle.py``) is what proves the whole URL right;
 this file is what says WHICH branch broke when it does.
 """
+import datetime as dt
+
 import pytest
 
-from autoposter.collections.filters import parse_filters
+from autoposter.collections.filters import evaluate, parse_filters
 from autoposter.collections.search_sorts import EPISODE_SORTS, SEASON_SORTS
 from autoposter.collections.search_url import (
     SearchAttributeNotAvailable,
@@ -229,6 +231,251 @@ def test_the_months_unit_is_rewritten_to_mon_on_the_wire():
 def test_an_absolute_date_is_iso_whichever_way_it_was_written():
     assert url({"added.before": "12/25/2020"}) == (
         "?type=1&sort=titleSort&addedAt%3C%3C=2020-12-25"
+    )
+
+
+def test_the_inclusive_date_pair_renders_as_plexs_single_angle_wire_string():
+    """Roadmap row 157's wire half. ``%3E`` and ``%3C`` are the SINGLE-angle
+    strings -- the ones Kometa reaches from ``.gte``/``.lte`` on an int, a
+    float or a duration, and from ``.ends``/``.begins`` on a string. Plex
+    honours them on a date field too, which was measured rather than assumed:
+    a read-only probe of the production server on 2026-09-08 over a 1963-item
+    movie section returned 101 for ``originallyAvailableAt%3E=D``, 99 for the
+    strict ``%3E%3E=D`` and 2 for ``=D`` (99 + 2 = 101), and 1864 / 1862 / 2
+    the same way on the other edge. The probe's own nonsense control
+    (``notAFieldAtAll%3E=8``) returned the whole 1963, so an unhonoured
+    modifier would have shown up as 1963 and did not.
+
+    THE ONE EXCEPTION, and it is the whole of ``search_url``'s edit for this
+    row: ``.to`` on a MOMENT row renders as the STRICT ``%3C%3C=`` at the day
+    AFTER the written one. Plex reads a bare date on ``addedAt`` as that day's
+    MIDNIGHT -- the probe measured ``addedAt%3C=A`` and ``addedAt%3C%3C=A`` at
+    the same 1862, both excluding everything added during day A -- so ``%3C=A``
+    would be "at or before A 00:00" and would drop an item added at 09:15 that
+    day. ``.to`` means the whole calendar day, so the wire boundary is the
+    start of A+1 and the comparison is strict. The last assertion below is
+    that difference, in one line: same operator, same value, two field types,
+    two different wire strings.
+    """
+    assert url({"release.from": "2000-01-01"}) == (
+        "?type=1&sort=titleSort&originallyAvailableAt%3E=2000-01-01"
+    )
+    assert url({"release.to": "12/25/2020"}) == (
+        "?type=1&sort=titleSort&originallyAvailableAt%3C=2020-12-25"
+    )
+    assert url({"added.from": "2026-01-10"}) == (
+        "?type=1&sort=titleSort&addedAt%3E=2026-01-10"
+    )
+    assert url({"added.to": "2026-01-10"}) == (
+        "?type=1&sort=titleSort&addedAt%3C%3C=2026-01-11"
+    )
+    assert url({"added.from": "2024-01-01"}, libtype="show") == (
+        "?type=2&sort=titleSort&show.addedAt%3E=2024-01-01"
+    )
+    assert url({"added.to": "2024-12-31"}, libtype="show") == (
+        "?type=2&sort=titleSort&show.addedAt%3C%3C=2025-01-01"
+    )
+    assert url({"last_played.to": "2026-02-28"}) == (
+        "?type=1&sort=titleSort&lastViewedAt%3C%3C=2026-03-01"
+    )
+
+
+# Roadmap row 157's acceptance. A same-name-different-filter defect is this
+# row's named failure: the pair is one spelling reaching two independent
+# implementations -- a python comparison in ``filters._matches_one`` and a
+# query parameter Plex evaluates -- and the two agreeing everywhere EXCEPT on
+# the boundary is exactly the bug an inclusive-boundary operator would have.
+# So the boundary is what is asserted, once per FIELD TYPE, because the two
+# field types put the item's own value in different places: a date-only field
+# is always midnight, a moment field carries a time of day.
+BOUNDARY_NOW = dt.datetime(2026, 9, 8, 12, 0)
+
+
+def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_date_only_field():
+    """``release`` -> ``originallyAvailableAt``: Plex stores a bare date, so
+    ``_as_moment`` reads BOTH sides as that day's midnight and the boundary
+    day is inside both operators.
+
+    The wire half means the same thing, measured: on the probe's boundary
+    ``D = 2025-09-04``, ``originallyAvailableAt=D`` returned 2 items,
+    ``%3E%3E=D`` (strict after) returned 99 and ``%3E=D`` returned 101 -- the
+    strict set PLUS the two items dated D. On the other edge ``%3C%3C=D``
+    returned 1862 and ``%3C=D`` returned 1864, the same two items. So an item
+    dated exactly D is INCLUDED by both wire predicates, which is what the
+    client evaluation below says too.
+
+    NOT covered here: ``.from: today`` disagrees between the two halves by up
+    to 24 hours, because the client compares against ``now`` (a moment) while
+    the wire compares against ``now.date()`` (a midnight) -- inherited from
+    the pre-existing ``_Today`` convention (``.after: today`` has the same
+    split) and out of scope for roadmap row 157 (review Important 3).
+    """
+    on_the_boundary = {"release": dt.date(2024, 1, 1)}
+    the_day_before = {"release": dt.date(2023, 12, 31)}
+    the_day_after = {"release": dt.date(2024, 1, 2)}
+
+    # client half: the boundary day is IN, on both operators
+    after = parse_filters({"release.from": "2024-01-01"})
+    before = parse_filters({"release.to": "2024-01-01"})
+    assert evaluate(after, on_the_boundary, now=BOUNDARY_NOW) is True
+    assert evaluate(after, the_day_before, now=BOUNDARY_NOW) is False
+    assert evaluate(before, on_the_boundary, now=BOUNDARY_NOW) is True
+    assert evaluate(before, the_day_after, now=BOUNDARY_NOW) is False
+
+    # wire half: the inclusive single-angle string, at the same boundary value
+    assert url({"release.from": "2024-01-01"}) == (
+        "?type=1&sort=titleSort&originallyAvailableAt%3E=2024-01-01"
+    )
+    assert url({"release.to": "2024-01-01"}) == (
+        "?type=1&sort=titleSort&originallyAvailableAt%3C=2024-01-01"
+    )
+
+
+def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_moment_field():
+    """``added`` -> ``addedAt``: Plex stores a time of day, so the two edges of
+    the pair sit at different KINDS of boundary and each half has to be built
+    to land on the same one.
+
+    ``.from: A`` is inclusive at the MOMENT ``A 00:00`` -- everything added
+    during day A is at or after midnight, so the whole day is in and the
+    evening before is out. ``.to: A`` is inclusive at the calendar DAY: it
+    keeps everything added through the end of day A, 09:15 included, and drops
+    the first instant of day A+1. Written as a pair, ``added.from: A`` plus
+    ``added.to: B`` is the closed range an operator writing two dates means.
+    The strict, moment-symmetric reading is still available and unchanged,
+    under the older spelling ``.after``/``.before`` (roadmap row 154,
+    ``_as_moment``'s docstring, and
+    ``test_collection_filter_oracle.py::test_the_added_boundary_is_decided_at_the_moment_not_the_date``).
+
+    The wire half lands on the same two boundaries, and the probe is why. For
+    ``.from``: on the probe's boundary ``A = 2026-01-10``, ``addedAt%3E=A``,
+    ``addedAt%3E%3E=A`` and ``addedAt%3E%3E=A-1day`` ALL returned 101 -- Plex
+    reads a bare date on a moment field as that day's MIDNIGHT, so ``%3E=A``
+    is "at or after ``A 00:00``", the client comparison exactly. For ``.to``
+    that same midnight reading is what rules ``%3C=A`` OUT: ``addedAt%3C=A``
+    returned 1862, identical to the strict ``%3C%3C=A``, i.e. both forms
+    exclude everything added during day A -- they would drop the 09:15 item
+    this test keeps. So ``.to`` renders at the day AFTER and strictly:
+    ``%3C%3C=A+1`` is "strictly before ``(A+1) 00:00``", the client's own
+    comparison. The same day-after form was measured on the date field, where
+    a same-day equality count exists to check it against: ``%3C%3C=D+1day``
+    returned 1864 = ``%3C=D`` = ``%3C%3C=D`` (1862) + ``=D`` (2).
+
+    NOT covered here: ``.from: today`` disagrees between the two halves on a
+    moment field, by up to 24 hours -- the client compares against ``now`` (a
+    moment, time of day included) while the wire compares against
+    ``now.date()`` (that day's midnight). Amendment 1 happens to make ``.to:
+    today`` AGREE (both halves land on the same calendar day); this test
+    itself exercises a literal date, ``A = 2026-01-10``, never ``today``, so
+    that agreement is asserted here in prose, not by an assertion. The
+    surviving asymmetry is on ``.from`` and is inherited from the
+    pre-existing ``_Today`` convention (``.after: today`` has the same
+    split) -- out of scope for roadmap row 157 (review Important 3).
+    """
+    at_midnight = {"added": dt.datetime(2026, 1, 10, 0, 0)}
+    during_the_day = {"added": dt.datetime(2026, 1, 10, 9, 15)}
+    the_last_minute = {"added": dt.datetime(2026, 1, 10, 23, 59)}
+    the_evening_before = {"added": dt.datetime(2026, 1, 9, 22, 40)}
+    the_next_midnight = {"added": dt.datetime(2026, 1, 11, 0, 0)}
+
+    after = parse_filters({"added.from": "2026-01-10"})
+    before = parse_filters({"added.to": "2026-01-10"})
+
+    # `.from` takes the whole of day A, midnight included
+    assert evaluate(after, at_midnight, now=BOUNDARY_NOW) is True
+    assert evaluate(after, during_the_day, now=BOUNDARY_NOW) is True
+    assert evaluate(after, the_evening_before, now=BOUNDARY_NOW) is False
+
+    # `.to` takes the whole calendar day A -- 09:15 IS kept, which is the one
+    # cell of this row's decision table the controller ruled on -- and stops
+    # at the first instant of A+1.
+    assert evaluate(before, at_midnight, now=BOUNDARY_NOW) is True
+    assert evaluate(before, during_the_day, now=BOUNDARY_NOW) is True
+    assert evaluate(before, the_last_minute, now=BOUNDARY_NOW) is True
+    assert evaluate(before, the_evening_before, now=BOUNDARY_NOW) is True
+    assert evaluate(before, the_next_midnight, now=BOUNDARY_NOW) is False
+
+    # wire half, at the same two boundaries: `.from` at A inclusive, `.to`
+    # strictly before A+1. The 09:15 item is inside `addedAt%3C%3C=2026-01-11`
+    # and outside `addedAt%3C=2026-01-10`, which is the whole reason the
+    # rendering differs from the date-only row above.
+    assert url({"added.from": "2026-01-10"}) == (
+        "?type=1&sort=titleSort&addedAt%3E=2026-01-10"
+    )
+    assert url({"added.to": "2026-01-10"}) == (
+        "?type=1&sort=titleSort&addedAt%3C%3C=2026-01-11"
+    )
+
+
+# Roadmap row 157's Important 2 review finding: `MOMENT_DATE_ROWS` was
+# referenced by no test, so two of its four members (`episode_added`,
+# `episode_last_played`) rendered `.to` unpinned -- dropping either from the
+# frozenset kept the whole suite green while the row silently fell onto the
+# date-only branch. Each entry here is a HARDCODED (row, libtype, term)
+# triple, not derived from `MOMENT_DATE_ROWS` -- so if a row is ever dropped
+# from that set, `search_url._arguments` renders it the date-only way
+# (`%3C=A` instead of `%3C%3C=A+1`) and the row's own case here goes red,
+# rather than silently disappearing from the parametrize. `added` and
+# `last_played` repeat the boundary already pinned above (kept for a single
+# per-row table a reader can scan); `episode_added` and `episode_last_played`
+# are the two the review found missing. `release` and `episode_air_date` are
+# the date-only rows with a search half -- `last_episode_aired` is date-only
+# too but `search_field=None` (facts tier), so it has no wire half to render.
+MOMENT_TO_RENDERS = [
+    ({"added.to": "2026-01-10"}, "movie", "addedAt%3C%3C=2026-01-11"),
+    ({"last_played.to": "2026-01-10"}, "movie", "lastViewedAt%3C%3C=2026-01-11"),
+    ({"episode_added.to": "2026-01-10"}, "show", "episode.addedAt%3C%3C=2026-01-11"),
+    (
+        {"episode_last_played.to": "2026-01-10"}, "show",
+        "episode.lastViewedAt%3C%3C=2026-01-11",
+    ),
+]
+
+DATE_ONLY_TO_RENDERS = [
+    ({"release.to": "2026-01-10"}, "movie", "originallyAvailableAt%3C=2026-01-10"),
+    (
+        {"episode_air_date.to": "2026-01-10"}, "show",
+        "episode.originallyAvailableAt%3C=2026-01-10",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("raw", "libtype", "term"), MOMENT_TO_RENDERS,
+    ids=[next(iter(raw)) for raw, _, _ in MOMENT_TO_RENDERS],
+)
+def test_every_moment_date_row_renders_to_as_strict_at_the_day_after(raw, libtype, term):
+    sort_type = "2" if libtype == "show" else "1"
+    assert url(raw, libtype=libtype) == f"?type={sort_type}&sort=titleSort&{term}"
+
+
+@pytest.mark.parametrize(
+    ("raw", "libtype", "term"), DATE_ONLY_TO_RENDERS,
+    ids=[next(iter(raw)) for raw, _, _ in DATE_ONLY_TO_RENDERS],
+)
+def test_every_date_only_row_renders_to_as_inclusive_lte(raw, libtype, term):
+    sort_type = "2" if libtype == "show" else "1"
+    assert url(raw, libtype=libtype) == f"?type={sort_type}&sort=titleSort&{term}"
+
+
+def test_an_existing_date_definitions_url_is_unchanged_by_the_inclusive_pair():
+    """Storm-guard for roadmap row 157, as a test rather than as an argument.
+
+    ``smart.smart_definition_hash`` (smart.py:225) and
+    ``reconcile.definition_hash`` (reconcile.py:92) both fold the BUILT search
+    URL, so a stored fingerprint moves if and only if a URL moves. Adding
+    operator NAMES to a table cannot move one -- no existing config can be
+    using a name that did not parse -- and these three literals are what says
+    so: the strict pair, the relative window, and the show-library rescope,
+    each byte-identical to what this renderer produced before row 157.
+    """
+    assert url({"release.after": "2000-01-01", "added.before": "12/25/2020"}) == (
+        "?type=1&sort=titleSort&originallyAvailableAt%3E%3E=2000-01-01"
+        "&and=1&addedAt%3C%3C=2020-12-25"
+    )
+    assert url({"added": 30}) == "?type=1&sort=titleSort&addedAt%3E%3E=-30d"
+    assert url({"added.after": "2024-01-01"}, libtype="show") == (
+        "?type=2&sort=titleSort&show.addedAt%3E%3E=2024-01-01"
     )
 
 

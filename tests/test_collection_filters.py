@@ -493,8 +493,10 @@ def test_aspect_is_not_searchable_and_the_refusal_says_where_it_lives():
 def test_every_operator_maps_onto_plexapis_own_operator_table():
     """9b translates this vocabulary into a Plex search rather than reinventing
     it, so every operator names the ``plexapi.base.OPERATORS`` key it means --
-    or ``None``, explicitly, for the ones plexapi has no equivalent for. This
-    is the only test in the file that imports plexapi; the model never does."""
+    or ``None``, explicitly, where plexapi has no single equivalent: no
+    equivalent at all, or (roadmap row 157's ``("date", "to")``) one whose
+    answer depends on the ROW rather than the operator alone. This is the only
+    test in the file that imports plexapi; the model never does."""
     from plexapi.base import OPERATORS
 
     pairs = {(t, op) for t, ops in OPERATORS_BY_TYPE.items() for op in ops}
@@ -505,12 +507,14 @@ def test_every_operator_maps_onto_plexapis_own_operator_table():
     # The deliberate gaps: "in the last N days" is a relative window and
     # plexapi's table is all absolute comparisons; `.count_*` (sub-phase
     # C2b) asks how MANY children the item has, which plexapi spells with no
-    # operator key at all.
+    # operator key at all; and roadmap row 157's `("date", "to")` has no
+    # SINGLE key because its answer depends on the row (`MOMENT_DATE_ROWS`
+    # or not) -- see the entry's own comment in `filters.py`.
     unmapped = [pair for pair, key in PLEXAPI_EQUIVALENT.items() if key is None]
     assert unmapped == [
         ("tag", "count_gt"), ("tag", "count_gte"),
         ("tag", "count_lt"), ("tag", "count_lte"),
-        ("date", "eq"), ("date", "not"),
+        ("date", "eq"), ("date", "not"), ("date", "to"),
     ]
 
 
@@ -886,9 +890,16 @@ def test_the_modifier_table_is_not_invertible():
     }
     # The four pairs, by operator. The types differ within every pair, which is
     # the load-bearing half.
+    # Roadmap row 157 added the third operator to each single-angle collision:
+    # ``date.from``/``date.to`` render as ``%3E``/``%3C``, the same wire strings
+    # ``int.gte``/``int.lte`` and ``str.ends``/``str.begins`` already reach.
+    # That is not a clash -- it is Plex's own vocabulary, where one comparison
+    # operator serves every field type -- and it is precisely why this table's
+    # key is a PAIR: three operators now share ``%3E`` and a modifier-keyed
+    # dict could represent at most one of them.
     assert {wire: sorted({op for _, op in keys}) for wire, keys in collisions.items()} == {
-        "%3E": ["ends", "gte"],
-        "%3C": ["begins", "lte"],
+        "%3E": ["ends", "from", "gte"],
+        "%3C": ["begins", "lte", "to"],
         "%3E%3E": ["after", "gt"],
         "%3C%3C": ["before", "lt"],
     }
@@ -896,9 +907,11 @@ def test_the_modifier_table_is_not_invertible():
     # cannot leave this test green by accident.
     assert collisions["%3E"] == {
         ("str", "ends"), ("int", "gte"), ("float", "gte"), ("duration", "gte"),
+        ("date", "from"),
     }
     assert collisions["%3C"] == {
         ("str", "begins"), ("int", "lte"), ("float", "lte"), ("duration", "lte"),
+        ("date", "to"),
     }
     assert collisions["%3E%3E"] == {
         ("date", "after"), ("int", "gt"), ("float", "gt"), ("duration", "gt"),
@@ -922,6 +935,36 @@ def test_the_modifier_table_is_total_over_the_search_operators():
     for row in FILTER_ATTRIBUTES:
         for operator in row.search_operators:
             assert (row.type, operator) in SEARCH_MODIFIERS, (row.name, operator)
+
+
+def test_moment_date_rows_is_derived_from_the_same_search_field_suffix_it_documents():
+    """``MOMENT_DATE_ROWS``'s own comment says membership "is a property of
+    PLEX's storage, not of this table": the four rows whose ``search_field``
+    is ``addedAt`` / ``lastViewedAt`` (or the ``episode.`` rescope of one),
+    which plexapi hands back as a full datetime rather than a bare date.
+
+    Nothing enforced that claim before roadmap row 157's Important 2 review
+    finding: the set was held up only by three literal URL strings that
+    happen to name ``added`` and ``last_played``, so dropping
+    ``episode_added`` or ``episode_last_played`` from the frozenset left the
+    whole suite green while ``episode_added.to`` silently rendered the
+    date-only branch and dropped a day of episodes. This test derives the
+    expected set from the SAME suffix rule the module's own comment states,
+    so the two cannot drift apart -- and a future date row whose
+    ``search_field`` is ``addedAt``-shaped but is forgotten here now fails
+    structurally instead of shipping unpinned.
+    """
+    from autoposter.collections.filters import MOMENT_DATE_ROWS
+
+    derived = {
+        row.name for row in FILTER_ATTRIBUTES
+        if row.type == "date"
+        and (row.search_field or "").endswith(("addedAt", "lastViewedAt"))
+    }
+    assert MOMENT_DATE_ROWS == derived
+    assert MOMENT_DATE_ROWS == {
+        "added", "last_played", "episode_added", "episode_last_played",
+    }
 
 
 def test_resolution_has_no_negated_search():
@@ -1157,6 +1200,114 @@ def test_the_operator_refusal_for_a_date_explains_the_bare_form_correctly():
     message = str(caught.value)
     assert "within-the-last-N-days" in message
     assert "which means eq" not in message
+
+
+def test_the_inclusive_date_pair_is_writable_in_a_filters_block():
+    """Roadmap row 157. ``.from`` and ``.to`` are inclusive-boundary absolute
+    date operators under a spelling Kometa does not have -- ``Plex.split``
+    (plex.py:2735-2747) knows ``.gt``/``.gte``/``.lt``/``.lte`` and rewrites
+    all four to the strict forms, and knows nothing called ``.from`` or
+    ``.to``, so no config key can mean one membership here and another there.
+
+    This is the CLIENT half of the vocabulary. The wire half is
+    ``tests/test_collection_search_url.py``.
+    """
+    [from_clause] = parse_filters({"release.from": "2000-01-01"}).children
+    assert from_clause.operator == "from"
+    assert from_clause.values == (dt.date(2000, 1, 1),)
+
+    [to_clause] = parse_filters({"release.to": "12/25/2020"}).children
+    assert to_clause.operator == "to"
+    assert to_clause.values == (dt.date(2020, 12, 25),)
+
+    on_the_day = {"release": dt.date(2000, 1, 1)}
+    assert evaluate(parse_filters({"release.from": "2000-01-01"}), on_the_day, now=NOW) is True
+    assert evaluate(parse_filters({"release.after": "2000-01-01"}), on_the_day, now=NOW) is False
+    assert evaluate(parse_filters({"release.to": "2000-01-01"}), on_the_day, now=NOW) is True
+    assert evaluate(parse_filters({"release.before": "2000-01-01"}), on_the_day, now=NOW) is False
+
+
+def test_the_inclusive_date_pair_is_writable_in_a_plex_search_block():
+    """The same pair in the SEARCH vocabulary, parsed with ``searching=True``.
+
+    Both blocks or neither: the roadmap cell's own argument (row 157) is that
+    a spelling present in one vocabulary and absent from the other becomes the
+    same-name-different-filter defect one level along. The value parses
+    through ``_as_date`` in both, because ``_parse_value``'s date tail sends
+    every operator that is not ``eq``/``not`` there already.
+    """
+    [from_clause] = parse_filters({"added.from": "2026-01-10"}, searching=True).children
+    assert from_clause.operator == "from"
+    assert from_clause.values == (dt.date(2026, 1, 10),)
+
+    [to_clause] = parse_filters({"added.to": "2026-01-10"}, searching=True).children
+    assert to_clause.operator == "to"
+    assert to_clause.values == (dt.date(2026, 1, 10),)
+
+
+def test_the_date_range_refusal_now_points_at_the_inclusive_pair():
+    """Roadmap row 157 closes the gap the ``.gte``/``.lte`` refusal used to
+    leave open. Telling an operator who wrote ``release.gte`` only "write the
+    strict one you mean" answered what Kometa does but not what they asked
+    for; the pair now exists, so the refusal names it -- and names the RIGHT
+    edge of it, ``.from`` for the two upper modifiers and ``.to`` for the two
+    lower ones."""
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"release.gte": "2000-01-01"})
+    message = str(caught.value)
+    assert ".after/.before" in message
+    assert "strict" in message
+    assert "`release.from`" in message
+
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"release.lte": "2000-01-01"})
+    assert "`release.to`" in str(caught.value)
+
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"added.gt": "2024-01-01"})
+    assert "`added.from`" in str(caught.value)
+
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"added.lt": "2024-01-01"})
+    assert "`added.to`" in str(caught.value)
+
+
+def test_the_bare_date_forms_refusal_names_the_inclusive_pair_too():
+    """``_as_days``' refusal lists the absolute date operators for an operator
+    who wrote a date where a day-count belongs. It listed two; there are four
+    now, and a list that silently omits half the vocabulary is the same defect
+    as the ``.gte`` message above."""
+    with pytest.raises(ValueError) as caught:
+        parse_filters({"added": "2024-01-01"})
+    message = str(caught.value)
+    assert ".before/.after" in message
+    assert ".from/.to" in message
+
+
+def test_a_date_operator_with_no_branch_refuses_rather_than_meaning_after():
+    """The single highest-risk line in roadmap row 157, pinned.
+
+    ``_matches_one``'s date branch used to end on an unguarded
+    ``return when > moment`` -- "after" by exhaustion. A fifth date operator
+    added to ``OPERATORS_BY_TYPE`` and to no branch here would have been
+    SILENTLY ``.after``: it would load, run, and produce a full, plausible,
+    wrong collection. Every date operator is now explicit and the tail
+    refuses, so the same mistake is an exception naming the operator instead.
+
+    Unreachable through ``parse_filters`` by construction (``_split_key``
+    refuses an operator the type does not have), which is why it is called
+    directly here.
+    """
+    from autoposter.collections import filters as filters_module
+
+    with pytest.raises(ValueError, match="no date comparison for .whenever"):
+        filters_module._matches_one(
+            BY_NAME["release"],
+            "whenever",
+            dt.date(2024, 1, 2),
+            dt.date(2024, 1, 1),
+            NOW,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1507,6 +1658,38 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (dt.date(2024, 1, 1), dt.date(2024, 1, 2), False),
         (dt.date(2026, 8, 26), "today", True),
         (TODAY, "today", False),
+        (None, dt.date(2024, 1, 1), False),
+    ],
+    # -- roadmap row 157: the inclusive pair. Every case below is the
+    #    ``.before``/``.after`` case above with the boundary flipped, plus the
+    #    boundary case itself -- which is the entire point of the pair, and
+    #    the case ``.after``/``.before`` answer False. ``REPRESENTATIVE["date"]``
+    #    is ``added``, a MOMENT row, so the datetime cases are the ones that
+    #    say where each edge's boundary actually falls: ``.from`` is inclusive
+    #    at the boundary day's MIDNIGHT, and ``.to`` is inclusive at the whole
+    #    calendar DAY, so an item added at 09:15 on the boundary day passes
+    #    BOTH. ``.to``'s exclusive edge is the next day's midnight, which the
+    #    ``dt.date(2024, 1, 2)`` case below is (``_as_moment`` makes a written
+    #    date that day's 00:00).
+    ("date", "from"): [
+        (dt.date(2024, 1, 1), dt.date(2024, 1, 1), True),
+        (dt.date(2024, 1, 2), dt.date(2024, 1, 1), True),
+        (dt.date(2023, 12, 31), dt.date(2024, 1, 1), False),
+        (dt.datetime(2024, 1, 1, 0, 1), dt.date(2024, 1, 1), True),
+        (dt.datetime(2023, 12, 31, 23, 59), dt.date(2024, 1, 1), False),
+        (dt.date(2024, 1, 1), "2024-01-01", True),
+        (TODAY, "today", True),
+        (dt.date(2026, 8, 24), "today", False),
+        (None, dt.date(2024, 1, 1), False),
+    ],
+    ("date", "to"): [
+        (dt.date(2024, 1, 1), dt.date(2024, 1, 1), True),
+        (dt.date(2023, 12, 31), dt.date(2024, 1, 1), True),
+        (dt.date(2024, 1, 2), dt.date(2024, 1, 1), False),
+        (dt.datetime(2024, 1, 1, 9, 15), dt.date(2024, 1, 1), True),
+        (dt.date(2024, 1, 1), "01/01/2024", True),
+        (TODAY, "today", True),
+        (dt.date(2026, 8, 26), "today", False),
         (None, dt.date(2024, 1, 1), False),
     ],
 }
@@ -2441,7 +2624,7 @@ def test_last_episode_aired_is_a_show_only_date_row_whose_bare_form_is_a_window(
     assert (row.type, row.kinds, row.source) == ("date", ("show",), "facts")
     assert row.filterable is True
     assert row.searchable is False
-    assert row.operators == ("eq", "not", "before", "after")
+    assert row.operators == ("eq", "not", "before", "after", "from", "to")
 
     now = dt.datetime(2026, 9, 5, 12, 0)
     recent = {"last_episode_aired": dt.date(2026, 8, 30)}   # 6 days ago
