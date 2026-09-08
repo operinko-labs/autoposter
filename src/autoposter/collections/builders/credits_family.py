@@ -31,6 +31,15 @@ the gap.
 Joins the delete sweep through ``family_label``/``generated_titles``, the
 protocol ``builders/dynamic.py`` names. The label prefix differs from both
 sibling families' so the three sweeps cannot enumerate each other's members.
+
+**A family-level refusal freezes its existing members, deliberately** (roadmap
+row 223, answered 2026-09-08: the coupling is KEPT). The over-cap branch returns
+before the record seed at ``ctx.run_cache[_generated_key(...)]``, so a refused
+family's collections keep stale sort prefixes and take no poster updates -- and,
+by the same return, are guaranteed not to be swept, because
+``engine.py:1418-1421`` reads an absent record as the fail-closed state. The
+refusal is logged as well as reported, ``builders/dynamic._refused``'s line
+verbatim, so a family that stops updating says so on the logs page.
 """
 import logging
 
@@ -435,14 +444,23 @@ class CreditsFamilyBuilder:
                 % (definition.title, params.type)
             ]
         if len(titled) > params.max_collections:
-            return actions + [
-                "%r built nothing: this would create %d collections in %r and "
-                "`max_collections` is %d. Narrow with `depth:`/`limit:`/"
-                "`exclude:`, or raise `max_collections` past %d if that is "
-                "really what you want"
-                % (definition.title, len(titled), ctx.library,
-                   params.max_collections, len(titled))
-            ]
+            # Roadmap row 223, this builder's half of the same line
+            # ``builders/dynamic._refused`` has carried since it shipped: a
+            # family-level refusal freezes every existing member out of its own
+            # re-sort and poster updates until the operator acts, and an
+            # operator who never opens the run report has no other way to learn
+            # that happened. The reported string is unchanged.
+            why = (
+                "this would create %d collections in %r and `max_collections` "
+                "is %d. Narrow with `depth:`/`limit:`/`exclude:`, or raise "
+                "`max_collections` past %d if that is really what you want"
+                % (len(titled), ctx.library, params.max_collections,
+                   len(titled))
+            )
+            logger.warning(
+                "%s: %r was not built: %s", ctx.library, definition.title, why
+            )
+            return actions + ["%r built nothing: %s" % (definition.title, why)]
 
         # The narrowing between the cap and the built family, reported rather
         # than left to be inferred from a short list (review F13).

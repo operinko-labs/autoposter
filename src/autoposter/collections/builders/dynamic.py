@@ -72,6 +72,20 @@ empty enumeration, an over-cap fan-out, a duplicate title, a bucket whose values
 the type's own search grammar refuses and a key whose query Plex cannot answer
 are all caught here and returned as action strings. A failing label write still
 reaches the engine's per-library rollback, unchanged.
+
+**A family-level refusal freezes its existing members, deliberately** (roadmap
+row 223, answered 2026-09-08: the coupling is KEPT). Every branch above returns
+BEFORE the sweep's record is seeded, before the listing is fetched and before
+the per-key ``reconcile_smart_collection`` call -- so a refused family's
+collections keep whatever sort prefix they had and take no poster updates until
+the operator acts. That is half a loss and half a protection, and the protective
+half is why it stays: ``engine.py:1418-1421`` reads an ABSENT record as the
+fail-closed state, so the same return that freezes the family also guarantees
+the sweep will not delete any of it. Reconciling half a family under a record
+the delete sweep also reads is how collections get deleted; splitting the two is
+filed rather than built, and its named prerequisite is that the record be seeded
+from the LIVE listing, never from ``titled``. The refusal is logged as well as
+reported (``_refused``) so the freeze is at least audible.
 """
 import logging
 import re

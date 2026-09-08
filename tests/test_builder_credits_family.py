@@ -465,6 +465,44 @@ async def test_a_fanout_past_max_collections_refuses_with_both_numbers(session):
     assert "3 collections" in actions[0] and "`max_collections` is 2" in actions[0]
 
 
+async def test_the_over_cap_refusal_reaches_the_logs_page(session, caplog):
+    """Roadmap row 223, this builder's half. ``credits_family`` has had a logger
+    since it shipped and its over-cap branch did not use it, so the one refusal
+    that freezes a whole family out of its own re-sort and poster updates was
+    the only family-level refusal here that never reached the logs page. ONE
+    record, ``builders/dynamic._refused``'s exact shape, and the action string
+    an operator reads in the run report is unchanged."""
+    import logging
+
+    await _seed(session, {"Ann": 3, "Bob": 3, "Cy": 3})
+    section = FakeSection()
+
+    with caplog.at_level(logging.WARNING):
+        actions = await REGISTRY["credits_family"].apply(_ctx(
+            session, section,
+            _definition(params={
+                "type": "actor", "depth": 1, "max_collections": 2,
+            }),
+        ))
+
+    warnings = [
+        record for record in caplog.records
+        if record.levelno == logging.WARNING
+        and record.name == "autoposter.collections.builders.credits_family"
+    ]
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+    message = warnings[0].getMessage()
+    assert "Movies" in message
+    assert "Top actors" in message
+    assert "`max_collections` is 2" in message
+    assert actions == [
+        "'Top actors' built nothing: this would create 3 collections in "
+        "'Movies' and `max_collections` is 2. Narrow with "
+        "`depth:`/`limit:`/`exclude:`, or raise `max_collections` past 3 if "
+        "that is really what you want"
+    ]
+
+
 async def test_an_all_excluded_family_says_so_rather_than_building_nothing(session):
     """``exclude`` emptying the family is an operator's own doing and reads
     identically to a broken enumeration unless it is reported."""
