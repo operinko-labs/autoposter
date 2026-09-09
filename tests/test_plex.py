@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import requests
 from plexapi.exceptions import BadRequest as PlexBadRequest
 from plexapi.exceptions import NotFound as PlexNotFound
 
@@ -10,7 +11,13 @@ from autoposter.arr.sync import enqueue_unknown_items
 from autoposter.config.loader import load_config
 from autoposter.db.models import Job
 from autoposter.intake.arr import RenderIntent
-from autoposter.plex.client import ItemNotFound, PlexClient, parse_guids
+from autoposter.plex.client import (
+    FETCH_ITEM_BACKOFF_SECONDS,
+    FETCH_ITEM_RETRIES,
+    ItemNotFound,
+    PlexClient,
+    parse_guids,
+)
 from autoposter.render.pipeline import title_text_for
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -212,6 +219,178 @@ async def test_fetch_item_fetches_by_rating_key_as_int():
     item = await client.fetch_item("12345")
 
     assert item is marker
+
+
+# --- fetch_item's retry policy (FETCH_ITEM_RETRIES / FETCH_ITEM_BACKOFF_SECONDS) ---
+
+#: A message no host, path or operator value could be confused with. Its whole
+#: job is case (g): if the warning ever interpolates `str(exc)` instead of the
+#: exception's class name, this string turns up in the log record, and on a
+#: real ReadTimeout the same slot carries the Plex host and port.
+TIMEOUT_DETAIL = "pfetch-timeout-detail-marker"
+
+
+class RecordingSleep:
+    """Stands in for ``asyncio.sleep`` inside ``plex/client.py``.
+
+    Records what it was asked to wait for and returns at once. The suite must
+    never really sleep -- the backoff is 14 seconds per exhausted item -- and
+    the recorded sequence IS the assertion: it is compared against
+    ``FETCH_ITEM_BACKOFF_SECONDS`` rather than against re-typed literals, so a
+    policy change moves the constant and the tests follow.
+    """
+
+    def __init__(self):
+        self.waits = []
+
+    async def __call__(self, seconds):
+        self.waits.append(seconds)
+
+
+class ScriptedFetchServer:
+    """A ``_server`` whose ``fetchItem`` replays a script, one entry per call.
+
+    An entry that is an exception instance is raised; anything else is
+    returned. Every call's argument is recorded, so the number of attempts and
+    the *type* of what reached plexapi are both assertable. Deliberately not a
+    subclass of ``FakeServer`` above: that double answers a key from a fixed
+    mapping, which is the opposite of what a retry test needs -- the same key
+    must answer differently on successive calls. Running the script dry raises
+    ``IndexError`` at the call itself, which says "the code retried more times
+    than the case scripted" where a silent ``None`` would surface frames later.
+    """
+
+    def __init__(self, script):
+        self._script = list(script)
+        self.calls = []
+
+    def fetchItem(self, ekey):
+        self.calls.append(ekey)
+        outcome = self._script.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _retrying_client(monkeypatch, script):
+    """A client over a scripted server, with the module's sleep neutralised."""
+    server = ScriptedFetchServer(script)
+    sleeps = RecordingSleep()
+    monkeypatch.setattr("autoposter.plex.client._sleep", sleeps)
+    return PlexClient(server=server, excluded_libraries=[]), server, sleeps
+
+
+async def test_fetch_item_retries_a_read_timeout_and_then_succeeds(monkeypatch):
+    marker = object()
+    client, server, sleeps = _retrying_client(monkeypatch, [
+        requests.exceptions.ReadTimeout(TIMEOUT_DETAIL),
+        requests.exceptions.ReadTimeout(TIMEOUT_DETAIL),
+        marker,
+    ])
+
+    item = await client.fetch_item("12345")
+
+    assert item is marker
+    assert sleeps.waits == list(FETCH_ITEM_BACKOFF_SECONDS[:2])
+    assert server.calls == [12345, 12345, 12345]
+
+
+async def test_fetch_item_reraises_the_original_timeout_after_the_last_attempt(monkeypatch):
+    # The SAME instance every time: app._handle_intent tags the object it
+    # catches with `max_attempts`, so a retry that wrapped or replaced the
+    # exception would silently move that job onto the generic budget.
+    failure = requests.exceptions.ReadTimeout(TIMEOUT_DETAIL)
+    attempts = FETCH_ITEM_RETRIES + 1
+    client, server, sleeps = _retrying_client(monkeypatch, [failure] * attempts)
+
+    with pytest.raises(requests.exceptions.ReadTimeout) as exc_info:
+        await client.fetch_item("12345")
+
+    assert exc_info.value is failure
+    assert sleeps.waits == list(FETCH_ITEM_BACKOFF_SECONDS)
+    assert server.calls == [12345] * attempts
+
+
+async def test_fetch_item_retries_a_connection_error_the_same_way(monkeypatch):
+    marker = object()
+    client, server, sleeps = _retrying_client(monkeypatch, [
+        requests.exceptions.ConnectionError(TIMEOUT_DETAIL),
+        marker,
+    ])
+
+    item = await client.fetch_item("12345")
+
+    assert item is marker
+    assert sleeps.waits == [FETCH_ITEM_BACKOFF_SECONDS[0]]
+    assert server.calls == [12345, 12345]
+
+
+async def test_fetch_item_does_not_retry_a_plex_not_found(monkeypatch):
+    # An item Plex does not have is a settled answer, not a transient one:
+    # retrying it costs 14 seconds and four requests to learn the same thing,
+    # and every caller already handles the raise.
+    client, server, sleeps = _retrying_client(monkeypatch, [
+        PlexNotFound("Unable to find item with key 12345"),
+    ])
+
+    with pytest.raises(PlexNotFound):
+        await client.fetch_item("12345")
+
+    assert sleeps.waits == []
+    assert server.calls == [12345]
+
+
+async def test_fetch_item_does_not_retry_an_unrelated_exception(monkeypatch):
+    client, server, sleeps = _retrying_client(monkeypatch, [ValueError("boom")])
+
+    with pytest.raises(ValueError):
+        await client.fetch_item("12345")
+
+    assert sleeps.waits == []
+    assert server.calls == [12345]
+
+
+async def test_fetch_item_passes_the_rating_key_as_an_int_on_every_attempt(monkeypatch):
+    # plexapi's fetchItem branches on the argument's type -- an int is a rating
+    # key, a str is a path -- so a retry loop that forgot the int() conversion
+    # on the second pass would issue a completely different request.
+    marker = object()
+    client, server, _ = _retrying_client(monkeypatch, [
+        requests.exceptions.ReadTimeout(TIMEOUT_DETAIL),
+        marker,
+    ])
+
+    item = await client.fetch_item("12345")
+
+    assert item is marker
+    assert server.calls == [12345, 12345]
+    assert [type(call) for call in server.calls] == [int, int]
+
+
+async def test_fetch_item_logs_the_exception_class_and_not_its_message(monkeypatch, caplog):
+    marker = object()
+    client, _, _ = _retrying_client(monkeypatch, [
+        requests.exceptions.ReadTimeout(TIMEOUT_DETAIL),
+        marker,
+    ])
+
+    with caplog.at_level("WARNING"):
+        item = await client.fetch_item("12345")
+
+    assert item is marker
+    records = [r for r in caplog.records if r.name == "autoposter.plex.client"]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "ReadTimeout" in message
+    assert "12345" in message
+    # Row 213: a real requests timeout's str() is
+    # "HTTPSConnectionPool(host=..., port=...): Read timed out." -- the host and
+    # port of the operator's Plex. Only the class name may be logged.
+    assert TIMEOUT_DETAIL not in message
+    # The numbers are retry ordinals, not attempt ordinals: "attempt 3 of 3"
+    # printed before a fourth attempt runs would mislead.
+    assert "retry 1 of 3" in message
+    assert "attempt" not in message
 
 
 async def test_resolve_raises_when_plex_has_not_scanned_yet(server):
