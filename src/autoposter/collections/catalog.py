@@ -892,7 +892,7 @@ _TMDB_CHARTS: tuple[tuple[str, str, str, str], ...] = (
     ("on_the_air", TMDB_CHART_TITLES["on_the_air"][0], "defaults/chart/tmdb.yml",
      "series airing an episode in the next week"),
     ("now_playing", "TMDb Now Playing", NOT_KOMETA + "the title is ours",
-     "films in cinemas now, with a title of ours since Kometa has no row for "
+     "films in cinemas now, with a title of ours because Kometa does not list "
      "this chart"),
     ("upcoming", "TMDb Upcoming", NOT_KOMETA + "the title is ours",
      "films with a release date still ahead, with a title of ours as with "
@@ -912,7 +912,7 @@ def _tmdb_chart_preset(chart: str, title: str, source: str, note: str) -> Preset
         key="chart_tmdb_%s" % chart,
         category="charts",
         name=title,
-        description="%s: %s, re-read from TMDb on every pass." % (title, note),
+        description="%s: %s, re-read from TMDb on every run." % (title, note),
         kometa_source=source,
         library_types=library_types,
         collections=(
@@ -947,7 +947,7 @@ _TRACEARR_SOURCE = NOT_KOMETA + (
 
 _TRACEARR_DESCRIPTION = (
     "The %s played most often on this server over the past 30 days, ranked "
-    "from Tracearr's own watch history and recomputed on every pass. Needs "
+    "from Tracearr's own watch history and recomputed on every run. Needs "
     "Tracearr connected in Settings, with its address and API key; without "
     "them the collection reports itself failed rather than emptying."
 )
