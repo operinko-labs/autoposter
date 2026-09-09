@@ -196,10 +196,13 @@ FAMILIES: dict[str, Family] = {
     ),
     "year": Family(
         "year", "number", False,
-        "Probe §5 `year/`: flat year numbers, 153 entries. The `time_year` "
-        "pack is GATED and builds nothing today, but `type: year` is a "
-        "shipped dynamic type an operator can write by hand, so the row is "
-        "filled -- and the pack flipping READY later costs nothing.",
+        "Probe §5 `year/`: flat year numbers, 153 entries. Read two ways: the "
+        "`time_year` pack's eleven windowed collections and any hand-written "
+        "`type: year` definition, both keyed on the year itself. `best/` is a "
+        "'best of' variant and is not read -- upstream's own `year.yml` points "
+        "at `year/best/<<key>>`, and this service serves the flat file for "
+        "every year family rather than one directory for the pack and another "
+        "for a definition an operator wrote.",
     ),
     "resolution": Family(
         "resolution", "short code", False,

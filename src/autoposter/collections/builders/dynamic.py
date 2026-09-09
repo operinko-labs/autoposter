@@ -102,7 +102,7 @@ from autoposter.collections.builders.plex_search import (
     LibraryTagResolver,
     PlexSearchUnavailable,
 )
-from autoposter.collections.dynamic_keys import derive_keys
+from autoposter.collections.dynamic_keys import DerivedKeys, derive_keys
 from autoposter.collections.dynamic_titles import (
     ABSENT_KEY,
     OTHER_KEY,
@@ -330,9 +330,20 @@ class YearWindow(BaseModel):
     starting: str
     ending: str
 
-    @field_validator("starting", "ending")
+    @field_validator("starting", "ending", mode="before")
     @classmethod
-    def _a_bound_is_a_year_or_the_sentinel(cls, value: str) -> str:
+    def _a_bound_is_a_year_or_the_sentinel(cls, value: object) -> str:
+        # ``mode="before"``, deliberately: a ``bool``, ``None`` or a list is a
+        # shape pydantic's own ``str`` coercion refuses on its own terms
+        # ("Input should be a valid string"), which never reaches this
+        # validator in "after" mode and tells an operator porting `year.yml`
+        # nothing about `data:`'s own grammar. ``bool`` is excluded from the
+        # numeric branch by name because it is a Python ``int`` subclass and
+        # ``coerce_numbers_to_str`` would otherwise wave ``True``/``False``
+        # through as "True"/"False".
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise ValueError(WINDOW_BOUND_REFUSAL)
+        value = str(value)
         if _as_current_year(value, "data") is not None:
             return value
         try:
@@ -776,22 +787,6 @@ class DynamicBuilder:
                 % (ctx.library, params.type, libtype)
             ))
 
-        if params.data is not None:
-            # One captured moment for the whole family, per pass. Both bounds
-            # resolve against it, so a pass that straddles midnight on New
-            # Year's Eve builds one window rather than two.
-            first, last = params.data.resolve(_now())
-            enumerated = [
-                (key, title) for key, title in enumerated
-                if key.isdigit() and first <= int(key) <= last
-            ]
-            # ``isdigit`` also drops Plex's ABSENT_KEY ("None") before it can
-            # reach a bucket, which is the same verdict ``family_titles``
-            # reaches for it a few lines below -- a year window has no bucket
-            # for "no year".
-            if not enumerated:
-                return self._refused(ctx, definition.title, WINDOW_HOLDS_NOTHING)
-
         derived = derive_keys(
             enumerated,
             include=params.include,
@@ -799,6 +794,35 @@ class DynamicBuilder:
             addons=params.addons,
             custom_keys=params.custom_keys,
         )
+
+        if params.data is not None:
+            # One captured moment for the whole family, per pass. Both bounds
+            # resolve against it, so a pass that straddles midnight on New
+            # Year's Eve builds one window rather than two.
+            #
+            # Applied to the DERIVED keys, after ``addons:`` has had its say --
+            # not to ``enumerated`` before ``derive_keys`` runs. An addon can
+            # introduce a key the library never enumerated at all
+            # (``dynamic_keys.derive_keys``'s ``add_key not in present``
+            # branch only requires that the addon's MEMBERS be present, not
+            # the synthetic key itself), so a window that filtered only the
+            # library's raw enumeration would let such a key through
+            # regardless of its bounds.
+            first, last = params.data.resolve(_now())
+            derived = DerivedKeys(
+                keys=tuple(
+                    unit for unit in derived.keys
+                    if unit.key.isdigit() and first <= int(unit.key) <= last
+                ),
+                other_keys=derived.other_keys,
+            )
+            # ``isdigit`` also drops Plex's ABSENT_KEY ("None") here -- a year
+            # window has no bucket for "no year" -- the same verdict
+            # ``family_titles`` reaches for it a few lines below for every
+            # other dynamic family.
+            if not derived.keys:
+                return self._refused(ctx, definition.title, WINDOW_HOLDS_NOTHING)
+
         try:
             titled = family_titles(
                 derived,

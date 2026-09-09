@@ -1147,9 +1147,9 @@ async def test_an_include_by_display_value_is_reported_inert_on_a_keyed_type(
 # (`filters._as_current_year`) and there is deliberately no second one.
 
 YEARS = [
-    FakeChoice("1", "2014"), FakeChoice("2", "2016"),
-    FakeChoice("3", "2020"), FakeChoice("4", "2026"),
-    FakeChoice("5", "2030"),
+    FakeChoice("1", "2014"), FakeChoice("2", "2015"), FakeChoice("3", "2016"),
+    FakeChoice("4", "2020"), FakeChoice("5", "2026"), FakeChoice("6", "2027"),
+    FakeChoice("7", "2030"),
 ]
 
 # The window every test below writes, as the pack writes it.
@@ -1226,6 +1226,23 @@ def test_a_bound_that_is_neither_a_year_nor_the_sentinel_refuses_at_load():
         assert written not in WINDOW_BOUND_REFUSAL
 
 
+def test_a_bound_of_the_wrong_shape_refuses_with_the_fixed_sentence_too():
+    """T2 review, folded finding 2. A `bool`, `None` or a list is a shape
+    pydantic's own `str` coercion would refuse on its own terms ("Input
+    should be a valid string"), never reaching the validator above at all --
+    which tells an operator porting `year.yml` nothing about `data:`'s own
+    grammar. `False` is the case that most needs the guard: `bool` is a
+    Python `int` subclass, and `coerce_numbers_to_str` would otherwise wave
+    it through as the string `"False"`.
+    """
+    from autoposter.collections.builders.dynamic import WINDOW_BOUND_REFUSAL
+
+    for bad in (False, None, [2020]):
+        with pytest.raises(ValidationError) as refusal:
+            DynamicParams(type="year", data={"starting": bad, "ending": "current_year"})
+        assert WINDOW_BOUND_REFUSAL in str(refusal.value), bad
+
+
 def test_a_bound_outside_the_believable_range_refuses_at_load(monkeypatch):
     _frozen(monkeypatch, 2026)
     for window in (
@@ -1291,6 +1308,56 @@ async def test_the_window_keeps_only_the_years_the_library_holds_inside_it(
     assert "Best of 2014" not in section._existing
     assert "Best of 2030" not in section._existing
     assert "Best of 2018" not in section._existing
+
+
+async def test_the_window_keeps_both_exact_bounds_and_drops_both_neighbours(
+    session, monkeypatch
+):
+    """T2 review, folded finding 3. The off-by-one case the inclusive range
+    (C2) promises: 2016 and 2026 are the window's own bounds and must be
+    built, 2015 and 2027 are one year outside either edge and must not be."""
+    _frozen(monkeypatch, 2026)
+    section = FakeSection(choices=YEARS)
+    definition = _definition(title="Years", params={
+        "type": "year", "data": WINDOW,
+        "title_format": "Best of <<key_name>>",
+    })
+
+    await REGISTRY["dynamic"].apply(_ctx(session, section, definition))
+
+    assert "Best of 2016" in section._existing
+    assert "Best of 2026" in section._existing
+    assert "Best of 2015" not in section._existing
+    assert "Best of 2027" not in section._existing
+
+
+async def test_an_addon_key_outside_the_window_is_never_built(session, monkeypatch):
+    """T2 review, folded finding 1. The window is applied to the DERIVED key
+    set, after `addons:` has had its say -- `addons:` can introduce a key the
+    library never enumerated at all (`dynamic_keys.derive_keys`'s `add_key
+    not in present` branch only requires that the addon's MEMBERS be
+    present, not the synthetic key itself), so a window that filtered only
+    the library's raw enumeration would let such a key through untouched.
+    `2030` is outside a 2016..2026 window and must never become a
+    collection, however `addons:` names it."""
+    _frozen(monkeypatch, 2026)
+    section = FakeSection(choices=YEARS)
+    definition = _definition(title="Years", params={
+        "type": "year", "data": WINDOW,
+        "title_format": "Best of <<key_name>>",
+        "addons": {"2030": ["2016"]},
+    })
+
+    await REGISTRY["dynamic"].apply(_ctx(session, section, definition))
+
+    # `2016` is the addon's MEMBER, not its key: `derive_keys` folds a member
+    # into its addon's synthetic bucket the same way it folds a genre variant
+    # into its parent (meta.py:863-867), so `2016` on its own is absorbed
+    # into `2030` rather than staying a standalone collection too -- and
+    # `2030` is exactly the key the window must still refuse.
+    assert "Best of 2030" not in section._existing
+    assert "Best of 2020" in section._existing
+    assert "Best of 2026" in section._existing
 
 
 async def test_include_and_exclude_still_compose_on_top_of_the_window(

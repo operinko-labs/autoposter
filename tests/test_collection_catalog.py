@@ -19,6 +19,7 @@ Three properties carry this phase, and every test here is one of them:
   title is not.
 """
 import ast
+import datetime as dt
 import hashlib
 import json
 import pathlib
@@ -298,7 +299,10 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     # 1/2/0 until the gated-packs decision: `time_seasonal` was REMOVED on the
     # operator's ruling rather than built. Its blocker was a collection fed by
     # several sources at once, which is an identity-model change, not a table.
-    "time": (1, 1, 0),
+    # 1/1/0 until the year-pack phase: `time_year` flipped GATED -> READY when
+    # the dynamic engine got a relative key window (`data: {starting,
+    # ending}`). `len(CATALOG)` does not move -- the row was always here.
+    "time": (2, 0, 0),
 }
 
 
@@ -591,6 +595,7 @@ def test_there_are_dynamic_packs_to_hold_to_the_contract():
     assert {preset.key for preset, _, _ in _dynamic_rows()} == {
         "content_genres",
         "time_decade",
+        "time_year",
         "media_audio_language",
         "media_subtitle_language",
         "location_country",
@@ -641,9 +646,20 @@ def test_every_pack_opens_with_what_the_operator_gets():
     mechanism: they cannot appear in a description any more (they were
     asserted as backticked keys and bare numbers), and what replaces them is
     the rule that made them worth asserting -- the row opens with what the
-    operator will find in Plex."""
+    operator will find in Plex.
+
+    ``time_year`` reads differently in shape, not in spirit: it is not "one
+    per value the library holds" like the other six -- it is one per year in
+    a bounded stretch of them -- so its opening names the stretch instead of
+    a value. Keyed on the preset rather than loosened for everyone, so a
+    pack that is genuinely "one per value" still has to say so.
+    """
     for preset, _collection, _params in _dynamic_rows():
-        assert preset.description.startswith("One collection per "), preset.key
+        opens_with = (
+            "One collection for " if preset.key == "time_year"
+            else "One collection per "
+        )
+        assert preset.description.startswith(opens_with), preset.key
 
 
 def test_a_language_packs_include_list_still_has_norwegian_in_it():
@@ -664,6 +680,57 @@ def test_a_language_packs_include_list_still_has_norwegian_in_it():
     for preset, params in packs:
         assert "no" in params["include"], preset.key
         assert len(params["include"]) == 187, preset.key
+
+
+def test_the_year_pack_is_the_eleven_year_window_its_file_pins():
+    """The transcription of ``defaults/both/year.yml``, held to its own file.
+
+    Upstream is ``data: {starting: current_year-10, ending: current_year}``
+    with ``title_format: Best of <<key_name>>``, ``sort_by:
+    critic_rating.desc`` and ``limit: 10`` -- eleven collections, the current
+    year and the ten before it, each that year's ten best. Every number here
+    is read out of the params rather than restated, so a pack edited away
+    from its file fails rather than a comment going quietly wrong.
+    """
+    from autoposter.collections.builders.dynamic import DynamicParams
+
+    (preset, collection, params), = [
+        row for row in _dynamic_rows() if row[0].key == "time_year"
+    ]
+    assert params["type"] == "year"
+    assert params["title_format"] == "Best of <<key_name>>"
+    assert tuple(params["sort_by"]) == ("critic_rating.desc",)
+    assert params["limit"] == 10
+    assert "max_collections" not in params, (
+        "eleven collections is inside the builder's own default of 50"
+    )
+
+    window = DynamicParams(**params).data
+    assert window is not None
+    first, last = window.resolve(dt.datetime(2026, 3, 4))
+    assert (first, last) == (2016, 2026)
+    assert last - first + 1 == 11
+
+    # Both library kinds: `year.yml` is a `defaults/both/` file.
+    assert set(preset.library_types) == {"Movie", "Show"}
+    assert collection.builder == "dynamic"
+
+
+def test_a_windowed_packs_shape_line_says_the_family_is_bounded():
+    """``dynamic_shape`` is what the Collections page prints under a row, and
+    for every other pack "one per <type> the library holds" is the whole
+    truth. For a windowed family it is not: the window is what makes this
+    eleven collections instead of the 87 the probe counted, and a shape line
+    that omitted it would describe a pack this row does not build -- the
+    failure the row itself was gated rather than commit."""
+    (_preset, _collection, params), = [
+        row for row in _dynamic_rows() if row[0].key == "time_year"
+    ]
+    line = catalog.dynamic_shape(params)
+
+    assert "year" in line
+    assert "range" in line
+    assert 'named "Best of <year>"' in line
 
 
 def _table_checksum(entries) -> str:
@@ -929,6 +996,17 @@ _ALLOWED_FORMAT_SHARERS: frozenset[frozenset[str]] = frozenset({
     frozenset({"content_franchises", "location_country"}),
     frozenset({"content_franchises", "location_region"}),
     frozenset({"content_franchises", "location_continent"}),
+    # MEASURED, and recurring rather than hypothetical: `time_decade` keys on
+    # `choice.key`, a decade spelled as its own first year ("1900".."2020" on
+    # the production movie library), and `time_year`'s window is the current
+    # year and the ten before it -- so whenever the window contains a decade
+    # key (roughly one year in ten, e.g. "2020" for a window that runs
+    # 2016..2026), a Movie library holding anything from that year and
+    # anything from that decade gets the SAME "Best of <year>" title from
+    # both packs. Both files carry `title_format: "Best of <<key_name>>"`
+    # upstream (`decade.yml`, `year.yml`), so this is upstream's own overlap,
+    # not one this transcription introduced.
+    frozenset({"time_decade", "time_year"}),
 })
 
 
@@ -1226,15 +1304,16 @@ def test_every_packs_static_titles_are_checked_against_the_managed_titles():
 
 
 # Every pack's `title_format`, as the literal `packs.py` pins. The second site
-# of a deliberate two-site edit: the test above proves the seven formats do not
-# COLLIDE, which a coordinated edit of two of them could keep true while
-# silently renaming a shipped family's every collection. Six of these are
-# Kometa's own; `production_studio`'s is this service's divergence, and it is
-# the one most likely to be "improved" by a later reader who has not read why
-# it is not bare.
+# of a deliberate two-site edit: the test above proves the eight formats do not
+# COLLIDE (past the one measured, allowlisted exception), which a coordinated
+# edit of two of them could keep true while silently renaming a shipped
+# family's every collection. Seven of these are Kometa's own; `production_
+# studio`'s is this service's divergence, and it is the one most likely to be
+# "improved" by a later reader who has not read why it is not bare.
 _PINNED_FORMATS: dict[str, str] = {
     "content_genres": "<<key_name>> <<library_typeU>>s",
     "time_decade": "Best of <<key_name>>",
+    "time_year": "Best of <<key_name>>",
     "media_audio_language": "<<key_name>> Audio",
     "media_subtitle_language": "<<key_name>> Subtitles",
     "location_country": "<<key_name>>",
@@ -1532,24 +1611,35 @@ def test_every_gated_row_cites_a_roadmap_row_that_exists():
         assert preset.gated_row in rows, (preset.key, preset.gated_row)
 
 
-def test_no_preset_still_waits_on_the_row_the_dynamic_engine_closed():
-    """Row 102 closed in phase 10a-2 and its preset-expansion phase (10b) has
-    shipped. A row still citing it would be citing work that is DONE, which is
-    the same as citing nothing -- so every preset that was gated on it has
-    either shipped or now names what actually blocks it.
+def test_no_preset_still_waits_on_a_row_that_is_already_closed():
+    """Rows 102 and 171 are both CLOSED, and a row citing closed work cites
+    nothing -- the defect rows 160 and 161 were filed to fix.
 
-    ``DYNAMIC_ENGINE_ROW`` stays in the module: the packs' descriptions cite it
-    as the phase that shipped their engine, which is a different kind of
+    ``time_year`` was the last preset in that position: it named 171's
+    ``current_year`` grammar as its blocker after 171 closed, when what it
+    actually lacked was the same words for a dynamic family's KEY SET. It has
+    them now, so the constant that carried the citation is gone -- asserted
+    directly, because a constant left behind is a citation waiting to be
+    reused.
+
+    ``DYNAMIC_ENGINE_ROW`` stays in the module: the packs' descriptions cite
+    it as the phase that shipped their engine, which is a different kind of
     citation from a blocker.
     """
-    still_waiting = [
+    assert [
         preset.key for preset in CATALOG
         if preset.gated_row == catalog.DYNAMIC_ENGINE_ROW
-    ]
-
-    assert still_waiting == []
+    ] == []
     assert catalog.BY_KEY["content_franchises"].gated_row is None
-    assert catalog.BY_KEY["time_year"].gated_row == catalog.RELATIVE_YEAR_ROW
+
+    year = catalog.BY_KEY["time_year"]
+    assert year.readiness == catalog.READY
+    assert year.gated_row is None
+    assert year.collections, "a READY row builds something"
+    assert not hasattr(catalog, "RELATIVE_YEAR_ROW"), (
+        "the constant existed only to carry this row's citation"
+    )
+
     for key in ("location_region", "location_continent"):
         assert catalog.BY_KEY[key].gated_row is None, key
         assert catalog.BY_KEY[key].readiness == catalog.READY, key
@@ -1697,17 +1787,35 @@ def test_every_gated_key_is_refused_at_load_naming_its_row():
     """The refusal the picker's disabled state is backed by, over every gated
     row rather than one injected double: a key copied out of the picker by hand
     is refused, and the refusal says which roadmap row it waits on."""
-    for preset in CATALOG:
-        if preset.readiness != GATED:
-            continue
+    gated = [preset for preset in CATALOG if preset.readiness == GATED]
+    if not gated:
+        # The catalog has no GATED row left -- the last one shipped with the
+        # year pack. This sweep is therefore empty on purpose, and the
+        # refusal machinery is covered instead by
+        # ``test_a_gated_preset_key_is_refused_at_load_naming_its_roadmap_row``
+        # below, which injects a synthetic gated row for exactly this day.
+        # Asserted against the checksum rather than left implicit, so a row
+        # that goes gated again turns this sweep back on.
+        assert sum(count for _, count, _ in CATALOG_CHECKSUM.values()) == 0
+        return
+    for preset in gated:
         with pytest.raises(ValidationError, match=str(preset.gated_row)):
             build_config(_document([preset.key]))
 
 
 def test_a_gated_row_expands_to_nothing_even_though_it_is_in_the_catalog():
-    for preset in CATALOG:
-        if preset.readiness != GATED:
-            continue
+    gated = [preset for preset in CATALOG if preset.readiness == GATED]
+    if not gated:
+        # The catalog has no GATED row left -- the last one shipped with the
+        # year pack. This sweep is therefore empty on purpose, and the
+        # refusal machinery is covered instead by
+        # ``test_a_gated_preset_key_is_refused_at_load_naming_its_roadmap_row``
+        # below, which injects a synthetic gated row for exactly this day.
+        # Asserted against the checksum rather than left implicit, so a row
+        # that goes gated again turns this sweep back on.
+        assert sum(count for _, count, _ in CATALOG_CHECKSUM.values()) == 0
+        return
+    for preset in gated:
         for library_type in LIBRARY_TYPES:
             assert preset.definitions(library_type) == [], preset.key
 

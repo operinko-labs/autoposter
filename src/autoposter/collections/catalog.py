@@ -195,7 +195,16 @@ def dynamic_shape(params: dict) -> str:
     without it.
     """
     row = DYNAMIC_TYPES[params["type"]]
-    return _family_shape(row, params, "in your library")
+    # A windowed family is NOT "one per value the library holds": the window
+    # is what makes the year pack eleven collections rather than the 87 the
+    # probe counted, and a shape line that left it out would describe a pack
+    # this row does not build -- which is the exact failure this row stayed
+    # gated rather than commit.
+    values_clause = (
+        "in your library's year range" if params.get("data")
+        else "in your library"
+    )
+    return _family_shape(row, params, values_clause)
 
 
 def facts_family_shape(params: dict) -> str:
@@ -806,8 +815,6 @@ PERSON_SCAN_ROW = 194      # the library-wide credit scan the four Top-* people
                            # whose every appearance is in a >200-role cast can
                            # be missing from the ranking entirely.
 STRANDED_FILTER_ROW = 155  # the six tier-1 filter attributes the listing strands
-RELATIVE_YEAR_ROW = 171    # the `current_year`/`current_year-N` value grammar,
-                           # the half of that row phase 10a did NOT ship
 TMDB_COUNTRY_NAME_ROW = 196  # the region/continent packs group country display
                              # NAMES and `origin_country` carries ISO codes --
                              # filed by the prefetch phase, CLOSED by the
@@ -2069,13 +2076,19 @@ TIME_PRESETS: tuple[Preset, ...] = (
         category="time",
         name="Best of each year",
         description=(
-            "Not built yet. One collection for each of the last ten years, "
-            "holding the ten highest-rated titles released in it."
+            "One collection for this year and for each of the ten before it, "
+            "skipping any year your library holds nothing from. Each is named "
+            "Best of and then the year, and holds that year's ten titles with "
+            "the highest critic rating. To change the count, the titles or "
+            "the order, copy this set into a definition of your own."
         ),
         kometa_source="defaults/both/year.yml",
         library_types=_BOTH,
-        readiness=GATED,
-        gated_row=RELATIVE_YEAR_ROW,
+        collections=(
+            PresetCollection(
+                title="Years", builder="dynamic", params=packs.YEAR_PARAMS,
+            ),
+        ),
     ),
     Preset(
         key="time_decade",
@@ -2114,11 +2127,11 @@ TIME_PRESETS: tuple[Preset, ...] = (
 #   content           2 / 0 / 0     content_ratings   7 / 0 / 1
 #   franchises        3 / 0 / 0     location          3 / 0 / 0
 #   media             4 / 0 / 0     people            5 / 0 / 0
-#   production        3 / 0 / 0     time              1 / 1 / 0
+#   production        3 / 0 / 0     time              2 / 0 / 0
 #
-# -- 57 rows: 53 presets an operator can switch on today, 1 that names what it
-# would build and the roadmap row that would let it, and 3 rendered switches
-# for families that already ship behind a boolean.
+# -- 57 rows: 54 presets an operator can switch on today and 3 rendered
+# switches for families that already ship behind a boolean. No row waits on a
+# roadmap row any more: the last GATED one shipped with the year pack.
 CATALOG: tuple[Preset, ...] = (
     AWARD_PRESETS
     + SETTING_PRESETS

@@ -1610,6 +1610,40 @@ Remove button: an overrides list replaces the file's wholesale, so the first
 one stored would stop every file-defined definition being built. The API
 refuses that write too, not only the page.
 
+### Dynamic families and the year window
+
+A `builder: dynamic` definition builds one smart collection per distinct value
+the library holds — one per genre, one per decade, one per year. The family's
+own title is reserved and never becomes a collection; each collection is named
+by `title_format`.
+
+`type: year` takes one extra key the others do not: `data:`, a moving window.
+
+```yaml
+params:
+  type: year
+  data:
+    starting: current_year-10
+    ending: current_year
+  title_format: Best of <<key_name>>
+  sort_by: [critic_rating.desc]
+  limit: 10
+```
+
+Each bound is either a whole year (`1994`) or Kometa's relative spelling —
+`current_year`, or `current_year-N` for N years ago — and both are resolved
+once per pass against that pass's own clock, so the window follows the
+calendar without a config edit. The window **narrows** the years the library
+reported: a year inside it that the library holds nothing from gets no
+collection, rather than an empty one. When the window moves on in January, the
+year that fell out simply stops being a collection this family builds, and its
+collection in Plex is then treated like any other unbuilt one — reported by
+default, deleted only under `collections.delete_unconfigured` and within
+`collections.max_deletes`. A window that ends before it starts, a bound
+outside 1800 to next year, or a window spanning more years than
+`max_collections` allows is refused when the config loads. `data:` on any
+other dynamic type is refused too, and the refusal says why.
+
 ## Filter values and pasted smart-filter URLs
 
 **A `filters:` tag value is now checked against the library's own list.** The

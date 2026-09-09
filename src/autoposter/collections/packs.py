@@ -86,6 +86,7 @@ __all__ = [
     "REGION_PARAMS",
     "STUDIO_PARAMS",
     "SUBTITLE_LANGUAGE_PARAMS",
+    "YEAR_PARAMS",
 ]
 
 # The `smart_filter` template's own default, which is what every pack but
@@ -186,6 +187,39 @@ DECADE_PARAMS: tuple[tuple[str, object], ...] = (
     ("limit", 100),
     # No `max_collections`: 12 decades on the production movie library, inside
     # the builder's default of 50.
+)
+
+
+# --- year: defaults/both/year.yml ---------------------------------------------
+#
+# The one pack of the eight whose key set is not "whatever the library holds":
+# upstream bounds it with `data: {starting: current_year-10, ending:
+# current_year}` on Kometa's `number` dynamic type, which is what "Best of the
+# last ten years" is written with. This engine reads that window as a NARROWING
+# of the years the library reports rather than as a range to enumerate
+# (`builders/dynamic.py`'s `YearWindow`), which is the one deliberate
+# divergence and the reason a year the library holds nothing from gets no
+# empty collection here.
+#
+# Sort and limit are the file's own `template_variables`, not the
+# `smart_filter` template's defaults -- like `decade.yml` and unlike the other
+# six, this file overrides both, and "the ten best" in the row an operator
+# reads is this `limit: 10`.
+
+_YEAR_WINDOW: dict[str, str] = {
+    "starting": "current_year-10",
+    "ending": "current_year",
+}
+
+YEAR_PARAMS: tuple[tuple[str, object], ...] = (
+    ("type", "year"),
+    ("data", _YEAR_WINDOW),
+    ("title_format", "Best of <<key_name>>"),
+    ("sort_by", ("critic_rating.desc",)),
+    ("limit", 10),
+    # No `max_collections`: the window is eleven collections, inside the
+    # builder's default of 50. The 87 years the probe counted on the
+    # production movie library are exactly what the window exists to bound.
 )
 
 
