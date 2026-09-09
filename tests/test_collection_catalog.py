@@ -45,6 +45,7 @@ from autoposter.collections.catalog import (
     catalog_listing,
     preset_definitions,
 )
+from autoposter.collections.filters import parse_filters, predicates
 from autoposter.collections.sources import (
     AWARD_YEARS_TITLE,
     chart_and_award_definitions,
@@ -279,10 +280,16 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     # `location_continent` flipped GATED -> READY when row 196's code->name
     # join shipped (`collections/iso_names.py`).
     "location": (3, 0, 0),
-    "media": (3, 1, 0),
+    # 3/1/0 until the gated-packs decision: `media_aspect` flipped GATED ->
+    # READY when the eight values were transcribed from Kometa's own file.
+    # The `aspect` attribute it was waiting on had already shipped.
+    "media": (4, 0, 0),
     "people": (5, 0, 0),
     "production": (3, 0, 0),
-    "time": (1, 2, 0),
+    # 1/2/0 until the gated-packs decision: `time_seasonal` was REMOVED on the
+    # operator's ruling rather than built. Its blocker was a collection fed by
+    # several sources at once, which is an identity-model change, not a table.
+    "time": (1, 1, 0),
 }
 
 
@@ -2108,6 +2115,54 @@ def test_the_resolution_transcription():
         "720 Movies": ["720"],
         "480 Movies": ["480", "144", "240", "360", "sd", "576"],
     }
+
+
+def test_the_aspect_transcription():
+    """The eight collections `defaults/both/aspect.yml` lists, and the shape
+    they are written in.
+
+    Kometa's `filter` template emits `filters: <<filter_term>>: <<filter_value>>`
+    -- a BARE key, which is this vocabulary's equality spelling: `_split_key`
+    resolves an empty modifier to `DEFAULT_OPERATOR["float"]` (`eq`) and refuses
+    the explicit `aspect.eq` on the very next branch. There are no bands in this
+    file; the `.gt`/`.lt` windows belong to `defaults/overlays/aspect.yml`, which
+    the overlay family transcribes separately.
+
+    The expectation is derived from `catalog._ASPECTS`, never re-typed: a table
+    spelled out twice is a table that drifts.
+    """
+    preset = catalog.BY_KEY["media_aspect"]
+
+    assert preset.readiness == READY
+    assert preset.gated_row is None
+    assert preset.kometa_source == "defaults/both/aspect.yml"
+    assert preset.library_types == ("Movie", "Show")
+    assert len(catalog._ASPECTS) == 8
+
+    for library_type in LIBRARY_TYPES:
+        definitions = preset.definitions(library_type)
+        # Constructing a definition IS validating it (``PresetCollection.
+        # definition``): every row below has been through
+        # ``CollectionDefinition``'s builder, params and filters validators,
+        # including the source-tier check that ``aspect`` is readable.
+        assert [
+            (definition.title, definition.builder, definition.filters)
+            for definition in definitions
+        ] == [
+            (title, "plex_all", {"aspect": value})
+            for title, value in catalog._ASPECTS
+        ], library_type
+        assert all(isinstance(value, float) for _title, value in catalog._ASPECTS)
+
+    # The bare key really is the equality operator, and the explicit spelling
+    # really is refused -- the two halves of C1's correction, proven rather
+    # than asserted in a comment.
+    parsed = parse_filters(preset.definitions("Movie")[0].filters)
+    predicate, = predicates(parsed)
+    assert predicate.attribute.name == "aspect"
+    assert predicate.operator == "eq"
+    with pytest.raises(ValueError):
+        parse_filters({"aspect.eq": catalog._ASPECTS[0][1]})
 
 
 def test_the_universes_transcription():

@@ -766,7 +766,6 @@ _KOMETA_DEFAULTS: frozenset[str] = frozenset(
         "defaults/movie/franchise.yml",
         "defaults/movie/producer.yml",
         "defaults/movie/region.yml",
-        "defaults/movie/seasonal.yml",
         "defaults/movie/writer.yml",
         "defaults/show/content_rating_us.yml",
         "defaults/show/network.yml",
@@ -807,11 +806,6 @@ PERSON_SCAN_ROW = 194      # the library-wide credit scan the four Top-* people
                            # whose every appearance is in a >200-role cast can
                            # be missing from the ranking entirely.
 STRANDED_FILTER_ROW = 155  # the six tier-1 filter attributes the listing strands
-FILTER_TIER_TWO_ROW = 96   # the filters subsystem; tier 1 shipped, tier 2 did not
-DATE_WINDOW_ROW = 70       # per-collection cadence and date windows: DELIVERED
-SEASONAL_WINDOW_ROW = 160  # day-level windows, and a collection fed by several
-                           # builders -- filed out of 70, which delivered a
-                           # whole-month gate and one builder per definition
 KEYWORD_RESOLUTION_ROW = 161  # TMDb keyword name -> id, which no earlier row owns
 RELATIVE_YEAR_ROW = 171    # the `current_year`/`current_year-N` value grammar,
                            # the half of that row phase 10a did NOT ship
@@ -1673,6 +1667,45 @@ _RESOLUTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # Upstream additionally gates the network type on the New Plex TV Agent and
 # this service does not, so a library whose agent cannot answer enumerates
 # nothing and the family refuses rather than creating a partial set.
+# ``defaults/both/aspect.yml`` reproduces exactly, and the shape is the one
+# ``_RESOLUTIONS`` above already has: a fixed table, one collection per row,
+# each a ``plex_all`` filtered on one attribute.
+#
+# The values are Kometa's ``dynamic_collections.Aspect.data`` keys and the
+# titles are that block's values, verbatim. What reaches the collection is
+# the ``filter`` template in Kometa's ``templates.yml``:
+#
+#     plex_all: true
+#     filters:
+#       <<filter_term>>: <<filter_value>>
+#
+# with ``filter_term: aspect`` -- a BARE key, which is this vocabulary's
+# equality spelling (``filters._split_key`` resolves an empty modifier to
+# ``DEFAULT_OPERATOR["float"]``, and refuses the explicit ``aspect.eq`` on the
+# next branch). There are NO bands here. The ``.gt``/``.lt`` windows around
+# each nominal ratio live in a different upstream file,
+# ``defaults/overlays/aspect.yml``, and ``overlays/families.py``'s ``ASPECT``
+# transcribes those separately -- the two are not the same table and must not
+# be reconciled.
+#
+# The consequence an operator meets: a ratio that is not exactly one of these
+# eight matches nothing, upstream included. That is transcribed, not corrected.
+#
+# Both library kinds, because the file is ``defaults/both/``. No sort: Kometa's
+# ``filter`` template defaults ``sort_by: release.desc`` for this pack and for
+# ``resolution.yml`` alike, and this service reproduces a collection's Plex
+# sort order for neither -- ``CollectionDefinition`` has no sort field at all.
+_ASPECTS: tuple[tuple[str, float], ...] = (
+    ("1.33 - Academy Aperture", 1.33),
+    ("1.65 - Early Widescreen", 1.65),
+    ("1.66 - European Widescreen", 1.66),
+    ("1.78 - Widescreen TV", 1.78),
+    ("1.85 - American Widescreen", 1.85),
+    ("2.2 - 70mm Frame", 2.2),
+    ("2.35 - Anamorphic Projection", 2.35),
+    ("2.77 - Cinerama", 2.77),
+)
+
 MEDIA_PRESETS: tuple[Preset, ...] = (
     Preset(
         key="media_resolution",
@@ -1701,13 +1734,23 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
         category="media",
         name="Aspect ratios",
         description=(
-            "Not built yet. One collection per picture shape, from the "
-            "squarish Academy frame to the widest Cinerama."
+            "Eight collections grouping films and shows by picture shape, "
+            "such as Academy Aperture, American Widescreen and Anamorphic "
+            "Projection. A title joins only when its ratio is exactly one of "
+            "the eight, so a picture that falls between two of them matches "
+            "none. Plex reports a ratio only for files it has analysed, so "
+            "the rest stay out until then."
         ),
         kometa_source="defaults/both/aspect.yml",
         library_types=_BOTH,
-        readiness=GATED,
-        gated_row=FILTER_TIER_TWO_ROW,
+        collections=tuple(
+            PresetCollection(
+                title=title,
+                builder="plex_all",
+                filters=(("aspect", value),),
+            )
+            for title, value in _ASPECTS
+        ),
     ),
     Preset(
         key="media_audio_language",
@@ -2007,19 +2050,6 @@ TIME_PRESETS: tuple[Preset, ...] = (
             ),
         ),
     ),
-    Preset(
-        key="time_seasonal",
-        category="time",
-        name="Seasonal",
-        description=(
-            "Not built yet. Nineteen collections that appear around their own "
-            "dates, among them Christmas, Halloween and Valentine's Day."
-        ),
-        kometa_source="defaults/movie/seasonal.yml",
-        library_types=_MOVIE,
-        readiness=GATED,
-        gated_row=SEASONAL_WINDOW_ROW,
-    ),
 )
 
 
@@ -2034,12 +2064,12 @@ TIME_PRESETS: tuple[Preset, ...] = (
 # setting-backed):
 #
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
-#   content           3 / 1 / 0     content_ratings   7 / 0 / 1
-#   franchises        1 / 0 / 0     location          3 / 0 / 0
-#   media             3 / 1 / 0     people            5 / 0 / 0
-#   production        3 / 0 / 0     time              1 / 2 / 0
+#   content           1 / 1 / 0     content_ratings   7 / 0 / 1
+#   franchises        3 / 0 / 0     location          3 / 0 / 0
+#   media             4 / 0 / 0     people            5 / 0 / 0
+#   production        3 / 0 / 0     time              1 / 1 / 0
 #
-# -- 58 rows: 51 presets an operator can switch on today, 4 that name what
+# -- 57 rows: 52 presets an operator can switch on today, 2 that name what
 # they would build and the roadmap row that would let them, and 3 rendered
 # switches for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (
