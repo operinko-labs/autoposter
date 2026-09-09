@@ -561,7 +561,17 @@ class DynamicParams(BaseModel):
         """
         if self.data is None:
             return self
-        first, last = self.data.resolve(_now())
+        now = _now()
+        first, last = self.data.resolve(now)
+        # The believable-range floor and ceiling apply here too, not only to
+        # a literal bound: `_a_bound_is_a_year_or_the_sentinel` checks a
+        # literal's own value, but a sentinel (`current_year-N`) is held AS
+        # WRITTEN and only becomes a year once resolved against a moment --
+        # so a window whose sentinel resolves outside 1800..next-year would
+        # otherwise reach the family unrefused. Same fixed sentence as the
+        # literal path; never the resolved value.
+        if not _EARLIEST_YEAR <= first <= now.year + 1 or not _EARLIEST_YEAR <= last <= now.year + 1:
+            raise ValueError(WINDOW_BOUND_REFUSAL)
         if last < first:
             raise ValueError(WINDOW_ORDER_REFUSAL)
         if last - first + 1 > self.max_collections:

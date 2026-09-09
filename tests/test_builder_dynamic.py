@@ -1259,6 +1259,26 @@ def test_a_bound_outside_the_believable_range_refuses_at_load(monkeypatch):
     assert YearWindow(starting="current_year-1", ending=2027)
 
 
+def test_a_sentinel_that_resolves_outside_the_believable_range_refuses_at_load(monkeypatch):
+    """T2's open finding, closed. ``_a_bound_is_a_year_or_the_sentinel`` only
+    checks a LITERAL bound's own value -- a sentinel is held as written and
+    only becomes a year once resolved against a moment, so a window whose
+    resolved bound falls outside 1800..next-year must be caught here too,
+    with the SAME fixed sentence the literal path uses. ``max_collections``
+    is raised so the window is not also too wide -- this refusal has to be
+    the floor, not a different rule catching the same window."""
+    from autoposter.collections.builders.dynamic import WINDOW_BOUND_REFUSAL
+
+    _frozen(monkeypatch, 2026)
+    with pytest.raises(ValidationError) as refusal:
+        DynamicParams(
+            type="year",
+            data={"starting": "current_year-300", "ending": "current_year"},
+            max_collections=400,
+        )
+    assert WINDOW_BOUND_REFUSAL in str(refusal.value)
+
+
 def test_a_window_that_ends_before_it_starts_refuses_at_load(monkeypatch):
     """Upstream refuses the same way (meta.py:1136-1137). Refused at LOAD
     rather than at build, because an empty window is a definition that can

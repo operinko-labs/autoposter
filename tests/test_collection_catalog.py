@@ -729,7 +729,7 @@ def test_a_windowed_packs_shape_line_says_the_family_is_bounded():
     line = catalog.dynamic_shape(params)
 
     assert "year" in line
-    assert "range" in line
+    assert "in this pack's year range" in line
     assert 'named "Best of <year>"' in line
 
 
@@ -996,16 +996,17 @@ _ALLOWED_FORMAT_SHARERS: frozenset[frozenset[str]] = frozenset({
     frozenset({"content_franchises", "location_country"}),
     frozenset({"content_franchises", "location_region"}),
     frozenset({"content_franchises", "location_continent"}),
-    # MEASURED, and recurring rather than hypothetical: `time_decade` keys on
-    # `choice.key`, a decade spelled as its own first year ("1900".."2020" on
-    # the production movie library), and `time_year`'s window is the current
-    # year and the ten before it -- so whenever the window contains a decade
-    # key (roughly one year in ten, e.g. "2020" for a window that runs
-    # 2016..2026), a Movie library holding anything from that year and
-    # anything from that decade gets the SAME "Best of <year>" title from
-    # both packs. Both files carry `title_format: "Best of <<key_name>>"`
-    # upstream (`decade.yml`, `year.yml`), so this is upstream's own overlap,
-    # not one this transcription introduced.
+    # Not a real duplicate, and not possible today: the two packs share only
+    # the FORMAT string "Best of <<key_name>>" (both upstream's own --
+    # `decade.yml`, `year.yml`), and this guard compares rendered formats, not
+    # key spaces. `time_decade`'s `key_from` is `"key"`, so its `key_name` is
+    # Plex's own decade spelling, e.g. "2020s"; `time_year`'s `key_from` is
+    # the default, so its `key_name` is the bare year, e.g. "2020"
+    # (`dynamic.py:774` pairs `(choice_key, choice_title)` when `key_from ==
+    # "key"` and `(choice_title, choice_title)` otherwise; the probe table
+    # agrees, `docs/research/plex-dynamic-probe/README.md:104`, "2020=2020s").
+    # The two key spaces are disjoint, so no duplicate title is possible
+    # today. The entry exists only because the guard is format-level.
     frozenset({"time_decade", "time_year"}),
 })
 

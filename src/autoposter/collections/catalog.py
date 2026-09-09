@@ -201,7 +201,7 @@ def dynamic_shape(params: dict) -> str:
     # this row does not build -- which is the exact failure this row stayed
     # gated rather than commit.
     values_clause = (
-        "in your library's year range" if params.get("data")
+        "the library holds in this pack's year range" if params.get("data")
         else "in your library"
     )
     return _family_shape(row, params, values_clause)
