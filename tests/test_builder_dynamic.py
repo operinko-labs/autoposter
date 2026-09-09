@@ -7,6 +7,7 @@ reconciler ``smart_filter`` uses -- so there is one write path, one query
 grammar and one drift hash for every smart collection this service manages
 (10a decision C1).
 """
+import datetime as dt
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from autoposter.collections.builders.base import SmartContext
 from autoposter.collections.builders.dynamic import (
     DynamicBuilder,
     DynamicParams,
+    YearWindow,
     family_label,
 )
 from autoposter.collections.filters import parse_filters
@@ -1133,3 +1135,289 @@ async def test_an_include_by_display_value_is_reported_inert_on_a_keyed_type(
     assert len(inert) == 1, actions
     assert "include: '1980s'" in inert[0]
     assert "include: '1980'" not in inert[0]
+
+
+# --- the relative year window (`data: {starting, ending}`) -------------------
+#
+# Kometa's `number` dynamic type, narrowed. Upstream parses the two bounds
+# (meta.py:1119-1134) and then enumerates the WHOLE range without asking the
+# library (meta.py:1138-1143); here the window narrows the keys
+# `LibraryTagResolver.choices` reported, so a year the library holds nothing
+# from is simply not a key. The sentinel parser is row 171's own
+# (`filters._as_current_year`) and there is deliberately no second one.
+
+YEARS = [
+    FakeChoice("1", "2014"), FakeChoice("2", "2016"),
+    FakeChoice("3", "2020"), FakeChoice("4", "2026"),
+    FakeChoice("5", "2030"),
+]
+
+# The window every test below writes, as the pack writes it.
+WINDOW = {"starting": "current_year-10", "ending": "current_year"}
+
+
+def _frozen(monkeypatch, year: int) -> None:
+    """Pin the module's one clock seam to midday on 4 March of ``year``.
+
+    A seam rather than a monkeypatched ``datetime`` class: the load-time
+    validator and ``apply`` both read it, so one patch covers both, and
+    patching ``dt.datetime`` itself would reach every other module sharing
+    that module object.
+    """
+    from autoposter.collections.builders import dynamic as module
+
+    monkeypatch.setattr(module, "_now", lambda: dt.datetime(year, 3, 4, 12, 0))
+
+
+def test_a_window_resolves_the_sentinel_against_the_moment_it_is_given():
+    """Row 171's parser, reused. Subtraction, never addition: Kometa's own
+    transcription is ``datetime.now().year - int(offset)``, so
+    ``current_year-10`` is ten years AGO (meta.py:1122)."""
+    window = YearWindow(starting="current_year-10", ending="current_year")
+
+    assert window.resolve(dt.datetime(2026, 3, 4)) == (2016, 2026)
+    # The same window, one year later: both bounds move together.
+    assert window.resolve(dt.datetime(2027, 1, 1)) == (2017, 2027)
+
+
+def test_a_window_takes_plain_years_too_and_leaves_them_alone():
+    assert YearWindow(starting=1994, ending=1999).resolve(
+        dt.datetime(2026, 3, 4)
+    ) == (1994, 1999)
+
+
+def test_a_window_is_accepted_on_the_year_type_and_refused_on_every_other():
+    """The narrowing, both directions. Kometa's `number` type DOES read
+    `data:` (meta.py:1112-1143), so the blanket refusal was wrong for this one
+    type -- and right for the other nine, where nothing upstream parses it."""
+    accepted = DynamicParams(type="year", data=WINDOW)
+    assert accepted.data is not None
+    assert accepted.data.resolve(dt.datetime(2026, 3, 4)) == (2016, 2026)
+
+    with pytest.raises(ValueError) as refusal:
+        DynamicParams(type="genre", data=WINDOW)
+    assert "data" in str(refusal.value)
+    assert "year" in str(refusal.value), (
+        "the refusal has to name the one type that does read it, or an "
+        "operator porting year.yml has nowhere to go"
+    )
+
+    # Without a window, nothing changed at all.
+    assert DynamicParams(type="year").data is None
+
+
+def test_a_bound_that_is_neither_a_year_nor_the_sentinel_refuses_at_load():
+    """Four near misses, including the two the shared parser deliberately
+    refuses that Kometa would take: whitespace around the dash, and a `+`
+    offset (`_as_current_year`'s own docstring says why).
+
+    The message THIS module produces is a fixed sentence that never echoes
+    what was written. pydantic's envelope around it does carry an
+    ``input_value=`` echo -- that is the framework's, not this module's, and
+    the API layer already drops it before anything is served -- so the
+    assertion is against the constant rather than against the whole string.
+    """
+    from autoposter.collections.builders.dynamic import WINDOW_BOUND_REFUSAL
+
+    for written in ("last_year", "current_year - 5", "current_year+2", "the 90s"):
+        with pytest.raises(ValidationError) as refusal:
+            DynamicParams(type="year", data={"starting": written, "ending": "current_year"})
+        assert WINDOW_BOUND_REFUSAL in str(refusal.value), written
+        assert written not in WINDOW_BOUND_REFUSAL
+
+
+def test_a_bound_outside_the_believable_range_refuses_at_load(monkeypatch):
+    _frozen(monkeypatch, 2026)
+    for window in (
+        {"starting": 1799, "ending": "current_year"},
+        {"starting": "current_year-10", "ending": 2028},
+    ):
+        with pytest.raises(ValidationError):
+            DynamicParams(type="year", data=window)
+
+    # The edges themselves are fine. Asserted on the window alone, because a
+    # window from 1800 to next year is 228 collections and the model's own
+    # `max_collections` rule would refuse it for a different reason entirely.
+    assert YearWindow(starting=1800, ending="current_year")
+    assert YearWindow(starting="current_year-1", ending=2027)
+
+
+def test_a_window_that_ends_before_it_starts_refuses_at_load(monkeypatch):
+    """Upstream refuses the same way (meta.py:1136-1137). Refused at LOAD
+    rather than at build, because an empty window is a definition that can
+    never build anything and the operator is right here."""
+    _frozen(monkeypatch, 2026)
+    with pytest.raises(ValidationError) as refusal:
+        DynamicParams(type="year", data={"starting": "current_year", "ending": "current_year-10"})
+    assert "empty" in str(refusal.value)
+
+
+def test_a_window_wider_than_max_collections_refuses_at_load(monkeypatch):
+    _frozen(monkeypatch, 2026)
+    with pytest.raises(ValidationError) as refusal:
+        DynamicParams(type="year", data={"starting": 1900, "ending": "current_year"})
+    assert "max_collections" in str(refusal.value)
+
+    # ...and raising the cap on purpose is how it is allowed.
+    assert DynamicParams(
+        type="year", data={"starting": 1900, "ending": "current_year"},
+        max_collections=200,
+    )
+
+
+async def test_the_window_keeps_only_the_years_the_library_holds_inside_it(
+    session, monkeypatch
+):
+    """C5's three cases in one family: a year below the window is absent, a
+    year above it is absent, the years inside it are present, and a year
+    INSIDE the window that the library holds nothing from is absent too --
+    which is where this diverges from upstream, whose `number` type
+    enumerates the whole range without asking the library
+    (meta.py:1138-1143)."""
+    _frozen(monkeypatch, 2026)
+    section = FakeSection(choices=YEARS)
+    definition = _definition(title="Years", params={
+        "type": "year", "data": WINDOW,
+        "title_format": "Best of <<key_name>>",
+    })
+
+    await REGISTRY["dynamic"].apply(_ctx(session, section, definition))
+
+    assert sorted(section._existing) == [
+        "Best of 2016", "Best of 2020", "Best of 2026",
+    ]
+    # 2014 is below the window, 2030 is above it, and 2018 is inside it and
+    # not in the library -- no collection for any of the three.
+    assert "Best of 2014" not in section._existing
+    assert "Best of 2030" not in section._existing
+    assert "Best of 2018" not in section._existing
+
+
+async def test_include_and_exclude_still_compose_on_top_of_the_window(
+    session, monkeypatch
+):
+    """The window narrows the ENUMERATION; the five narrowing sources then run
+    over what is left, unchanged. A year excluded inside the window goes, and
+    an include list narrows further still."""
+    _frozen(monkeypatch, 2026)
+    section = FakeSection(choices=YEARS)
+
+    await REGISTRY["dynamic"].apply(_ctx(session, section, _definition(
+        title="Years", params={
+            "type": "year", "data": WINDOW,
+            "title_format": "Best of <<key_name>>", "exclude": ["2020"],
+        },
+    )))
+    assert sorted(section._existing) == ["Best of 2016", "Best of 2026"]
+
+    narrower = FakeSection(choices=YEARS)
+    await REGISTRY["dynamic"].apply(_ctx(session, narrower, _definition(
+        title="Years", params={
+            "type": "year", "data": WINDOW,
+            "title_format": "Best of <<key_name>>", "include": ["2026"],
+        },
+    )))
+    assert sorted(narrower._existing) == ["Best of 2026"]
+
+
+async def test_a_window_the_library_answers_nothing_inside_refuses_the_family(
+    session, monkeypatch
+):
+    """Its own refusal, not the "reports no values at all" one: the library
+    DID answer, and saying otherwise would send an operator to look at a
+    library that is fine. Family-level, so nothing is recorded and the sweep
+    considers none of this family's collections."""
+    from autoposter.collections.builders.dynamic import generated_titles
+
+    _frozen(monkeypatch, 2026)
+    section = FakeSection(choices=[FakeChoice("1", "1999"), FakeChoice("2", "2004")])
+    definition = _definition(title="Years", params={
+        "type": "year", "data": WINDOW, "title_format": "Best of <<key_name>>",
+    })
+    ctx = _ctx(session, section, definition)
+
+    actions = await REGISTRY["dynamic"].apply(ctx)
+
+    assert actions and actions[0].startswith("refused")
+    assert "window" in actions[0]
+    assert section._existing == {}
+    assert generated_titles(ctx.run_cache, definition) is None
+
+
+async def test_next_january_the_oldest_year_leaves_the_familys_record(
+    session, monkeypatch
+):
+    """C3, pinned. `sync: true` upstream is a labelled delete sweep
+    (meta.py:1300, :1456-1461); this service runs that sweep for every builder
+    instead, off the family label and the pass's generated record. So the
+    whole of "the window slides" is that the oldest title stops being in the
+    record -- after which `engine._sweep` treats an existing collection under
+    it like any other candidate, through `delete_unconfigured`, the protecting
+    labels and `max_deletes`. Nothing here deletes anything.
+    """
+    from autoposter.collections.builders.dynamic import generated_titles
+
+    _frozen(monkeypatch, 2026)
+    definition = _definition(title="Years", params={
+        "type": "year", "data": WINDOW, "title_format": "Best of <<key_name>>",
+    })
+    choices = [FakeChoice(str(n), str(2016 + n)) for n in range(11)]
+
+    first = _ctx(session, FakeSection(choices=choices), definition)
+    await REGISTRY["dynamic"].apply(first)
+    assert "Best of 2016" in generated_titles(first.run_cache, definition)
+
+    _frozen(monkeypatch, 2027)
+    second = _ctx(session, FakeSection(choices=choices), definition)
+    await REGISTRY["dynamic"].apply(second)
+    built = generated_titles(second.run_cache, definition)
+
+    assert "Best of 2016" not in built, (
+        "the window moved on and this key is no longer one the family builds"
+    )
+    assert "Best of 2017" in built
+    assert "Best of 2026" in built
+
+
+async def test_a_family_with_no_window_never_reads_the_clock(session, monkeypatch):
+    """The no-behaviour-change pin for every `include`-only family, which is
+    all seven shipped packs but this one. A family with no `data:` must not
+    resolve anything against a moment -- so the clock seam is made to explode
+    and the genre family builds anyway."""
+    from autoposter.collections.builders import dynamic as module
+
+    def _explode():
+        raise AssertionError("a family with no `data:` window read the clock")
+
+    monkeypatch.setattr(module, "_now", _explode)
+    section = FakeSection()
+
+    actions = await REGISTRY["dynamic"].apply(_ctx(session, section, _definition()))
+
+    assert sorted(section._existing) == ["Top Drama movies", "Top Horror movies"]
+    assert any("created 'Top Horror movies'" in one for one in actions)
+
+
+async def test_a_windowed_family_asks_plex_for_the_year_and_the_pinned_top_ten(
+    session, monkeypatch
+):
+    """The emitted query, byte for byte: the key is the year, the sort is the
+    pack's and the limit is the pack's. Upstream's `smart_filter` template
+    builds the same three things out of `search_term`, `sort_by` and `limit`
+    (defaults/templates.yml:238-255)."""
+    _frozen(monkeypatch, 2026)
+    section = FakeSection(choices=[FakeChoice("4", "2026")])
+
+    await REGISTRY["dynamic"].apply(_ctx(session, section, _definition(
+        title="Years", params={
+            "type": "year", "data": WINDOW,
+            "title_format": "Best of <<key_name>>",
+            "sort_by": ["critic_rating.desc"], "limit": 10,
+        },
+    )))
+
+    assert section.fetched == [
+        "/library/sections/2/all"
+        "?type=1&limit=10&sort=rating%3Adesc"
+        "&push=1&year=2026&pop=1"
+    ]

@@ -87,10 +87,11 @@ filed rather than built, and its named prerequisite is that the record be seeded
 from the LIVE listing, never from ``titled``. The refusal is logged as well as
 reported (``_refused``) so the freeze is at least audible.
 """
+import datetime as dt
 import logging
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from autoposter.collections.builders.base import (
     LibraryTypeMismatch,
@@ -110,7 +111,7 @@ from autoposter.collections.dynamic_titles import (
     title_format_names_the_key,
 )
 from autoposter.collections.dynamic_types import DYNAMIC_TYPE_NAMES, DYNAMIC_TYPES
-from autoposter.collections.filters import parse_filters
+from autoposter.collections.filters import _as_current_year, parse_filters
 from autoposter.collections.search_sorts import KNOWN_SORT_NAMES, SortNotAvailable
 from autoposter.collections.search_url import (
     SearchAttributeNotAvailable,
@@ -128,8 +129,8 @@ from autoposter.collections.smart import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "FAMILY_LABEL_PREFIX", "DynamicBuilder", "DynamicParams", "family_label",
-    "generated_titles", "poster_for_unit",
+    "FAMILY_LABEL_PREFIX", "DynamicBuilder", "DynamicParams", "YearWindow",
+    "family_label", "generated_titles", "poster_for_unit",
 ]
 
 # The label every collection in one family carries, beside the ownership label.
@@ -138,6 +139,11 @@ __all__ = [
 # ``Genres`` label an operator may already use for something else, and this
 # label is a delete handle -- 10a-2's sweep reads it.
 FAMILY_LABEL_PREFIX = "autoposter-dynamic: "
+
+# The one dynamic type whose `data:` this service reads. A constant rather
+# than the literal in three places, because the refusal table below, the
+# params validator and the enumeration filter all have to agree about it.
+WINDOW_TYPE = "year"
 
 # Kometa's keys this builder refuses, each with the reason. Held as data so the
 # refusals cannot drift apart in wording, and so adding one is a row rather than
@@ -153,11 +159,14 @@ _REFUSED_KEYS: dict[str, str] = {
         "without writing"
     ),
     "data": (
-        "`data:` is never read for any of Kometa's thirteen LIBRARY dynamic "
-        "types (meta.py:23 makes it a valid key, and nothing parses it unless "
-        "the type is one of the people, award, number, custom or list types "
-        "this service does not ship). Accepting it would be a block an "
-        "operator writes and nothing reads"
+        "`data:` is read here for exactly ONE dynamic type, `year`, where "
+        "Kometa's `number` type takes `starting`/`ending` and enumerates the "
+        "years between them (meta.py:1112-1143) -- which is how "
+        "`defaults/both/year.yml` says 'the last ten years'. For every other "
+        "type upstream never parses it either (meta.py:23 makes it a valid "
+        "key, and nothing reads it unless the type is one of the people, "
+        "award, number, custom or list types), so accepting it on this type "
+        "would be a block an operator writes and nothing reads"
     ),
     "sync": (
         "`sync: true` upstream is a DELETE sweep -- it labels each generated "
@@ -186,6 +195,15 @@ _REFUSED_KEYS: dict[str, str] = {
         "`title_format`"
     ),
 }
+
+# The one refusal above that is CONDITIONAL, and the only type it is lifted
+# for. Held beside the table rather than as a branch inside the validator so
+# the table stays the whole story: a key is refused unless the definition's
+# type is the one named here. `year` is on this list because Kometa's own
+# `number` type reads `data:` (meta.py:1112-1143) and `defaults/both/year.yml`
+# is written with it; nothing else upstream reads it for a library type this
+# service ships.
+_REFUSED_UNLESS_TYPE: dict[str, str] = {"data": WINDOW_TYPE}
 
 # Anything written as ``<<...>>``. Non-greedy on the inside so two tokens on one
 # line are two matches rather than one span from the first to the last.
@@ -224,6 +242,110 @@ _OTHER_NAME_TOKENS = frozenset({"<<library_type>>", "<<library_typeU>>"})
 # A ``title_override`` is the finished title, verbatim (meta.py:1382-1383): no
 # substitution pass runs over it at all, so every token in one is unresolvable.
 _TITLE_OVERRIDE_TOKENS: frozenset[str] = frozenset()
+
+# The oldest bound worth believing. Not a Kometa number -- upstream range
+# checks `starting` at `minimum=0` (meta.py:1126) -- but `year: 0` is a typo
+# every time, and a family whose window starts before cinema builds nothing
+# and says nothing about why.
+_EARLIEST_YEAR = 1800
+
+# Every window refusal, as a FIXED sentence. None of them interpolates what
+# the operator wrote: an operator's value in a served string is what this
+# project refuses, and the four cases are distinguishable without it.
+WINDOW_BOUND_REFUSAL = (
+    "each bound of `data:` is either a whole year (1800 or later, and no "
+    "later than next year) or Kometa's own relative spelling `current_year` "
+    "/ `current_year-N`, which is resolved against the run's own moment and "
+    "subtracts (meta.py:1119-1134). Written any other way it is neither, so "
+    "there is no window to build"
+)
+WINDOW_ORDER_REFUSAL = (
+    "`data.ending` resolves to a year before `data.starting`, so the window "
+    "is empty and this definition could never build anything. Kometa refuses "
+    "the same pair the same way (meta.py:1136-1137)"
+)
+WINDOW_TOO_WIDE_REFUSAL = (
+    "this `data:` window spans more years than `max_collections` allows, so "
+    "the family would refuse on every pass once it met a library. Narrow the "
+    "window, or raise `max_collections` on purpose"
+)
+WINDOW_HOLDS_NOTHING = (
+    "this library reported no year inside this definition's `data:` window, "
+    "so it builds nothing. The window narrows the years the library itself "
+    "reports -- it never invents one -- so a window over years this library "
+    "has nothing from is a family with no members. Widen the window, or aim "
+    "the definition at a library that covers those years"
+)
+
+
+def _now() -> dt.datetime:
+    """The pass's own moment, in ONE place.
+
+    Every relative bound in a family resolves against a single captured
+    moment, which is the shape ``filters.resolve_search_values`` established
+    for a ``plex_search`` (``builders/plex_search.py``, ``builders/
+    smart_filter.py``: one ``dt.datetime.now()`` per build, never one per
+    value). A function rather than an inline call so the load-time validator
+    and ``apply`` read the same clock and a test can advance it by a year --
+    which is the only way to see the window slide without waiting for
+    January.
+    """
+    return dt.datetime.now()
+
+
+def _resolve_bound(written: str, now: dt.datetime) -> int:
+    """One written bound as a year, against ``now``.
+
+    ``filters._as_current_year`` is row 171's parser and this reuses it
+    rather than growing a second one: two parsers for one grammar is two
+    things to keep in step, and the divergences that parser already chose
+    deliberately -- case-insensitive, no whitespace around the dash -- are
+    ones an operator should meet in the same shape here.
+    """
+    sentinel = _as_current_year(written, "data")
+    if sentinel is None:
+        return int(written.strip())
+    return now.year - sentinel.offset
+
+
+class YearWindow(BaseModel):
+    """Kometa's ``number`` window (``data: {starting, ending}``), for
+    ``type: year`` only.
+
+    The two bounds are held AS WRITTEN and resolved on demand, never at
+    parse time: ``current_year`` means the run's year, and a service that
+    resolved it when the config loaded would pin January's answer until the
+    next config write. That is the same deferred-resolution property
+    ``_CurrentYear`` and ``_Today`` already have on the ``filters:`` side.
+
+    ``extra="forbid"`` because upstream's ``increment`` is deliberately not
+    read here -- every year in the window gets a collection, and a family
+    that skipped every other year is not a pack anybody asked for -- and a
+    silently-ignored ``increment:`` would be the block an operator writes and
+    nothing reads.
+    """
+
+    model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
+
+    starting: str
+    ending: str
+
+    @field_validator("starting", "ending")
+    @classmethod
+    def _a_bound_is_a_year_or_the_sentinel(cls, value: str) -> str:
+        if _as_current_year(value, "data") is not None:
+            return value
+        try:
+            year = int(value.strip())
+        except ValueError:
+            raise ValueError(WINDOW_BOUND_REFUSAL) from None
+        if not _EARLIEST_YEAR <= year <= _now().year + 1:
+            raise ValueError(WINDOW_BOUND_REFUSAL)
+        return value
+
+    def resolve(self, now: dt.datetime) -> tuple[int, int]:
+        """Both bounds against ONE moment, inclusive at both ends."""
+        return _resolve_bound(self.starting, now), _resolve_bound(self.ending, now)
 
 # Every EXCEPTION CLASS of its own an operator's configuration can cause once it
 # meets a real library. A tuple so the per-key path has one catch rather than
@@ -315,6 +437,14 @@ class DynamicParams(BaseModel):
     model_config = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
 
     type: str
+    # Kometa's `number` window, and the only key this service reads out of
+    # `data:` (meta.py:1112-1143). Accepted for `type: year` alone -- the
+    # refusal table above is what enforces that, before this field is ever
+    # built -- and it NARROWS the enumeration rather than replacing it: the
+    # keys are still the years the library reports, which is the deliberate
+    # divergence from upstream's unconditional `while current <= ending`
+    # (meta.py:1138-1143).
+    data: YearWindow | None = None
     include: list[str] = Field(default_factory=list)
     exclude: list[str] = Field(default_factory=list)
     # Typed as a mapping rather than left to ``dynamic_keys._dictliststr``:
@@ -385,8 +515,16 @@ class DynamicParams(BaseModel):
             return data
         keys = {str(key) for key in data}
         for refused, why in _REFUSED_KEYS.items():
-            if refused in keys:
-                raise ValueError("%r is not accepted here. %s" % (refused, why))
+            if refused not in keys:
+                continue
+            # ``is not None`` and not a truthiness test: a definition with no
+            # ``type`` at all must still be refused here, and ``data.get`` on
+            # such a mapping answers ``None``, which would otherwise compare
+            # equal to a missing exemption and wave the key through.
+            exempt = _REFUSED_UNLESS_TYPE.get(refused)
+            if exempt is not None and data.get("type") == exempt:
+                continue
+            raise ValueError("%r is not accepted here. %s" % (refused, why))
         return data
 
     @model_validator(mode="after")
@@ -398,6 +536,25 @@ class DynamicParams(BaseModel):
                 "-- see `collections/dynamic_types.py`'s module docstring"
                 % (self.type, ", ".join(DYNAMIC_TYPE_NAMES))
             )
+        return self
+
+    @model_validator(mode="after")
+    def _a_window_must_be_one_a_family_could_build(self) -> "DynamicParams":
+        """The three window refusals that need more than one bound to see.
+
+        Checked at LOAD, against the load's own moment, rather than at build:
+        both bounds of a relative window move together, so the verdict is the
+        same in any year, and a mixed window (one literal, one relative) is
+        judged the way it reads today -- which is when the operator is here to
+        read the answer.
+        """
+        if self.data is None:
+            return self
+        first, last = self.data.resolve(_now())
+        if last < first:
+            raise ValueError(WINDOW_ORDER_REFUSAL)
+        if last - first + 1 > self.max_collections:
+            raise ValueError(WINDOW_TOO_WIDE_REFUSAL)
         return self
 
     @model_validator(mode="after")
@@ -618,6 +775,22 @@ class DynamicBuilder:
                 "%s and an operator fills with something else"
                 % (ctx.library, params.type, libtype)
             ))
+
+        if params.data is not None:
+            # One captured moment for the whole family, per pass. Both bounds
+            # resolve against it, so a pass that straddles midnight on New
+            # Year's Eve builds one window rather than two.
+            first, last = params.data.resolve(_now())
+            enumerated = [
+                (key, title) for key, title in enumerated
+                if key.isdigit() and first <= int(key) <= last
+            ]
+            # ``isdigit`` also drops Plex's ABSENT_KEY ("None") before it can
+            # reach a bucket, which is the same verdict ``family_titles``
+            # reaches for it a few lines below -- a year window has no bucket
+            # for "no year".
+            if not enumerated:
+                return self._refused(ctx, definition.title, WINDOW_HOLDS_NOTHING)
 
         derived = derive_keys(
             enumerated,
