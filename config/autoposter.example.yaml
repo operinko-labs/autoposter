@@ -380,6 +380,14 @@ collections:
   #                      # country | resolution | audio_language |
   #                      # subtitle_language | network -- an unknown one is
   #                      # rejected when the config loads, listing these
+  #         # Only for `type: year`: bound the family to a moving window of
+  #         # years instead of every year the library holds. Each bound is a
+  #         # whole year or `current_year`/`current_year-N`, resolved against
+  #         # the run's own clock, so this one follows the calendar. Years in
+  #         # the window the library holds nothing from get no collection.
+  #         # data:
+  #         #   starting: current_year-10
+  #         #   ending: current_year
   #         # Which values become collections. include: is a whitelist applied
   #         # last; every addon member stops getting a collection of its own.
   #         # exclude: matches the key or the displayed value; include:,
