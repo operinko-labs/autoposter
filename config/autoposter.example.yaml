@@ -514,6 +514,7 @@ collections:
   #         event: [oscars] # nominated at this ceremony; a raw ev… id works too
   #         event_winning: [cannes] # ...and won it
   #         sort: popularity.desc # the default; popularity, rating, votes, release_date or runtime
+  #         limit: 200 # keep at most this many, in sort order; leave it out for no limit
   #         list: [ls539646485] # on every listed IMDb list
   #         list_any: [ls000000001]
   #         list_not: [ls000000002]

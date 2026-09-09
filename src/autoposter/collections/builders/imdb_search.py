@@ -158,13 +158,15 @@ SORTS: dict[str, tuple[str, str]] = {
     "runtime.asc": ("RUNTIME", "ASC"),
 }
 
-# The two params that scope or order a search rather than filter it, so the
+# The three params that scope or order a search rather than filter it, so the
 # "at least one constraint" guard must not count them -- the judgement
 # ``builders/tmdb_discover.py`` makes about ``sort_by``/``region``/``language``,
-# for the same reason. The *filtering* set is derived as everything else in the
-# model rather than hand-listed, so a param added later is a filter by default
-# and the guard cannot silently forget it.
-_NON_FILTERING = frozenset({"type", "sort"})
+# for the same reason. ``limit`` is the newest of the three and the easiest to
+# get wrong: "the 200 most popular titles of any kind" is the popularity chart
+# with a smaller page, not a search. The *filtering* set is derived as everything
+# else in the model rather than hand-listed, so a param added later is a filter
+# by default and the guard cannot silently forget it.
+_NON_FILTERING = frozenset({"type", "sort", "limit"})
 
 # ``list`` is one of Kometa's operator keys (the document's §2 row 19), so the
 # params model below has a field named ``list`` -- and a name bound in a class
@@ -198,6 +200,13 @@ _CONTENT_RATING_REGION = (
     "US region here; this refuses instead, because a certificate filtered in "
     "the wrong region matches nothing, and an empty result one layer down means "
     "'remove every member'."
+)
+
+_LIMIT_SHAPE = (
+    "`limit` is how many titles to keep and must be a whole number of at least "
+    "one. Kometa spells 'no limit at all' as zero; here it is the key left out, "
+    "because a limit of zero keeps nothing and an empty result one layer down "
+    "means 'remove every member'."
 )
 
 _COUNTRY_CODE = re.compile(r"^[A-Za-z]{2}\Z")
@@ -340,6 +349,14 @@ class ImdbSearchParams(BaseModel):
     event: _Strings | None = Field(default=None, min_length=1)
     event_winning: _Strings | None = Field(default=None, min_length=1)
     sort: str = "popularity.desc"
+    # Kometa's own key, with Kometa's own arithmetic (the transcription's §3):
+    # a REQUEST-level cap, not a post-filter. The page size becomes the limit
+    # when the limit is under a page, and the walk stops as soon as that many
+    # ids are in hand. Without it a broad keyword search -- `based on book`
+    # matches tens of thousands of titles -- walks to the ten-page cap on every
+    # run and logs a warning it cannot act on. None is "no limit", which is what
+    # every definition written before this param existed means.
+    limit: int | None = Field(default=None, ge=1)
     # Row 265 (``list``/``.any``/``.not``, §2 row 19). ``list`` shadows the
     # builtin inside this class body, which is why every annotation here reads
     # ``_Strings``; declared last as well, so the shadowing has nothing left to
@@ -391,6 +408,20 @@ class ImdbSearchParams(BaseModel):
                 f"unknown `imdb_search` sort {value!r}: the sorts are "
                 + ", ".join(sorted(SORTS))
             )
+        return value
+
+    @field_validator("limit", mode="before")
+    @classmethod
+    def _must_keep_at_least_one_title(cls, value):
+        """``mode="before"`` so this sentence wins over the ``ge=1`` constraint's.
+
+        pydantic's own constraint message is not one of row 213's sentences and
+        its error carries the number the operator wrote; a before-validator runs
+        first, so the fixed sentence is what a zero produces. The ``ge=1`` stays
+        as the structural pin for anything this does not see.
+        """
+        if isinstance(value, int) and value < 1:
+            raise ValueError(_LIMIT_SHAPE)
         return value
 
     @field_validator("runtime_gte", "runtime_lte")
@@ -803,5 +834,6 @@ class ImdbSearchBuilder:
             constraints,
             {"sortBy": sort_by, "sortOrder": sort_order},
             f"the imdb_search of {ctx.library!r}",
+            limit=params.limit,
         )
         return BuilderResult(ids=[("imdb", value) for value in ids])

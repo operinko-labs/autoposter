@@ -192,13 +192,15 @@ if it worked.
 | Variable | Source | Value |
 |---|---|---|
 | `locale` | fixed | `"en-US"` (`imdb.py:613`) |
-| `first` | `limit` | `data["limit"]` when `0 < limit < 250`, else `250` (`imdb.py:611-614`). The operator-facing default is **100** (`builder.py:2390-2400`, `default=100, minimum=0`); `limit: 0` means "no limit" and yields `first: 250` |
+| `first` | `limit` | `data["limit"]` when `0 < limit < 250`, else `250` (`imdb.py:611-614`). The operator-facing default is **100** (`builder.py:2390-2400`, `default=100, minimum=0`); `limit: 0` means "no limit" and yields `first: 250`. **Shipped here** as `ImdbSearchParams.limit` (2026-09-09): same arithmetic, except that "no limit" is the key left out and `limit: 0` is refused at load |
 | `sortBy` | `sort_by` | one of 8 enum values (below) |
 | `sortOrder` | `sort_by` | `ASC` or `DESC`, from the suffix, uppercased (`imdb.py:648-649`) |
 | `after` | paging | the previous page's `endCursor` (`imdb.py:781`) |
 
 `sort_by` is written `<key>.<asc|desc>` and defaults to `popularity.asc`
-(`imdb.py:643`). The eight keys (`imdb.py:150-159`):
+(`imdb.py:643`). Kometa's default `popularity.asc` is this repository's **`popularity.desc`**: both send
+`{sortBy: POPULARITY, sortOrder: ASC}`, because IMDb's popularity field is a rank and Kometa names
+the direction of the rank where `SORTS` names the direction of the quantity. The eight keys (`imdb.py:150-159`):
 
 | YAML key | GraphQL enum |
 |---|---|
@@ -217,6 +219,8 @@ and the last page truncated to the remainder (`imdb.py:766-788`). Kometa applies
 **no** page cap: `num_of_pages = math.ceil(limit / 250)` where `limit` becomes
 `total` when the operator asked for none. This repo caps at `MAX_PAGES = 10`
 (`imdb_graphql.py:96`) — 2,500 ids — with a warning at the cap.
+With a `limit`, the walk stops as soon as that many ids are collected and truncates to exactly
+that many, so the cap is only reached by a limitless search.
 
 **The "at least one constraint" rule.** Kometa's is a length test on the parsed
 dict (`builder.py:2577-2580`):

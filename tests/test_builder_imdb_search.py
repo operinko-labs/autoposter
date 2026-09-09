@@ -344,6 +344,79 @@ async def test_paging_stops_when_the_last_page_says_so():
     assert len(seen) == 2
 
 
+# --- limit ---------------------------------------------------------------------
+#
+# Kometa's own key and Kometa's own arithmetic (the transcription's §3): the page
+# size IS the limit when the limit is under a page, so a 200-title search costs
+# one request for 200 rather than one for 250, and the walk stops as soon as
+# `limit` ids are in hand. The recorded two-page transport is the whole fixture
+# story here: page 1 carries two ids and says there is another page, page 2
+# carries one and says there is not.
+
+
+async def test_a_limit_inside_the_first_page_costs_one_request():
+    """The point of the param. Page 1 says `hasNextPage: true` and is ignored:
+    the ids asked for are in hand, so the second request is never made."""
+    seen: list = []
+    async with httpx.AsyncClient(transport=_paged(seen)) as http:
+        result = await _build(http, **RECORDED_PARAMS, limit=2)
+
+    assert len(seen) == 1
+    assert _body(seen[0])["variables"]["first"] == 2
+    assert result.ids == [("imdb", "tt0043014"), ("imdb", "tt0036775")]
+
+
+async def test_a_limit_below_the_pages_own_count_truncates_to_exactly_that_many():
+    """The recording answers with two ids whatever `first` says, because it is a
+    recording. Truncation is therefore a separate step from the request cap, and
+    this is the assertion on it."""
+    seen: list = []
+    async with httpx.AsyncClient(transport=_paged(seen)) as http:
+        result = await _build(http, **RECORDED_PARAMS, limit=1)
+
+    assert len(seen) == 1
+    assert result.ids == [("imdb", "tt0043014")]
+
+
+async def test_a_limit_spanning_two_pages_stops_at_the_second():
+    seen: list = []
+    async with httpx.AsyncClient(transport=_paged(seen)) as http:
+        result = await _build(http, **RECORDED_PARAMS, limit=3)
+
+    assert len(seen) == 2
+    assert _body(seen[0])["variables"]["first"] == 3
+    assert result.ids == [
+        ("imdb", "tt0043014"), ("imdb", "tt0036775"),  # page 1, recorded order
+        ("imdb", "tt0041959"),                          # page 2
+    ]
+
+
+async def test_without_a_limit_the_whole_search_is_walked_a_full_page_at_a_time():
+    """The control: `limit` is opt-in, and a definition that does not write one
+    behaves exactly as it did before this param existed."""
+    seen: list = []
+    async with httpx.AsyncClient(transport=_paged(seen)) as http:
+        result = await _build(http, **RECORDED_PARAMS)
+
+    assert len(seen) == 2
+    assert _body(seen[0])["variables"]["first"] == PAGE_SIZE
+    assert len(result.ids) == 3
+
+
+@pytest.mark.parametrize("value", [0, -3])
+async def test_a_limit_below_one_is_refused_at_load_without_echoing_it(value):
+    """Kometa's `limit: 0` means "no limit"; here "no limit" is the key left out,
+    and zero is refused -- a limit of zero keeps nothing, and an empty result one
+    layer down means "remove every member". Row 213: the sentence names the key
+    and the shape, never the number that was written."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, genres=["Film-Noir"], limit=value)
+
+    messages = _messages(caught)
+    assert any("`limit` is how many titles to keep" in m for m in messages)
+    assert not any(str(value) in m for m in messages)
+
+
 async def test_the_page_loop_is_capped_and_warns():
     """A cursor that never terminates -- a bug at either end -- must cost a
     bounded number of requests and say so, not truncate in silence."""
@@ -508,6 +581,11 @@ async def test_a_search_that_really_is_empty_is_data_not_a_failure():
         {"sort": "rating.desc"},
         {"type": "movie"},
         {"type": "movie", "sort": "votes.desc"},
+        # `limit` scopes a search, it does not filter one: a search of "the 200
+        # most popular titles of any kind" is the popularity chart with a
+        # smaller page, which is exactly what this guard exists to refuse.
+        {"limit": 200},
+        {"type": "movie", "sort": "popularity.desc", "limit": 200},
     ],
 )
 async def test_a_search_with_no_filtering_constraint_is_refused(params):
@@ -1405,14 +1483,15 @@ def test_the_one_constraint_guard_names_every_filtering_param():
 
     message = "\n".join(error["msg"] for error in caught.value.errors())
     for name in ImdbSearchParams.model_fields:
-        if name in ("type", "sort"):
+        if name in ("type", "sort", "limit"):
             assert name not in message.split(":")[1]
         else:
             assert name in message
 
 
 def test_the_params_model_carries_thirty_fields():
-    """Eight from row 81, twenty-two from rows 258-265. A count rather than a
-    list: the names are pinned one family at a time above, and what this adds is
-    that nothing was quietly dropped between them."""
-    assert len(ImdbSearchParams.model_fields) == 30
+    """Eight from row 81, twenty-two from rows 258-265, one (`limit`) from the
+    request-level cap. A count rather than a list: the names are pinned one
+    family at a time above, and what this adds is that nothing was quietly
+    dropped between them."""
+    assert len(ImdbSearchParams.model_fields) == 31
