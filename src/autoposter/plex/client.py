@@ -1,13 +1,33 @@
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 
+import requests
 from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.intake.arr import RenderIntent
 from autoposter.render.naming import derive_root_folder
 
+logger = logging.getLogger(__name__)
+
 _GUID_RE = re.compile(r"^(?:com\.plexapp\.agents\.)?(tmdb|imdb|tvdb)://([^?]+)")
+
+#: ``fetch_item``'s retry policy. A fixed policy rather than a config key: the
+#: operator asked for reliability, not a knob, and ``PlexConfig
+#: .resolve_max_attempts`` is a DIFFERENT budget (the job-level parking when
+#: Plex is unreachable at all) that this must not be confused with. Four
+#: attempts in all -- the initial one plus ``FETCH_ITEM_RETRIES`` -- and the
+#: wait BEFORE retry n is the n-th entry below.
+FETCH_ITEM_RETRIES = 3
+FETCH_ITEM_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
+
+#: Bound to a module-level name so a test can neutralise the 14 seconds of
+#: real waiting by patching ``autoposter.plex.client._sleep``. Patching
+#: ``autoposter.plex.client.asyncio.sleep`` would reach through to the
+#: ``asyncio`` module object itself and silence sleeping process-wide, for
+#: every other module in the same interpreter.
+_sleep = asyncio.sleep
 
 
 class ItemNotFound(Exception):
@@ -591,8 +611,39 @@ class PlexClient:
         the object the writer calls ``.batchEdits()``/``.edit()`` on. It is a
         plain GET (``PlexObject.fetchItem``) — unlike a metadata refresh, no
         agent re-pull is triggered.
+
+        A read timeout or a dropped connection is retried
+        ``FETCH_ITEM_RETRIES`` times, waiting ``FETCH_ITEM_BACKOFF_SECONDS``
+        between attempts: a Plex that is mid-scan on a fresh import drops
+        single reads that succeed seconds later, and one dropped read used to
+        cost the item its whole metadata pass. The retry lives at this seam
+        rather than in any caller so that all of them inherit it -- the
+        pipeline's metadata and badge stages, the artwork modes, the artwork
+        and item-override endpoints, the metadata backup. Only
+        ``requests.exceptions.Timeout`` and ``requests.exceptions
+        .ConnectionError`` are retried: an item Plex does not have
+        (``NotFound``) is a settled answer rather than a transient one, and
+        everything else -- cancellation included -- propagates at once. After
+        the last attempt the ORIGINAL exception re-raises unchanged, so
+        ``app._handle_intent``'s attempt budget (which tags the object it
+        catches) and the pipeline's "continuing to artwork" containment behave
+        exactly as they do today, just four attempts later.
         """
-        return await asyncio.to_thread(self._server.fetchItem, int(rating_key))
+        for attempt in range(FETCH_ITEM_RETRIES + 1):
+            try:
+                return await asyncio.to_thread(self._server.fetchItem, int(rating_key))
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+                if attempt == FETCH_ITEM_RETRIES:
+                    raise
+                wait = FETCH_ITEM_BACKOFF_SECONDS[attempt]
+                # The exception's CLASS, never str(exc): a real requests
+                # timeout stringifies to "HTTPSConnectionPool(host=...,
+                # port=...): Read timed out." -- the operator's Plex host.
+                logger.warning(
+                    "plex: fetching item %s failed (%s); retrying in %ss (attempt %d of %d)",
+                    rating_key, type(exc).__name__, wait, attempt + 1, FETCH_ITEM_RETRIES,
+                )
+                await _sleep(wait)
 
     def _list_items_sync(self, wanted_type: str) -> list[SectionItem]:
         items = []
