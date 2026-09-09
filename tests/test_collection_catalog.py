@@ -421,7 +421,7 @@ def test_an_award_preset_derives_its_facts_from_the_event_registry():
         assert preset.titles() == [award.title for award in event.awards.values()]
         assert preset.library_types == event.library_types
         assert preset.years_title() == (
-            'one per ceremony, named "%s"' % (event.year_title % "<year>")
+            'one collection per ceremony, named "%s"' % (event.year_title % "<year>")
         )
 
 
@@ -763,7 +763,7 @@ def test_a_packs_placeholder_title_is_listed_and_reserved():
         assert collection.title in preset.titles(), preset.key
         shape = preset.years_title()
         assert shape is not None, preset.key
-        assert shape.startswith("one per "), (preset.key, shape)
+        assert shape.startswith("one collection per "), (preset.key, shape)
         assert "named " in shape, (preset.key, shape)
 
 
@@ -826,9 +826,7 @@ def test_a_dynamic_packs_builds_string_is_honest_end_to_end():
 
     assert genres["titles"] == ["Genres"]
     assert genres["years_title"] == (
-        'one per genre the library holds, named "<genre> <Library type>s" '
-        '("Genres" above is the reserved definition title -- the family\'s '
-        "own collections are the ones per genre, named this way)"
+        'one collection per genre in your library, named "<genre> <Library type>s"'
     )
 
     # The picker's own composition, unchanged by this fix
@@ -837,10 +835,8 @@ def test_a_dynamic_packs_builds_string_is_honest_end_to_end():
         ", ".join(genres["titles"]), genres["years_title"]
     )
     assert builds == (
-        "Builds: Genres, plus one per genre the library holds, named "
-        '"<genre> <Library type>s" ("Genres" above is the reserved '
-        "definition title -- the family's own collections are the ones per "
-        "genre, named this way)"
+        "Builds: Genres, plus one collection per genre in your library, named "
+        '"<genre> <Library type>s"'
     )
 
 
@@ -1359,7 +1355,7 @@ def test_a_facts_packs_placeholder_title_is_listed_and_reserved():
         assert collection.title in preset.titles(), preset.key
         shape = preset.years_title()
         assert shape is not None, preset.key
-        assert shape.startswith("one per "), (preset.key, shape)
+        assert shape.startswith("one collection per "), (preset.key, shape)
         assert "named " in shape, (preset.key, shape)
 
 
@@ -1672,7 +1668,7 @@ def test_a_credits_packs_placeholder_title_is_listed_and_reserved():
         assert collection.title in preset.titles(), preset.key
         shape = preset.years_title()
         assert shape is not None, preset.key
-        assert shape.startswith("one per "), (preset.key, shape)
+        assert shape.startswith("one collection per "), (preset.key, shape)
         assert "named " in shape, (preset.key, shape)
 
 
@@ -2786,7 +2782,7 @@ async def test_the_catalog_endpoint_lists_every_category_and_the_awards(
         "key": "award_cannes",
         "name": "Cannes",
         "titles": ["Cannes Golden Palm Winners"],
-        "years_title": 'one per ceremony, named "Cannes <year>"',
+        "years_title": 'one collection per ceremony, named "Cannes <year>"',
         "description": cannes["description"],
         "kometa_source": "defaults/award/cannes.yml",
         "library_types": ["Movie"],
@@ -2960,3 +2956,91 @@ def test_the_catalog_has_a_franchises_category_and_the_preset_moved():
     assert CATEGORIES["franchises"] == "Franchises"
     assert list(CATEGORIES) == sorted(CATEGORIES)  # the declaration stays alphabetical
     assert BY_KEY["content_franchises"].category == "franchises"
+
+
+# --- the copy contract -------------------------------------------------------
+#
+# The Collections picker renders `preset.description` as a raw JSX text child
+# (``CatalogPanel.tsx:186-188``): a backtick shows as a grave accent, ``--``
+# shows as two hyphens, and a 454-word paragraph shows as one unbroken wall.
+# Everything a description used to cite has a structured home on the same row
+# already -- ``kometa_source`` is a badge at ``CatalogPanel.tsx:205``, the
+# setting is a badge at ``:203``, and a gated row's roadmap number is the
+# ``needs row N`` badge at ``:194-198`` -- so a description that repeats one
+# prints it twice.
+#
+# Read off ``CATALOG`` rather than a list written here: a preset added later is
+# held to this contract on the day it lands, not on the day somebody remembers
+# to add it.
+_BANNED_IN_COPY = ("`", "--", "—", ".yml", ".py", ".superpowers", "defaults/")
+_ROW_OR_PHASE = re.compile(r"\b(?:row|phase)\s*\d", re.IGNORECASE)
+# A full stop that is not followed by whitespace or the end of the string: a
+# file name, a dotted config path, a decimal, or an abbreviation. Forbidding
+# all four is what lets the sentence count below be a plain count of full
+# stops -- "e.g." and "1.33" would each read as a sentence boundary otherwise.
+_ABBREVIATION = re.compile(r"\.(?=\S)")
+_SENTENCE_END = re.compile(r"[.?!](?:\s|$)")
+
+# The one customisation sentence, used verbatim or not at all, and the only
+# place the word "definition" may appear in a served string.
+CUSTOMISATION = (
+    "To change the count, the titles or the order, copy this set into a "
+    "definition of your own."
+)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Task 3 lands the copy. 36 of the 58 rows fail this contract on the "
+        "file as it stands: every row that carries a backtick, a `--`, a "
+        "roadmap row number, a Kometa file name, a dotted config path, or "
+        "more than 60 words."
+    ),
+)
+def test_every_row_reads_like_a_sentence_an_operator_can_act_on():
+    """The copy contract, over every row the picker shows.
+
+    Not a taste test: each clause below is something the operator SEES go
+    wrong. Backticks and double hyphens render literally. A roadmap row
+    number in prose duplicates the badge beside it. A dotted config path is a
+    key nobody can act on from the picker. Sixty words is roughly where the
+    paragraph stops being read.
+    """
+    for preset in CATALOG:
+        description = preset.description
+        for banned in _BANNED_IN_COPY:
+            assert banned not in description, (preset.key, banned)
+        assert not _ROW_OR_PHASE.search(description), preset.key
+        assert not _ABBREVIATION.search(description), preset.key
+        words = len(description.split())
+        assert words <= 60, (preset.key, words)
+        sentences = len(_SENTENCE_END.findall(description))
+        assert sentences <= 3, (preset.key, sentences)
+        if "copy this set" in description:
+            # Verbatim, and once: an operator who has read the sentence on one
+            # row should recognise it on the next without re-reading it.
+            assert CUSTOMISATION in description, preset.key
+            assert description.count("definition") == 1, preset.key
+        else:
+            assert "definition" not in description, preset.key
+
+
+def test_no_family_shape_line_carries_a_parenthetical_any_more():
+    """The clause the operator quoted, gone and unable to come back.
+
+    ``_family_shape`` used to append ``("Decades" above is the reserved
+    definition title -- ...)`` to all fourteen family rows at once. The shape
+    line now ENDS at the closing quote of the title it names, which is what
+    forbids a trailing aside without forbidding a parenthesis inside a real
+    collection title (``"<director> (Director)"`` is a title the builder
+    creates).
+    """
+    shaped = _dynamic_rows() + _facts_family_rows() + _credits_family_rows()
+    assert shaped, "no family rows found; the helpers above changed shape"
+    lines = [preset.years_title() for preset, _collection, _params in shaped]
+    lines += [
+        preset.years_title() for preset in CATALOG if preset.award_event is not None
+    ]
+    for line in lines:
+        assert re.fullmatch(r'one collection per .+, named "[^"]*"', line), line

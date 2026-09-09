@@ -138,15 +138,29 @@ def _shape_line(what: str, shape: str) -> str:
     members of. Shared by the three families that have one -- an award
     ceremony's year collections, a dynamic pack and a facts-enumerated pack --
     because the picker renders one string and there is no reason for it to be
-    assembled two ways."""
-    return 'one per %s, named "%s"' % (what, shape)
+    assembled two ways.
+
+    "one collection per" rather than "one per": the reader of this line is
+    looking at a picker row and deciding whether to switch it on, and the noun
+    it is one of is the thing they will find in Plex afterwards.
+    """
+    return 'one collection per %s, named "%s"' % (what, shape)
 
 
-def _family_shape(row, params: dict, placeholder_title: str, values_clause: str) -> str:
+def _family_shape(row, params: dict, values_clause: str) -> str:
     """Shared body of ``dynamic_shape`` and ``facts_family_shape``: everything
     but the type table each reads and the clause naming where its values come
     from -- the one sentence an operator needs to read differently between
-    them (see each function's own docstring for why)."""
+    them (see each function's own docstring for why).
+
+    The line ends at the title it names. It used to carry a trailing
+    parenthetical explaining that the pack's reserved definition title is not
+    one of the collections; that sentence was written for a reader of this
+    module and printed to an operator choosing a checkbox, on fourteen rows at
+    once, and it is the clause the operator asked to be rid of. What the
+    reserved title IS stays where it belongs, in ``dynamic_shape``'s docstring
+    and in ``titles()``'s.
+    """
     noun = row.name.replace("_", " ")
     key_name = DYNAMIC_KEY_PLACEHOLDER % noun
     shape = render_title(
@@ -157,14 +171,10 @@ def _family_shape(row, params: dict, placeholder_title: str, values_clause: str)
         values=(),
         auto_type=row.name,
     )
-    line = _shape_line("%s %s" % (noun, values_clause), shape)
-    return (
-        '%s ("%s" above is the reserved definition title -- the family\'s own '
-        "collections are the ones per %s, named this way)" % (line, placeholder_title, noun)
-    )
+    return _shape_line("%s %s" % (noun, values_clause), shape)
 
 
-def dynamic_shape(params: dict, placeholder_title: str) -> str:
+def dynamic_shape(params: dict) -> str:
     """The family-shape line for one dynamic pack.
 
     Derived, not restated. The format is the pack's own pinned
@@ -176,19 +186,19 @@ def dynamic_shape(params: dict, placeholder_title: str) -> str:
     will supply, and the library type, which differs between a preset's
     libraries and would be a lie if one of them were picked.
 
-    ``placeholder_title`` is the OTHER thing ``titles()`` lists next to this
-    shape -- the reserved definition title the engine falls through to when a
-    smart builder declares none (``builders/dynamic.py``'s "No ``titles()``,
-    deliberately" note), under which no collection is ever created. C3 licenses
-    ``titles()`` reporting that title only on the condition that the shape line
-    explains it, so the explanation is written into the line itself rather than
-    left for the picker to invent.
+    ``titles()`` reports one more thing next to this shape -- the reserved
+    definition title the engine falls through to when a smart builder declares
+    none (``builders/dynamic.py``'s "No ``titles()``, deliberately" note),
+    under which no collection is ever created. It is not explained in the
+    served line any more: the explanation was a paragraph of this module's own
+    vocabulary printed on fourteen picker rows, and the line reads correctly
+    without it.
     """
     row = DYNAMIC_TYPES[params["type"]]
-    return _family_shape(row, params, placeholder_title, "the library holds")
+    return _family_shape(row, params, "in your library")
 
 
-def facts_family_shape(params: dict, placeholder_title: str) -> str:
+def facts_family_shape(params: dict) -> str:
     """The family-shape line for one facts-enumerated pack.
 
     ``dynamic_shape``'s twin, and deliberately its near-copy rather than a
@@ -206,7 +216,7 @@ def facts_family_shape(params: dict, placeholder_title: str) -> str:
     a small lie on every freshly-deployed deployment.
     """
     row = FACTS_FAMILY_TYPES[params["type"]]
-    return _family_shape(row, params, placeholder_title, "this service has gathered facts for")
+    return _family_shape(row, params, "this service has gathered facts for")
 
 
 @dataclass(frozen=True)
@@ -220,7 +230,7 @@ class _CreditKindRow:
     title_format: str
 
 
-def credits_family_shape(params: dict, placeholder_title: str) -> str:
+def credits_family_shape(params: dict) -> str:
     """The family-shape line for one counted-credits pack.
 
     ``dynamic_shape``'s third twin, and the same contract: derived rather than
@@ -236,9 +246,7 @@ def credits_family_shape(params: dict, placeholder_title: str) -> str:
     """
     kind = params["type"]
     row = _CreditKindRow(name=kind, title_format=CREDIT_TITLE_FORMATS[kind])
-    return _family_shape(
-        row, params, placeholder_title, "the credits cache has counted"
-    )
+    return _family_shape(row, params, "the credits cache has counted")
 
 
 def collection_title(template: str, library_type: str) -> str:
@@ -473,13 +481,11 @@ class Preset:
             )
         for collection in self.collections:
             if collection.builder == "dynamic":
-                return dynamic_shape(dict(collection.params), collection.title)
+                return dynamic_shape(dict(collection.params))
             if collection.builder == "facts_family":
-                return facts_family_shape(dict(collection.params), collection.title)
+                return facts_family_shape(dict(collection.params))
             if collection.builder == "credits_family":
-                return credits_family_shape(
-                    dict(collection.params), collection.title
-                )
+                return credits_family_shape(dict(collection.params))
         return None
 
 
