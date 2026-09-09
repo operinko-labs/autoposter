@@ -537,7 +537,7 @@ _AWARD_NOTES: dict[str, str] = {
         "belong in both kinds of library; the best-picture collection is a "
         "film collection and is offered for Movie libraries only."
     ),
-    "emmy": "Television only -- the one ceremony here that is.",
+    "emmy": "Television only, the one ceremony here that is.",
     "nfr": (
         "Not a yearly prize: the static collection is the whole registry, and "
         "the year collections are the films inducted that year."
@@ -673,8 +673,8 @@ SETTING_PRESETS: tuple[Preset, ...] = (
         name=_oscars.name,
         description=_award_description(
             _oscars,
-            "Switched on by the collections.awards setting, not by a preset "
-            "key -- it is these collections' original, shipped toggle.",
+            "Switched on by the Awards switch in Settings rather than by this "
+            "catalog.",
         ),
         kometa_source="defaults/award/oscars.yml",
         library_types=_oscars.library_types,
@@ -686,17 +686,9 @@ SETTING_PRESETS: tuple[Preset, ...] = (
         category="charts",
         name="IMDb Charts",
         description=(
-            "IMDb Popular, IMDb Top 250, and IMDb Lowest Rated (Movie "
-            "libraries only) -- the chart family collections.charts already "
-            "builds, refreshed from IMDb on every pass. The switch is the "
-            "FAMILY's: collections.charts builds all three or none, and it "
-            "must be false before you write any of them yourself, or the "
-            "title collides with the built-in one. To build a subset, write "
-            "definitions with builder: imdb_chart and params: {chart: <key>} "
-            "-- popular_movies, top_movies, or lowest_rated, each narrowed "
-            "with libraries: to a Movie library; popular_shows or "
-            "top_shows, each narrowed with libraries: to a Show library -- "
-            "one definition per title and library type."
+            "IMDb Popular, IMDb Top 250 and IMDb Lowest Rated, refreshed from "
+            "IMDb on every run. The Charts switch in Settings builds all three "
+            "or none, and IMDb Lowest Rated is offered for film libraries only."
         ),
         kometa_source="defaults/chart/imdb.yml",
         library_types=("Movie", "Show"),
@@ -709,9 +701,8 @@ SETTING_PRESETS: tuple[Preset, ...] = (
         name="%s divider" % CONTENT_RATINGS_DIVIDER_TITLE,
         description=(
             "The blank %r section divider that belongs to the Common Sense "
-            "age-rating family. The age-rating collections themselves are "
-            "always built and have no switch of their own; this divider is "
-            "the one part of the family collections.separators turns off."
+            "age-rating collections. Those collections are always built; the "
+            "Separators switch in Settings turns this divider off."
             % CONTENT_RATINGS_DIVIDER_TITLE
         ),
         kometa_source="defaults/both/content_rating_cs.yml",
@@ -901,16 +892,14 @@ _TMDB_CHARTS: tuple[tuple[str, str, str, str], ...] = (
     ("on_the_air", TMDB_CHART_TITLES["on_the_air"][0], "defaults/chart/tmdb.yml",
      "series airing an episode in the next week"),
     ("now_playing", "TMDb Now Playing", NOT_KOMETA + "the title is ours",
-     "films in cinemas now. TMDb publishes this chart and this service's "
-     "builder reads it; Kometa's chart defaults do not include it, so the "
-     "title above was written here rather than transcribed"),
+     "films in cinemas now, with a title of ours since Kometa has no row for "
+     "this chart"),
     ("upcoming", "TMDb Upcoming", NOT_KOMETA + "the title is ours",
-     "films with a release date still ahead. Not in Kometa's chart defaults "
-     "either, so the title is ours, as with TMDb Now Playing"),
+     "films with a release date still ahead, with a title of ours as with "
+     "TMDb Now Playing"),
     ("trending_day", "TMDb Trending Daily", NOT_KOMETA + "the title is ours",
-     "TMDb's trending list over the past day. Kometa's TMDb Trending is the "
-     "WEEKLY list, which has its own row above; this is the daily one, which "
-     "its chart defaults do not include"),
+     "TMDb's trending list over the past day, where the TMDb Trending row "
+     "above is the weekly one"),
 )
 
 
@@ -959,8 +948,8 @@ _TRACEARR_SOURCE = NOT_KOMETA + (
 _TRACEARR_DESCRIPTION = (
     "The %s played most often on this server over the past 30 days, ranked "
     "from Tracearr's own watch history and recomputed on every pass. Needs "
-    "tracearr.enabled, tracearr.base_url and AUTOPOSTER_TRACEARR_APIKEY; "
-    "without them the collection reports itself failed rather than emptying."
+    "Tracearr connected in Settings, with its address and API key; without "
+    "them the collection reports itself failed rather than emptying."
 )
 
 TRACEARR_PRESETS: tuple[Preset, ...] = (
@@ -1046,18 +1035,11 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         category="franchises",
         name="Universes",
         description=(
-            "Eight cross-franchise universes -- %s -- each built from the "
-            "public IMDb list Kometa's own defaults name for it. Kometa's "
-            "ninth universe, DC, is not here: it is the three-collection DC "
-            "preset beside this one (`content_dc`), which replaced the single "
-            "DC Universe row this pack used to carry -- tick that preset to "
-            "have DC, in three collections instead of one. The three that "
-            "are film-only are offered for Movie libraries only, as Kometa's "
-            "allowed_libraries has them. Kometa's remaining seven universes "
-            "are MDBList-hosted under a URL shape this service's mdblist_list "
-            "builder cannot address, so they are absent rather than guessed "
-            "at."
-            % ", ".join(title for title, _list, _types in _UNIVERSE_LISTS)
+            "Eight collections for the big crossover worlds, among them the "
+            "Marvel Cinematic Universe, Star Wars Universe and Arrowverse, "
+            "each built from a public IMDb list. Alien / Predator, Conjuring "
+            "Universe and Fast & Furious are offered for film libraries only. "
+            "DC has its own row beside this one."
         ),
         kometa_source=NOT_KOMETA
         + (
@@ -1100,20 +1082,11 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         category="franchises",
         name="DC",
         description=(
-            "Three DC collections where the Universes pack used to have one, "
-            "because the three are technically not the same universe. 'DC "
-            "Universe' is DC Studios' current DCU slate, film and TV, from "
-            "public TMDb list 8642250. 'DC Extended Universe' is the "
-            "2013-2023 DCEU, from the public MDBList "
-            "fa11en82/dc-extended-universe. 'In Association With DC' is "
-            "everything DC that is not canonically in either universe, from "
-            "fa11en82/in-association-with-dc. Enabling this beside the "
-            "Universes pack does not collide: that pack's DC row moved here. "
-            "An operator who had the old DC Universe collection gets it back "
-            "under the same title with the new membership by ticking this "
-            "preset; until then the pass reports the old collection as "
-            "unmanaged every pass and deletes nothing (deleting it takes "
-            "collections.delete_unconfigured, which is off by default)."
+            "Three DC collections, because the three are not one universe: DC "
+            "Universe is the current slate, DC Extended Universe is the 2013 "
+            "to 2023 films, and In Association With DC is everything else. "
+            "Turning this on alongside Universes does not clash, and an old DC "
+            "Universe collection is taken over rather than left behind."
         ),
         kometa_source=NOT_KOMETA
         + (
@@ -1138,26 +1111,10 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         category="content",
         name="Genres",
         description=(
-            "One collection per genre the library actually holds -- Kometa's "
-            "largest pack, transcribed from `defaults/both/genre.yml` (its "
-            "addon merges, which fold 'Action & Adventure' into both Action and "
-            "Adventure and 'Biography' into Biopic, are "
-            "`collections/packs.py`'s table). Built by the per-value engine "
-            "phase 10a shipped: `builder: dynamic`, `type: genre`, one "
-            "definition that expands against the library on every pass, titled "
-            "in Kometa's own shape. 21 genres on the production movie library "
-            "and 14 on the shows, inside the engine's default "
-            "`max_collections` of 50, so this pack pins no cap. Ordered "
-            "newest-first, which is upstream's own `release.desc`, and each "
-            "collection holds every title that matches rather than a top-N: "
-            "upstream sets no per-collection limit and neither does this "
-            "pack. The genre attribute's own caveat stands and is why the "
-            "family is built by SEARCH rather than from the section listing, "
-            "which phase 9a's probe found truncates to two tags per item (row "
-            "%d). To build something other than what this pack builds, copy it "
-            "into a `definitions:` entry of your own and edit it there -- a "
-            "preset is a key, not a copy of the definitions it stands for."
-            % STRANDED_FILTER_ROW
+            "One collection per genre in your library, such as Action Movies, "
+            "Horror Movies and Comedy Shows, holding everything that matches, "
+            "newest first. To change the count, the titles or the order, copy "
+            "this set into a definition of your own."
         ),
         kometa_source="defaults/both/genre.yml",
         library_types=_BOTH,
@@ -1167,63 +1124,27 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
             ),
         ),
     ),
+    # What this pack does differently from upstream, kept here rather than in
+    # the picker's prose: Kometa builds no franchise collection until the
+    # library holds two of its films (``minimum_items: 2``) and this family has
+    # no such floor; where Kometa's addons fold two TMDb collections into one
+    # (Prometheus into Alien) the builder here takes a single collection id, so
+    # twelve buckets build the first of the two and name the other in the pass
+    # report; and where upstream merges extra movie ids into a collection's own
+    # membership (``template_variables.movie``), 29 franchise collections here
+    # are missing those films. ``max_collections`` is pinned at 500, ten times
+    # the engine's own default: a guard against runaway enumeration, not
+    # against a large library's organic franchise count.
     Preset(
         key="content_franchises",
         category="franchises",
         name="Franchises",
         description=(
-            "One collection per TMDb franchise collection the library holds, "
-            "with Kometa's addon merges (Prometheus into Alien, Minions into "
-            "Despicable Me) and its 'Collection' suffix removed, transcribed "
-            "from `defaults/movie/franchise.yml`. Movie libraries only, as "
-            "upstream has it: TMDb collections are movie franchises. Built by "
-            "`builder: facts_family`, `type: tmdb_collection` -- the family "
-            "enumerates the franchises this library's items belong to from the "
-            "`belongs_to_collection` id the facts pipeline stores off the "
-            "`/movie/{id}` read it already makes, and each collection's MEMBERS "
-            "are that franchise's own parts through the `tmdb_collection` "
-            "builder, so a film the library owns but has not been gathered yet "
-            "still joins its collection. That enumeration is what row %d was "
-            "filed for, and it closed with this pack. "
-            "What that costs, said plainly: the family is as complete as the "
-            "facts pipeline's coverage. A freshly-deployed library starts small "
-            "and grows as the ratings-drift sweep works through it "
-            "(`scheduler.drift_days`, `scheduler.drift_batch_size` -- 500 items "
-            "a week by default), and each pass reports how many items it has "
-            "visited. "
-            "`max_collections` is pinned at %d, which is this service's "
-            "judgement and not Kometa's -- upstream caps nothing, and unlike "
-            "the packs beside this one there is no include list to compute a "
-            "ceiling from, so the number is ten times the engine's own default "
-            "of 50: a guard against runaway enumeration (a mount or filter "
-            "break producing thousands of buckets from nothing), not against "
-            "a large library's organic franchise count. Past it the family "
-            "creates nothing and reports both numbers rather than building a "
-            "plausible fraction of itself. "
-            "Three more things this pack does differently from upstream, "
-            "because an operator can see all three. Kometa builds no "
-            "franchise collection until the library holds TWO of its films "
-            "(`minimum_items: 2`); this family has no such floor, so a "
-            "franchise you own one film of still gets a collection. Where "
-            "Kometa's addons fold two TMDb collections into one (Prometheus "
-            "into Alien), the builder here takes a single collection id -- so "
-            "such a bucket builds the first of the two and names the other in "
-            "the pass report, where you can write it as a definition of your "
-            "own. Twelve buckets can do that, and only if you hold both "
-            "halves. And where upstream merges extra movie ids into a "
-            "collection's own membership (`template_variables.movie` -- "
-            "Hobbs & Shaw into The Fast and the Furious, Once Upon a Deadpool "
-            "into X-Men), this family's membership is the franchise's own "
-            "`parts` through the `tmdb_collection` builder alone, so 29 "
-            "franchise collections are missing the films Kometa adds to "
-            "them. "
-            "To build something other than what this pack builds, copy it into "
-            "a `definitions:` entry of your own and edit it there -- a preset "
-            "is a key, not a copy of the definitions it stands for."
-            % (
-                TMDB_COLLECTION_TYPE_ROW,
-                dict(packs.FRANCHISE_PARAMS)["max_collections"],
-            )
+            "One collection per film franchise in your library, such as James "
+            "Bond, The Lord of the Rings and Toy Story. Film libraries only, "
+            "and a new install starts small and fills in over a few weeks. To "
+            "change the count, the titles or the order, copy this set into a "
+            "definition of your own."
         ),
         kometa_source="defaults/movie/franchise.yml",
         library_types=_MOVIE,
@@ -1239,18 +1160,8 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         category="content",
         name="Based on...",
         description=(
-            "Based on a Book, a Comic, a True Story, a Video Game. Kometa "
-            "builds these from TMDb keyword NAMES ('based on novel', 'based on "
-            "comic book'), which it resolves to ids by searching TMDb at run "
-            "time; the tmdb_keyword builder here takes an id, and the expansion "
-            "is pure and cannot search. A keyword id written out here from "
-            "memory is exactly the invention this table refuses, so the pack "
-            "waits for the resolution step, which is row %d. Not the per-value "
-            "engine: based.yml is a FIXED four-collection pack, and row %d "
-            "has since landed (phase 10a) without closing this one, exactly as "
-            "this row said it would not." % (
-                KEYWORD_RESOLUTION_ROW, DYNAMIC_ENGINE_ROW
-            )
+            "Not built yet. Four collections for films and shows based on a "
+            "book, a comic, a true story or a video game."
         ),
         kometa_source="defaults/both/based.yml",
         library_types=_BOTH,
@@ -1546,30 +1457,28 @@ _REGIONAL_RATINGS: tuple[
     ...,
 ] = (
     ("uk", "UK", "UK certificates", _UK_CONTENT_RATINGS,
-     "Seven collections -- %s -- grouping the library by its BBFC "
-     "certificate.",
+     "Seven collections, %s U through %s R18, grouping your library by its "
+     "BBFC certificate.",
      "'UK 12' and 'UK 12A' are two buckets rather than one because Kometa "
      "keeps the video certificate and the cinema one apart."),
     ("de", "DE", "German FSK ratings", _DE_CONTENT_RATINGS,
-     "Six collections -- %s -- grouping the library by its FSK age rating.",
+     "Six collections, %s 0 through %s BPjM, grouping your library by its FSK "
+     "age rating.",
      "'DE BPjM' is not an age band: it is the bucket for titles on the German "
-     "restricted index, which is a different kind of classification."),
+     "restricted index."),
     ("au", "AU", "Australian classifications", _AU_CONTENT_RATINGS,
-     "Six collections -- %s -- grouping the library by its Australian "
-     "Classification Board rating.",
-     "'AU M' is the Australian advisory rating and NOT the US 'M'; the two "
-     "systems happen to share a letter and mean different things."),
+     "Six collections, %s G through %s X18+, grouping your library by its "
+     "Australian Classification Board rating.",
+     "'AU M' is the Australian advisory rating, not the US 'M'; the two "
+     "systems share a letter and mean different things."),
     ("nz", "NZ", "New Zealand classifications", _NZ_CONTENT_RATINGS,
-     "Eleven collections -- %s -- grouping the library by its New Zealand "
-     "classification.",
-     "Three things worth knowing, all Kometa's own and all kept verbatim: "
-     "'NZ R' is the X-rated RESTRICTED bucket rather than anything "
-     "R-for-mature; 'NZ M' is not the US 'M'; and the RP buckets overlap the "
-     "R ones by design, so a title rated 14 lands in 'NZ R13' AND in "
-     "'NZ RP13'."),
+     "Eleven collections, %s G through %s R, grouping your library by its New "
+     "Zealand classification.",
+     "'NZ R' is the restricted bucket, 'NZ M' is not the US 'M', and a title "
+     "rated 14 lands in both 'NZ R13' and 'NZ RP13'."),
     ("mal", "MAL", "MyAnimeList ratings", _MAL_CONTENT_RATINGS,
-     "Six collections -- %s -- grouping the library by its MyAnimeList "
-     "rating.",
+     "Six collections, %s G through %s Rx, grouping your library by its "
+     "MyAnimeList rating.",
      "MyAnimeList's own scale rather than a national board's, which is why "
      "'MAL Rx' exists and why an anime library is the one this row is for."),
 )
@@ -1580,20 +1489,9 @@ _REGIONAL_RATING_PRESETS: tuple[Preset, ...] = tuple(
         category="content_ratings",
         name=name,
         description=(
-            "%s Each bucket carries Kometa's own addon list, so a title "
-            "certified under another system lands in the matching bucket "
-            "rather than in nothing. %s The titles carry the "
-            "'%s' prefix -- unlike the US rows, which shipped bare -- because "
-            "these families share bucket letters with each other and switching "
-            "two of them on would otherwise build two collections under one "
-            "title."
-            % (
-                headline % ", ".join(
-                    "%s %s" % (prefix, key) for key, _values in table
-                ),
-                note,
-                prefix,
-            )
+            "%s Each one also takes the matching certificates from other "
+            "countries, so a title classified elsewhere still lands somewhere. "
+            "%s" % (headline % (prefix, prefix), note)
         ),
         kometa_source="defaults/both/content_rating_%s.yml" % code,
         library_types=_BOTH,
@@ -1615,12 +1513,11 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
         category="content_ratings",
         name="US certifications",
         description=(
-            "Five collections -- %s -- grouping the library's films by MPA "
-            "certification. Each bucket carries Kometa's own addon list, so a "
-            "film certified TV-14 or gb/12A lands in PG-13 rather than in "
-            "nothing. Plex's own contentRating, deliberately distinct from the "
-            "Common Sense age buckets in this same tab: same idea, different "
-            "rating system, and the two never share a title."
+            "Five collections, %s, grouping your films by their MPA "
+            "certificate. Each one also takes the equivalent certificates from "
+            "other countries, so a film rated TV-14 lands in PG-13 rather than "
+            "nowhere. Separate from the Common Sense age collections in this "
+            "same tab, and the two never share a title."
             % ", ".join("%s Movies" % key for key, _values in _US_CONTENT_RATINGS)
         ),
         kometa_source="defaults/movie/content_rating_us.yml",
@@ -1639,16 +1536,11 @@ CONTENT_RATING_PRESETS: tuple[Preset, ...] = (
         category="content_ratings",
         name="US TV ratings",
         description=(
-            "Five collections -- %s -- grouping the library's series by their "
-            "TV Parental Guidelines rating. Each bucket carries Kometa's own "
-            "addon list, so a series certified PG-13 or gb/12A lands in TV-14 "
-            "rather than in nothing. The television counterpart of "
-            "'content_ratings_us', which is Movie-only: Kometa ships the two "
-            "as separate files with separate include lists, and so does this "
-            "catalog rather than reusing film certifications for television. "
-            "Plex's own contentRating, deliberately distinct from the Common "
-            "Sense age buckets in this same tab: same idea, different rating "
-            "system, and the two never share a title."
+            "Five collections, %s, grouping your series by their TV Parental "
+            "Guidelines rating. Each one also takes the equivalent ratings from "
+            "other systems, so a series rated PG-13 lands in TV-14 rather than "
+            "nowhere. The television counterpart of the US certifications row, "
+            "which is for films only."
             % ", ".join(
                 "%s Shows" % key for key, _values in _US_SHOW_CONTENT_RATINGS
             )
@@ -1683,34 +1575,12 @@ _COUNTRY_PRESET = Preset(
     category="location",
     name="Countries",
     description=(
-        "One collection per country the library's own metadata names, with "
-        "Kometa's own list of 255 country names and the addon merges that fold "
-        "Plex's spellings into them -- 'Bolivarian Republic of Venezuela' "
-        "becomes Venezuela -- transcribed from `defaults/movie/country.yml`. "
-        "Movie libraries only, as upstream has it. Built by `builder: "
-        "dynamic`, `type: country`: 63 values on the production movie library, "
-        "measured by phase 10a's probe, and the same Plex `country` tag "
-        "upstream enumerates, so this is Kometa's own value set and not a "
-        "near-miss for it. Kometa's title shape (the country's name, and "
-        "nothing else) ships unchanged. `max_collections` is pinned at 256 -- "
-        "that include list plus the leftovers bucket, which is the most this "
-        "family can ever build -- so a library with a wider spread than the "
-        "one measured is not refused by a number nobody set. What the include "
-        "list costs: a Plex country title outside those 255 names lands in "
-        "'Other Countries' rather than getting a collection of its own. "
-        "The `Regions` and `Continents` packs beside this one group a "
-        "different field with the same bare title shape, and their lists "
-        "touch this one's: co-enable `Regions` and two names -- 'Antarctica' "
-        "and 'Micronesia' -- are a collection in each pack, so two managed "
-        "rows rebuild one title from different value sets on every pass; "
-        "with `Continents` it is 'Antarctica' alone. Upstream's own files "
-        "overlap the same way, so all three rows disclose it rather than "
-        "renaming a transcription. "
-        "Ordered newest-first, upstream's own `release.desc`, and each "
-        "collection holds every title that matches rather than a top-N, which "
-        "is also upstream's -- its pack sets no per-collection limit. To "
-        "build something else, copy this pack into a `definitions:` entry of "
-        "your own and edit it there."
+        "One collection per country your films come from, such as France, "
+        "Japan and Mexico, chosen from Kometa's 255 country names; movie "
+        "libraries only. Turning on Regions or Continents rebuilds one title "
+        "twice: Antarctica is in all three lists, Micronesia in Regions. To "
+        "change the count, the titles or the order, copy this set into a "
+        "definition of your own."
     ),
     kometa_source="defaults/movie/country.yml",
     library_types=_MOVIE,
@@ -1726,50 +1596,11 @@ _REGION_PRESET = Preset(
     category="location",
     name="Regions",
     description=(
-        "One collection per world region (Northern Europe, South-Eastern "
-        "Asia, the Caribbean and the rest of Kometa's 23-entry include "
-        "list), grouping TMDb's origin-country field with the name-keyed "
-        "addon tables transcribed verbatim -- alias spellings and all -- "
-        "from `defaults/movie/region.yml`. Movie libraries only, as "
-        "upstream has it. Built by `builder: facts_family`, `type: "
-        "origin_country`: the enumeration is the ISO-3166-1 codes the facts "
-        "pipeline stores off the `/movie/{id}` read it already makes "
-        "(shipped when row %d closed), and each code maps UP to TMDb's own "
-        "English name through the vendored `/configuration/countries` table "
-        "(`collections/iso_names.py`) -- the code->name join row %d was "
-        "filed for, measured per-name before this pack shipped "
-        "(docs/research/tmdb-iso-names/README.md) and closed with it. Ten of "
-        "TMDb's 251 country codes -- 250 unique names, one of them carried "
-        "by two codes -- are named differently by upstream's tables "
-        "('Faeroe Islands' for 'Faroe Islands'); each of those "
-        "spellings is added to the group its upstream twin already sits in, "
-        "which is this catalog's own addition and the only thing added to "
-        "upstream's grouping tables. This "
-        "is a DIFFERENT value set from the `Countries` pack beside this "
-        "one, which groups Plex's own `country` tag: enable both and they "
-        "will disagree on exactly the co-productions you would notice. They "
-        "also share a title shape with it and with `Continents`: "
-        "'Antarctica' and 'Micronesia' are a region here and a country "
-        "there, and 'Antarctica' is a continent too, so co-enabling any two "
-        "of the three means two managed collections rebuilding one title "
-        "from different value sets on every pass. Upstream's own files "
-        "overlap the same way; these rows disclose it rather than renaming "
-        "a transcription. A "
-        "country the tables do not place falls into 'Other Regions' "
-        "honestly, upstream's own leftovers rule. Titled with Kometa's own "
-        "title shape (the region's name, nothing else). What the family "
-        "builds tracks what the facts pipeline has VISITED: a fresh library "
-        "starts small, correct and growing as the drift sweep works through "
-        "the rest (`scheduler.drift_days`, `scheduler.drift_batch_size` -- "
-        "500 items a week by default, so a library of a couple of thousand "
-        "movies and shows fills in over about five weekly passes), and each "
-        "pass reports its coverage. "
-        "`max_collections` is pinned at %d -- the include list plus the "
-        "leftovers bucket, the most this family can ever build -- so no "
-        "library is refused by a number nobody set. To build something "
-        "else, copy this pack into a `definitions:` entry of your own."
-        % (TMDB_ORIGIN_COUNTRY_ROW, TMDB_COUNTRY_NAME_ROW,
-           len(packs._REGION_INCLUDE) + 1)
+        "One collection per world region, such as Northern Europe and the "
+        "Caribbean; a new install starts small and fills in over a few weeks. "
+        "Film libraries only, and with Countries or Continents on, Antarctica "
+        "and Micronesia build one title twice. To change the count, the titles "
+        "or the order, copy this set into a definition of your own."
     ),
     kometa_source="defaults/movie/region.yml",
     library_types=_MOVIE,
@@ -1785,38 +1616,11 @@ _CONTINENT_PRESET = Preset(
     category="location",
     name="Continents",
     description=(
-        "One collection per continent -- the coarsest of the three location "
-        "packs, its 6-entry include list and addon tables transcribed "
-        "verbatim from `defaults/movie/continent.yml`. Movie libraries "
-        "only, as upstream has it. Built by `builder: facts_family`, "
-        "`type: origin_country`, exactly as the Regions pack beside it: "
-        "stored ISO codes (row %d) mapped UP to TMDb's English names "
-        "through the vendored table (`collections/iso_names.py`, the join "
-        "row %d was filed for, measured per-name first -- "
-        "docs/research/tmdb-iso-names/README.md), with the same ten TMDb "
-        "spellings upstream's tables miss added to their own groups, this "
-        "catalog's own addition beside the transcription. A DIFFERENT value "
-        "set "
-        "from the `Countries` pack, which groups Plex's own `country` tag "
-        "-- the two disagree on exactly the co-productions you would "
-        "notice. 'Antarctica' is also an entry in the `Countries` and "
-        "`Regions` lists, and all three packs title with the bare name, so "
-        "co-enabling any two of them means two managed collections "
-        "rebuilding one title on every pass -- upstream's own files overlap "
-        "the same way, and these rows disclose it rather than renaming a "
-        "transcription. A country the tables do not place falls into 'Other "
-        "Continents' honestly. Titled with Kometa's own title shape (the "
-        "continent's name, nothing else). Coverage tracks what the facts "
-        "pipeline has VISITED and converges via the drift sweep "
-        "(`scheduler.drift_days`, `scheduler.drift_batch_size` -- 500 "
-        "items a week by default, so a library of a couple of thousand "
-        "movies and shows fills in over about five weekly passes). "
-        "`max_collections` is pinned at %d -- "
-        "the include list plus the leftovers bucket, the most this family "
-        "can ever build. To build something else, copy this pack into a "
-        "`definitions:` entry of your own."
-        % (TMDB_ORIGIN_COUNTRY_ROW, TMDB_COUNTRY_NAME_ROW,
-           len(packs._CONTINENT_INCLUDE) + 1)
+        "One collection per continent, such as Europe, Asia and South "
+        "America; a new install starts small and fills in over a few weeks. "
+        "Film libraries only, and with Countries or Regions on, Antarctica "
+        "builds one title twice. To change the count, the titles or the order, "
+        "copy this set into a definition of your own."
     ),
     kometa_source="defaults/movie/continent.yml",
     library_types=_MOVIE,
@@ -1853,17 +1657,32 @@ _RESOLUTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("480", ("480", "144", "240", "360", "sd", "576")),
 )
 
+# The measured value counts behind the three search-backed families, recorded
+# here rather than in the picker's prose. Phase 9b's live probe read 46
+# audioLanguage values and 115 subtitleLanguage values straight off the
+# production movie library and searched them; the same probe read 91 networks
+# off the show library and a search on one returned its shows, whose `studio`
+# values (S4C, ITV1) disagree with the network name, so `network` carries
+# information no other shipped attribute does
+# (docs/research/plex-search-probe/README.md). The client-side path is strand-
+# ed for all three -- 9a's probe found the section listing stops at Part, zero
+# stream elements across 200 movies, and Plex 1.43.4 emits no `network` item
+# attribute at all -- which is why these families are built by search and not
+# out of a library walk (roadmap row 155).
+#
+# Upstream additionally gates the network type on the New Plex TV Agent and
+# this service does not, so a library whose agent cannot answer enumerates
+# nothing and the family refuses rather than creating a partial set.
 MEDIA_PRESETS: tuple[Preset, ...] = (
     Preset(
         key="media_resolution",
         category="media",
         name="Resolutions",
         description=(
-            "Four collections -- %s -- grouping films by video resolution, with "
-            "Kometa's addon merges (8k into 4k, and 576/360/240/144/sd into "
-            "480). Movie libraries only: a show's resolution belongs to its "
-            "episodes, which the one library walk this service pays for does "
-            "not reach."
+            "Four collections, %s, grouping films by video resolution, with "
+            "Kometa's merges (8k into 4k, and 576, 360, 240, 144 and sd into "
+            "480). Film libraries only: a show's resolution belongs to its "
+            "episodes."
             % ", ".join("%s Movies" % key for key, _values in _RESOLUTIONS)
         ),
         kometa_source="defaults/both/resolution.yml",
@@ -1882,18 +1701,8 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
         category="media",
         name="Aspect ratios",
         description=(
-            "Eight collections, one per aspect ratio Kometa names -- 1.33 "
-            "Academy Aperture through 2.77 Cinerama. The values are a fixed "
-            "list and would need no enumeration; what is missing is the "
-            "attribute. Row %d shipped its tier-1 half, and `aspect` is not "
-            "one of the tier-1 rows in collections/filters.py -- it sits in "
-            "the filter residue that row carries (55 names after 9a, 53 now "
-            "that 9b added plays and last_played to the same table). Note "
-            "what 9b did NOT do for it: `aspect` is one of the 44 names in "
-            "Kometa's filter vocabulary with no Plex SEARCH field at all, so "
-            "the plex_search builder cannot reach it either. This waits on a "
-            "client-side metadata budget, not on a query language."
-            % FILTER_TIER_TWO_ROW
+            "Not built yet. One collection per picture shape, from the "
+            "squarish Academy frame to the widest Cinerama."
         ),
         kometa_source="defaults/both/aspect.yml",
         library_types=_BOTH,
@@ -1905,45 +1714,12 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
         category="media",
         name="Audio languages",
         description=(
-            "One collection per audio language in the library -- a per-value "
-            "enumeration, which is why it is gated on the engine and not on "
-            "an attribute. Phase 9b moved the blocker without lifting it. The "
-            "CLIENT-side path is still what row %d describes: audio languages "
-            "live on the streams under <Media><Part>, and 9a's probe found "
-            "the section listing stops at Part -- zero stream elements across "
-            "200 movies, against four for the same film from the metadata "
-            "endpoint. But the SEARCH path answers: 9b's live probe read 46 "
-            "audioLanguage values straight off the library and searched them "
-            "(docs/research/plex-search-probe/README.md). So the data path "
-            "exists and so does the enumerator: one collection per distinct "
-            "value, with the naming and lifecycle machinery, SHIPPED in phase "
-            "10a, and this row is that engine pointed at Kometa's pack -- "
-            "`builder: dynamic`, `type: audio_language`, one definition that "
-            "expands against the library on every pass. Two things the preset "
-            "carries because 9b measured them: Kometa expands a base code to "
-            "every variant the library holds and joins them with the enclosing "
-            "block's conjunction, so a language predicate under `all:` matches "
-            "NOTHING (0 against 24 under `any:`, measured); and the value "
-            "vocabulary is a mix of 2-letter, locale, 3-letter, "
-            "script-qualified and one literal english, so no single "
-            "normalisation target is correct. Which is why the buckets are "
-            "named from Plex's own choice titles -- the fallback branch "
-            "upstream itself ships, since Kometa names them from TMDb's "
-            "ISO-639-1 table at run time and this service has no such table; "
-            "vendoring one is roadmap row %d, and it would change names only, "
-            "never membership. Kometa's own 187-code include list ships with "
-            "it, so a code outside that list lands in 'Other Audio' rather "
-            "than getting a collection of its own; 34 of the 46 the production "
-            "movie library holds are on the list. `max_collections` is pinned "
-            "at 188 -- that include list plus the leftovers bucket, which is "
-            "the most this family can ever build however wide the library is, "
-            "so no library is refused by a number nobody set. Ordered "
-            "newest-first, upstream's own `release.desc`, and each collection "
-            "holds every title that matches rather than a top-N, which is "
-            "also upstream's -- its pack sets no per-collection limit. To "
-            "build something else, copy this pack into a `definitions:` entry "
-            "of your own and edit it there."
-            % (STRANDED_FILTER_ROW, TMDB_LANGUAGE_NAME_ROW)
+            "One collection per audio language in your library, such as "
+            "English Audio, French Audio and Japanese Audio, holding "
+            "everything that matches. A language outside Kometa's list of 187 "
+            "goes into Other Audio rather than getting a collection of its "
+            "own. To change the count, the titles or the order, copy this set "
+            "into a definition of your own."
         ),
         kometa_source="defaults/both/audio_language.yml",
         library_types=_BOTH,
@@ -1960,46 +1736,12 @@ MEDIA_PRESETS: tuple[Preset, ...] = (
         category="media",
         name="Subtitle languages",
         description=(
-            "One collection per subtitle language, in exactly the same "
-            "position as the audio-language pack and for the same reasons. "
-            "Client-side, no stream element reaches the section listing at "
-            "all, so the values are readable only at the per-item metadata "
-            "cost; through a search they are readable now -- 9b's live probe "
-            "read 115 subtitleLanguage values and searched them, and the "
-            "`all:`-conjunction trap is worse here, 0 against 442 under "
-            "`any:`. Built by the per-value enumeration engine phase 10a "
-            "shipped: `builder: dynamic`, `type: subtitle_language`, one "
-            "definition "
-            "that expands against the library on every pass, titled in "
-            "Kometa's own shape. Kometa's 187-code include list ships with it, "
-            "transcribed from `defaults/both/subtitle_language.yml` -- whose "
-            "list is byte-identical to the audio pack's, so one table serves "
-            "both -- and a code outside it lands in 'Other Subtitles' rather "
-            "than getting a collection of its own; 57 of the 115 the "
-            "production movie library holds are on the list. The buckets are "
-            "named from Plex's own choice titles, which is the fallback branch "
-            "upstream itself ships, since Kometa names them from TMDb's "
-            "ISO-639-1 table at run time and this service has no such table "
-            "(vendoring one is roadmap row %d, and it would change names only, "
-            "never membership); the value vocabulary is a mix of 2-letter, "
-            "locale, 3-letter, script-qualified and one literal english, so no "
-            "single normalisation target is correct and some titles are Plex's "
-            "wording rather than Kometa's. `max_collections` is pinned at 188 "
-            "-- that include list plus the leftovers bucket, which is the most "
-            "this family can ever build however wide the library is -- so the "
-            "large multilingual library this pack exists for is not refused by "
-            "a number nobody set. Ordered newest-first, upstream's own "
-            "`release.desc`, and each collection holds every title that "
-            "matches rather than a top-N, which is also upstream's. Switching "
-            "this off is a family-wide narrowing: every collection it built "
-            "becomes a sweep candidate at once. That sweep is off unless "
-            "`collections.delete_unconfigured` is on, it never exceeds "
-            "`collections.max_deletes` in a pass, it skips protected labels -- "
-            "and past that cap it refuses the whole library's sweep and "
-            "reports the numbers rather than deleting a prefix of the family. "
-            "To build something else, copy this pack into a `definitions:` "
-            "entry of your own and edit it there."
-            % TMDB_LANGUAGE_NAME_ROW
+            "One collection per subtitle language in your library, such as "
+            "English Subtitles, Spanish Subtitles and Korean Subtitles, "
+            "holding everything that matches. A language outside Kometa's list "
+            "of 187 goes into Other Subtitles rather than getting a collection "
+            "of its own. To change the count, the titles or the order, copy "
+            "this set into a definition of your own."
         ),
         kometa_source="defaults/both/subtitle_language.yml",
         library_types=_BOTH,
@@ -2046,21 +1788,23 @@ _STARTER_DIRECTORS: tuple[tuple[str, int], ...] = (
 # credit list at 200 roles per item, so "the twenty-five actors with the most
 # appearances" would be a completeness claim the data cannot support. The rest
 # of the disclosure is in the shared description below.
+#
+# Two things the four packs no longer say in the picker, because they are
+# mechanism and the row has sixty words: the membership is a Plex search on the
+# person's TAG -- the library's own credit data, not a TMDb filmography, which
+# credits people the library's files do not name -- and `limit:` is filled from
+# the people this library's tag vocabulary can actually be SEARCHED for
+# (roadmap row 224), so somebody the credits cache counted but Plex will not
+# answer a tag search on does not take one of the twenty-five slots.
 _PERSON_PACKS: tuple[tuple[str, str, str, str, str, tuple[str, ...]], ...] = (
     ("people_top_actors", "Top actors", "defaults/both/actor.yml", "actor",
-     "the twenty-five actors Plex credits on the most items in the library",
-     _BOTH),
+     "actors", _BOTH),
     ("people_top_directors", "Top directors", "defaults/movie/director.yml",
-     "director",
-     "the twenty-five directors Plex credits on the most films in the library",
-     _MOVIE),
+     "director", "directors", _MOVIE),
     ("people_top_writers", "Top writers", "defaults/movie/writer.yml", "writer",
-     "the twenty-five writers Plex credits on the most films in the library",
-     _MOVIE),
+     "writers", _MOVIE),
     ("people_top_producers", "Top producers", "defaults/movie/producer.yml",
-     "producer",
-     "the twenty-five producers Plex credits on the most films in the library",
-     _MOVIE),
+     "producer", "producers", _MOVIE),
 )
 
 PEOPLE_PRESETS: tuple[Preset, ...] = (
@@ -2069,20 +1813,10 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
         category="people",
         name="Director starter set",
         description=(
-            "One filmography collection for each of six directors -- %s -- read "
-            "from TMDb's credits. Each collection takes its summary from the "
-            "director's TMDb biography and its poster from their TMDb profile "
-            "photo; a `summary:` of your own, or a poster file in the assets "
-            "folder, still wins. The six are OUR choice, not Kometa's: "
-            "defaults/movie/director.yml names no directors at all, it "
-            "enumerates them from the library, which needed the library-wide "
-            "credit scan of roadmap row %d. That scan ships now, and the 'Top "
-            "directors' row below is the enumerated family -- a DIFFERENT "
-            "membership from this one, deliberately: this pack's collections "
-            "are TMDb FILMOGRAPHIES, and that pack's are Plex TAG searches "
-            "over the files you actually have. The only thing borrowed from "
-            "Kometa's file here is the '<name> (Director)' title shape."
-            % (", ".join(name for name, _id in _STARTER_DIRECTORS), PERSON_SCAN_ROW)
+            "A collection for each of six directors: %s. Each one takes its "
+            "summary and poster from TMDb unless you supply your own. The six "
+            "are our pick, not Kometa's."
+            % ", ".join(name for name, _id in _STARTER_DIRECTORS)
         ),
         kometa_source=NOT_KOMETA + "the six people are ours",
         library_types=_MOVIE,
@@ -2101,27 +1835,11 @@ PEOPLE_PRESETS: tuple[Preset, ...] = (
         category="people",
         name=name,
         description=(
-            "One smart collection per person: %s. `depth: 5, limit: 25` is "
-            "upstream's own data block, and the membership is upstream's own "
-            "semantic -- each collection is a Plex search on the person's TAG, "
-            "the library's credit data, NOT a TMDb filmography (which credits "
-            "people the library's files do not name; the two are different "
-            "memberships under the same name, and this pack chooses the tag "
-            "on purpose). The people are counted from this service's credits "
-            "cache, which the weekly scan fills "
-            "(`scheduler.credits_scan_days`): on a library the scan has not "
-            "finished, the family is smaller than it will be -- correct, "
-            "incomplete, and converging, and the pass's own report says so in "
-            "numbers. The counts are a FLOOR and the ranking inherits it: "
-            "Plex caps its credit list at 200 people per item, so somebody "
-            "whose every appearance is in a large cast can be missing from "
-            "this family altogether. \"Most-credited\" here means "
-            "most-credited of what Plex answered, which is not the same claim "
-            "as most-credited in the library. `limit:` is filled from the "
-            "people this library's own tag vocabulary can be searched for "
-            "(roadmap row 224): somebody the credits cache counted but Plex "
-            "will not answer a tag search on does not take one of the slots, "
-            "and the next-most-credited person takes it instead." % what
+            "One collection per person, for the twenty-five %s your library "
+            "credits most often. The list comes from what Plex credits, and "
+            "Plex stops at two hundred people per title, so somebody in a "
+            "large cast can be missing. To change the count, the titles or the "
+            "order, copy this set into a definition of your own." % what
         ),
         kometa_source=source,
         library_types=library_types,
@@ -2183,17 +1901,12 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
         category="production",
         name="Streaming services",
         description=(
-            "One collection per streaming service -- %s -- built from TMDb's "
-            "watch-provider data for the %s region, which is Kometa's own "
-            "default. Three of them (Crunchyroll, discovery+, hayu) are offered "
-            "for Show libraries only, as Kometa has them. The seven services "
-            "Kometa switches off outside GB, ES and CA are not in this row; a "
-            "non-US deployment wants a different set, and shipping all of them "
-            "would build empty collections nobody asked for."
-            % (
-                ", ".join(name for name, _id, _types in _STREAMING_SERVICES),
-                _STREAMING_REGION,
-            )
+            "One collection per streaming service, such as Netflix Movies, "
+            "Disney+ Shows and Prime Video Movies, from TMDb's watch-provider "
+            "data for the %s region. Crunchyroll, discovery+ and hayu are "
+            "offered for show libraries only. The services Kometa switches off "
+            "outside Britain, Spain and Canada are not here."
+            % _STREAMING_REGION
         ),
         kometa_source="defaults/both/streaming.yml",
         library_types=_BOTH,
@@ -2211,47 +1924,22 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
             for name, provider, library_types in _STREAMING_SERVICES
         ),
     ),
+    # Two divergences from upstream, kept here rather than in the picker's
+    # prose. The title format is qualified ('Top <studio> Movies') where Kometa
+    # titles bare, because the country and network packs title bare too and
+    # this is the pack in both of those pairs. And Kometa additionally matches
+    # its 20th Century Studios bucket on a substring, which one search block
+    # cannot express, so that bucket matches the exact names in its addon list.
     Preset(
         key="production_studio",
         category="production",
         name="Studios",
         description=(
-            "One collection per studio, over the 485 names Kometa's include "
-            "list carries -- the animation studios above all -- with the addon "
-            "merges that fold a studio's other spellings into one bucket (Toei "
-            "into Toei Animation, MGM into Metro-Goldwyn-Mayer), transcribed "
-            "from `defaults/both/studio.yml`. Built by the per-value engine "
-            "phase 10a shipped: `builder: dynamic`, `type: studio`, one "
-            "definition that expands against the library on every pass. The "
-            "number the include list answers for: phase 10a's probe measured "
-            "824 studio values on the production movie library, and upstream "
-            "ships no leftovers bucket for this pack, so a studio outside "
-            "those 485 names builds nothing at all rather than getting a "
-            "collection of its own. `max_collections` is pinned at 485 -- "
-            "Kometa's include list is that long and a whitelist is applied "
-            "last, so the family cannot exceed it whatever the library holds, "
-            "and the 824 raw values never reach it. The title format is this "
-            "pack's one divergence: Kometa titles these with the studio's name "
-            "and nothing else, and gives the country and network packs the "
-            "same bare shape -- three families that would then build "
-            "identically-named collections the moment an operator switched two "
-            "of them on. This pack is the one in both of those pairs, so it "
-            "takes a qualified format instead ('Top <studio> Movies', 'Top "
-            "<studio> Shows') and the other two keep Kometa's unchanged. One "
-            "narrowing relative to upstream, stated rather than hidden: Kometa "
-            "additionally matches the 20th Century Studios bucket on a "
-            "substring, which this engine's single search block cannot "
-            "express, so that bucket matches the exact names in its addon list. "
-            "Ordered newest-first, upstream's own `release.desc`, and each "
-            "collection holds every title that matches rather than a top-N, "
-            "which is also upstream's. Switching this off is a family-wide "
-            "narrowing: every collection it built becomes a sweep candidate at "
-            "once. That sweep is off unless `collections.delete_unconfigured` "
-            "is on, it never exceeds `collections.max_deletes` in a pass, it "
-            "skips protected labels -- and past that cap it refuses the whole "
-            "library's sweep and reports the numbers rather than deleting a "
-            "prefix of the family. To build something else, copy this pack "
-            "into a `definitions:` entry of your own and edit it there."
+            "One collection per studio, such as Top Pixar Movies and Top "
+            "Studio Ghibli Movies, chosen from Kometa's 485 studio names. A "
+            "studio outside those names gets no collection at all. To change "
+            "the count, the titles or the order, copy this set into a "
+            "definition of your own."
         ),
         kometa_source="defaults/both/studio.yml",
         library_types=_BOTH,
@@ -2266,50 +1954,12 @@ PRODUCTION_PRESETS: tuple[Preset, ...] = (
         category="production",
         name="Networks",
         description=(
-            "One collection per television network -- a per-value "
-            "enumeration, over the 272 names Kometa's include list carries. "
-            "Phase 9a's "
-            "probe found Plex 1.43.4 emits no `network` ITEM attribute at all "
-            "(zero of 284 shows in the section listing AND absent from the "
-            "per-item metadata endpoint), which strands the client-side "
-            "filter for good -- no request budget buys it, row %d. The SEARCH "
-            "FIELD is a different mechanism and it answers: 9b's live probe "
-            "read 91 networks off the same library and a search on one "
-            "returned its shows, whose `studio` values (S4C, ITV1) disagree "
-            "with the network name -- so `network` carries information no "
-            "other shipped attribute does, and is not a `studio` alias "
-            "(docs/research/plex-search-probe/README.md). Built by the "
-            "per-value engine phase 10a shipped, show-only: `builder: "
-            "dynamic`, `type: network`, one definition that expands against "
-            "the library on every pass, with its choices listing probed at the "
-            "same 91 values before the type was allowed to ship. Kometa's own "
-            "272-name include list ships with it, from "
-            "`defaults/show/network.yml`, together with the addon merges that "
-            "fold a broadcaster's regional and sibling channels into the "
-            "parent (Sky Atlantic and Sky Cinema into Sky, the ESPN family "
-            "into ESPN); upstream ships no leftovers bucket here either, so a "
-            "network outside those names builds nothing rather than getting a "
-            "collection of its own. Kometa's title shape (the network's name, "
-            "and nothing else) ships unchanged. `max_collections` is pinned at "
-            "272 -- the include list's own length, which a whitelist applied "
-            "last makes a hard ceiling however wide the library is. Breadth "
-            "caveat, unchanged by shipping the pack: the search mechanism is "
-            "proven at ONE network with two shows; 91 exist, and nothing has "
-            "yet checked that they all behave. Upstream additionally gates "
-            "this type on the New Plex TV Agent and this service does not, so "
-            "a library whose agent cannot answer enumerates nothing and the "
-            "family refuses rather than creating a partial pack. Ordered "
-            "newest-first, upstream's own `release.desc`, and each collection "
-            "holds every title that matches rather than a top-N, which is also "
-            "upstream's. Switching this off is a family-wide narrowing: every "
-            "collection it built becomes a sweep candidate at once. That sweep "
-            "is off unless `collections.delete_unconfigured` is on, it never "
-            "exceeds `collections.max_deletes` in a pass, it skips protected "
-            "labels -- and past that cap it refuses the whole library's sweep "
-            "and reports the numbers rather than deleting a prefix of the "
-            "family. To build something else, copy this pack into a "
-            "`definitions:` entry of your own and edit it there."
-            % STRANDED_FILTER_ROW
+            "One collection per TV network, such as HBO, BBC One and Netflix, "
+            "from Kometa's 272 names, with sister channels folded into the "
+            "parent, Sky Atlantic counting as Sky. Show libraries only, and a "
+            "network outside those names gets no collection. To change the "
+            "count, the titles or the order, copy this set into a definition "
+            "of your own."
         ),
         kometa_source="defaults/show/network.yml",
         library_types=_SHOW,
@@ -2329,26 +1979,8 @@ TIME_PRESETS: tuple[Preset, ...] = (
         category="time",
         name="Best of each year",
         description=(
-            "Kometa's 'Best of <year>' for the last ten years: one collection "
-            "per year, each the ten highest-rated titles released in it. Two "
-            "of the three things it needed have landed. The per-value engine "
-            "SHIPPED in phase 10a with `type: year`, and so did the per-key "
-            "sort and limit that make each collection a top-N by rating rather "
-            "than a filter -- so a definition builds 'one collection per year "
-            "the library holds' today (the probe counted 87 of them on the "
-            "production movie library, past the default `max_collections` of "
-            "50). "
-            "What did NOT ship is the counting relative to today: the "
-            "`current_year`/`current_year-N` value grammar is the half of row "
-            "%d that phase 10a left open, and without it 'the last ten years' "
-            "has no expression here -- so this pack waits on that row and not "
-            "on the engine. Phase 10b considered shipping the pack it COULD "
-            "build -- one collection per year the library holds -- and "
-            "refused: the probe counted 87 years on the production movie "
-            "library, and 87 unbounded years is not 'Best of the last ten "
-            "years' wearing its name. A preset that builds something other "
-            "than the pack it cites is worse than one that waits."
-            % RELATIVE_YEAR_ROW
+            "Not built yet. One collection for each of the last ten years, "
+            "holding the ten highest-rated titles released in it."
         ),
         kometa_source="defaults/both/year.yml",
         library_types=_BOTH,
@@ -2360,21 +1992,12 @@ TIME_PRESETS: tuple[Preset, ...] = (
         category="time",
         name="Best of each decade",
         description=(
-            "'Best of the 1980s' and its neighbours: one collection per decade "
-            "the library covers, each the hundred highest-rated films in it. "
-            "Built by the per-value engine phase 10a shipped -- `builder: "
-            "dynamic`, `type: decade`, one definition that expands against the "
-            "library on every pass -- and movie-only, because Plex's decade "
-            "filter is. The title shape and the per-key ordering are "
-            "transcribed from `defaults/movie/decade.yml`: this is the one "
-            "Kometa pack that pins its own `critic_rating.desc` and `limit: "
-            "100` rather than taking its template's defaults, and the hundred "
-            "in the sentence above is that pin. Twelve decades on the "
-            "production movie library, inside the engine's default "
-            "`max_collections` of 50, so this pack pins no cap. To build "
-            "something other than what this pack builds -- the 25 best of each "
-            "decade, say -- copy it into a `definitions:` entry of your own "
-            "and edit it there."
+            "One collection per decade your library covers, such as Best of "
+            "the 1980s and Best of the 1990s, each holding the hundred "
+            "highest-rated films of that decade. Film libraries only, because "
+            "Plex knows a decade for films but not for shows. To change the "
+            "count, the titles or the order, copy this set into a definition "
+            "of your own."
         ),
         kometa_source="defaults/movie/decade.yml",
         library_types=_MOVIE,
@@ -2389,16 +2012,8 @@ TIME_PRESETS: tuple[Preset, ...] = (
         category="time",
         name="Seasonal",
         description=(
-            "Nineteen date-windowed collections -- Christmas, Halloween, "
-            "Valentine's Day, Black History Month and the rest -- each visible "
-            "only around its own date. Two halves are missing and the second is "
-            "the harder one. Kometa windows these by DAY (range(03/20-04/30) "
-            "for Easter), where the schedule gate row %d DELIVERED is whole "
-            "calendar months; and most of these collections are fed by SEVERAL "
-            "sources at once (Halloween is three IMDb lists, ten TMDb franchise "
-            "collections and one film), which one definition, being one "
-            "builder, cannot express. Both are row %d, filed out of 70 for "
-            "exactly this pack." % (DATE_WINDOW_ROW, SEASONAL_WINDOW_ROW)
+            "Not built yet. Nineteen collections that appear around their own "
+            "dates, among them Christmas, Halloween and Valentine's Day."
         ),
         kometa_source="defaults/movie/seasonal.yml",
         library_types=_MOVIE,
