@@ -421,7 +421,7 @@ def test_an_award_preset_derives_its_facts_from_the_event_registry():
         assert preset.titles() == [award.title for award in event.awards.values()]
         assert preset.library_types == event.library_types
         assert preset.years_title() == (
-            'one per ceremony, named "%s"' % (event.year_title % "<year>")
+            'one collection per ceremony, named "%s"' % (event.year_title % "<year>")
         )
 
 
@@ -608,41 +608,26 @@ def test_a_pack_is_exactly_one_definition_whose_type_the_engine_enumerates():
             assert definitions[0].title == collection.title
 
 
-def test_every_pack_says_which_dynamic_type_it_is_in_words():
-    """The row an operator READS names the type they would write themselves.
+def test_every_pack_tells_the_operator_how_to_change_it():
+    """The row an operator READS ends with the one sentence that says the set
+    is a starting point, in the same words on every family -- so a reader who
+    has met it once recognises it on the next row without re-reading it. It
+    replaces the old ``type:`` assertion: a description may no longer carry a
+    config key at all, and the key without the path to write it in was never
+    the useful half."""
+    for preset, _collection, _params in _dynamic_rows():
+        assert CUSTOMISATION in preset.description, preset.key
 
-    Every pack description already tells them the customisation path is a
-    ``definitions:`` entry of their own; that path is worthless without the
-    ``type:`` to write in it.
-    """
-    for preset, _collection, params in _dynamic_rows():
-        assert "`type: %s`" % params["type"] in preset.description, preset.key
 
-
-def test_every_opinion_a_pack_pins_is_stated_in_the_row():
-    """Global constraint 10, enforced rather than trusted.
-
-    A cap, an include list or a divergent title format is an OPINION
-    (``catalog.py``'s "opinion-free until asked"), and an opinion that ships
-    without appearing in the description is one the operator cannot find. The
-    numbers are asserted as strings because that is how they appear in the
-    sentence an operator reads.
-    """
-    for preset, _collection, params in _dynamic_rows():
-        cap = params.get("max_collections")
-        if cap is not None:
-            assert str(cap) in preset.description, (preset.key, cap)
-        else:
-            # The converse, which the check above cannot see: a pin DELETED
-            # from the params leaves the sentence that announced it standing,
-            # and the row then promises a ceiling the family does not have.
-            # Measured as a gap by the plan's own mutation proof -- dropping
-            # `("max_collections", len(STUDIO_INCLUDE))` left every test green.
-            assert "`max_collections` is pinned" not in preset.description, preset.key
-        if params.get("include"):
-            assert "include" in preset.description, preset.key
-        if params.get("title_format"):
-            assert "title" in preset.description.lower(), preset.key
+def test_every_pack_opens_with_what_the_operator_gets():
+    """Sentence one is the collections, never the machinery. The cap, the
+    include list and the title format that used to be asserted here are
+    mechanism: they cannot appear in a description any more (they were
+    asserted as backticked keys and bare numbers), and what replaces them is
+    the rule that made them worth asserting -- the row opens with what the
+    operator will find in Plex."""
+    for preset, _collection, _params in _dynamic_rows():
+        assert preset.description.startswith("One collection per "), preset.key
 
 
 def test_a_language_packs_include_list_still_has_norwegian_in_it():
@@ -763,7 +748,7 @@ def test_a_packs_placeholder_title_is_listed_and_reserved():
         assert collection.title in preset.titles(), preset.key
         shape = preset.years_title()
         assert shape is not None, preset.key
-        assert shape.startswith("one per "), (preset.key, shape)
+        assert shape.startswith("one collection per "), (preset.key, shape)
         assert "named " in shape, (preset.key, shape)
 
 
@@ -826,9 +811,7 @@ def test_a_dynamic_packs_builds_string_is_honest_end_to_end():
 
     assert genres["titles"] == ["Genres"]
     assert genres["years_title"] == (
-        'one per genre the library holds, named "<genre> <Library type>s" '
-        '("Genres" above is the reserved definition title -- the family\'s '
-        "own collections are the ones per genre, named this way)"
+        'one collection per genre in your library, named "<genre> <Library type>s"'
     )
 
     # The picker's own composition, unchanged by this fix
@@ -837,10 +820,8 @@ def test_a_dynamic_packs_builds_string_is_honest_end_to_end():
         ", ".join(genres["titles"]), genres["years_title"]
     )
     assert builds == (
-        "Builds: Genres, plus one per genre the library holds, named "
-        '"<genre> <Library type>s" ("Genres" above is the reserved '
-        "definition title -- the family's own collections are the ones per "
-        "genre, named this way)"
+        "Builds: Genres, plus one collection per genre in your library, named "
+        '"<genre> <Library type>s"'
     )
 
 
@@ -1307,46 +1288,30 @@ def test_a_facts_pack_is_one_definition_whose_type_this_service_enumerates():
             assert definitions[0].title == collection.title
 
 
-def test_every_facts_pack_says_which_type_it_is_in_words():
-    for preset, _collection, params in _facts_family_rows():
-        assert "`type: %s`" % params["type"] in preset.description, preset.key
+def test_every_facts_pack_tells_the_operator_how_to_change_it():
+    for preset, _collection, _params in _facts_family_rows():
+        assert CUSTOMISATION in preset.description, preset.key
 
 
 def test_every_facts_pack_states_its_coverage_story():
     """The one thing these packs must say that the Plex-enumerated ones need
-    not: their values come from what the facts pipeline has VISITED, so a
-    freshly-deployed library gets a small, correct, growing family. An
-    operator who is not told that reads a half-built family as a bug.
+    not: their values come from what this service has visited, so a freshly
+    deployed library gets a small, correct, growing set. An operator who is
+    not told that reads a half-built family as a bug.
 
-    Three assertions rather than the one the plan named, because the one has
-    no teeth on its own: the sweep's two config knobs both carry ``drift`` in
-    their names, so a description that deleted the whole coverage paragraph and
-    kept ``scheduler.drift_days`` would still contain the substring. What makes
-    the story actionable is naming the sweep AND the knobs that move it, so
-    both are asserted -- measured, not assumed: deleting the word ``drift``
-    from the sentence alone left this test green.
+    Both halves are asserted, and neither is a config key. "starts small" on
+    its own would pass on a row that said it and left the reader there;
+    "fills in" is the half that makes it a wait rather than a fault.
     """
     for preset, _collection, _params in _facts_family_rows():
         description = preset.description
-        assert "drift" in description.lower(), preset.key
-        assert "scheduler.drift_days" in description, preset.key
-        assert "scheduler.drift_batch_size" in description, preset.key
+        assert "starts small" in description, preset.key
+        assert "fills in" in description, preset.key
 
 
-def test_every_opinion_a_facts_pack_pins_is_stated_in_the_row():
-    for preset, _collection, params in _facts_family_rows():
-        cap = params.get("max_collections")
-        if cap is not None:
-            assert str(cap) in preset.description, (preset.key, cap)
-        else:
-            # The converse the check above cannot see, exactly as the dynamic
-            # packs' own opinion test spells it: a pin DELETED from the params
-            # leaves the sentence that announced it standing.
-            assert "`max_collections` is pinned" not in preset.description, preset.key
-        if params.get("include"):
-            assert "include" in preset.description, preset.key
-        if params.get("title_format"):
-            assert "title" in preset.description.lower(), preset.key
+def test_every_facts_pack_opens_with_what_the_operator_gets():
+    for preset, _collection, _params in _facts_family_rows():
+        assert preset.description.startswith("One collection per "), preset.key
 
 
 def test_a_facts_packs_placeholder_title_is_listed_and_reserved():
@@ -1359,7 +1324,7 @@ def test_a_facts_packs_placeholder_title_is_listed_and_reserved():
         assert collection.title in preset.titles(), preset.key
         shape = preset.years_title()
         assert shape is not None, preset.key
-        assert shape.startswith("one per "), (preset.key, shape)
+        assert shape.startswith("one collection per "), (preset.key, shape)
         assert "named " in shape, (preset.key, shape)
 
 
@@ -1581,24 +1546,16 @@ def test_no_preset_still_waits_on_the_rows_the_facts_enumeration_closed():
     that is done -- which is the same as citing nothing.
 
     Both constants stay in the module, in the shape ``TMDB_LANGUAGE_NAME_ROW``
-    already had: cited rather than waited on. ``content_franchises`` names 192
-    as the enumeration it ships on, and the two location packs name 189 as the
-    values they build from and 196 as the join that let them ship -- both
-    cited in running prose now, neither waited on.
+    already had: cited in the code, never in the picker. A served string may
+    not carry a roadmap row number at all -- a gated row's number is already
+    the ``needs row N`` badge beside it, and a shipped row's is a citation for
+    a reader of this file.
     """
     assert [
         preset.key for preset in CATALOG
         if preset.gated_row in (catalog.TMDB_ORIGIN_COUNTRY_ROW,
                                 catalog.TMDB_COLLECTION_TYPE_ROW)
     ] == []
-
-    assert "row %d" % catalog.TMDB_COLLECTION_TYPE_ROW in catalog.BY_KEY[
-        "content_franchises"
-    ].description
-    for key in ("location_region", "location_continent"):
-        description = catalog.BY_KEY[key].description
-        assert "row %d" % catalog.TMDB_ORIGIN_COUNTRY_ROW in description, key
-        assert "row %d" % catalog.TMDB_COUNTRY_NAME_ROW in description, key
 
 
 def test_no_preset_still_waits_on_the_person_rows():
@@ -1608,9 +1565,7 @@ def test_no_preset_still_waits_on_the_person_rows():
     all ship, so the four Top-* packs build.
 
     ``PERSON_SCAN_ROW`` stays in the module, in the shape
-    ``TMDB_LANGUAGE_NAME_ROW`` already had: CITED rather than waited on. The
-    Director starter set names it as the scan its enumerated sibling needed,
-    which is a different kind of citation from a blocker.
+    ``TMDB_LANGUAGE_NAME_ROW`` already had: CITED rather than waited on.
     """
     assert [
         preset.key for preset in CATALOG
@@ -1620,9 +1575,6 @@ def test_no_preset_still_waits_on_the_person_rows():
                 "people_top_writers", "people_top_producers"):
         assert catalog.BY_KEY[key].readiness == READY, key
         assert catalog.BY_KEY[key].gated_row is None, key
-    assert "row %d" % catalog.PERSON_SCAN_ROW in catalog.BY_KEY[
-        "people_directors"
-    ].description
 
 
 def _credits_family_rows() -> list[tuple[Preset, catalog.PresetCollection, dict]]:
@@ -1672,7 +1624,7 @@ def test_a_credits_packs_placeholder_title_is_listed_and_reserved():
         assert collection.title in preset.titles(), preset.key
         shape = preset.years_title()
         assert shape is not None, preset.key
-        assert shape.startswith("one per "), (preset.key, shape)
+        assert shape.startswith("one collection per "), (preset.key, shape)
         assert "named " in shape, (preset.key, shape)
 
 
@@ -1700,37 +1652,29 @@ def test_a_credits_packs_shape_line_comes_from_the_renderer_the_builder_uses():
 
 def test_every_people_pack_discloses_the_two_things_it_cannot_promise():
     """The row an operator READS carries both honesty clauses, because neither
-    is visible from the collections themselves.
+    is visible from the collections themselves: the list is what PLEX credits
+    (not a TMDb filmography), and it is a floor, because Plex stops at two
+    hundred people per title -- so somebody whose every appearance is in a big
+    cast can be missing from the set altogether.
 
-    One: the membership is the Plex TAG, not a TMDb filmography -- the two are
-    different memberships under the same name, and roadmap row 194 left the
-    choice open for this task to make and disclose. Two: the counts are a
-    FLOOR, because Plex caps its credit list at 200 people per item, so
-    "the most-credited" cannot be read as "the most-credited in the library".
+    Asserted in the words the row uses. The old form demanded ten substrings,
+    four of them shouted and three of them config keys, and that assertion is
+    why those four rows were 225 words each.
     """
-    for preset, _collection, params in _credits_family_rows():
-        description = preset.description
-        assert "TAG" in description, preset.key
-        assert "filmography" in description.lower(), preset.key
-        assert "200" in description, preset.key
-        assert "FLOOR" in description, preset.key
-        # The pinned opinions, stated in the row the way both sibling families
-        # are held to state theirs.
-        assert "depth: %d" % params["depth"] in description, preset.key
-        assert "limit: %d" % params["limit"] in description, preset.key
-        assert "credits_scan_days" in description, preset.key
-
-
-def test_every_people_pack_says_the_cap_is_filled_from_searchable_people():
-    """Roadmap row 224, disclosed where the operator picks the pack. `limit:`
-    now caps the people this library can actually be SEARCHED for, not the
-    people with the highest raw counts -- so the row an operator reads has to
-    say that the cap is filled from the tag vocabulary, or "the 25
-    most-credited" reads as a promise about the counts alone."""
     for preset, _collection, _params in _credits_family_rows():
         description = preset.description
-        assert "vocabulary" in description, preset.key
-        assert "searched" in description, preset.key
+        assert "Plex credits" in description, preset.key
+        assert "can be missing" in description, preset.key
+
+
+def test_every_people_pack_tells_the_operator_how_to_change_it():
+    """Row 224's disclosure -- that the cap is filled from the people this
+    library's tag vocabulary can be SEARCHED for -- is mechanism, and it moved
+    to the comment above ``_PERSON_PACKS``. What the row keeps is the sentence
+    that gives the operator somewhere to go: the same customisation sentence
+    the other ten families carry, word for word."""
+    for preset, _collection, _params in _credits_family_rows():
+        assert CUSTOMISATION in preset.description, preset.key
 
 
 def test_every_gated_key_is_refused_at_load_naming_its_row():
@@ -2117,12 +2061,12 @@ def test_the_regional_rows_say_where_their_letters_mislead():
     nz = catalog.BY_KEY["content_ratings_nz"].description
     au = catalog.BY_KEY["content_ratings_au"].description
 
-    # NZ's R is the X-rated restricted bucket, not "R-rated".
-    assert "RESTRICTED" in nz
+    # NZ's R is the restricted adult bucket, not "R-rated".
+    assert "restricted" in nz
     # The RP buckets overlap the R ones by Kometa's own design, kept verbatim.
     assert "'NZ RP13'" in nz
     # AU/NZ M is not the US M.
-    assert "NOT the US 'M'" in au
+    assert "not the US 'M'" in au
     assert "'NZ M' is not the US 'M'" in nz
 
 
@@ -2267,7 +2211,7 @@ def test_the_starter_director_pack_says_the_people_are_not_kometas():
 
     assert preset.kometa_source.startswith(catalog.NOT_KOMETA)
     assert "ours" in preset.kometa_source
-    assert "OUR choice" in preset.description
+    assert "our pick" in preset.description
 
 
 # --- the expansion ----------------------------------------------------------
@@ -2589,15 +2533,24 @@ def test_the_imdb_charts_row_names_the_three_titles_its_one_switch_builds():
     assert CATALOG_CHECKSUM["charts"] == (10, 0, 1)
 
 
-def test_the_imdb_charts_description_names_the_per_definition_escape_hatch():
-    """The other half of the close: an operator who wants two of the three
-    gets the answer at the point of asking rather than only in the roadmap --
-    turn the switch off and write the ones you want as definitions."""
-    row = next(preset for preset in CATALOG if preset.key == "imdb_charts")
+def test_the_imdb_charts_row_names_its_three_collections_and_its_switch():
+    """The all-or-nothing shape, said in words the picker's own reader can
+    act on. ``collections.charts`` is a badge on this row already
+    (``CatalogPanel.tsx:203``), so naming it in prose printed it twice; what
+    the prose has to carry is WHICH three collections the one switch builds,
+    and that they come together.
 
-    assert "collections.charts" in row.description
-    assert "definitions" in row.description
-    assert "imdb_chart" in row.description
+    The titles are read off ``titles()`` rather than typed here: the row's
+    display table is derived from the builder's own tables
+    (``_IMDB_CHART_COLLECTIONS``), so a chart renamed upstream moves this
+    assertion with it.
+    """
+    row = next(preset for preset in CATALOG if preset.key == "imdb_charts")
+    assert row.titles()
+    for title in row.titles():
+        assert title in row.description, title
+    assert "all three" in row.description
+    assert "Settings" in row.description
 
 
 def test_ordinary_preset_rows_carry_no_setting_in_the_listing():
@@ -2786,7 +2739,7 @@ async def test_the_catalog_endpoint_lists_every_category_and_the_awards(
         "key": "award_cannes",
         "name": "Cannes",
         "titles": ["Cannes Golden Palm Winners"],
-        "years_title": 'one per ceremony, named "Cannes <year>"',
+        "years_title": 'one collection per ceremony, named "Cannes <year>"',
         "description": cannes["description"],
         "kometa_source": "defaults/award/cannes.yml",
         "library_types": ["Movie"],
@@ -2928,30 +2881,24 @@ def test_the_listing_is_the_endpoints_only_source_of_truth():
     assert active == ["award_venice"]
 
 
-def test_the_presets_9b_readjudicated_carry_their_evidence_into_the_pack():
-    """Phase 9b proved the DATA path for three presets and none of the shapes;
-    10a shipped the enumerator; 10b ships the packs. What must not be lost in
-    that sequence is the evidence -- each of these rows names the live probe
-    that measured its value count, so the next reader does not re-run it.
+def test_the_three_list_backed_packs_name_the_list_they_ship_with():
+    """Phase 9b's probe evidence is a comment in ``catalog.py`` now, above
+    ``MEDIA_PRESETS``: "live probe" and "enumerat" are this file's vocabulary,
+    not an operator's, and the number they were standing in for is not a
+    measurement the picker can act on.
 
-    ``media_audio_language`` ships here; ``production_network`` and
-    ``media_subtitle_language`` ship in the task after this one. The assertion
-    is written over whichever of them is READY, so it holds in both states
-    rather than needing an edit between two commits of one phase.
+    What the row must still carry is the number the OPERATOR can act on: how
+    long Kometa's list is, because a value outside it is the one thing that
+    silently gets no collection. Derived from the pack's own params, so a
+    re-transcribed list moves the assertion with it.
     """
     for key in ("production_network", "media_audio_language",
                 "media_subtitle_language"):
         preset = catalog.BY_KEY[key]
-        assert "live probe" in preset.description, key
-        assert "enumerat" in preset.description, key
+        include = dict(preset.collections[0].params)["include"]
+        assert str(len(include)) in preset.description, (key, len(include))
         if preset.readiness == GATED:
             assert preset.gated_row == catalog.DYNAMIC_ENGINE_ROW, key
-
-    # The client-side strand is still named -- it is why these cannot be built
-    # out of a library walk -- but it was never what they waited on.
-    assert "row %d" % catalog.STRANDED_FILTER_ROW in catalog.BY_KEY[
-        "media_audio_language"
-    ].description
 
 
 def test_the_catalog_has_a_franchises_category_and_the_preset_moved():
@@ -2960,3 +2907,82 @@ def test_the_catalog_has_a_franchises_category_and_the_preset_moved():
     assert CATEGORIES["franchises"] == "Franchises"
     assert list(CATEGORIES) == sorted(CATEGORIES)  # the declaration stays alphabetical
     assert BY_KEY["content_franchises"].category == "franchises"
+
+
+# --- the copy contract -------------------------------------------------------
+#
+# The Collections picker renders `preset.description` as a raw JSX text child
+# (``CatalogPanel.tsx:186-188``): a backtick shows as a grave accent, ``--``
+# shows as two hyphens, and a 454-word paragraph shows as one unbroken wall.
+# Everything a description used to cite has a structured home on the same row
+# already -- ``kometa_source`` is a badge at ``CatalogPanel.tsx:205``, the
+# setting is a badge at ``:203``, and a gated row's roadmap number is the
+# ``needs row N`` badge at ``:194-198`` -- so a description that repeats one
+# prints it twice.
+#
+# Read off ``CATALOG`` rather than a list written here: a preset added later is
+# held to this contract on the day it lands, not on the day somebody remembers
+# to add it.
+_BANNED_IN_COPY = ("`", "--", "—", "–", ".yml", ".py", ".superpowers", "defaults/")
+_ROW_OR_PHASE = re.compile(r"\b(?:rows?|phases?)\b[^.\n]{0,8}?\d", re.IGNORECASE)
+# A full stop that is not followed by whitespace or the end of the string: a
+# file name, a dotted config path, a decimal, or an abbreviation. Forbidding
+# all four is what lets the sentence count below be a plain count of full
+# stops -- "e.g." and "1.33" would each read as a sentence boundary otherwise.
+_ABBREVIATION = re.compile(r"\.(?=\S)")
+_SENTENCE_END = re.compile(r"[.?!](?:\s|$)")
+
+# The one customisation sentence, used verbatim or not at all, and the only
+# place the word "definition" may appear in a served string.
+CUSTOMISATION = (
+    "To change the count, the titles or the order, copy this set into a "
+    "definition of your own."
+)
+
+
+def test_every_row_reads_like_a_sentence_an_operator_can_act_on():
+    """The copy contract, over every row the picker shows.
+
+    Not a taste test: each clause below is something the operator SEES go
+    wrong. Backticks and double hyphens render literally. A roadmap row
+    number in prose duplicates the badge beside it. A dotted config path is a
+    key nobody can act on from the picker. Sixty words is roughly where the
+    paragraph stops being read.
+    """
+    for preset in CATALOG:
+        description = preset.description
+        for banned in _BANNED_IN_COPY:
+            assert banned not in description, (preset.key, banned)
+        assert not _ROW_OR_PHASE.search(description), preset.key
+        assert not _ABBREVIATION.search(description), preset.key
+        words = len(description.split())
+        assert words <= 60, (preset.key, words)
+        sentences = len(_SENTENCE_END.findall(description))
+        assert sentences <= 3, (preset.key, sentences)
+        if "copy this set" in description:
+            # Verbatim, and once: an operator who has read the sentence on one
+            # row should recognise it on the next without re-reading it.
+            assert CUSTOMISATION in description, preset.key
+            assert description.count("definition") == 1, preset.key
+        else:
+            assert "definition" not in description, preset.key
+
+
+def test_no_family_shape_line_carries_a_parenthetical_any_more():
+    """The clause the operator quoted, gone and unable to come back.
+
+    ``_family_shape`` used to append ``("Decades" above is the reserved
+    definition title -- ...)`` to all fourteen family rows at once. The shape
+    line now ENDS at the closing quote of the title it names, which is what
+    forbids a trailing aside without forbidding a parenthesis inside a real
+    collection title (``"<director> (Director)"`` is a title the builder
+    creates).
+    """
+    shaped = _dynamic_rows() + _facts_family_rows() + _credits_family_rows()
+    assert shaped, "no family rows found; the helpers above changed shape"
+    lines = [preset.years_title() for preset, _collection, _params in shaped]
+    lines += [
+        preset.years_title() for preset in CATALOG if preset.award_event is not None
+    ]
+    for line in lines:
+        assert re.fullmatch(r'one collection per .+, named "[^"]*"', line), line
