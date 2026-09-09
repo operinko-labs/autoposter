@@ -419,8 +419,13 @@ class ImdbSearchParams(BaseModel):
         its error carries the number the operator wrote; a before-validator runs
         first, so the fixed sentence is what a zero produces. The ``ge=1`` stays
         as the structural pin for anything this does not see.
+
+        A ``bool`` is refused outright rather than checked against ``< 1``:
+        ``isinstance(True, int)`` is true and ``True < 1`` is false, so without
+        this branch ``limit: true`` would silently coerce to ``1`` -- the same
+        class of quiet damage this validator exists to refuse.
         """
-        if isinstance(value, int) and value < 1:
+        if isinstance(value, bool) or (isinstance(value, int) and value < 1):
             raise ValueError(_LIMIT_SHAPE)
         return value
 

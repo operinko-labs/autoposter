@@ -403,6 +403,46 @@ async def test_without_a_limit_the_whole_search_is_walked_a_full_page_at_a_time(
     assert len(result.ids) == 3
 
 
+def _synthetic_page(start: int, count: int, has_next: bool) -> dict:
+    edges = [
+        {"node": {"title": {"id": f"tt{start + i:07d}"}}} for i in range(count)
+    ]
+    return {
+        "data": {
+            "advancedTitleSearch": {
+                "total": start + count,
+                "pageInfo": {
+                    "hasNextPage": has_next,
+                    "endCursor": "cursor" if has_next else None,
+                },
+                "edges": edges,
+            }
+        }
+    }
+
+
+async def test_a_limit_above_the_page_size_still_costs_a_full_first_page():
+    """`first = min(limit, PAGE_SIZE)`: a limit bigger than one page does not
+    widen the first request past the page size, it only lets the walk continue
+    into a second page for the remainder."""
+    limit = PAGE_SIZE + 2
+    seen: list = []
+
+    def handler(request):
+        seen.append(request)
+        cursored = "after" in _body(request)["variables"]
+        if not cursored:
+            return httpx.Response(200, json=_synthetic_page(0, PAGE_SIZE, True))
+        return httpx.Response(200, json=_synthetic_page(PAGE_SIZE, 2, False))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _build(http, **RECORDED_PARAMS, limit=limit)
+
+    assert len(seen) == 2
+    assert _body(seen[0])["variables"]["first"] == PAGE_SIZE
+    assert len(result.ids) == limit
+
+
 @pytest.mark.parametrize("value", [0, -3])
 async def test_a_limit_below_one_is_refused_at_load_without_echoing_it(value):
     """Kometa's `limit: 0` means "no limit"; here "no limit" is the key left out,
@@ -415,6 +455,19 @@ async def test_a_limit_below_one_is_refused_at_load_without_echoing_it(value):
     messages = _messages(caught)
     assert any("`limit` is how many titles to keep" in m for m in messages)
     assert not any(str(value) in m for m in messages)
+
+
+@pytest.mark.parametrize("value", [True, False])
+async def test_a_limit_that_is_a_bool_is_refused_at_load(value):
+    """`isinstance(True, int)` is true and `True < 1` is false, so a bare
+    `value < 1` check would silently coerce `limit: true` to `1` -- the same
+    class of quiet damage `_LIMIT_SHAPE` exists to refuse. Both bools are
+    refused, with the same fixed sentence."""
+    with pytest.raises(ValidationError) as caught:
+        await _build(None, genres=["Film-Noir"], limit=value)
+
+    messages = _messages(caught)
+    assert any("`limit` is how many titles to keep" in m for m in messages)
 
 
 async def test_the_page_loop_is_capped_and_warns():
@@ -1489,7 +1542,7 @@ def test_the_one_constraint_guard_names_every_filtering_param():
             assert name in message
 
 
-def test_the_params_model_carries_thirty_fields():
+def test_the_params_model_field_count_is_pinned():
     """Eight from row 81, twenty-two from rows 258-265, one (`limit`) from the
     request-level cap. A count rather than a list: the names are pinned one
     family at a time above, and what this adds is that nothing was quietly

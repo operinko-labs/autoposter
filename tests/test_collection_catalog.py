@@ -35,6 +35,11 @@ from autoposter.app import create_app
 from autoposter.collections import catalog, iso_names, packs
 from autoposter.collections.builders import REGISTRY
 from autoposter.collections.builders.imdb_award import EVENTS
+from autoposter.collections.builders.imdb_search import (
+    SORTS,
+    ImdbSearchParams,
+    search_constraints,
+)
 from autoposter.collections.catalog import (
     CATALOG,
     CATEGORIES,
@@ -273,7 +278,11 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     # `content_dc` followed `content_franchises` into the `franchises` tab on
     # an operator directive. The rows themselves did not change -- only their
     # tab.
-    "content": (1, 1, 0),
+    # 1/1/0 until the "Based on..." phase: `content_based_on` flipped GATED ->
+    # READY when row 161's premise was corrected -- Kometa builds the pack from
+    # an IMDb keyword search, not a TMDb keyword id, so there was never a
+    # name->id step to wait for.
+    "content": (2, 0, 0),
     "content_ratings": (7, 0, 1),
     "franchises": (3, 0, 0),
     # 1/2/0 until the location-names phase: `location_region` and
@@ -2115,6 +2124,56 @@ def test_the_resolution_transcription():
         "720 Movies": ["720"],
         "480 Movies": ["480", "144", "240", "360", "sd", "576"],
     }
+
+
+def test_the_based_on_transcription():
+    """The four collections of Kometa's `based.yml`, one row each.
+
+    Constructing a `CollectionDefinition` is validating it -- the builder is
+    checked against the registry and the params against `ImdbSearchParams` --
+    so this test is also the proof that all four load. Both library kinds: the
+    pack is `defaults/both/`, and Kometa's title format carries no library-type
+    suffix, so the four titles are the same on a Movie and a Show library.
+    """
+    based = catalog.BY_KEY["content_based_on"]
+
+    assert based.readiness == catalog.READY
+    assert based.gated_row is None
+    for library_type in LIBRARY_TYPES:
+        definitions = based.definitions(library_type)
+        assert {d.title for d in definitions} == {
+            title for title, _keywords in catalog._BASED_ON_KEYWORDS
+        }
+        assert {d.builder for d in definitions} == {"imdb_search"}
+        keywords = {d.title: tuple(d.params["keyword_any"]) for d in definitions}
+        assert keywords == dict(catalog._BASED_ON_KEYWORDS)
+        # Kometa's `limit: 200`, per collection.
+        assert {d.params["limit"] for d in definitions} == {200}
+        # The sort trap, pinned by the WIRE PAIR and not by the name: IMDb's
+        # popularity field is a rank, so most-popular-first is ASC. Kometa
+        # spells that `popularity.asc`; `SORTS` names the quantity, so the same
+        # order is `popularity.desc` here. Naming Kometa's spelling straight
+        # through would build four collections of the LEAST popular matches.
+        assert {SORTS[d.params["sort"]] for d in definitions} == {("POPULARITY", "ASC")}
+
+
+def test_the_based_on_keywords_reach_the_search_as_any_keywords():
+    """Row 262's family, from the catalog side: `keyword_any` is IMDb's
+    `keywordConstraint.anyKeywords`, and Kometa's space-to-hyphen rewrite is the
+    builder's own. Asserted as the WHOLE constraints object, so a row that
+    quietly grew a second constraint fails here."""
+    definitions = {
+        d.title: d for d in catalog.BY_KEY["content_based_on"].definitions("Movie")
+    }
+
+    for title, phrases in catalog._BASED_ON_KEYWORDS:
+        params = ImdbSearchParams.model_validate(definitions[title].params)
+        assert search_constraints(params, ("movie",)) == {
+            "titleTypeConstraint": {"anyTitleTypeIds": ["movie"]},
+            "keywordConstraint": {
+                "anyKeywords": [phrase.replace(" ", "-") for phrase in phrases]
+            },
+        }, title
 
 
 def test_the_aspect_transcription():

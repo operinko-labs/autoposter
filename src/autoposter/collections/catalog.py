@@ -806,7 +806,6 @@ PERSON_SCAN_ROW = 194      # the library-wide credit scan the four Top-* people
                            # whose every appearance is in a >200-role cast can
                            # be missing from the ranking entirely.
 STRANDED_FILTER_ROW = 155  # the six tier-1 filter attributes the listing strands
-KEYWORD_RESOLUTION_ROW = 161  # TMDb keyword name -> id, which no earlier row owns
 RELATIVE_YEAR_ROW = 171    # the `current_year`/`current_year-N` value grammar,
                            # the half of that row phase 10a did NOT ship
 TMDB_COUNTRY_NAME_ROW = 196  # the region/continent packs group country display
@@ -1023,6 +1022,37 @@ _DC_LISTS: tuple[tuple[str, str, tuple[str, object], tuple[str, ...] | None], ..
     ("In Association With DC", "mdblist_list", ("list", "fa11en82/in-association-with-dc"), None),
 )
 
+# ``defaults/both/based.yml``'s four data keys and their ``keywords``, verbatim
+# and unhyphenated -- the space-to-hyphen rewrite is the search builder's own
+# normalisation (``builders/imdb_search._must_be_hyphenated_keywords``), so
+# writing hyphens here would be transcribing the same rule twice.
+#
+# Kometa builds these through its ``based`` template, which is an
+# ``imdb_search`` keyword query and not a ``tmdb_keyword`` lookup -- roadmap
+# row 161 was filed on the opposite reading and closes with the correction.
+#
+# Three things upstream does that this does not, all deliberate:
+#
+# * Kometa's title-type conditional sends ``movie, tv_movie`` for a movie
+#   library; ``imdb_search.TITLE_TYPE_IDS`` sends ``movie`` alone (its own
+#   comment says why), so a TV movie Plex files as a film is upstream's and not
+#   ours. Show libraries match exactly.
+# * Kometa's ``sort_by: release.desc`` in the template's ``default`` block is
+#   the Plex SMART LABEL's ordering, not the search's; the search's sort is the
+#   hardcoded ``popularity.asc``. This service has no smart-label equivalent.
+# * ``popularity.asc`` upstream is ``popularity.desc`` here. IMDb's popularity
+#   field is a RANK, so most-popular-first is ``sortOrder: ASC``: Kometa names
+#   the direction of the rank, ``SORTS`` names the direction of the quantity,
+#   and both send ``{POPULARITY, ASC}``. Kometa's spelling written through
+#   unchanged would build the LEAST popular matches, which is the trap
+#   ``imdb_search``'s ``SORTS`` comment exists to name.
+_BASED_ON_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Based on a Book", ("based on book", "based on novel")),
+    ("Based on a Comic", ("based on comic", "based on comic book")),
+    ("Based on a True Story", ("based on true story",)),
+    ("Based on a Video Game", ("based on video game",)),
+)
+
 CONTENT_PRESETS: tuple[Preset, ...] = (
     Preset(
         key="content_universes",
@@ -1154,13 +1184,30 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
         category="content",
         name="Based on...",
         description=(
-            "Not built yet. Four collections for films and shows based on a "
-            "book, a comic, a true story or a video game."
+            "Four collections for films and shows adapted from something else: "
+            "%s. A title joins when IMDb has tagged it that way, so one IMDb "
+            "has not tagged stays out. Each one holds the two hundred most "
+            "popular titles."
+            % ", ".join(title for title, _keywords in _BASED_ON_KEYWORDS)
         ),
         kometa_source="defaults/both/based.yml",
         library_types=_BOTH,
-        readiness=GATED,
-        gated_row=KEYWORD_RESOLUTION_ROW,
+        collections=tuple(
+            PresetCollection(
+                title=title,
+                builder="imdb_search",
+                # A tuple, not a list: a row is a frozen dataclass and stays
+                # hashable. ``ImdbSearchParams``'s keyword validator iterates
+                # whatever it is given and answers a list, so the tuple never
+                # reaches pydantic's list coercion.
+                params=(
+                    ("keyword_any", keywords),
+                    ("sort", "popularity.desc"),
+                    ("limit", 200),
+                ),
+            )
+            for title, keywords in _BASED_ON_KEYWORDS
+        ),
     ),
 )
 
@@ -2064,14 +2111,14 @@ TIME_PRESETS: tuple[Preset, ...] = (
 # setting-backed):
 #
 #   awards           15 / 0 / 1     charts           10 / 0 / 1
-#   content           1 / 1 / 0     content_ratings   7 / 0 / 1
+#   content           2 / 0 / 0     content_ratings   7 / 0 / 1
 #   franchises        3 / 0 / 0     location          3 / 0 / 0
 #   media             4 / 0 / 0     people            5 / 0 / 0
 #   production        3 / 0 / 0     time              1 / 1 / 0
 #
-# -- 57 rows: 52 presets an operator can switch on today, 2 that name what
-# they would build and the roadmap row that would let them, and 3 rendered
-# switches for families that already ship behind a boolean.
+# -- 57 rows: 53 presets an operator can switch on today, 1 that names what it
+# would build and the roadmap row that would let it, and 3 rendered switches
+# for families that already ship behind a boolean.
 CATALOG: tuple[Preset, ...] = (
     AWARD_PRESETS
     + SETTING_PRESETS
