@@ -319,6 +319,7 @@ async def _fetch(
     null_root: str = _NULL_ROOT,
     null_class: type[Exception] = ImdbListRefused,
     type_path: tuple[str, ...] | None = None,
+    limit: int | None = None,
 ) -> list[tuple[str, str | None]]:
     """Walk one connection's cursor pages and return its entries in source order.
 
@@ -327,8 +328,14 @@ async def _fetch(
     """
     entries: list[tuple[str, str | None]] = []
     after: str | None = None
+    # Kometa's arithmetic, and the reason it is a REQUEST-level cap rather than a
+    # slice of the answer: asking for 200 costs one request for 200 rather than
+    # one for 250 thrown half away (``modules/imdb.py``'s ``_graphql_json``
+    # sets ``first`` to the limit whenever the limit is under a page). The query
+    # text is untouched -- ``first`` has always been a variable.
+    first = PAGE_SIZE if limit is None else min(limit, PAGE_SIZE)
     for page in range(1, MAX_PAGES + 1):
-        page_variables = dict(variables, first=PAGE_SIZE)
+        page_variables = dict(variables, first=first)
         if after is not None:
             page_variables["after"] = after
         response = await http.post(
@@ -337,6 +344,11 @@ async def _fetch(
         response.raise_for_status()
         edges, page_info = _connection(response.json(), path, subject, null_root, null_class)
         entries += _entries(edges, edge_path, subject, len(entries), type_path)
+        # Before the ``hasNextPage`` question, not after it: a page that answers
+        # more ids than were asked for is truncated here, and a page that
+        # promises another one is simply not asked for.
+        if limit is not None and len(entries) >= limit:
+            return entries[:limit]
         if not page_info.get("hasNextPage"):
             return entries
         after = page_info.get("endCursor")
@@ -401,7 +413,11 @@ async def fetch_watchlist(
 
 
 async def fetch_search(
-    http: httpx.AsyncClient, constraints: dict, sort: dict, subject: str
+    http: httpx.AsyncClient,
+    constraints: dict,
+    sort: dict,
+    subject: str,
+    limit: int | None = None,
 ) -> list[str]:
     """One ``advancedTitleSearch``'s ids, in the order the sort produced them.
 
@@ -416,6 +432,13 @@ async def fetch_search(
     Ids only, and no title-type filter here either: the search *constraint*
     already names the title types (``builders/imdb_search.TITLE_TYPE_IDS``), so
     IMDb never returns one that was not asked for.
+
+    ``limit`` is the operator's ``limit:``, and it is Kometa's own arithmetic: the
+    first page asks for exactly that many when it is under ``PAGE_SIZE``, and the
+    walk stops as soon as that many ids are in hand. It is not a slice of a
+    complete answer -- a keyword search can match tens of thousands of titles,
+    and paying for all of them to keep two hundred is the cost this exists to
+    refuse. None means the whole search, up to ``MAX_PAGES``.
     """
     entries = await _fetch(
         http,
@@ -427,5 +450,6 @@ async def fetch_search(
         null_root="came back null with no error, which is not a shape IMDb has "
         "ever answered this query with",
         null_class=ImdbListDrift,
+        limit=limit,
     )
     return [value for value, _ in entries]
