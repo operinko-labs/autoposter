@@ -387,6 +387,10 @@ async def test_fetch_item_logs_the_exception_class_and_not_its_message(monkeypat
     # "HTTPSConnectionPool(host=..., port=...): Read timed out." -- the host and
     # port of the operator's Plex. Only the class name may be logged.
     assert TIMEOUT_DETAIL not in message
+    # The numbers are retry ordinals, not attempt ordinals: "attempt 3 of 3"
+    # printed before a fourth attempt runs would mislead.
+    assert "retry 1 of 3" in message
+    assert "attempt" not in message
 
 
 async def test_resolve_raises_when_plex_has_not_scanned_yet(server):

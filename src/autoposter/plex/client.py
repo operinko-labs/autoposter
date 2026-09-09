@@ -640,7 +640,7 @@ class PlexClient:
                 # timeout stringifies to "HTTPSConnectionPool(host=...,
                 # port=...): Read timed out." -- the operator's Plex host.
                 logger.warning(
-                    "plex: fetching item %s failed (%s); retrying in %ss (attempt %d of %d)",
+                    "plex: fetching item %s failed (%s); retrying in %ss (retry %d of %d)",
                     rating_key, type(exc).__name__, wait, attempt + 1, FETCH_ITEM_RETRIES,
                 )
                 await _sleep(wait)
