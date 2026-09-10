@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "engines": {
-    "node": "26.8.1"
+    "node": "26.8.2"
   },
   "comment": "Every version is pinned exactly, with no caret. CI resolving a newer minor than the developer had is the skew that broke this repository three times over (ruff, Pillow, fastapi); the frontend does not repeat it.",
   "scripts": {
