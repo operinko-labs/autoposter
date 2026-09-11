@@ -19,9 +19,14 @@ Five things can go wrong here in ways nothing downstream would notice:
    the artifact that passed the checks.
 4. ``ci.yml`` starts firing on tags too, and a release re-runs the whole suite
    on Forgejo alongside this one.
-5. The ``permissions`` block loses ``packages: write``, or grows write access
-   to the repository contents. The first makes every release fail at the push;
-   the second is a scope nothing here needs.
+5. The ``permissions`` block loses ``packages: write`` or ``contents: write``.
+   The first makes every release fail at the push; the second makes it fail at
+   the Release, which is subtler -- see below.
+6. The Release step goes away. A mirrored git tag is **not** a GitHub Release,
+   and ``/releases/latest`` -- the endpoint ``api/version.py`` polls -- knows
+   only about Releases. It answered 404 for this repository while ``/tags``
+   listed ``v0.1.0`` quite happily. Without this step no released container
+   ever learns about its successor, and nothing anywhere goes red.
 
 Deliberately NOT asserted: that the steps work. They were run verbatim against
 a locally built image before the workflow was committed, which is what this
@@ -197,18 +202,51 @@ def test_the_token_is_the_runs_own_and_nothing_is_stored():
 
 
 def test_the_permissions_are_exactly_what_publishing_needs():
-    """`packages: write` is what lets GITHUB_TOKEN push to ghcr.io. Declaring
-    the block at all narrows every other scope to nothing, so `contents` is
-    spelled out as read rather than left to a default that has changed before.
-    """
+    """Two scopes, each earned by a step. Declaring the block at all narrows
+    everything else to nothing, which is the point of spelling it out."""
     permissions = _workflow(RELEASE)["permissions"]
     assert permissions.get("packages") == "write", (
         "without `packages: write` the token cannot push and every release "
         f"fails at the push step; permissions are {permissions!r}"
     )
-    assert permissions.get("contents") == "read", (
-        f"`contents` is {permissions.get('contents')!r}; this job never writes "
-        "to the repository, and a release must not be able to"
+    assert permissions.get("contents") == "write", (
+        f"`contents` is {permissions.get('contents')!r}; creating the GitHub "
+        "Release needs write, and without the Release `/releases/latest` stays "
+        "a 404 and the in-app update check never finds anything"
+    )
+    assert set(permissions) == {"contents", "packages"}, (
+        f"release.yml grants {sorted(permissions)}; every scope here should be "
+        "one a step actually uses"
+    )
+
+
+def test_a_github_release_is_created_and_only_after_the_push():
+    """The step that makes the update check possible.
+
+    A mirrored tag creates no Release, so `api/version.py` would poll
+    `/releases/latest` and get 404 forever. It runs last on purpose: a Release
+    announces something that exists, and creating one before the push would
+    advertise an image a failing push never delivered.
+    """
+    create = _index_of("Create the GitHub release")
+    assert create > _index_of("Push the verified image"), (
+        "the Release is created before the image is pushed, so a failed push "
+        "would leave a Release advertising an image nobody can pull"
+    )
+
+    step = _release_steps()[create]
+    run = step["run"]
+    assert "gh release create" in run, (
+        f"the Release step no longer calls `gh release create`: {run!r}"
+    )
+    assert step.get("env", {}).get("GH_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", (
+        "gh needs GH_TOKEN in the environment; without it the step fails "
+        "unauthenticated even though the job has the permission"
+    )
+    assert "--verify-tag" in run, (
+        "`--verify-tag` makes gh refuse to invent a tag that does not exist, "
+        "which is the one way this step could publish a Release pointing at "
+        "nothing"
     )
 
 
