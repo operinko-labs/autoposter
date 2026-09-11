@@ -282,3 +282,10 @@ built bundle so the requirement can't regress silently.
 - [MDBList](https://mdblist.com) — ratings API used for content ratings.
 
 TMDB, TheTVDB, Fanart.tv and IMDb are credited in Attribution above.
+
+## License
+
+GPL-3.0-only — see [LICENSE](LICENSE). The project is a rewrite of
+Posterizarr, which is GPL-3.0, so that licence governs the whole work. Kometa's
+MIT-licensed material and the OFL fonts keep their own notices, collected in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
