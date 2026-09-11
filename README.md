@@ -12,9 +12,16 @@ the shared asset tree. Work is queued in PostgreSQL and processed by a worker
 pool, so a season-pack import becomes one pass per affected item rather than a
 full-library scan.
 
-- Design: [`docs/superpowers/specs/2026-08-20-autoposter-design.md`](docs/superpowers/specs/2026-08-20-autoposter-design.md)
-- Phase 1 plan: [`docs/superpowers/plans/2026-08-20-phase1-posterizarr-parity.md`](docs/superpowers/plans/2026-08-20-phase1-posterizarr-parity.md)
+- Design: [`docs/design/2026-08-20-autoposter-design.md`](docs/design/2026-08-20-autoposter-design.md)
+- Parity roadmap: [`docs/design/2026-08-22-full-parity-roadmap.md`](docs/design/2026-08-22-full-parity-roadmap.md)
 - Deployment: [`deploy/README.md`](deploy/README.md)
+- License: [GPL-3.0-only](LICENSE), with [third-party notices](THIRD_PARTY_NOTICES.md)
+
+> **Development happens on Forgejo**, at
+> <https://forgejo.vaderrp.com/operinko-labs/autoposter>. That is where
+> issues, pull requests and CI live. The GitHub repository is a read-only
+> push mirror of the `release` branch, published so the tagged container
+> images have a public home — pull requests opened there will not be seen.
 
 ## Status
 
@@ -30,7 +37,7 @@ library browser — an art grid with library/kind/status filters — and a
 per-item detail page showing the rendered base image beside what Plex is
 currently serving, with the facts and render history that produced it and a
 re-run action. Artwork comes from the app's own API, behind the same session
-as everything else; see `docs/superpowers/specs/2026-08-20-autoposter-design.md`
+as everything else; see `docs/design/2026-08-20-autoposter-design.md`
 section 6a for what's provisional and what's still deferred to a later phase.
 
 Building it needs **Node 26.7.0** — the exact patch, not a floor — which the
@@ -120,6 +127,10 @@ the config block and all four payload shapes.
 
 ## Development
 
+This project is developed at
+<https://forgejo.vaderrp.com/operinko-labs/autoposter>; the GitHub
+mirror tracks the `release` branch only and accepts no pull requests.
+
 A working Docker installation is the only requirement. There is no host Python
 or Node toolchain to install, and so no version of either to keep in step with
 the image.
@@ -198,7 +209,7 @@ which satisfies the "direct link" requirement, rather than TheTVDB's official
 brand image — that asset is not vendored into this repository, and fetching a
 third-party brand image from the network unattended isn't something this
 project does without asking. **Open item**: vendor the image and swap it in;
-see `docs/superpowers/specs/2026-08-20-autoposter-design.md` section 6a.
+see `docs/design/2026-08-20-autoposter-design.md` section 6a.
 
 ### TMDB
 

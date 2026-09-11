@@ -20,7 +20,7 @@ tags AND the deployment sets ``collections.arr_tag_apply``.
 
 Kometa's ``add_missing``/``radarr_add_all``/``radarr_remove_by_tag`` family --
 telling an instance to ACQUIRE or DROP content -- is a declared non-goal
-(``docs/superpowers/specs/2026-08-22-full-parity-roadmap.md:1213-1215``).
+(``docs/design/2026-08-22-full-parity-roadmap.md:1213-1215``).
 Nothing here adds, removes or deletes anything on an arr instance; the only
 write is an additive tag.
 """

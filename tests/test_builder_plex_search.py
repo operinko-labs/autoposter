@@ -677,7 +677,7 @@ def test_the_roadmap_row_this_phase_closes_says_so_and_files_its_tail():
     import re
 
     roadmap = pathlib.Path(
-        "docs/superpowers/specs/2026-08-22-full-parity-roadmap.md"
+        "docs/design/2026-08-22-full-parity-roadmap.md"
     ).read_text(encoding="utf-8")
     by_number = {
         int(re.match(r"^\|\s*(\d+)\s*\|", line).group(1)): line
