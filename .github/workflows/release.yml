@@ -34,12 +34,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# The whole reason this runs on GitHub. `packages: write` is what lets
-# GITHUB_TOKEN push to ghcr.io under this repository's owner; `contents: read`
-# is the default narrowed explicitly, so a future step cannot quietly gain
-# write access to the repository itself.
+# The whole reason this runs on GitHub. `packages: write` lets GITHUB_TOKEN push
+# to ghcr.io under this repository's owner, and `contents: write` lets it create
+# the GitHub Release at the end.
+#
+# That second one is not decoration. A mirrored git tag is NOT a Release:
+# `/releases/latest` -- the endpoint api/version.py polls -- answered 404 for
+# this repository while `/tags` happily listed v0.1.0, because no Release
+# object existed. Without this step the update check would poll a 404 forever
+# and no released container would ever learn about its successor.
+#
+# Everything else stays at the no-permission default, which declaring the block
+# at all is what achieves.
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -219,8 +227,35 @@ jobs:
           docker push "${TARGET}:latest"
           echo "pushed ${TARGET}:${TAG}, ${TARGET}:${VERSION} and ${TARGET}:latest"
 
-      - name: Say where it landed
+      # LAST, and deliberately after the push. A Release announces something
+      # that exists; creating it before the push would advertise an image that
+      # a failing push then never delivered.
+      #
+      # This is also what makes the in-app update check work at all. It reads
+      # `/releases/latest`, and that endpoint knows nothing about git tags --
+      # only about Release objects, which a push mirror cannot create. `gh` is
+      # preinstalled on GitHub-hosted runners.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TARGET: ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/${{ env.IMAGE_NAME }}
         run: |
-          echo "### Released ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          cat > /tmp/notes.md <<EOF
+          \`\`\`sh
+          docker pull ${TARGET}:${TAG}
+          \`\`\`
+
+          Also published as \`${TARGET}:${{ steps.version.outputs.version }}\` and \`${TARGET}:latest\`.
+
+          Development happens at <https://forgejo.vaderrp.com/operinko-labs/autoposter>;
+          this repository is a read-only mirror of its \`release\` branch.
+          EOF
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file /tmp/notes.md \
+            --generate-notes \
+            --verify-tag
+          echo "### Released ${TAG}" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`docker pull ${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`docker pull ${TARGET}:${TAG}\`" >> "$GITHUB_STEP_SUMMARY"

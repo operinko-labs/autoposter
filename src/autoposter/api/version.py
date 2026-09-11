@@ -27,6 +27,14 @@ release workflow built, verified and published an image for it. The question
 the sidebar is really asking is "is there something I can pull", and the
 releases endpoint is the thing that answers it.
 
+That distinction is load-bearing rather than pedantic. The push mirror that
+carries tags to GitHub cannot create a Release, and ``/releases/latest`` knows
+nothing about tags -- it answered 404 for this repository while ``/tags``
+listed ``v0.1.0`` quite happily. The final step of
+``.github/workflows/release.yml`` is what creates the Release, after the image
+is pushed, and ``tests/test_release_workflow.py`` holds it there. Delete that
+step and this module polls a 404 forever while nothing goes red.
+
 **GitHub is polled in the background, not fetched on request.** A request-path
 call would mean one GitHub round trip per sidebar mount, and unauthenticated
 API calls are limited to 60 per hour per address. ``ReleasePoller`` refreshes
