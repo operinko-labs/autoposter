@@ -221,7 +221,7 @@ ENV AUTOPOSTER_EXAMPLE_CONFIG=/app/config/autoposter.example.yaml
 ARG GIT_SHA=""
 ENV AUTOPOSTER_VERSION=sha-${GIT_SHA}
 
-# The release this image *is*, set only by .forgejo/workflows/release.yml and
+# The release this image *is*, set only by .github/workflows/release.yml and
 # empty in every other build. Two stamps rather than one because they answer
 # different questions: AUTOPOSTER_VERSION says which commit was built, which is
 # what Harbor and Flux key on, and this says which published version it was

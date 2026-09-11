@@ -721,7 +721,7 @@ anything.
 
 Which build you are running is what decides whether the check runs at all:
 
-- **A release image** — one published by `.forgejo/workflows/release.yml` to
+- **A release image** — one published by `.github/workflows/release.yml` to
   `ghcr.io/operinko-labs/autoposter` — is stamped at build time with its own
   version (`AUTOPOSTER_RELEASE=v1.2.3`). It compares that against the newest
   release on GitHub and marks the sidebar when it is behind.

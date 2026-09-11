@@ -5,9 +5,10 @@ The running version is not derived, it is *stamped* at build time, and which
 of the two stamps applies says what kind of build this is:
 
 * A **release** build carries ``AUTOPOSTER_RELEASE=v1.2.3``, passed as
-  ``RELEASE_VERSION`` by ``.forgejo/workflows/release.yml`` and set in the
+  ``RELEASE_VERSION`` by ``.github/workflows/release.yml`` and set in the
   Dockerfile's runtime stage. That is the tag the image was published under on
-  GHCR.
+  GHCR, and the workflow that sets it runs on GitHub Actions -- which is also
+  where the releases this module polls for are published.
 * Every **other** build carries only ``AUTOPOSTER_VERSION=sha-<git>``, which
   ``ci.yml`` stamps and pushes to Harbor under the same name, and which Flux
   deploys. A build given no ``GIT_SHA`` at all -- every local ``docker build``

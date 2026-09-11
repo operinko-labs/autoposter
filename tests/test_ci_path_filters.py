@@ -47,6 +47,10 @@ VERIFIED_NON_SOURCE = [
     "assets/collections/content_rating_cs.json",
     ".forgejo/workflows/ci.yml",
     ".forgejo/scripts/wait_for_postgres.py",
+    # Runs on GitHub Actions rather than here, but tests/test_release_workflow.py
+    # and tests/test_version_stamp.py both read it, so a change to it must still
+    # run this suite -- the same reason the Dockerfile is on this list.
+    ".github/workflows/release.yml",
     "src/autoposter/app.py",
     "tests/test_ci_path_filters.py",
     "alembic/env.py",

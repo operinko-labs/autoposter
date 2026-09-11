@@ -2,7 +2,14 @@
 keep an unverified or mislabelled image out of it are worth asserting rather
 than reading.
 
-Four things can go wrong here in ways nothing downstream would notice:
+This is the one workflow in the repository that runs on GitHub Actions rather
+than on Forgejo, and that is a credentials decision: GitHub mints a scoped
+``GITHUB_TOKEN`` per run that can already write to that repository's packages,
+so publishing to ghcr.io needs no stored PAT. The push mirror carries the
+`release` branch and its tags to GitHub, so tagging on Forgejo is what starts
+it.
+
+Five things can go wrong here in ways nothing downstream would notice:
 
 1. The tag and ``pyproject.toml`` disagree, and an image is published under a
    version its own metadata contradicts.
@@ -11,12 +18,15 @@ Four things can go wrong here in ways nothing downstream would notice:
 3. The push rebuilds instead of re-tagging, so the artifact published is not
    the artifact that passed the checks.
 4. ``ci.yml`` starts firing on tags too, and a release re-runs the whole suite
-   (or worse, races this workflow for the same docker resources).
+   on Forgejo alongside this one.
+5. The ``permissions`` block loses ``packages: write``, or grows write access
+   to the repository contents. The first makes every release fail at the push;
+   the second is a scope nothing here needs.
 
 Deliberately NOT asserted: that the steps work. They were run verbatim against
-a locally built image before the workflow was committed, which is what
-.superpowers notes require of any workflow edit here; a test that re-ran them
-would need a docker daemon and a build, and would duplicate CI.
+a locally built image before the workflow was committed, which is what this
+repository requires of any workflow edit; a test that re-ran them would need a
+docker daemon and a build, and would duplicate the workflow itself.
 """
 import re
 from pathlib import Path
@@ -24,7 +34,7 @@ from pathlib import Path
 import yaml
 
 REPO = Path(__file__).resolve().parent.parent
-RELEASE = REPO / ".forgejo" / "workflows" / "release.yml"
+RELEASE = REPO / ".github" / "workflows" / "release.yml"
 CI = REPO / ".forgejo" / "workflows" / "ci.yml"
 
 
@@ -63,10 +73,10 @@ def test_the_release_workflow_triggers_only_on_version_tags():
 def test_ci_does_not_also_run_on_tags():
     """The two workflows must not both wake on a tag.
 
-    ci.yml creates docker resources named after its run id and pushes to
-    Harbor; release.yml builds and pushes to GHCR. Overlapping on one tag would
-    put two builds on the runner's shared daemon for the same commit and re-run
-    a suite that already passed on main.
+    ci.yml runs on this project's own Forgejo runners, creates docker resources
+    named after its run id and pushes to Harbor. Overlapping on one tag would
+    re-run, on a shared and much slower runner, a suite that already passed on
+    main -- for no gain, since the release job does not depend on it.
     """
     push = _workflow(CI)["on"]["push"]
     assert "tags" not in push, (
@@ -132,11 +142,9 @@ def test_nothing_is_pushed_before_the_image_is_verified():
             f"{gate!r} runs after the push step, so a failing check cannot stop "
             "the image reaching a public registry"
         )
-    # Credentials are checked before the build, so a missing secret costs
-    # seconds rather than a full image build.
-    assert _index_of("Require the GHCR credentials") < _index_of("Build the image"), (
-        "the GHCR credential check moved below the build; a missing secret now "
-        "wastes the whole build before failing"
+    # And the login itself, which is not a gate but would be a wasted build.
+    assert _index_of("Log in to GHCR") < push, (
+        "the login step runs after the push, which cannot work"
     )
 
 
@@ -164,6 +172,44 @@ def test_the_pushed_image_is_the_one_that_was_built():
         assert f"docker push {ref}" in run, (
             f"the push step no longer publishes {ref}"
         )
+
+
+def test_it_runs_on_githubs_own_runners():
+    """`ubuntu-latest` here means a runner GitHub provides, which is the point:
+    no self-hosted label, nothing of this project's infrastructure involved."""
+    assert _workflow(RELEASE)["jobs"]["release"]["runs-on"] == "ubuntu-latest"
+
+
+def test_the_token_is_the_runs_own_and_nothing_is_stored():
+    """The whole reason this moved to GitHub Actions. A `secrets.` reference to
+    anything but the automatic GITHUB_TOKEN means a credential was put back
+    into storage to be rotated and leaked."""
+    text = RELEASE.read_text(encoding="utf-8")
+    used = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", text))
+    assert used == {"GITHUB_TOKEN"}, (
+        f"release.yml references stored secrets {sorted(used - {'GITHUB_TOKEN'})}; "
+        "GITHUB_TOKEN is minted per run and already carries packages:write"
+    )
+
+    login = _release_steps()[_index_of("Log in to GHCR")]
+    assert login["with"]["password"] == "${{ secrets.GITHUB_TOKEN }}"
+    assert login["with"]["registry"] == "${{ env.REGISTRY }}"
+
+
+def test_the_permissions_are_exactly_what_publishing_needs():
+    """`packages: write` is what lets GITHUB_TOKEN push to ghcr.io. Declaring
+    the block at all narrows every other scope to nothing, so `contents` is
+    spelled out as read rather than left to a default that has changed before.
+    """
+    permissions = _workflow(RELEASE)["permissions"]
+    assert permissions.get("packages") == "write", (
+        "without `packages: write` the token cannot push and every release "
+        f"fails at the push step; permissions are {permissions!r}"
+    )
+    assert permissions.get("contents") == "read", (
+        f"`contents` is {permissions.get('contents')!r}; this job never writes "
+        "to the repository, and a release must not be able to"
+    )
 
 
 def test_the_published_repository_is_the_public_ghcr_path():

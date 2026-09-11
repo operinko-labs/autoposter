@@ -13,7 +13,8 @@ involved mentions the others.
 
 **The release stamp**, only on a published release:
 
-* ``.forgejo/workflows/release.yml`` passes the tag it publishes under as
+* ``.github/workflows/release.yml`` -- which runs on GitHub Actions, not on
+  this project's Forgejo runners -- passes the tag it publishes under as
   ``RELEASE_VERSION``.
 * ``Dockerfile`` turns that into ``AUTOPOSTER_RELEASE=v1.2.3``.
 * ``src/autoposter/api/version.py`` prefers it, and polls GitHub for a newer
@@ -37,7 +38,7 @@ from autoposter.api.version import SHA_PREFIX, _version_tuple
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
 WORKFLOW = REPO / ".forgejo" / "workflows" / "ci.yml"
-RELEASE_WORKFLOW = REPO / ".forgejo" / "workflows" / "release.yml"
+RELEASE_WORKFLOW = REPO / ".github" / "workflows" / "release.yml"
 
 BUILD_ACTION = "docker/build-push-action"
 
