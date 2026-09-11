@@ -126,8 +126,8 @@ export function Sidebar() {
     writeStored(next);
   };
 
-  // Fetched once, at mount, and never polled. The server caches Harbor's
-  // answer for fifteen minutes, so a refetch would mostly re-read the same
+  // Fetched once, at mount, and never polled. The server refreshes its answer
+  // on a six-hour background poll, so a refetch would mostly re-read the same
   // string; and the sidebar mounts on every full page load, which is often
   // enough for a line that changes when the pod is replaced. A failure leaves
   // this null and the line simply does not render -- the shell must not show

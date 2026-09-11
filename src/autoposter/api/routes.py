@@ -226,10 +226,10 @@ router.include_router(facts_backfill_router)
 # writing down.
 router.include_router(mismatches_router)
 
-# The sidebar's version line: what this pod is running, and whether the Harbor
-# registry holds a newer image. Its own module because the registry URL is
-# operator config that must not reach a log or a response, and the rules that
-# keep it out of both are the substance of it.
+# The sidebar's version line: what this container is running, and whether a
+# newer release has been published. Its own module because the rules about
+# which builds may ask that question at all -- and what a tri-state
+# `update_available` means -- are the substance of it.
 router.include_router(version_router)
 
 # The storage stats (roadmap row 52): how many artifacts this service has

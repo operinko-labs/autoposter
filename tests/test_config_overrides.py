@@ -211,8 +211,8 @@ def _overrides_warnings(caplog) -> list[str]:
 
 async def test_a_stored_version_check_section_does_not_brick_the_boot(session, caplog):
     """The migration hazard this strip exists for. ``version_check`` was
-    live-editable in the settings editor right up to the commit that moved its
-    three fields into AUTOPOSTER_IMAGE_REF, so any deployment whose operator
+    live-editable in the settings editor right up to the commit that took its
+    three fields out of the config file, so any deployment whose operator
     ever saved that section carries the key in its ``config_overrides`` row --
     and ``Config._version_check_moved_to_an_env_var`` refuses the key in *any*
     document it validates, the merged one included.
@@ -243,7 +243,7 @@ async def test_dropping_a_stored_version_check_section_says_so_once(session, cap
     warnings = _overrides_warnings(caplog)
     assert len(warnings) == 1
     assert "dropping stale version_check from stored overrides" in warnings[0]
-    assert "AUTOPOSTER_IMAGE_REF" in warnings[0]
+    assert "takes no configuration now" in warnings[0]
     # Self-healing, and the message has to say so: the editor can no longer
     # produce the key, and the document is always written whole.
     assert "next saved" in warnings[0]

@@ -35,7 +35,6 @@ _SOFT_SECRET_ENV = {
     "radarr_apikey": "AUTOPOSTER_RADARR_APIKEY",
     "sonarr_apikey": "AUTOPOSTER_SONARR_APIKEY",
     "admin_password_hash": "AUTOPOSTER_ADMIN_PASSWORD_HASH",
-    "harbor_token": "AUTOPOSTER_HARBOR_TOKEN",
     "plex_account_token": "AUTOPOSTER_PLEX_ACCOUNT_TOKEN",
     "tracearr_apikey": "AUTOPOSTER_TRACEARR_APIKEY",
     "api_key": "AUTOPOSTER_API_KEY",
@@ -219,23 +218,6 @@ class Secrets(BaseModel):
         description=(
             "The bcrypt hash the Web UI's login checks against. A deployment "
             "without one still runs, with every login attempt rejected."
-        ),
-    )
-    # Soft secret, same reasoning as mdblist_apikey, but for a different
-    # reason than most of this class's other ones: the autoposter Harbor
-    # project is public and internet-accessible (operator decision,
-    # 2026-08-26), so the update check works with no credential at all --
-    # an empty value means an anonymous request, not a disabled check. This
-    # exists only for a deployment whose registry project is private, where
-    # Harbor's artifact listing needs a robot account's credential. Already
-    # base64 of `robot$name:secret`, ready to be the value of an
-    # `Authorization: Basic` header when set; see api/version.py.
-    harbor_token: str = Field(
-        default="",
-        description=(
-            "The Harbor robot account credential the update check authenticates "
-            "with. A deployment without one still runs the check anonymously; "
-            "only needed when the registry project is private."
         ),
     )
     # Soft secret, same reasoning as mdblist_apikey: only the collection
@@ -4205,20 +4187,22 @@ class Config(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _version_check_moved_to_an_env_var(cls, data):
-        """``version_check:`` is no longer a config section -- the registry,
-        project and repository it held are derived from ``AUTOPOSTER_IMAGE_REF``
-        instead (``config/image_ref.py``). Pydantic ignores unknown keys, so
-        without this a deployment that forgot to remove the block from its
-        YAML would have it silently dropped and believe it still did
-        something, rather than being told to migrate. ``mode="before"`` is
-        required to see it at all: by ``mode="after"`` the key is already
-        gone.
+        """``version_check:`` is no longer a config section, and there is
+        nothing to migrate it to: the update check now compares this build's
+        own release stamp against the newest published GitHub release and
+        takes no configuration at all (``api/version.py``). Pydantic ignores
+        unknown keys, so without this a deployment that forgot to remove the
+        block from its YAML would have it silently dropped and believe it
+        still did something, rather than being told it is inert.
+        ``mode="before"`` is required to see it at all: by ``mode="after"``
+        the key is already gone.
         """
         if isinstance(data, dict) and "version_check" in data:
             raise ValueError(
-                "version_check: has moved out of the config file -- set "
-                "AUTOPOSTER_IMAGE_REF instead (see deploy/README.md's "
-                '"The sidebar\'s update check") and remove this block'
+                "version_check: is no longer a config section -- the update "
+                "check is automatic for released builds and takes no settings "
+                '(see deploy/README.md\'s "The sidebar\'s update check"); '
+                "remove this block"
             )
         return data
 

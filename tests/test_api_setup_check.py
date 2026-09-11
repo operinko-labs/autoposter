@@ -1,9 +1,9 @@
-"""One check-connection endpoint, ten subjects, and the bound on all of them.
+"""One check-connection endpoint, nine subjects, and the bound on all of them.
 
 The surface this file guards is the one the wizard could not avoid having: a
 form behind the setup token that makes an outbound request to an address a
-caller supplies. Four of the ten subjects take such an address (Plex, Radarr,
-Sonarr, Tracearr); six hit a compiled-in host. What is deliberately NOT here
+caller supplies. Four of the nine subjects take such an address (Plex, Radarr,
+Sonarr, Tracearr); five hit a compiled-in host. What is deliberately NOT here
 is a private-IP denylist -- every correct answer on every shipped deployment IS
 a private address, so a denylist would refuse `http://sonarr` and nothing else.
 The bound is instead: an allowlisted system key, a fixed path per system, no
@@ -63,7 +63,6 @@ CREDENTIALS = {
     "AUTOPOSTER_MDBLIST_APIKEY": FAKE_APIKEY,
     "AUTOPOSTER_RADARR_APIKEY": FAKE_APIKEY,
     "AUTOPOSTER_SONARR_APIKEY": FAKE_APIKEY,
-    "AUTOPOSTER_HARBOR_TOKEN": FAKE_TOKEN,
     "AUTOPOSTER_TRACEARR_APIKEY": FAKE_APIKEY,
 }
 
@@ -100,7 +99,6 @@ def test_the_allowlist_is_exactly_the_ten_systems_the_wizard_shows():
         "mdblist",
         "radarr",
         "sonarr",
-        "harbor",
         "tracearr",
     }
 
@@ -111,9 +109,7 @@ def test_no_check_lets_a_caller_choose_a_path_a_method_or_a_header():
     for system, check in setup_checks.CHECK_SYSTEMS.items():
         assert check.method in {"GET", "POST"}, system
         assert (check.host is None) == (system in TYPED), system
-        if system != "harbor":
-            # Harbor's path is derived from AUTOPOSTER_IMAGE_REF at call time.
-            assert check.path.startswith("/"), system
+        assert check.path.startswith("/"), system
 
 
 @pytest.mark.parametrize(
@@ -216,20 +212,8 @@ async def test_tracearr_two_hundred_without_its_rate_limit_header_never_reached_
     assert outcome.failure == "TracearrDidNotAnswer"
 
 
-async def test_harbor_with_no_image_reference_says_so_as_a_class_name(monkeypatch):
-    """Harbor's address is DERIVED from AUTOPOSTER_IMAGE_REF, never typed --
-    which is why it has no SSRF surface at all -- so an unset one is a
-    deployment fact, not a credential failure."""
-    monkeypatch.delenv("AUTOPOSTER_IMAGE_REF", raising=False)
-
-    outcome = await setup_checks.run_check("harbor", None, CREDENTIALS)
-
-    assert outcome.ok is False
-    assert outcome.failure == "ImageReferenceUnset"
-
-
 async def test_no_provider_body_text_survives_any_outcome():
-    """The sweep. Ten subjects, one assertion: whatever the third party said,
+    """The sweep. Nine subjects, one assertion: whatever the third party said,
     the wizard reports a boolean and a class name."""
     for system in setup_checks.CHECK_SYSTEMS:
         for status in (200, 401, 500):
@@ -467,20 +451,6 @@ async def test_the_composed_url_is_the_path_and_query_the_table_compiled_in(
         assert seen[0].params.get(name) == expected, name
 
 
-async def test_harbor_composes_the_derived_path_with_its_page_bound(monkeypatch):
-    """Harbor's is the one path built at call time, from AUTOPOSTER_IMAGE_REF,
-    so its `?page_size=1` is composed by `_harbor_target` rather than by the
-    table and is asserted separately."""
-    monkeypatch.setenv("AUTOPOSTER_IMAGE_REF", "registry.example.test/proj/repo:v1")
-    seen: list[httpx.URL] = []
-
-    await setup_checks.run_check("harbor", None, CREDENTIALS, transport=_recording_transport(seen))
-
-    assert seen[0].path == "/api/v2.0/projects/proj/repositories/repo/artifacts"
-    assert set(seen[0].params.keys()) == {"page_size"}
-    assert seen[0].params.get("page_size") == "1"
-
-
 def _oversized_transport(chunks: list[int], chunk_size: int = 1024, count: int = 4096):
     """A response body far larger than anything this table reads, yielded a
     chunk at a time so the test can see how much of it was consumed."""
@@ -497,7 +467,7 @@ def _oversized_transport(chunks: list[int], chunk_size: int = 1024, count: int =
 
 
 async def test_a_probe_that_reads_no_body_never_pulls_one():
-    """Nine of the ten subjects are answered by the status and one header. The
+    """Eight of the nine subjects are answered by the status and one header. The
     body behind them is a third party's, on the private network these checks
     are aimed at, and five seconds of it is gigabytes."""
     chunks: list[int] = []

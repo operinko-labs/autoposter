@@ -70,7 +70,7 @@ HARD = (
 def isolated_state(monkeypatch, tmp_path):
     for name in (*HARD, "AUTOPOSTER_ADMIN_PASSWORD_HASH", "AUTOPOSTER_API_KEY",
                  "AUTOPOSTER_MDBLIST_APIKEY", "AUTOPOSTER_RADARR_APIKEY",
-                 "AUTOPOSTER_SONARR_APIKEY", "AUTOPOSTER_HARBOR_TOKEN",
+                 "AUTOPOSTER_SONARR_APIKEY",
                  "AUTOPOSTER_PLEX_ACCOUNT_TOKEN", "AUTOPOSTER_TRACEARR_APIKEY"):
         monkeypatch.delenv(name, raising=False)
     # The wizard now asks the loader's own resolver, which prefers a PRESENT

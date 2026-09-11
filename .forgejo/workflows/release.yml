@@ -1,0 +1,233 @@
+name: Release
+
+# Tags are the trigger, and only tags. `ci.yml` filters its push trigger to
+# `branches: [main]`, so a tag push starts nothing there -- the two workflows
+# do not overlap and a release never re-runs the suite.
+#
+# What this assumes, stated rather than implied: a release tag is cut from a
+# main commit whose own CI run was green, which is what proved the suite, the
+# frontend bundle, the bundled assets and the migrations for this exact tree.
+# This job re-proves only what is cheap and what publication itself puts at
+# stake -- that the image starts, that ImageMagick is the build poster parity
+# depends on, and that nothing HIGH or CRITICAL ships to a public registry.
+"on":
+  push:
+    tags:
+      - 'v*'
+
+# Never cancel a release in flight. `ci.yml` sets cancel-in-progress because a
+# superseded commit's run is waste; here a cancellation between `docker push`
+# calls would leave the registry holding some of a release's tags and not the
+# rest.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: autoposter
+  # ghcr.io is the public mirror's registry. The private Harbor push stays in
+  # ci.yml on main: that one feeds Flux and fires on every commit, this one
+  # publishes a named version for people who are not this operator.
+  REGISTRY: ghcr.io
+  # Lowercase is not a style choice -- GHCR rejects a path with uppercase in it.
+  REGISTRY_NAMESPACE: operinko-labs
+  # Suffixed with the run id for the same reason every resource in ci.yml is:
+  # the runner hosts concurrent jobs on one shared daemon, and a fixed tag lets
+  # one run re-tag another's image between its build and its push.
+  REL_IMAGE: autoposter:rel-${{ github.run_id }}
+
+jobs:
+  release:
+    name: Build, verify and publish the tagged image to GHCR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Same sweep as ci.yml's image job, and for the same reason: cancelled or
+      # killed jobs never reach their `if: always()` cleanup, and the leftovers
+      # filled runner2's disk once already (2026-09-06). Only this workflow's
+      # own names are touched.
+      - name: Sweep leftovers from earlier runs
+        run: |
+          for img in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^autoposter:rel-' | grep -v "${{ github.run_id }}"); do
+            docker rmi "$img" >/dev/null 2>&1 || true
+          done
+          docker volume prune -f >/dev/null 2>&1 || true
+          df -h / | tail -1
+
+      # The guard that makes the tag mean something. Tagging v0.2.0 while
+      # pyproject.toml still says 0.1.0 would publish an image whose own
+      # metadata disagrees with the name it is published under, and nothing
+      # downstream would notice.
+      - name: Derive the version and check it against pyproject.toml
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *)
+              echo "tag '${TAG}' is not vMAJOR.MINOR.PATCH, refusing to publish" >&2
+              echo "a pre-release suffix is deliberately not accepted: nothing here" >&2
+              echo "decides whether such a tag should move ':latest'" >&2
+              exit 1
+              ;;
+          esac
+          VERSION="${TAG#v}"
+          # sed rather than a TOML parser: pyproject.toml's `version` is a
+          # top-level key on its own line, and this job has no virtualenv.
+          DECLARED=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -1)
+          if [ -z "$DECLARED" ]; then
+            echo 'could not read the version key from pyproject.toml' >&2
+            exit 1
+          fi
+          if [ "$VERSION" != "$DECLARED" ]; then
+            echo "tag says ${VERSION}, pyproject.toml says ${DECLARED}" >&2
+            echo "bump pyproject.toml and re-tag, or tag the version already declared" >&2
+            exit 1
+          fi
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "short_sha=${SHORT_SHA}"
+          } >> "$GITHUB_OUTPUT"
+          echo "releasing ${TAG} from ${SHORT_SHA}"
+
+      # Fail before the build, not after it. A missing secret discovered at the
+      # login step costs the whole build first.
+      - name: Require the GHCR credentials
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$GHCR_USERNAME" ] || missing="${missing} GHCR_USERNAME"
+          [ -n "$GHCR_TOKEN" ] || missing="${missing} GHCR_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "missing repository secret(s):${missing}" >&2
+            echo "GHCR_USERNAME is the GitHub account that owns the token." >&2
+            echo "GHCR_TOKEN is a classic PAT for that account with write:packages." >&2
+            exit 1
+          fi
+          echo "GHCR credentials present"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      # Loaded, not pushed. Everything below verifies this exact image, and the
+      # push at the end re-tags it rather than rebuilding -- a second build
+      # could produce something the checks never saw.
+      #
+      # The frontend needs no step of its own here: the Dockerfile's `frontend`
+      # stage runs `npm ci && npm run build` inside the build, so the bundle in
+      # the image is built from this tag's sources.
+      - name: Build the image locally
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ env.REL_IMAGE }}
+          # Two stamps, because they answer different questions. GIT_SHA
+          # becomes AUTOPOSTER_VERSION=sha-<it>, which is what every build
+          # carries and what Harbor and Flux key on. RELEASE_VERSION becomes
+          # AUTOPOSTER_RELEASE, set by nothing but this workflow, and it is
+          # what api/version.py compares against the newest published GitHub
+          # release -- a `sha-` string is neither ahead of nor behind a
+          # release tag, so without this a released container could never tell
+          # whether it was current.
+          build-args: |
+            GIT_SHA=${{ steps.version.outputs.short_sha }}
+            RELEASE_VERSION=${{ steps.version.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify the application imports inside the image
+        run: |
+          docker run --rm ${{ env.REL_IMAGE }} \
+            python -c "import autoposter.boot; import autoposter.main; import autoposter.app; print('entrypoint imports OK')"
+
+      - name: Verify ImageMagick is a Q16-HDRI build
+        # Poster output is byte-identical to the tool being replaced only on a
+        # Q16-HDRI build; a plain Q16 renders the same source 0.077% differently.
+        run: |
+          # Captured rather than piped into `grep -q`: grep exits at the match,
+          # docker gets EPIPE writing the rest, and pipefail fails the step
+          # even though the match succeeded. No pipe, no race.
+          version=$(docker run --rm ${{ env.REL_IMAGE }} magick -version)
+          echo "$version"
+          case "$version" in
+            *HDRI*) echo "Q16-HDRI confirmed" ;;
+            *) echo "not a Q16-HDRI build; poster parity depends on it" >&2; exit 1 ;;
+          esac
+
+      - name: Verify the version the image reports
+        # Both stamps are the last layers in the Dockerfile and so the easiest
+        # to lose to a cache or a build-arg that never arrived. An image
+        # published as v1.2.3 while reporting an empty AUTOPOSTER_RELEASE would
+        # do more than look wrong: api/version.py polls for a newer release
+        # only when that value parses as a version, so an unstamped release
+        # image silently never checks for updates at all.
+        run: |
+          reported=$(docker run --rm ${{ env.REL_IMAGE }} \
+            python -c "import os; print(os.environ.get('AUTOPOSTER_VERSION',''), os.environ.get('AUTOPOSTER_RELEASE',''))")
+          expected="sha-${{ steps.version.outputs.short_sha }} ${{ steps.version.outputs.tag }}"
+          echo "image reports: ${reported}"
+          if [ "$reported" != "$expected" ]; then
+            echo "expected '${expected}'; a build arg did not reach its stamp" >&2
+            exit 1
+          fi
+          # And the value the endpoint would actually serve, through the same
+          # function the API calls rather than a re-implementation of it here.
+          served=$(docker run --rm ${{ env.REL_IMAGE }} \
+            python -c "from autoposter.api.version import _running_version; print(_running_version())")
+          echo "GET /api/version would report: ${served}"
+          if [ "$served" != "${{ steps.version.outputs.tag }}" ]; then
+            echo "the endpoint would report '${served}', not the release tag" >&2
+            exit 1
+          fi
+
+      # Scan before publishing, not after -- and here the registry is public,
+      # so this is the last gate before anyone else can pull it.
+      - name: Scan the image for vulnerabilities
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             aquasec/trivy:0.70.0 image --quiet --scanners vuln             --severity MEDIUM,HIGH,CRITICAL --no-progress             ${{ env.REL_IMAGE }}
+          # Medium findings are reported above but do not block; anything HIGH
+          # or CRITICAL fails the job and so is never pushed. `.trivyignore`
+          # carries the dated, explained base-image exceptions; its text
+          # travels as an environment variable and is written inside the scan
+          # container, because a bind mount of $PWD cannot work here -- the
+          # docker socket is the runner HOST's while the checkout lives in the
+          # job container, so the host has no such path.
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock             -e TRIVY_IGNORE_TEXT="$(cat .trivyignore)" --entrypoint sh             aquasec/trivy:0.70.0 -c 'printf "%s\n" "$TRIVY_IGNORE_TEXT" > /.trivyignore             && trivy image --quiet --scanners vuln --severity HIGH,CRITICAL             --exit-code 1 --no-progress --ignorefile /.trivyignore "$0"' ${{ env.REL_IMAGE }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      # Three tags, all pointing at the one image the steps above verified.
+      # `latest` moves because this workflow only ever runs for a final
+      # vMAJOR.MINOR.PATCH tag -- the version step refuses anything else, so
+      # there is no pre-release that could quietly take it.
+      - name: Push the verified image
+        run: |
+          TARGET="${{ env.REGISTRY }}/${{ env.REGISTRY_NAMESPACE }}/${{ env.IMAGE_NAME }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          docker tag ${{ env.REL_IMAGE }} "${TARGET}:${TAG}"
+          docker tag ${{ env.REL_IMAGE }} "${TARGET}:${VERSION}"
+          docker tag ${{ env.REL_IMAGE }} "${TARGET}:latest"
+          docker push "${TARGET}:${TAG}"
+          docker push "${TARGET}:${VERSION}"
+          docker push "${TARGET}:latest"
+          echo "pushed ${TARGET}:${TAG}, ${TARGET}:${VERSION} and ${TARGET}:latest"
+
+      - name: Remove the run's image tag
+        if: always()
+        run: |
+          docker rmi ${{ env.REL_IMAGE }} >/dev/null 2>&1 || true

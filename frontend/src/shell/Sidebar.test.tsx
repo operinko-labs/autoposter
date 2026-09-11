@@ -385,8 +385,8 @@ describe("Sidebar version line", () => {
     renderSidebar();
     await screen.findByText(RUNNING);
 
-    // The server caches Harbor's answer for fifteen minutes, so a poll would
-    // mostly re-read one string; the mount is frequent enough on its own.
+    // The server refreshes its answer on a background poll, so a poll from
+    // here would mostly re-read one string; the mount is frequent enough.
     const calls = fetchMock.mock.calls.filter(([path]) => path === "/api/version");
     expect(calls).toHaveLength(1);
 

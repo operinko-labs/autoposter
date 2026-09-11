@@ -56,12 +56,10 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 from dataclasses import dataclass
 
 import httpx
 
-from autoposter.config.image_ref import parse_image_ref
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +112,6 @@ def no_httpx_request_log():
 class TracearrDidNotAnswer(Exception):
     """A 200 with no ``x-ratelimit-limit`` header: Tracearr's SPA answered, not
     its API (providers/tracearr.py:175), so the key was never tested."""
-
-
-class ImageReferenceUnset(Exception):
-    """Harbor's coordinates come from ``AUTOPOSTER_IMAGE_REF`` and this
-    deployment has none, so there is no registry to ask."""
 
 
 @dataclass(frozen=True)
@@ -219,16 +212,6 @@ CHECK_SYSTEMS: dict[str, Check] = {
         credential="AUTOPOSTER_SONARR_APIKEY",
         auth="x-api-key",
     ),
-    # The one subject with no SSRF surface whatever: the host is DERIVED from
-    # AUTOPOSTER_IMAGE_REF (config/image_ref.py), so nothing about it is typed.
-    # `host` and `path` are filled in by `_harbor_target` at call time.
-    "harbor": Check(
-        label="Harbor",
-        host="",
-        path="",
-        credential="AUTOPOSTER_HARBOR_TOKEN",
-        auth="basic",
-    ),
     "tracearr": Check(
         label="Tracearr",
         host=None,
@@ -248,22 +231,6 @@ class CheckOutcome:
     refused: bool
     #: An exception class name or a status marker, never a message.
     failure: str | None
-
-
-def _harbor_target(check: Check) -> Check:
-    parsed = parse_image_ref(os.environ.get("AUTOPOSTER_IMAGE_REF", ""))
-    if parsed is None:
-        raise ImageReferenceUnset()
-    registry, project, repository = parsed
-    # api/version.py:98 builds exactly this, and https always: an image
-    # reference carries no scheme to derive one from.
-    return Check(
-        label=check.label,
-        host=f"https://{registry}",
-        path=f"/api/v2.0/projects/{project}/repositories/{repository}/artifacts?page_size=1",
-        credential=check.credential,
-        auth=check.auth,
-    )
 
 
 async def _capped_body(response: httpx.Response) -> bytes:
@@ -288,12 +255,6 @@ async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) 
         headers["X-Api-Key"] = value
     elif check.auth == "bearer":
         headers["Authorization"] = f"Bearer {value}"
-    elif check.auth == "basic":
-        # api/version.py:93 -- a Harbor robot credential arrives already
-        # base64-encoded as `robot$name:secret`. An empty one sends no header
-        # at all, which is not the same as an empty Authorization.
-        if value:
-            headers["Authorization"] = f"Basic {value}"
     elif check.auth == "query-api_key":
         params["api_key"] = value
     elif check.auth == "query-apikey":
@@ -353,8 +314,6 @@ async def run_check(
     value = credentials.get(check.credential or "", "")
 
     try:
-        if system == "harbor":
-            check = _harbor_target(check)
         host = check.host if check.host is not None else base_url
         url = f"{host}{check.path}"
 
