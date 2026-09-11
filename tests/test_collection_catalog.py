@@ -63,7 +63,7 @@ from autoposter.config.schema import CollectionDefinition, Secrets
 EXAMPLE = pathlib.Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 ROADMAP = (
     pathlib.Path(__file__).parent.parent
-    / "docs" / "superpowers" / "specs" / "2026-08-22-full-parity-roadmap.md"
+    / "docs" / "design" / "2026-08-22-full-parity-roadmap.md"
 )
 PASSWORD = "correct horse battery staple"
 

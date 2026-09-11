@@ -284,7 +284,7 @@ async def test_lists_dry_run_reports_would_adopt_and_claims_nothing(session):
 # --- Label CASE: Plex canonicalises it, so every reader folds both sides ---
 #
 # Measured against the live server on 2026-08-30 (recorded in
-# ``docs/superpowers/specs/2026-08-22-full-parity-roadmap.md`` row 135): the
+# ``docs/design/2026-08-22-full-parity-roadmap.md`` row 135): the
 # Movies library held exactly ONE ownership tag, ``'Autoposter'``, tagID
 # 214239, and ``section.collections(label=...)`` returned the same 99
 # collections for ``autoposter``, ``Autoposter`` and ``AUTOPOSTER``. The

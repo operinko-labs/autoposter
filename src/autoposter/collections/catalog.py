@@ -785,7 +785,7 @@ _KOMETA_DEFAULTS: frozenset[str] = frozenset(
 # would hide the fact that most of them are waiting on ONE thing, and which
 # one; a reader of the table should be able to see the blockers group.
 #
-# ``docs/superpowers/specs/2026-08-22-full-parity-roadmap.md`` is the document,
+# ``docs/design/2026-08-22-full-parity-roadmap.md`` is the document,
 # and a test reads the row numbers out of it rather than trusting these -- a
 # citation nobody can look up is worse than no citation at all.
 DYNAMIC_ENGINE_ROW = 102   # phase 10a: one collection per distinct value

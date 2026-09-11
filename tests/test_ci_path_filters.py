@@ -664,7 +664,7 @@ def test_every_api_suite_has_been_assigned_a_lane():
 @pytest.mark.parametrize(
     "path",
     [
-        "docs/superpowers/specs/2026-08-20-autoposter-design.md",
+        "docs/design/2026-08-20-autoposter-design.md",
         "docs/research/kometa-overlays.md",
         "deploy/README.md",
         "README.md",

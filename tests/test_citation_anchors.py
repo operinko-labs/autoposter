@@ -11,13 +11,14 @@ back empty. This file is that mechanical pass, standing.
 
 Scope -- src/ and tests/ only, and the exclusions are deliberate:
 
-- The roadmap (docs/superpowers/specs/2026-08-22-full-parity-roadmap.md)
+- The roadmap (docs/design/2026-08-22-full-parity-roadmap.md)
   carries 8 more refs (3 filename-anchored on rows 169/170/172 plus 5 bare
   continuations), but row 216's own line holds meta-citations ABOUT
   citations (`filters.py:1220`'s `:282`) whose antecedent a mechanical
   tracker resolves wrong. Excluded; the exclusion is documented in the row's
   close as an accepted residual.
-- The frozen plan documents under docs/superpowers/plans/ keep their
+- The frozen plan documents (docs/superpowers/plans/, no longer tracked)
+  keep their
   as-authored numbers by design (a historical brief rewritten is a record
   falsified), so a guard walking them would red on them by design.
 - .superpowers/ is gitignored scratch, not a citing surface the repo owns.
