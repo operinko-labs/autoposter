@@ -6,7 +6,7 @@ else uses, and `routes.py` is already 2 400 lines. `api/item_overrides.py`
 and eleven others are the same argument.
 
 WHAT IT MAY IMPORT. `setup_arr` imports only stdlib, httpx and
-`setup_checks`, which imports only stdlib, httpx and `config.image_ref`.
+`setup_checks`, which imports only stdlib and httpx.
 Neither is part of the setup SURFACE `boot.main` keeps out of a configured
 boot -- `api/setup.py` is -- so importing them here at module scope is safe
 and importing `api.setup` would not be. The four lines of the unwritable-

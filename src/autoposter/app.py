@@ -21,9 +21,8 @@ from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.errors import validation_error_without_input
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
-from autoposter.api.version import VersionPoller
+from autoposter.api.version import ReleasePoller
 from autoposter.config.holder import ConfigHolder
-from autoposter.config.image_ref import parse_image_ref
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
@@ -227,11 +226,10 @@ def create_app(
 
         # Replaces create_app's http=None placeholder with one that can
         # actually poll, now that `http` exists. See api/version.py's
-        # VersionPoller and its module docstring for why this is a
-        # background poll rather than a request-path fetch.
-        app.state.version_poller = VersionPoller(
-            http=http, target=app.state.version_check_target, token=secrets.harbor_token,
-        )
+        # ReleasePoller and its module docstring for why this is a
+        # background poll rather than a request-path fetch, and why a build
+        # that is not a release never polls at all.
+        app.state.version_poller = ReleasePoller(http=http)
 
         async with session_factory() as session:
             reclaimed = await reclaim_stale(session)
@@ -509,9 +507,9 @@ def create_app(
     # does not carry is "not from the file". `boot` publishes the NAMES across
     # its exec (see `state_file_secret_names`), and this is the only reader.
     #
-    # Read from os.environ directly at this construction path, the way
-    # AUTOPOSTER_IMAGE_REF just below is and for the same reason: it is not a
-    # credential, it is a deployment fact, and routing it through Secrets
+    # Read from os.environ directly at this construction path, the way the
+    # version stamp the poller below reads is and for the same reason: it is
+    # not a credential, it is a deployment fact, and routing it through Secrets
     # would make every test app fake a value for it.
     #
     # FAIL CLOSED. An application that never went through `boot` -- every test
@@ -522,25 +520,17 @@ def create_app(
     app.state.secret_from_state_file = {
         name: True for name in os.environ.get(STATE_FILE_NAMES_ENV, "").split(",") if name
     }
-    # ``(registry, project, repository)``, or None -- see api/version.py.
-    # Read here, once, rather than through Secrets: it is not a credential,
-    # it is a deployment fact (the image reference the pod already runs), so
-    # os.environ is read directly at this construction path rather than
-    # through Secrets.from_env(), which every test app would then have to
-    # fake a value for. create_app rather than main.build() because this is
-    # the one path every application -- deployed and every test's -- goes
-    # through; main.build() is production-only and tests never call it.
-    app.state.version_check_target = parse_image_ref(
-        os.environ.get("AUTOPOSTER_IMAGE_REF", "")
-    )
     # http=None here -- create_app has no http client yet, only the lifespan
     # builds one -- so this placeholder never actually polls; GET /api/version
     # still has something to read from every test app that never runs the
     # background branch. The lifespan below replaces this with a poller that
     # can, the same app.state.plex / app.state.http precedent.
-    app.state.version_poller = VersionPoller(
-        http=None, target=app.state.version_check_target, token=secrets.harbor_token,
-    )
+    #
+    # The poller reads its own build stamp from the environment (see
+    # api/version.py's `_running_version`): it is not a credential, it is a
+    # deployment fact baked into the image, so routing it through Secrets would
+    # make every test app fake a value for it.
+    app.state.version_poller = ReleasePoller(http=None)
     # The worker-pause fence (Phase 7b). Created here so every application --
     # the deployed one and every test's -- has one for a mode trigger endpoint
     # to reach; the background lifespan hands this exact object to the worker

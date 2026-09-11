@@ -17,7 +17,6 @@ const PROGRESS: SetupProgress = {
   providers: {
     AUTOPOSTER_PLEX_TOKEN: "***REDACTED***",
     AUTOPOSTER_MDBLIST_APIKEY: null,
-    AUTOPOSTER_HARBOR_TOKEN: null,
     // Both *arr services are configured in the base fixture -- staged key,
     // checked address -- so the existing "not attempted" cases below stay
     // about an operator who simply did not press the button. The one test

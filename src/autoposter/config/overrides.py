@@ -43,9 +43,11 @@ OVERRIDES_INSERT_LOCK_KEY = 4907594664404778877
 # overrides document instead of being refused with it.
 #
 # ``version_check`` was live-editable in the settings editor right up to the
-# commit that moved its three fields into ``AUTOPOSTER_IMAGE_REF``
-# (``config/image_ref.py``), so any deployment whose operator ever saved that
-# section has the key sitting in this table's one row. ``Config``'s
+# commit that took its three fields out of the config file, so any deployment
+# whose operator ever saved that section has the key sitting in this table's
+# one row. The update check takes no configuration at all now
+# (``api/version.py``), so the key has nowhere to migrate to and is simply
+# dropped. ``Config``'s
 # ``_version_check_moved_to_an_env_var`` validator refuses the key in *any*
 # document it validates, and the merged document goes through the same
 # validator -- so leaving it in place would brick the pod at boot with a
@@ -299,9 +301,9 @@ def without_migrated_sections(document: dict) -> dict:
         return document
     for key in present:
         logger.warning(
-            "dropping stale %s from stored overrides -- the section moved to "
-            "AUTOPOSTER_IMAGE_REF; this warning disappears once the stored "
-            "overrides are next saved", key,
+            "dropping stale %s from stored overrides -- the update check "
+            "takes no configuration now; this warning disappears once the "
+            "stored overrides are next saved", key,
         )
     return {key: value for key, value in document.items() if key not in present}
 

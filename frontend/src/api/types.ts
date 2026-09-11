@@ -855,23 +855,28 @@ export interface ArtworkModeResponse {
   [count: string]: string | number | boolean | undefined;
 }
 
-/** `GET /api/version` -- what this pod is running, and whether Harbor has newer.
+/** `GET /api/version` -- what this container is running, and whether a newer
+ * release has been published.
  *
  * `update_available` is a tri-state, and the null is the point: it means the
- * registry has no answer here yet. Either the check is off (no
- * `AUTOPOSTER_IMAGE_REF`, or one that did not parse), or the background poll
- * that refreshes the answer has not completed a successful pass -- which
- * includes the ordinary seconds between boot and the first poll, not only a
- * registry that could not be reached. A robot token is NOT one of these
- * cases: the Harbor project is public, so an unset `AUTOPOSTER_HARBOR_TOKEN`
- * polls anonymously rather than switching the check off. None of them mean
- * "you are up to date", so the sidebar shows no marker at all rather than one
- * it cannot stand behind. `latest` is null in exactly the same cases --
- * `update_available` is derived from it server-side.
+ * question cannot be answered here, which is NOT the same as "you are up to
+ * date". Three ways to get it:
  *
- * The Harbor URL is deliberately absent from this shape: it is derived from
- * AUTOPOSTER_IMAGE_REF at boot and never leaves the server -- see
- * src/autoposter/api/version.py.
+ * - This build is not a release. Only an image published by the release
+ *   workflow carries a version the newest release tag can be compared with; a
+ *   build of main reports `sha-<commit>`, which is neither ahead of a release
+ *   nor behind one, so it never even asks.
+ * - The background poll has not completed a successful pass yet, which
+ *   includes the ordinary seconds between boot and the first poll, not only a
+ *   GitHub that could not be reached.
+ * - The newest published tag did not parse as a version.
+ *
+ * So the sidebar shows no marker at all rather than one it cannot stand
+ * behind. `latest` is null in the first two cases -- `update_available` is
+ * derived from it server-side, against this build's own stamp.
+ *
+ * No credential is involved anywhere in this: the releases endpoint is public
+ * and is called anonymously -- see src/autoposter/api/version.py.
  */
 export interface VersionResponse {
   version: string;

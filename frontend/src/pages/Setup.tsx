@@ -60,7 +60,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   AUTOPOSTER_MDBLIST_APIKEY: "MDBList API key",
   AUTOPOSTER_RADARR_APIKEY: "Radarr API key",
   AUTOPOSTER_SONARR_APIKEY: "Sonarr API key",
-  AUTOPOSTER_HARBOR_TOKEN: "Harbor token",
   AUTOPOSTER_PLEX_ACCOUNT_TOKEN: "Plex account token",
   AUTOPOSTER_TRACEARR_APIKEY: "Tracearr API key",
 };
@@ -106,7 +105,6 @@ const SYSTEM_FOR_CREDENTIAL: Record<string, string> = {
   AUTOPOSTER_MDBLIST_APIKEY: "mdblist",
   AUTOPOSTER_RADARR_APIKEY: "radarr",
   AUTOPOSTER_SONARR_APIKEY: "sonarr",
-  AUTOPOSTER_HARBOR_TOKEN: "harbor",
   AUTOPOSTER_TRACEARR_APIKEY: "tracearr",
 };
 

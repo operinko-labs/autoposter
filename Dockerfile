@@ -208,8 +208,8 @@ ENV AUTOPOSTER_EXAMPLE_CONFIG=/app/config/autoposter.example.yaml
 
 # The image's own name in the registry. .forgejo/workflows/ci.yml passes the
 # commit's short sha here and then pushes the built image as `sha-<that>`, so
-# these two strings are the same by construction -- which is the whole reason
-# GET /api/version can compare what is running against what Harbor holds.
+# these two strings are the same by construction -- which is what lets Flux's
+# ImagePolicy and a running pod agree on what is deployed.
 #
 # Deliberately last among the ENVs and after every COPY: this layer changes on
 # every commit, so anything below it would be rebuilt every time. Nothing is.
@@ -220,6 +220,17 @@ ENV AUTOPOSTER_EXAMPLE_CONFIG=/app/config/autoposter.example.yaml
 # registry has never heard of.
 ARG GIT_SHA=""
 ENV AUTOPOSTER_VERSION=sha-${GIT_SHA}
+
+# The release this image *is*, set only by .github/workflows/release.yml and
+# empty in every other build. Two stamps rather than one because they answer
+# different questions: AUTOPOSTER_VERSION says which commit was built, which is
+# what Harbor and Flux key on, and this says which published version it was
+# released as, which is the only thing comparable to a GitHub release tag.
+#
+# api/version.py prefers this when set, and polls for a newer release only when
+# it is -- a build of main is not behind any release, so it asks nothing.
+ARG RELEASE_VERSION=""
+ENV AUTOPOSTER_RELEASE=${RELEASE_VERSION}
 EXPOSE 8080
 # `exec` so python replaces sh as PID 1, rather than relying on ash's
 # tail-call optimisation to make python the process that receives the

@@ -113,7 +113,7 @@ returned 200.
    passing this step and failing hours later with the wizard already gone.
    Staged in memory, not written, until step 5.
 4. **Systems.** One collapsible panel per system: Plex, the Plex account,
-   TMDb, TVDB, Fanart, MDBList, Radarr, Sonarr, Harbor, Tracearr. A system
+   TMDb, TVDB, Fanart, MDBList, Radarr, Sonarr, Tracearr. A system
    this deployment cannot boot without opens by default; one whose credential
    is already stored collapses with a **Stored** pill on its header; the rest
    collapse. Open or closed is never sent to the server and never persisted.
@@ -246,7 +246,7 @@ hard names are later handed to an ExternalSecret, must carry every soft name
 the wizard wrote into the environment (or the Secret) in that same change:
 `AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, and every provider key step 3
 collected — `AUTOPOSTER_MDBLIST_APIKEY`, `AUTOPOSTER_RADARR_APIKEY`,
-`AUTOPOSTER_SONARR_APIKEY`, `AUTOPOSTER_HARBOR_TOKEN`,
+`AUTOPOSTER_SONARR_APIKEY`,
 `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` and `AUTOPOSTER_TRACEARR_APIKEY` — or they are
 silently dropped. A hand-added `AUTOPOSTER_API_KEY` in `secrets.env` is
 subject to the same rule, though the wizard never writes it: that key is
@@ -683,10 +683,8 @@ variables:
   password. See "Web UI authentication" below: unlike the keys above, an
   unset value does not mean "no auth required", it means every login attempt
   401s.
-- `AUTOPOSTER_HARBOR_TOKEN` — optional, same posture as the MDBList key. See
-  "The sidebar's update check" below, which also covers `AUTOPOSTER_IMAGE_REF`
-  — not a secret, and so not part of this ExternalSecret, but the other half
-  of the same check.
+- The update check needs no variable at all, secret or otherwise. See "The
+  sidebar's update check" below.
 - `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` — optional, same posture as the MDBList key.
   A plex.tv *account* token, for the collection builders whose source is the
   account rather than the server. Deliberately not `AUTOPOSTER_PLEX_TOKEN`:
@@ -716,72 +714,49 @@ variables:
 
 ### The sidebar's update check
 
-The sidebar shows the version the pod is running, and marks "Update
-available" when the Harbor registry holds a newer image. It is off until
-`AUTOPOSTER_IMAGE_REF` is provided, and it is off safely — the version line
-still shows, with no marker.
+The sidebar shows the version the container is running, and marks "Update
+available" when a newer release has been published. It takes **no
+configuration and no credential**, and there is nothing to keep in sync with
+anything.
 
-The registry, project and repository are **not** operator config — they are a
-deployment fact, derivable from the image reference the pod is already
-running, so there is nothing to keep in sync with wherever the image actually
-lives. `AUTOPOSTER_IMAGE_REF` is the only variable the check strictly needs:
+Which build you are running is what decides whether the check runs at all:
 
-1. **`AUTOPOSTER_IMAGE_REF`**, set to the full reference the pod pulled --
-   e.g. `harbor.example.internal/operinko-labs/autoposter:sha-abc1234`. The
-   app splits this into the registry host, the Harbor project and the
-   repository itself at boot (`config/image_ref.py`); there is no separate
-   field for any of the three. In Helm this is one line templated from the
-   chart's own image value, e.g.
-   `"{{ .Values.image.repository }}:{{ .Values.image.tag }}"`, so it can
-   never drift from what the Deployment actually runs.
+- **A release image** — one published by `.github/workflows/release.yml` to
+  `ghcr.io/operinko-labs/autoposter` — is stamped at build time with its own
+  version (`AUTOPOSTER_RELEASE=v1.2.3`). It compares that against the newest
+  release on GitHub and marks the sidebar when it is behind.
+- **Anything else** — an image built from `main` by `ci.yml` and deployed by
+  Flux, or one you built yourself — is stamped `AUTOPOSTER_VERSION=sha-<commit>`
+  and nothing else. A commit is neither ahead of nor behind a release, so such
+  a build **makes no outbound request at all** and shows the version line with
+  no marker. This is the case for this project's own cluster, which tracks
+  `main` rather than releases.
 
-   The derived registry host is treated as private, the same as the old
-   config field was: it never appears in `GET /api/version`'s response, in an
-   event row, or in the log — a failed check logs the exception's class name
-   (plus, for an HTTP error from Harbor, the status code) and nothing else. An
-   `AUTOPOSTER_IMAGE_REF` that does not parse (not enough `/`-separated
-   segments, or a first segment that doesn't look like a registry host) logs
-   one WARNING naming the reason and switches the check off, the same as
-   leaving it unset.
+That gate is why there is no switch: running a non-release image *is* the off
+position, and a released image checking for its own successor is the whole
+reason the stamp exists.
 
-2. **`AUTOPOSTER_HARBOR_TOKEN`, only for a private registry project.** The
-   `autoposter` project on Harbor is public and internet-accessible, so the
-   check works with no credential at all — unset, requests are anonymous.
-   Set this only if your own deployment pushes to a private project: in
-   Harbor, under the project → Robot Accounts, create one with `pull` and
-   `list` on the `autoposter` repository (nothing more; this account never
-   pushes). Harbor shows the secret once. The environment variable is not
-   that secret but `base64("robot$<name>:<secret>")` — the value of an
-   `Authorization: Basic` header, which is what the app sends verbatim when
-   the variable is set:
+The check runs in the background, not on request: every six hours (hardcoded —
+a deployment fact, not a setting), a poll refreshes the cached answer, with the
+first poll firing at startup so the sidebar has something to show within
+seconds of boot rather than up to six hours later. `GET /api/version` only ever
+reads that cache; it never calls GitHub itself, so however many browser tabs
+are open, GitHub sees at most one request per container every six hours — four
+a day, against an anonymous limit of sixty an hour. A failed poll leaves the
+previous answer standing rather than blanking the marker, and logs a category
+and an exception class name only.
 
-   ```sh
-   printf '%s' 'robot$autoposter-readonly:THE-SECRET' | base64 -w0
-   ```
-
-   Put the result in the ExternalSecret as `AUTOPOSTER_HARBOR_TOKEN`.
-
-The check runs in the background, not on request: every six hours (hardcoded
-— a deployment fact, not a setting), a poll refreshes the cached answer, with
-the first poll firing at startup so the sidebar has something to show within
-seconds of boot rather than up to six hours later. `GET /api/version` only
-ever reads that cache; it never calls Harbor itself, so however many browser
-tabs are open, the registry sees at most one request per pod every six hours.
-A failed poll leaves the previous answer standing rather than blanking the
-marker, and logs the same class-name-only warning described above.
-
-The comparison only works because the image knows its own tag: CI passes the
-commit's short sha to `docker build` as `GIT_SHA`, the Dockerfile stamps it as
-`AUTOPOSTER_VERSION=sha-<it>`, and the same job pushes the image under that
-exact tag. An image built any other way reports `dev`, and a `dev` pod with a
-reachable registry always shows the marker — correctly, since it is running
-something that was never published.
+`update_available` is deliberately a tri-state. `null` means the question could
+not be answered — not a release build, no successful poll yet, or a tag that
+did not parse — and the sidebar renders no marker rather than one it cannot
+stand behind. It never means "you are up to date".
 
 **Migrating from the old `version_check:` config block:** remove it from
-`autoposter.yaml` — the schema no longer recognises it, and a mounted file
-that still has it fails to load — and add `AUTOPOSTER_IMAGE_REF`.
-`AUTOPOSTER_HARBOR_TOKEN` is now optional (see step 2 above); a deployment
-already carrying one for a private project needs no change.
+`autoposter.yaml` — the schema no longer recognises it, and a mounted file that
+still has it fails to load. There is nothing to replace it with. The same
+applies to `AUTOPOSTER_HARBOR_TOKEN` and `AUTOPOSTER_IMAGE_REF`, which are both
+gone: delete them from your ExternalSecret and your Deployment. Neither is read
+any more, and leaving them set does nothing.
 
 None of these are read from the YAML config file.
 
@@ -836,7 +811,7 @@ adds is a way to read exactly four routes without logging in:
 
 - `GET /api/status` — queue counts by state, worker count, the scheduled-job
   table
-- `GET /api/version` — the running version and whether Harbor has a newer
+- `GET /api/version` — the running version and whether a newer release
   one
 - `GET /api/stats/storage` — how many artifacts this service has rendered per
   library and art kind, and how many bytes they occupy

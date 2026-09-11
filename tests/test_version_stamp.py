@@ -1,33 +1,44 @@
-"""The image's version stamp must be the tag the image is pushed under.
+"""An image must be stamped with what it is, and there are two stamps.
 
-``GET /api/version`` compares two strings for equality. That comparison is
-only meaningful because three files agree, and none of them mentions the
-others:
+Which one a build carries is what decides whether the update check runs, so
+the agreements below are load-bearing in two separate directions and no file
+involved mentions the others.
+
+**The commit stamp**, on every build:
 
 * ``.forgejo/workflows/ci.yml`` computes the commit's short sha once, hands it
-  to ``docker build`` as ``GIT_SHA``, and pushes the result as ``sha-<it>``.
+  to ``docker build`` as ``GIT_SHA``, and pushes the result to Harbor as
+  ``sha-<it>``, which is the tag Flux's ImagePolicy resolves.
 * ``Dockerfile`` turns that build-arg into ``AUTOPOSTER_VERSION=sha-<it>``.
-* ``src/autoposter/api/version.py`` reads that variable and matches Harbor
-  tags on the ``sha-`` prefix.
 
-Break any one link and nothing fails: the build still succeeds, the image
-still pushes, the endpoint still answers. It answers ``"dev"`` forever, or it
-compares a tag against a differently-shaped one and reports an update that
-never goes away. A silent, permanent wrong answer in the UI is precisely the
-failure a suite has to catch at the seam rather than in production, which is
-why these assertions are about *agreement* between the files and never about
-a particular sha.
+**The release stamp**, only on a published release:
+
+* ``.github/workflows/release.yml`` -- which runs on GitHub Actions, not on
+  this project's Forgejo runners -- passes the tag it publishes under as
+  ``RELEASE_VERSION``.
+* ``Dockerfile`` turns that into ``AUTOPOSTER_RELEASE=v1.2.3``.
+* ``src/autoposter/api/version.py`` prefers it, and polls GitHub for a newer
+  release only when the value it reads parses as a version.
+
+Break any one link and nothing fails loudly: the build still succeeds, the
+image still pushes, the endpoint still answers. It answers ``"dev"`` forever,
+or a release image silently never checks for updates because its stamp never
+arrived. A silent, permanent wrong answer in the UI is precisely the failure a
+suite has to catch at the seam rather than in production, which is why these
+assertions are about *agreement* between the files and never about a
+particular sha or version.
 """
 import re
 from pathlib import Path
 
 import yaml
 
-from autoposter.api.version import TAG_PREFIX
+from autoposter.api.version import SHA_PREFIX, _version_tuple
 
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
 WORKFLOW = REPO / ".forgejo" / "workflows" / "ci.yml"
+RELEASE_WORKFLOW = REPO / ".github" / "workflows" / "release.yml"
 
 BUILD_ACTION = "docker/build-push-action"
 
@@ -80,12 +91,12 @@ def test_the_runtime_stage_stamps_the_version_from_the_build_arg():
         "and then ignored"
     )
     assert re.search(
-        r"^ENV AUTOPOSTER_VERSION=" + re.escape(TAG_PREFIX) + r"\$\{GIT_SHA\}$",
+        r"^ENV AUTOPOSTER_VERSION=" + re.escape(SHA_PREFIX) + r"\$\{GIT_SHA\}$",
         stage,
         re.MULTILINE,
     ), (
         "the runtime stage does not set "
-        f"`ENV AUTOPOSTER_VERSION={TAG_PREFIX}${{GIT_SHA}}`, so the shipped "
+        f"`ENV AUTOPOSTER_VERSION={SHA_PREFIX}${{GIT_SHA}}`, so the shipped "
         "image cannot tell anyone which commit it was built from and "
         "GET /api/version reports `dev` in production"
     )
@@ -125,10 +136,10 @@ def test_ci_hands_the_build_the_sha_it_pushes_the_image_under():
         "image is pushed as) and `short_sha` (what the build is stamped with) "
         "are needed, computed from the same value"
     )
-    assert outputs["tag"] == TAG_PREFIX + outputs["short_sha"], (
+    assert outputs["tag"] == SHA_PREFIX + outputs["short_sha"], (
         f"gen_tag publishes tag={outputs['tag']!r} and "
         f"short_sha={outputs['short_sha']!r}; the pushed tag must be exactly "
-        f"{TAG_PREFIX!r} followed by the stamped sha, or the running version "
+        f"{SHA_PREFIX!r} followed by the stamped sha, or the running version "
         "can never equal a tag in the registry and the sidebar shows an update "
         "that no deploy will ever clear"
     )
@@ -151,5 +162,79 @@ def test_the_pushed_tag_comes_from_that_same_step():
     assert "steps.gen_tag.outputs.tag" in pushes[0]["run"], (
         "the push step no longer tags the image from gen_tag's `tag` output, so "
         "the tag in the registry and the sha stamped into the image are now two "
+        "independent values"
+    )
+
+
+def _release_steps() -> list[dict]:
+    loaded = yaml.safe_load(RELEASE_WORKFLOW.read_text(encoding="utf-8"))
+    steps = ((loaded.get("jobs") or {}).get("release") or {}).get("steps") or []
+    assert steps, "release.yml has no `release` job, so nothing below is verifiable"
+    return steps
+
+
+def test_the_runtime_stage_declares_and_stamps_the_release_version():
+    """The stamp that decides whether a container checks for updates at all."""
+    stage = _runtime_stage()
+    assert re.search(r"^ARG RELEASE_VERSION", stage, re.MULTILINE), (
+        "the Dockerfile's runtime stage declares no `ARG RELEASE_VERSION`. A "
+        "build-arg is scoped to the stage that declares it, so the release "
+        "workflow's --build-arg would be accepted and then ignored"
+    )
+    assert re.search(
+        r"^ENV AUTOPOSTER_RELEASE=\$\{RELEASE_VERSION\}$", stage, re.MULTILINE
+    ), (
+        "the runtime stage does not set `ENV AUTOPOSTER_RELEASE=${RELEASE_VERSION}`, "
+        "so a released image cannot tell it is a release and api/version.py "
+        "never polls for a newer one"
+    )
+
+
+def test_a_build_with_no_release_arg_is_not_mistaken_for_a_release():
+    """The default has to be empty, not a placeholder.
+
+    `ARG RELEASE_VERSION="dev"` or similar would make every build of main look
+    like a release to `_running_version`, and every Flux pod in the cluster
+    would start polling GitHub and comparing a made-up version against real
+    release tags.
+    """
+    stage = _runtime_stage()
+    match = re.search(r'^ARG RELEASE_VERSION=(.*)$', stage, re.MULTILINE)
+    assert match is not None, "ARG RELEASE_VERSION is declared with no default at all"
+    default = match.group(1).strip().strip('"').strip("'")
+    assert default == "", (
+        f"ARG RELEASE_VERSION defaults to {default!r}; it must default to empty "
+        "so that only the release workflow can stamp a release"
+    )
+    assert _version_tuple(default) is None, (
+        f"the default {default!r} parses as a version, so every non-release "
+        "build would report itself as a release"
+    )
+
+
+def test_the_release_workflow_stamps_the_tag_it_publishes_under():
+    """The release equivalent of the sha agreement: what is stamped into the
+    image and what it is pushed as are the same string, from one step."""
+    build = [
+        s for s in _release_steps()
+        if str(s.get("uses", "")).startswith(f"{BUILD_ACTION}@")
+    ]
+    assert len(build) == 1, f"expected exactly one {BUILD_ACTION} step in release.yml"
+    build_args = build[0].get("with", {}).get("build-args") or ""
+    assert "RELEASE_VERSION=${{ steps.version.outputs.tag }}" in build_args, (
+        "the release build is not passed RELEASE_VERSION from the version "
+        f"step's `tag` output (build-args: {build_args!r}); the published image "
+        "would carry no release stamp and would never check for updates"
+    )
+    assert "GIT_SHA=${{ steps.version.outputs.short_sha }}" in build_args, (
+        "the release build no longer stamps the commit as well, so a released "
+        "image cannot say which commit it was built from"
+    )
+
+    pushes = [s for s in _release_steps() if "docker push" in str(s.get("run", ""))]
+    assert len(pushes) == 1, f"expected exactly one pushing step, found {len(pushes)}"
+    assert "steps.version.outputs.tag" in pushes[0]["run"], (
+        "the push step no longer tags the image from the version step's `tag` "
+        "output, so the registry tag and the stamp inside the image are now two "
         "independent values"
     )
