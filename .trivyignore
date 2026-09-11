@@ -1,14 +1,33 @@
-# 2026-09-05 -- seven util-linux 2.42.1-r0 advisories (libblkid, libmount, libuuid) in the
-# python:3.14.7-alpine base. Trivy reports the fix as 2.42.3-r0, but on this
-# date the Alpine v3.24 repository still offers only 2.42.1-r0 (the fixed
-# package exists in edge alone), so `apk upgrade` cannot reach it. All seven
-# are in the `mount`/`nsenter` helpers, which this container never runs.
-# Remove these lines the day `apk policy libblkid` in the base shows 2.42.3-r0
-# (the Dockerfile's whole-base `apk upgrade` then picks it up unaided).
-CVE-2026-53612
-CVE-2026-53613
-CVE-2026-53614
-CVE-2026-76642
-CVE-2026-78408
-CVE-2026-78409
-CVE-2026-78410
+# Base-image CVEs that the pinned Alpine branch has not shipped a fix for yet.
+#
+# EMPTY, ON PURPOSE, and the file stays because both Trivy gates `cat` it --
+# .forgejo/workflows/ci.yml and .github/workflows/release.yml. Deleting it
+# would fail those steps rather than relax them.
+#
+# What was here, and why it went (2026-09-11):
+#
+#   Seven util-linux advisories -- CVE-2026-53612, -53613, -53614, -76642,
+#   -78408, -78409, -78410 -- reported against libblkid, libmount and libuuid
+#   2.42.1-r0 in the python:3.14.7-alpine base, 21 HIGH findings in all. Added
+#   2026-09-05 because Trivy named a fix (2.42.3-r0) that existed only in
+#   Alpine edge, so the Dockerfile's `apk upgrade` could not reach it, and main
+#   went red four runs in a row.
+#
+#   That entry carried its own expiry: "remove these lines the day
+#   `apk policy libblkid` in the base shows 2.42.3-r0". Alpine v3.24/main now
+#   offers 2.42.3-r1, and a cache-free build of the `pybase` stage installs it,
+#   so `apk upgrade` reaches the fix unaided and the suppressions describe a
+#   state the image is no longer in. Removed rather than left standing: an
+#   exception nobody revisits is how a real finding gets waved through.
+#
+# ONE CAVEAT worth knowing before this file is next touched. `apk upgrade` is a
+# RUN layer keyed on this Dockerfile's text, not on time, so a build that
+# reuses a cached `pybase` from before 2026-09-11 still carries 2.42.1-r0 and
+# will now fail the gate instead of being waved past it. That failure is the
+# correct one -- it says the image really does contain those CVEs. Bust the
+# cache (`docker build --no-cache-filter pybase`) rather than restoring these
+# lines.
+#
+# Adding an entry here: give the CVE id, the package and version, the date, why
+# the fix cannot be reached today, and the condition under which the line comes
+# out again. A bare id with no expiry is a permanent silent exception.
