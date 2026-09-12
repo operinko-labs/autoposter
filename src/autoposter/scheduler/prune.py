@@ -658,7 +658,9 @@ def make_prune_job(
             # true of the CLIENT the workers hold, which is built once at
             # startup, and not of this job, whose PlexClient is rebuilt per run
             # from the same live value (app.py's plex_factory lambda).
-            excluded = frozenset(holder.current.plex.excluded_libraries)
+            excluded = frozenset(
+                holder.current.plex.excluded_libraries if holder.current.plex else []
+            )
             scan = await find_prunable(session, plex, excluded)
         except Exception as exc:
             # The class name only, never str(exc) and never a URL: a Plex

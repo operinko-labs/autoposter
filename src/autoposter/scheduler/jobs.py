@@ -648,8 +648,9 @@ def make_arr_sync_job(
         sections = await asyncio.to_thread(server.library.sections)
 
         parts: list[str] = []
+        excluded = config.plex.excluded_libraries if config.plex else []
         for section in sections:
-            if section.title in config.plex.excluded_libraries:
+            if section.title in excluded:
                 continue
 
             if section.type == "movie":

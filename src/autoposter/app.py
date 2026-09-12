@@ -58,13 +58,14 @@ from autoposter.scheduler.jobs import (
 )
 from autoposter.scheduler.merge import make_merge_job
 from autoposter.scheduler.prune import make_prune_job
+from autoposter.servers.registry import PLEX_REQUIRED, Servers
 
 logger = logging.getLogger(__name__)
 
 
 def create_app(
     config: Config, session_factory, secrets: Secrets, run_background: bool = False,
-    plex_factory: Callable[[Config, httpx.AsyncClient], PlexClient] | None = None,
+    servers_factory: Callable[[Config, httpx.AsyncClient], Servers] | None = None,
     engine=None,
 ) -> FastAPI:
     """The application, built from ``config`` -- the *file* generation.
@@ -79,10 +80,10 @@ def create_app(
     background application does nothing. Configure one the way a deployment
     does, through the file at ``app.state.config_path`` or the overrides row.
 
-    ``plex_factory`` is a callable taking the effective ``Config`` and the
-    lifespan's own ``httpx.AsyncClient`` and returning the client to publish
-    as ``app.state.plex`` -- the ``http`` argument is what lets the built
-    ``PlexClient`` actually read artwork (``fetch_artwork``/
+    ``servers_factory`` is a callable taking the effective ``Config`` and the
+    lifespan's own ``httpx.AsyncClient`` and returning the ``Servers`` registry
+    to publish as ``app.state.servers`` -- the ``http`` argument is what lets a
+    built ``PlexClient`` actually read artwork (``fetch_artwork``/
     ``artwork_provenance`` go over HTTP, not through ``plexapi``), so the
     factory is called only once ``http`` exists, not before. Only
     ``main.build()`` passes one, exactly as only ``main.build()`` passes
@@ -90,7 +91,8 @@ def create_app(
     on its behalf, because both need something ``build()`` cannot have -- a
     running event loop, and the config generation that loop reads out of the
     database. Every test application passes neither and keeps
-    ``app.state.plex`` as ``None``.
+    ``app.state.servers`` as an empty registry (``app.state.plex``, the alias
+    kept for one release, as ``None``).
     """
 
     @asynccontextmanager
@@ -168,13 +170,18 @@ def create_app(
         # Single client for the process: provider clients borrow it rather than
         # each owning one, so there is exactly one AsyncClient to close on shutdown.
         http = httpx.AsyncClient(timeout=30.0)
-        if plex_factory is not None:
-            # After `http` exists, not before: the built PlexClient reads
+        if servers_factory is not None:
+            # After `http` exists, not before: a built PlexClient reads
             # artwork over this same client (fetch_artwork/artwork_provenance
-            # are HTTP, not plexapi), so a client built without it would 500
-            # on every live-artwork request and silently swallow every
+            # are HTTP, not plexapi), so one built without it would 500 on
+            # every live-artwork request and silently swallow every
             # provenance read to None.
-            app.state.plex = plex_factory(config, http)
+            app.state.servers = servers_factory(config, http)
+            # Alias kept for one release: many existing tests and a few
+            # routes still read app.state.plex directly rather than
+            # app.state.servers.plex -- see servers/registry.py's own
+            # docstring for the gate predicate that also has to account for it.
+            app.state.plex = app.state.servers.plex
         # Published so request handlers can borrow it too -- the artwork
         # endpoints proxy Plex on behalf of the SPA. Closed in the `finally`
         # below with everything else that holds it.
@@ -219,18 +226,32 @@ def create_app(
         notifier = build_notifier(config.notifications, http, session_factory)
         app.state.notifier = notifier
 
-        health = PlexHealth(
-            url=config.plex.url,
-            token=secrets.plex_token,
-            http=http,
-            liveness_interval=config.plex.liveness_interval_seconds,
-            refresh_interval=config.plex.token_refresh_interval_seconds,
-            refresh_enabled=config.plex.token_refresh_enabled,
-        )
-        app.state.plex_health = health
-        # Check once before workers start: a service booting during a Plex
-        # outage should not immediately claim and fail a batch of jobs.
-        await health.check_liveness()
+        # One health object per CONSTRUCTED server -- not per config block --
+        # so a registry with no servers (a plex-less deployment mid-Jellyfin
+        # rollout, or any test app) yields no health entries at all, and
+        # is_healthy() below is vacuously True (all([]) == True): nothing
+        # needing a server that is not there should ever be gated by one.
+        health_by_server = {}
+        if config.plex is not None:
+            health_by_server["plex"] = PlexHealth(
+                url=config.plex.url,
+                token=secrets.plex_token,
+                http=http,
+                liveness_interval=config.plex.liveness_interval_seconds,
+                refresh_interval=config.plex.token_refresh_interval_seconds,
+                refresh_enabled=config.plex.token_refresh_enabled,
+            )
+        # Task 15 adds JellyfinHealth here, behind `if config.jellyfin is not
+        # None:` -- jellyfin/health.py does not exist until then.
+        app.state.server_health = health_by_server
+        app.state.plex_health = health_by_server.get("plex")
+        # Check once before workers start: a service booting during an outage
+        # should not immediately claim and fail a batch of jobs.
+        for health in health_by_server.values():
+            await health.check_liveness()
+
+        def is_healthy() -> bool:
+            return all(health.healthy for health in health_by_server.values())
 
         # Replaces create_app's http=None placeholder with one that can
         # actually poll, now that `http` exists. See api/version.py's
@@ -247,7 +268,12 @@ def create_app(
         # Reads our own EXIF provenance back off whatever artwork Plex is
         # currently serving, so the badge stage can tell that the correct image
         # is already there and skip the upload -- see pipeline._already_in_plex.
-        artwork_probe = functools.partial(_artwork_provenance_probe, app.state.plex)
+        # None when this deployment has no Plex: there is nothing to probe,
+        # and apply_badges already treats an unset probe as "skip this check".
+        artwork_probe = (
+            functools.partial(_artwork_provenance_probe, app.state.plex)
+            if config.plex is not None else None
+        )
         # The plex-preview fallback (roadmap row 241): when no provider has
         # a title_card, ask Plex for the frame it derived from the media
         # file itself (posters(), the media://-prefixed entry -- never our
@@ -255,11 +281,14 @@ def create_app(
         # plex/artwork.generated_title_card_url and the probe banked at
         # docs/research/2026-09-03-plex-episode-posters-probe.md). Built
         # here, once, so render_artifact never holds the token -- the same
-        # shape as artwork_probe just above.
-        plex_generated_base = functools.partial(
-            fetch_plex_generated_base, http, app.state.plex,
-            base_url=config.plex.url,
-            headers={"X-Plex-Token": secrets.plex_token},
+        # shape as artwork_probe just above. None for the same reason.
+        plex_generated_base = (
+            functools.partial(
+                fetch_plex_generated_base, http, app.state.plex,
+                base_url=config.plex.url,
+                headers={"X-Plex-Token": secrets.plex_token},
+            )
+            if config.plex is not None else None
         )
         # config_holder, never the Config: this partial lives for the life of
         # the process, so a closured instance would pin every worker to the
@@ -268,7 +297,7 @@ def create_app(
         # asset roots, operations.* -- live in one move. See _handle_intent.
         handler = functools.partial(
             _handle_intent, config_holder=app.state.config_holder, http=http,
-            plex=app.state.plex, providers=app.state.providers,
+            servers=app.state.servers, providers=app.state.providers,
             tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
             artwork_probe=artwork_probe, imdb_parental=app.state.imdb_parental,
             plex_generated_base=plex_generated_base,
@@ -292,7 +321,10 @@ def create_app(
         # Miss-triggered refresh (see facts/imdb.py's ImdbMissRefresh): installed
         # process-wide since gather_facts()'s signature carries no http client.
         imdb_module.configure_miss_refresh(http, config.operations.imdb_miss_refresh_minutes)
-        health_task = asyncio.create_task(health.run(stop_event))
+        health_tasks = [
+            asyncio.create_task(health.run(stop_event))
+            for health in health_by_server.values()
+        ]
         # ImdbAutoRefresh deliberately keeps its own loop rather than joining
         # the scheduler below: its trigger is remote dataset staleness plus a
         # miss-triggered cooldown path (see facts/imdb.py), not a fixed
@@ -315,8 +347,14 @@ def create_app(
         # expose. Published rather than kept local to the scheduler branch
         # below because the collections preview endpoint needs the same thing
         # on a replica running with the scheduler off. Connecting blocks, so
-        # every caller runs it through asyncio.to_thread.
-        server_factory = functools.partial(PlexServer, config.plex.url, secrets.plex_token)
+        # every caller runs it through asyncio.to_thread. None when this
+        # deployment has no Plex -- every reader already answers its own
+        # refusal (503, "not connected") for that case, the same shape a
+        # replica with the scheduler off already produces.
+        server_factory = (
+            functools.partial(PlexServer, config.plex.url, secrets.plex_token)
+            if config.plex is not None else None
+        )
         app.state.plex_server_factory = server_factory
         # Registered unconditionally, unlike everything below: scheduler.enabled
         # is the master switch for the five optional maintenance passes
@@ -335,62 +373,81 @@ def create_app(
             # that reads as configured and silently is not, which is the failure
             # this phase's refusal table exists to prevent, one level up from
             # the config.
-            if config.collections.enabled or config.playlists.enabled:
-                scheduler_jobs.append(make_collections_job(
-                    holder, server_factory, http, summaries=app.state.tmdb_facts,
-                    secrets=secrets, cache=cache, notifier=notifier,
+            #
+            # collections/credits/maintenance/prune/merge/arr_sync all need a
+            # raw PlexServer or a PlexClient (server_factory is None without
+            # one), so each is registered only when config.plex is not None --
+            # a plex-less deployment gets one INFO line per pass it skips
+            # instead of a job that would crash on its first run.
+            # SCHEDULED_JOB_NAMES stays as-is: a skipped pass simply never
+            # appears among the registered jobs, so /api/status shows it
+            # absent rather than naming a job that never ran.
+            if config.plex is not None:
+                if config.collections.enabled or config.playlists.enabled:
+                    scheduler_jobs.append(make_collections_job(
+                        holder, server_factory, http, summaries=app.state.tmdb_facts,
+                        secrets=secrets, cache=cache, notifier=notifier,
+                    ))
+                scheduler_jobs.append(make_credits_job(holder, server_factory))
+                scheduler_jobs.append(make_maintenance_job(holder, server_factory))
+                # The prune sweep needs a PlexClient rather than a raw PlexServer:
+                # "gone" here means "the pipeline cannot resolve it", which is
+                # PlexClient's section-constrained search and its library
+                # exclusions, not a bare fetchItem. Built inside the factory so
+                # that both the connect and the client construction happen on the
+                # thread the job offloads to, and read off the holder -- so an
+                # edited exclusion list reaches this job on its next run, even
+                # before the restart the rest of the `plex` section waits for
+                # (it is a FROZEN_SECTIONS entry; the settings editor tells the
+                # operator so). The server connection itself still comes from
+                # server_factory, built once at startup like the rest of `plex`.
+                # `is_healthy` is passed as a deref for the same reason the
+                # worker pool takes one: an unhealthy Plex must be seen at the
+                # moment the pass starts, and for THIS job it means refuse, not
+                # wait.
+                scheduler_jobs.append(make_prune_job(
+                    holder,
+                    lambda: PlexClient(
+                        server_factory(), holder.current.plex.excluded_libraries
+                    ),
+                    is_healthy,
                 ))
+                # The twin merge takes the same PlexClient the prune does, and for
+                # the same reason: it asks whether a stored rating key is still
+                # the item's own key, which is a section-constrained question that
+                # honours the library exclusions. Built inside the factory so the
+                # connect and the client construction both happen on the thread
+                # the job offloads to, and read off the holder so an edited
+                # exclusion list reaches it on its next run.
+                #
+                # `is_healthy` gates only this job's APPLY, not its scan: the
+                # dry run asks Plex nothing at all, so an outage must not cost the
+                # operator the report (see make_merge_job's docstring).
+                scheduler_jobs.append(make_merge_job(
+                    holder,
+                    lambda: PlexClient(
+                        server_factory(), holder.current.plex.excluded_libraries
+                    ),
+                    is_healthy,
+                ))
+                if config.arr_sync.enabled:
+                    scheduler_jobs.append(make_arr_sync_job(holder, server_factory, http, secrets))
+            else:
+                if config.collections.enabled or config.playlists.enabled:
+                    logger.info("%s needs Plex; skipped -- %s", "collections", PLEX_REQUIRED)
+                logger.info("%s needs Plex; skipped -- %s", "credits", PLEX_REQUIRED)
+                logger.info("%s needs Plex; skipped -- %s", "maintenance", PLEX_REQUIRED)
+                logger.info("%s needs Plex; skipped -- %s", "prune", PLEX_REQUIRED)
+                logger.info("%s needs Plex; skipped -- %s", "merge", PLEX_REQUIRED)
+                if config.arr_sync.enabled:
+                    logger.info("%s needs Plex; skipped -- %s", "arr_sync", PLEX_REQUIRED)
             scheduler_jobs.append(make_drift_job(holder))
-            scheduler_jobs.append(make_credits_job(holder, server_factory))
-            scheduler_jobs.append(make_maintenance_job(holder, server_factory))
             scheduler_jobs.append(make_cleanup_job(holder))
             # Roadmap row 52's backfill, beside the cleanup sweep because they
             # are the two passes that read the asset tree. It needs nothing but
             # the holder: no Plex, no HTTP, no provider clients -- it stats the
             # paths renders rows already name.
             scheduler_jobs.append(make_asset_stats_job(holder))
-            # The prune sweep needs a PlexClient rather than a raw PlexServer:
-            # "gone" here means "the pipeline cannot resolve it", which is
-            # PlexClient's section-constrained search and its library
-            # exclusions, not a bare fetchItem. Built inside the factory so
-            # that both the connect and the client construction happen on the
-            # thread the job offloads to, and read off the holder -- so an
-            # edited exclusion list reaches this job on its next run, even
-            # before the restart the rest of the `plex` section waits for
-            # (it is a FROZEN_SECTIONS entry; the settings editor tells the
-            # operator so). The server connection itself still comes from
-            # server_factory, built once at startup like the rest of `plex`.
-            # `health.healthy` is passed as a deref for the same reason the
-            # worker pool takes one: an unhealthy Plex must be seen at the
-            # moment the pass starts, and for THIS job it means refuse, not
-            # wait.
-            scheduler_jobs.append(make_prune_job(
-                holder,
-                lambda: PlexClient(
-                    server_factory(), holder.current.plex.excluded_libraries
-                ),
-                lambda: health.healthy,
-            ))
-            # The twin merge takes the same PlexClient the prune does, and for
-            # the same reason: it asks whether a stored rating key is still
-            # the item's own key, which is a section-constrained question that
-            # honours the library exclusions. Built inside the factory so the
-            # connect and the client construction both happen on the thread
-            # the job offloads to, and read off the holder so an edited
-            # exclusion list reaches it on its next run.
-            #
-            # `health.healthy` gates only this job's APPLY, not its scan: the
-            # dry run asks Plex nothing at all, so an outage must not cost the
-            # operator the report (see make_merge_job's docstring).
-            scheduler_jobs.append(make_merge_job(
-                holder,
-                lambda: PlexClient(
-                    server_factory(), holder.current.plex.excluded_libraries
-                ),
-                lambda: health.healthy,
-            ))
-            if config.arr_sync.enabled:
-                scheduler_jobs.append(make_arr_sync_job(holder, server_factory, http, secrets))
         # Published so config.live.swap_config can recompute the cadences
         # below without rebuilding the jobs -- it has no other way to reach
         # them, and rebuilding would silently change the job set.
@@ -418,7 +475,7 @@ def create_app(
         task = asyncio.create_task(
             run_workers(
                 config.workers, session_factory, handlers, stop_event,
-                is_healthy=lambda: health.healthy, pause=app.state.worker_pause,
+                is_healthy=is_healthy, pause=app.state.worker_pause,
             )
         )
         logger.info("started %d workers", config.workers)
@@ -427,12 +484,13 @@ def create_app(
         finally:
             stop_event.set()
             task.cancel()
-            health_task.cancel()
+            for health_task in health_tasks:
+                health_task.cancel()
             imdb_task.cancel()
             version_task.cancel()
             scheduler_task.cancel()
             await asyncio.gather(
-                task, health_task, imdb_task, version_task, scheduler_task,
+                task, *health_tasks, imdb_task, version_task, scheduler_task,
                 return_exceptions=True,
             )
             imdb_module.configure_miss_refresh(http, 0)
@@ -502,7 +560,7 @@ def create_app(
     app.state.session_factory = session_factory
     # The engine behind that factory, so the lifespan can dispose() it on the
     # way out -- see the `finally` above. None for every application but
-    # main.build()'s, exactly like plex_factory: a test app's engine belongs
+    # main.build()'s, exactly like servers_factory: a test app's engine belongs
     # to the fixture that made it and must not be disposed here.
     app.state.engine = engine
     app.state.secrets = secrets
@@ -575,8 +633,17 @@ def create_app(
             "AUTOPOSTER_ADMIN_PASSWORD_HASH is not set; this deployment has no "
             "admin password configured, so every login attempt will fail"
         )
-    # Built by the lifespan from plex_factory, once it holds the effective
-    # config -- see the top of the lifespan and main.build's plex_client.
+    # Built by the lifespan from servers_factory, once it holds the effective
+    # config -- see the top of the lifespan and main.build's servers_factory.
+    # Empty rather than built from `config` here: this is the synchronous,
+    # no-lifespan default, and building it from config would make a plain
+    # `create_app()` test app (no lifespan, no servers_factory) look
+    # "configured" for Plex while `app.state.plex` stayed None -- exactly the
+    # split servers/registry.py's plex_configured has to reconcile.
+    app.state.servers = Servers({})
+    # The alias servers/registry.py's docstring describes: kept for one
+    # release because many existing tests and a few routes still read this
+    # directly rather than app.state.servers.plex.
     app.state.plex = None
     # A zero-argument callable returning a connected PlexServer, set by the
     # lifespan's background branch. None here for the same reason plex is: an
@@ -699,14 +766,14 @@ async def _artwork_provenance_probe(plex, ref, art_kind):
 
     ``plex`` is captured as a plain argument, like ``plex_generated_base``'s own
     partial captures it, rather than read off ``app.state`` at partial-construction
-    time -- a test's ``plex_factory`` can hand back a bare stand-in that has no
+    time -- a test's ``servers_factory`` can hand back a bare stand-in that has no
     such method, and this must not touch it until the probe is actually called.
     """
     return await plex.artwork_provenance(ref, art_kind)
 
 
 async def _handle_intent(
-    session, intent, *, config_holder, http, plex, providers, tmdb_facts=None, mdblist=None,
+    session, intent, *, config_holder, http, servers, providers, tmdb_facts=None, mdblist=None,
     artwork_probe=None, imdb_parental=None, plex_generated_base=None,
 ):
     # Dereferenced once per job, at the top: process_item takes a config per
@@ -714,6 +781,13 @@ async def _handle_intent(
     # visible to the very next item a worker picks up. One read rather than
     # several also means a single job never straddles two generations.
     config = config_holder.current
+    # process_item's fifth positional is still named `plex` and still takes
+    # exactly one server -- the fan-out across every configured server is
+    # Task 19's job, not this one's. Until then: the Plex server when this
+    # deployment has one, otherwise whichever server the registry does hold
+    # (one server, chosen deterministically), so a Jellyfin-only deployment
+    # still has something to resolve against rather than nothing at all.
+    plex = servers.plex or next(iter(servers.values()), None)
     try:
         await process_item(
             session, config, http, plex, providers, intent,
@@ -735,7 +809,12 @@ async def _handle_intent(
         # simply has not scanned the file yet is not on a budget at all, it is
         # deferred on an unbounded horizon (queue/worker.py, queue/jobs.py's
         # fail()). A budget threaded onto it would be read by nothing.
-        exc.max_attempts = config.plex.resolve_max_attempts
+        #
+        # config.plex can be None now (a Jellyfin-only deployment): this
+        # exception only ever surfaces from a Plex connection attempt (see
+        # above), which cannot happen without one, but the fallback keeps this
+        # read from raising AttributeError if that ever changes.
+        exc.max_attempts = config.plex.resolve_max_attempts if config.plex else 10
         raise
     except SourceRefused as exc:
         # A validation refusal (render/pipeline.py's own docstring) is

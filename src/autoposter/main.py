@@ -3,14 +3,13 @@ import logging
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from plexapi.server import PlexServer
 
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
 from autoposter.config.loader import DEFAULT_CONFIG_PATH, load_config
 from autoposter.config.schema import Config, Secrets
 from autoposter.db.base import make_engine, make_session_factory
-from autoposter.plex.client import PlexClient
+from autoposter.servers.registry import Servers, build_servers
 
 # The file this process boots from, published as app.state.config_path so the
 # lifespan knows which document to merge the database overrides over and the
@@ -20,39 +19,6 @@ from autoposter.plex.client import PlexClient
 CONFIG_PATH = DEFAULT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
-
-
-class _LazyPlexServer:
-    """Defers connecting to Plex until the server is actually used.
-
-    ``PlexServer(...)`` makes a blocking network call. Doing that eagerly at
-    boot means a Plex outage crashloops the whole pod, taking webhook intake
-    down with it. Connecting lazily lets the process start, serve /healthz,
-    and queue webhooks while Plex is unreachable; jobs that need Plex get
-    ``config.plex.resolve_max_attempts`` worth of backoff (see
-    ``_handle_intent`` in app.py) instead of the generic retry cap, but an
-    outage longer than that still parks them permanently — see "Recovering
-    parked jobs" in deploy/README.md to requeue them by hand. Every attribute
-    access (already happening inside a worker thread via ``PlexClient``)
-    triggers a (re)connect attempt if the previous one failed or never ran.
-    """
-
-    def __init__(self, url: str, token: str):
-        self._url = url
-        self._token = token
-        self._server = None
-
-    def _connect(self):
-        if self._server is None:
-            try:
-                self._server = PlexServer(self._url, self._token)
-            except Exception:
-                logger.error("failed to connect to Plex at %s", self._url, exc_info=True)
-                raise
-        return self._server
-
-    def __getattr__(self, name):
-        return getattr(self._connect(), name)
 
 
 def build() -> FastAPI:
@@ -86,31 +52,28 @@ def build() -> FastAPI:
     engine = make_engine(secrets.database_url)
     session_factory = make_session_factory(engine)
 
-    def plex_client(effective: Config, http: httpx.AsyncClient) -> PlexClient:
-        """The Plex client, built by the lifespan once it holds the effective
-        config rather than here.
+    def servers_factory(effective: Config, http: httpx.AsyncClient) -> Servers:
+        """The servers this deployment configures, built by the lifespan once
+        it holds the effective config rather than here.
 
-        ``config.plex`` feeds three objects built once at startup: this
-        client, the liveness probe and the scheduler's server factory. The
-        other two are built inside the lifespan, after the overrides land.
-        Building this one here would leave the client that runs every job
-        pointed at the un-overridden URL while the probe that decides whether
-        jobs run at all watched the overridden one -- a split no operator
-        could be expected to diagnose. Passing the recipe instead keeps the
-        Plex wiring in this module and its timing in the lifespan's.
+        ``config.plex``/``config.jellyfin`` feed three objects built once at
+        startup: the servers themselves, the liveness probe(s) and the
+        scheduler's server factory. The other two are built inside the
+        lifespan, after the overrides land. Building this one here would
+        leave the client that runs every job pointed at the un-overridden URL
+        while the probe that decides whether jobs run at all watched the
+        overridden one -- a split no operator could be expected to diagnose.
+        Passing the recipe instead keeps the wiring in this module and its
+        timing in the lifespan's.
 
-        ``http``/``base_url``/``token`` are what let this client actually read
-        artwork (``fetch_artwork``/``artwork_provenance`` go over HTTP, never
-        through ``plexapi``) -- the lifespan hands its own ``http`` in here so
-        this is the one real ``PlexClient`` in the process with all of them
-        wired, unlike the prune/merge jobs' own clients (app.py), which never
-        read artwork and so never needed them.
+        ``http`` is what lets a built ``PlexClient`` actually read artwork
+        (``fetch_artwork``/``artwork_provenance`` go over HTTP, never through
+        ``plexapi``) -- the lifespan hands its own ``http`` in here so this is
+        the one real client construction in the process with it wired, unlike
+        the prune/merge jobs' own clients (app.py), which never read artwork
+        and so never needed it.
         """
-        return PlexClient(
-            server=_LazyPlexServer(effective.plex.url, secrets.plex_token),
-            excluded_libraries=effective.plex.excluded_libraries,
-            http=http, base_url=effective.plex.url, token=secrets.plex_token,
-        )
+        return build_servers(effective, secrets, http)
 
     # create_app publishes app.state.config_holder from this config -- the
     # file generation the process starts on, which the lifespan then swaps for
@@ -118,7 +81,7 @@ def build() -> FastAPI:
     # gives every test's application one too.
     app = create_app(
         config, session_factory, secrets, run_background=True,
-        plex_factory=plex_client, engine=engine,
+        servers_factory=servers_factory, engine=engine,
     )
     # Which document the config came from. create_app defaults this to
     # DEFAULT_CONFIG_PATH; rebinding it to the path this call actually read is

@@ -34,6 +34,7 @@ from autoposter.config.overrides import load_overrides_document
 from autoposter.db.models import EventLog, ManagedPlaylist, ManagedPlaylistUser
 from autoposter.db.models import Session as SessionModel
 from autoposter.redact import redact_urls
+from autoposter.servers.registry import require_plex
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ class PreviewRequest(BaseModel):
     title: str | None = None
 
 
-@router.post("/playlists/preview")
+@router.post("/playlists/preview", dependencies=[Depends(require_plex)])
 async def preview_playlists(
     body: PreviewRequest,
     request: Request,
@@ -353,7 +354,7 @@ class DeleteRequest(BaseModel):
     confirm: bool = False
 
 
-@router.post("/playlists/ops/delete")
+@router.post("/playlists/ops/delete", dependencies=[Depends(require_plex)])
 async def delete_playlist(
     body: DeleteRequest,
     request: Request,

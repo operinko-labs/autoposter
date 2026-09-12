@@ -61,6 +61,7 @@ from autoposter.arr.sync import (
 )
 from autoposter.db.models import Session as SessionModel
 from autoposter.plex.client import SectionItem
+from autoposter.servers.registry import require_plex
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +336,7 @@ async def _compare(
     }
 
 
-@router.get("/id-mismatches")
+@router.get("/id-mismatches", dependencies=[Depends(require_plex)])
 async def id_mismatches(request: Request, _: SessionModel = Depends(require_session)) -> dict:
     """Scan both services against Plex and report every disagreement.
 

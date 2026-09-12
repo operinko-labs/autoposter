@@ -393,6 +393,22 @@ def test_is_configured_needs_a_server_credential_not_the_plex_token(monkeypatch,
     assert boot.is_configured({**hard, "AUTOPOSTER_PLEX_TOKEN": "t"}) is False  # plex is not configured here
 
 
+def test_a_malformed_config_document_does_not_crash_the_boot_decision(monkeypatch, tmp_path):
+    """``is_configured`` only ever asks "is there a document", never "is it
+    valid" (its own docstring) -- a document that exists but fails to parse
+    (a hand-edited YAML file, say) must not raise out of this gate. It
+    answers ``True`` here and lets the real config load -- not this narrow
+    presence check -- be the thing that fails loudly, at the right place,
+    when a deployment's document turns out to be broken.
+    """
+    doc = tmp_path / "autoposter.yaml"
+    doc.write_text("plex: [unterminated\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(doc))
+    hard = {n: "x" for n in boot.missing_hard_secret_names({})}
+
+    assert boot.is_configured({**hard}) is True
+
+
 def test_credentials_without_a_config_document_exit_instead_of_serving_the_wizard(
     monkeypatch, tmp_path
 ):

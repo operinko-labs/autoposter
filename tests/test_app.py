@@ -11,10 +11,11 @@ import requests
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
+from autoposter.api.auth import hash_password
 from autoposter.app import _build_mdblist, _build_providers, _handle_intent, create_app
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
-from autoposter.config.loader import load_config
+from autoposter.config.loader import build_config, load_config, read_config_document
 from autoposter.config.overrides import OVERRIDES_ROW_ID
 from autoposter.config.schema import STATE_FILE_NAMES_ENV, Secrets
 from autoposter.db.models import ConfigOverride
@@ -26,6 +27,7 @@ from autoposter.providers.tmdb import TMDBClient
 from autoposter.queue.jobs import MAX_ATTEMPTS
 from autoposter.render.pipeline import SourceRefused
 from autoposter.scheduler.run_history import UNRECORDED
+from autoposter.servers.registry import Servers
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -387,12 +389,12 @@ async def test_the_lifespan_builds_the_plex_client_from_the_effective_config(
 
     seen = []
 
-    def plex_factory(config, http):
+    def servers_factory(config, http):
         seen.append(config)
-        return "the-plex-client"
+        return Servers({"plex": "the-plex-client"})
 
     app = _background_app(
-        file_config, session_factory, secrets, plex_factory=plex_factory
+        file_config, session_factory, secrets, servers_factory=servers_factory
     )
     assert app.state.plex is None, "create_app alone must not build a Plex client"
 
@@ -437,7 +439,7 @@ async def test_the_lifespan_publishes_its_http_client_for_request_handlers(
 
 async def test_handle_intent_tags_plex_connection_errors_with_resolve_max_attempts(monkeypatch):
     # Finding 1: a Plex outage surfaces as a requests connection/timeout error
-    # (see _LazyPlexServer._connect in main.py), not ItemNotFound, so
+    # (see _LazyPlexServer._connect in plex/client.py), not ItemNotFound, so
     # _handle_intent must classify it the same way — otherwise run_once falls
     # back to the generic MAX_ATTEMPTS cap and the job parks after ~450s.
     config = load_config(EXAMPLE)
@@ -451,7 +453,8 @@ async def test_handle_intent_tags_plex_connection_errors_with_resolve_max_attemp
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
     with pytest.raises(requests.exceptions.ConnectionError) as exc_info:
         await _handle_intent(
-            None, intent, config_holder=ConfigHolder(config), http=None, plex=None, providers=[],
+            None, intent, config_holder=ConfigHolder(config), http=None,
+            servers=Servers({}), providers=[],
         )
 
     assert exc_info.value.max_attempts == config.plex.resolve_max_attempts
@@ -474,7 +477,8 @@ async def test_handle_intent_tags_source_refused_with_max_attempts_one(monkeypat
     intent = RenderIntent(kind="movie", title="Dune", tmdb_id=1)
     with pytest.raises(SourceRefused) as exc_info:
         await _handle_intent(
-            None, intent, config_holder=ConfigHolder(config), http=None, plex=None, providers=[],
+            None, intent, config_holder=ConfigHolder(config), http=None,
+            servers=Servers({}), providers=[],
         )
 
     assert exc_info.value.max_attempts == 1
@@ -524,7 +528,8 @@ async def test_handle_intent_passes_the_artwork_probe_through_to_process_item():
         mp.setattr("autoposter.app.process_item", capture)
         await _handle_intent(
             None, RenderIntent(kind="movie", title="Dune", tmdb_id=1),
-            config_holder=ConfigHolder(config), http=None, plex=None, providers=[], artwork_probe=probe,
+            config_holder=ConfigHolder(config), http=None, servers=Servers({}),
+            providers=[], artwork_probe=probe,
         )
 
     assert seen["artwork_probe"] is probe
@@ -573,8 +578,8 @@ async def test_handle_intent_passes_plex_generated_base_through_to_process_item(
         mp.setattr("autoposter.app.process_item", capture)
         await _handle_intent(
             None, RenderIntent(kind="movie", title="Dune", tmdb_id=1),
-            config_holder=ConfigHolder(config), http=None, plex=None, providers=[],
-            plex_generated_base=plex_generated_base,
+            config_holder=ConfigHolder(config), http=None, servers=Servers({}),
+            providers=[], plex_generated_base=plex_generated_base,
         )
 
     assert seen["plex_generated_base"] is plex_generated_base
@@ -996,3 +1001,34 @@ def test_an_empty_marker_is_not_a_name(secrets, monkeypatch):
     app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
 
     assert app.state.secret_from_state_file == {}
+
+
+async def test_a_plex_less_app_boots_and_serves_status(session_factory):
+    """Task 11's ruling 2: a deployment with no `plex:` block must still boot
+    and answer `/api/status` truthfully about which servers it has.
+
+    `create_app` is called with no `servers_factory` at all, so
+    `app.state.servers` stays the empty `Servers({})` default -- exactly what
+    a replica running with the lifespan off looks like. `capabilities` has to
+    read `config.configured_servers` rather than the registry for this app to
+    answer truthfully despite that.
+    """
+    password = "correct horse battery staple"
+    doc = read_config_document(EXAMPLE)
+    doc.pop("plex")
+    doc["jellyfin"] = {"url": "https://jf"}
+    config = build_config(doc)
+    app_secrets = Secrets(
+        database_url="postgresql+asyncpg://unused",
+        tmdb_token="x", tvdb_apikey="x", fanart_apikey="x", webhook_secret="x",
+        jellyfin_api_key="k", admin_password_hash=hash_password(password),
+    )
+    app = create_app(config, session_factory, app_secrets)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        token = (await client.post("/api/login", json={"password": password})).json()["token"]
+        body = (
+            await client.get("/api/status", headers={"Authorization": f"Bearer {token}"})
+        ).json()
+
+    assert body["capabilities"] == {"plex": False, "jellyfin": True}
