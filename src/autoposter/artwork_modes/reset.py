@@ -246,7 +246,9 @@ class ResetMode:
         )
         if refusal is not None:
             if missing:
-                logger.info("reset: skipped %d item(s) no longer in Plex", missing)
+                logger.info(
+                    "reset: skipped %d item(s) with no Plex id or no longer in Plex", missing
+                )
             if probe_failed:
                 logger.info("reset: could not probe %d item(s)", probe_failed)
             return ResetResult(
@@ -256,7 +258,9 @@ class ResetMode:
 
         if not self._apply:
             if missing:
-                logger.info("reset: skipped %d item(s) no longer in Plex", missing)
+                logger.info(
+                    "reset: skipped %d item(s) with no Plex id or no longer in Plex", missing
+                )
             if probe_failed:
                 logger.info("reset: could not probe %d item(s)", probe_failed)
             return ResetResult(
@@ -306,7 +310,9 @@ class ResetMode:
                     failed += 1
 
         if missing:
-            logger.info("reset: skipped %d item(s) no longer in Plex", missing)
+            logger.info(
+                "reset: skipped %d item(s) with no Plex id or no longer in Plex", missing
+            )
         if probe_failed:
             logger.info("reset: could not probe %d item(s)", probe_failed)
 

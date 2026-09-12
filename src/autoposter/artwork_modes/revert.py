@@ -210,7 +210,9 @@ class RevertMode:
                     failed += 1
 
         if missing:
-            logger.info("revert: skipped %d item(s) no longer in Plex", missing)
+            logger.info(
+                "revert: skipped %d item(s) with no Plex id or no longer in Plex", missing
+            )
 
         return RevertResult(
             total, items_with_base, files, pushed, failed, dry_run=False, missing=missing

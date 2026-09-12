@@ -239,7 +239,9 @@ class RestoreMode:
                     failed += 1
 
         if missing:
-            logger.info("restore: skipped %d item(s) no longer in Plex", missing)
+            logger.info(
+                "restore: skipped %d item(s) with no Plex id or no longer in Plex", missing
+            )
 
         return RestoreResult(
             total, items_with_backup, files, skipped, pushed, failed, dry_run=False,

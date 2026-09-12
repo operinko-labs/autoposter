@@ -255,6 +255,9 @@ class BackupMode:
                 written += 1
 
         if missing_items:
-            logger.info("backup: skipped %d item(s) no longer in Plex", missing_items)
+            logger.info(
+                "backup: skipped %d item(s) with no Plex id or no longer in Plex",
+                missing_items,
+            )
 
         return BackupResult(items, written, skipped, failed, missing=missing_items)

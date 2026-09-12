@@ -294,7 +294,10 @@ class LogoMode:
         )
         if refusal is not None:
             if missing_from_plex:
-                logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+                logger.info(
+                    "logo: skipped %d item(s) with no Plex id or no longer in Plex",
+                    missing_from_plex,
+                )
             if probe_failed:
                 logger.info("logo: could not probe %d item(s)", probe_failed)
             return LogoUpdateResult(
@@ -304,7 +307,10 @@ class LogoMode:
 
         if not self._apply:
             if missing_from_plex:
-                logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+                logger.info(
+                    "logo: skipped %d item(s) with no Plex id or no longer in Plex",
+                    missing_from_plex,
+                )
             if probe_failed:
                 logger.info("logo: could not probe %d item(s)", probe_failed)
             return LogoUpdateResult(
@@ -334,7 +340,10 @@ class LogoMode:
                 unmarked += 1
 
         if missing_from_plex:
-            logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+            logger.info(
+                "logo: skipped %d item(s) with no Plex id or no longer in Plex",
+                missing_from_plex,
+            )
         if probe_failed:
             logger.info("logo: could not probe %d item(s)", probe_failed)
 
@@ -552,7 +561,10 @@ class LogoRevertMode:
         )
         if refusal is not None:
             if missing:
-                logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+                logger.info(
+                    "logo revert: skipped %d item(s) with no Plex id or no longer in Plex",
+                    missing,
+                )
             if probe_failed:
                 logger.info("logo revert: could not probe %d item(s)", probe_failed)
             return LogoRevertResult(
@@ -562,7 +574,10 @@ class LogoRevertMode:
 
         if not self._apply:
             if missing:
-                logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+                logger.info(
+                    "logo revert: skipped %d item(s) with no Plex id or no longer in Plex",
+                    missing,
+                )
             if probe_failed:
                 logger.info("logo revert: could not probe %d item(s)", probe_failed)
             return LogoRevertResult(
@@ -606,7 +621,10 @@ class LogoRevertMode:
         await session.commit()
 
         if missing:
-            logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+            logger.info(
+                "logo revert: skipped %d item(s) with no Plex id or no longer in Plex",
+                missing,
+            )
         if probe_failed:
             logger.info("logo revert: could not probe %d item(s)", probe_failed)
 
