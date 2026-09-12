@@ -8,6 +8,9 @@ from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.intake.arr import RenderIntent
 from autoposter.render.naming import derive_root_folder
+from autoposter.servers.base import (  # noqa: F401 -- re-exported for existing importers
+    ItemNotFound, PathMismatch, ResolvedItem, SectionItem, ServerItemRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,86 +33,8 @@ FETCH_ITEM_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
 _sleep = asyncio.sleep
 
 
-class ItemNotFound(Exception):
-    """Plex has no matching item — usually it has not scanned the file yet."""
-
-    # Reviewed safe for a served surface (roadmap row 213). The scheduler's
-    # marker (scheduler/core.py) originally meant "this message was BUILT for
-    # a served surface" (CollectionsPassFailed, PruneRefused); here the
-    # contract is the wider "reviewed safe to serve", and the divergence is
-    # deliberate: both raise sites below interpolate only the job's own item
-    # fields (title, ids, rating key -- resolve()'s two raises), which the
-    # jobs endpoint already serves verbatim in the same row. The subclass
-    # inherits this, and for it the review is a disclosure DECISION: its
-    # message carries the operator's own filesystem paths, and those paths
-    # ARE the answer to "why did this job park" -- redacting them would buy
-    # nothing and cost the diagnosis (the same trade rows 136/188 and 209
-    # site (2a) decided the same way).
-    served_detail = True
-
-
-class PlexPathMismatch(ItemNotFound):
-    """The item resolved in Plex, but its file path maps into none of the
-    library's roots.
-
-    Unlike the class it subclasses, this is not a scan-in-progress wait -- it
-    is a path-mapping mismatch between this container's view of the
-    filesystem and Plex's, which no amount of retrying fixes. Raised only at
-    the third ``resolve()`` raise site; see ``queue/worker.py``'s ordered
-    except clause for how this is kept off the unbounded defer path.
-    """
-
-
-@dataclass(frozen=True)
-class ResolvedItem:
-    rating_key: str
-    library: str
-    kind: str
-    title: str
-    year: int | None
-    season_number: int | None
-    episode_number: int | None
-    root_folder: str
-    file_path: str | None
-    art_url: str | None
-    tmdb_id: int | None
-    tvdb_id: int | None
-    imdb_id: str | None
-    parent_rating_key: str | None = None
-    # Roadmap row 44. Plex carries originalTitle for movies and not for shows
-    # or episodes, so None is the ordinary case rather than the corner one.
-    original_title: str | None = None
-    # Roadmap row 78. The SHOW's own title, filled for a SEASON only: a
-    # season's `title` is the season's own Plex title ("Season 2",
-    # "Specials", or a bare year), so a season poster had no way to draw the
-    # show's name. Sourced off the container the producers already hold,
-    # exactly as `year` is -- no extra Plex request. None everywhere else,
-    # including on an episode: only the season poster draws it, and
-    # `adopt/walk._resolved_episode` is handed the season rather than the
-    # show, so filling it there would mean threading a fourth argument
-    # through that walk to feed a field nothing reads.
-    show_title: str | None = None
-
-
-@dataclass(frozen=True)
-class SectionItem:
-    """One movie or show in a library section, as plain data.
-
-    What ``list_items`` returns: nothing here is a ``plexapi`` object, for the
-    same reason ``_RawMatch`` is not one -- reading an attribute back on the
-    event loop can trigger a synchronous HTTP reload.
-
-    ``locations`` is the item's own, not the section's: a movie's is its file
-    and a show's is its directory, which is exactly what ``arr.sync``'s
-    ``source_path`` expects to be handed.
-    """
-
-    rating_key: str
-    library: str
-    title: str
-    year: int | None
-    locations: list[str]
-    guids: dict[str, str]
+class PlexPathMismatch(PathMismatch):
+    """Plex's spelling of PathMismatch; queue/worker.py's except ladder names it."""
 
 
 def parse_guids(guids: list[str]) -> dict[str, str]:
@@ -666,7 +591,8 @@ class PlexClient:
             for item in section.all(includeGuids=True):
                 items.append(
                     SectionItem(
-                        rating_key=str(item.ratingKey),
+                        server="plex",
+                        native_id=str(item.ratingKey),
                         library=section.title,
                         title=item.title,
                         year=getattr(item, "year", None),
@@ -795,7 +721,8 @@ class PlexClient:
             )
 
         return ResolvedItem(
-            rating_key=match.rating_key,
+            server="plex",
+            native_id=match.rating_key,
             library=match.library,
             kind=intent.kind,
             title=match.title,
@@ -808,7 +735,7 @@ class PlexClient:
             tmdb_id=as_int(guids.get("tmdb")) or intent.tmdb_id,
             tvdb_id=as_int(guids.get("tvdb")) or intent.tvdb_id,
             imdb_id=guids.get("imdb") or intent.imdb_id,
-            parent_rating_key=match.parent_rating_key,
+            parent_native_id=match.parent_rating_key,
             original_title=match.original_title,
             show_title=match.show_title,
         )
