@@ -56,6 +56,19 @@ def test_preview_uses_root_folder_for_provider_less_movies():
     ]
 
 
+def test_main_requires_a_database_url():
+    """No database needed: __main__ must check up front rather than raise a
+    bare KeyError traceback."""
+    env = {k: v for k, v in os.environ.items() if k != "AUTOPOSTER_DATABASE_URL"}
+    result = subprocess.run(
+        [sys.executable, "-m", "autoposter.migrate_preview"],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert ("AUTOPOSTER_DATABASE_URL is not set; point it at the database the migration will run against"
+            in result.stderr)
+
+
 def _alembic(*args: str) -> None:
     env = {**os.environ, "AUTOPOSTER_DATABASE_URL": SCRATCH}
     subprocess.run(["alembic", *args], check=True, env=env)
