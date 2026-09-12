@@ -1,4 +1,18 @@
-"""The server-neutral item identity (spec §4.2). One rule, no I/O."""
+"""The server-neutral item identity (spec §4.2). One rule, no I/O.
+
+There is exactly one implementation, and alembic revision c1d2e3f4a5b6
+imports it rather than restating it, so the keys the migration wrote and the
+keys the pipeline computes cannot drift apart by transcription.
+
+The price is that this rule is now schema. **Any change to it that alters an
+existing key needs a re-key migration of its own**: revision c1d2e3f4a5b6
+computed every stored ``media_items.identity_key`` with the rule as of that
+revision, and a row whose stored key no longer matches what this function
+returns is a row the pipeline will duplicate rather than find.
+``tests/test_servers_identity.py`` pins the literal output for one row of
+each shape as of that revision, so such a change breaks a named test on
+purpose instead of passing quietly.
+"""
 from __future__ import annotations
 
 import posixpath

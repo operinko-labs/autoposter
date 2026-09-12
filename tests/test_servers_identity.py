@@ -138,3 +138,42 @@ def test_identity_key_for_a_resolved_item_and_its_parent():
     # An episode's parent is its own SEASON, not the show directly (two-hop
     # model: config/impact.py, api/routes.py's detail breadcrumb).
     assert parent_identity_key_for(ep) == "season:tvdb:71663:s2:"
+
+
+def test_the_stored_key_shapes_are_pinned_as_of_revision_c1d2e3f4a5b6():
+    """A CHANGE DETECTOR, on purpose.
+
+    ``media_items.identity_key`` is UNIQUE and is what every upsert finds its
+    row by. Alembic revision c1d2e3f4a5b6 computed the stored key of every
+    existing row with this rule as of that revision, so a later edit that
+    changes any of these strings silently orphans every row that carries the
+    old form -- the pipeline would insert a second row rather than find the
+    first. Breaking this test is the signal that the change needs a re-key
+    migration of its own; it is never a reason to edit the literals alone.
+
+    One row of each shape the rule can produce.
+    """
+    assert identity_key(
+        "movie", tmdb_id=603, tvdb_id=None, imdb_id="tt0133093", season_number=None,
+        episode_number=None, file_path="/m/The Matrix (1999)/m-4k.mkv", root_folder="The Matrix (1999)",
+    ) == "movie:tmdb:603::m-4k.mkv"
+    assert identity_key(
+        "movie", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
+        episode_number=None, file_path="/m/Unmatched/u.mkv", root_folder="Unmatched",
+    ) == "movie:path:::Unmatched/u.mkv"
+    assert identity_key(
+        "show", tmdb_id=None, tvdb_id=71663, imdb_id=None, season_number=None,
+        episode_number=None, file_path=None, root_folder="The Simpsons",
+    ) == "show:tvdb:71663::"
+    assert identity_key(
+        "season", tmdb_id=None, tvdb_id=71663, imdb_id=None, season_number=2,
+        episode_number=None, file_path=None, root_folder="The Simpsons",
+    ) == "season:tvdb:71663:s2:"
+    assert identity_key(
+        "episode", tmdb_id=None, tvdb_id=71663, imdb_id=None, season_number=2,
+        episode_number=3, file_path=None, root_folder="The Simpsons",
+    ) == "episode:tvdb:71663:s2e3:"
+    assert identity_key(
+        "movie", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
+        episode_number=None, file_path=None, root_folder=None, legacy="4",
+    ) == "movie:legacy:plex:4"
