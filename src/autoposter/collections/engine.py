@@ -63,6 +63,7 @@ from autoposter.collections.filters import (
     tag_predicates,
     without_values,
 )
+from autoposter.collections import member_sort
 from autoposter.collections.lists import member_diff, reconcile_list_collection
 from autoposter.collections.reconcile import (
     LIBTYPES,
@@ -168,6 +169,13 @@ class LibraryRun:
     actions: list[str]
     definitions: list[DefinitionResult]
     notifications: list[CollectionNotification] = field(default_factory=list)
+    # Row 269: the ``process_item`` entries -- ``(payload, dedupe_key)``, the
+    # shape ``queue.jobs.enqueue_batch`` takes -- for members whose sort
+    # position was recorded, changed or released this pass. Collected here
+    # and enqueued by ``service.reconcile_libraries`` BELOW its per-library
+    # commit, for the notifications' reason: a job must never describe a
+    # row the database does not yet show.
+    reprocess: list[tuple[dict, str]] = field(default_factory=list)
 
     @property
     def failures(self) -> list[str]:
@@ -444,6 +452,12 @@ async def run_library(
             results.append(
                 DefinitionResult(title=definition.title, library=library, skipped=True)
             )
+            if definition.member_sort:
+                # Row 269: a gated placeholder cannot name its units, so no
+                # row in this library may be released on its account.
+                member_sort.hold_releases(
+                    run_cache, library, "%r is outside its schedule" % definition.title,
+                )
             continue
 
         builder = REGISTRY[definition.builder]
@@ -538,6 +552,12 @@ async def run_library(
             results.append(DefinitionResult(
                 title=definition.title, library=library, failed=True, skipped=True
             ))
+            if definition.member_sort:
+                member_sort.hold_releases(
+                    run_cache, library,
+                    "%r could not be expanded, so its units cannot be named"
+                    % definition.title,
+                )
             continue
 
         if reporter is not None:
@@ -603,6 +623,15 @@ async def run_library(
         actions += result.actions
         results.append(result)
 
+    # Row 269. After every definition and before the sweep, inside the
+    # per-library transaction ``reconcile_libraries`` commits -- and, like
+    # the separators above, deliberately NOT wrapped: a failure here is a
+    # database write failing and belongs to that same rollback.
+    commit_actions, reprocess = await member_sort.commit_assignment(
+        session, run_cache, library, dry_run
+    )
+    actions += commit_actions
+
     if sweep:
         try:
             swept = await _sweep(
@@ -661,7 +690,8 @@ async def run_library(
             ))
 
     return LibraryRun(
-        actions=actions, definitions=results, notifications=notifications
+        actions=actions, definitions=results, notifications=notifications,
+        reprocess=reprocess,
     )
 
 
@@ -947,8 +977,15 @@ async def _run_one(
         # missing one of the first few, or the filter excluded one of them.
         items = items[: definition.limit]
 
+    # Row 269. At the one point that holds the definition's ordered,
+    # filtered, capped members. An empty ``items`` marks the definition
+    # UNSETTLED (its existing rows are left alone, see member_sort.py), and a
+    # failed build is empty by construction (``BuilderResult(ids=[])``).
+    if definition.member_sort:
+        member_sort.record(ctx.run_cache, library, definition.title, items)
+
     outcome.skipped = not items
-    if preview:
+    if preview and definition.create_collection:
         collection = listing().get(definition.title)
         if collection is None:
             outcome.adding = len(items)
@@ -1017,6 +1054,16 @@ async def _run_one(
         outcome.actions.append(
             "%r: the source returned %d id(s), none of which this library owns; "
             "leaving the collection untouched" % (definition.title, len(result.ids))
+        )
+    elif not definition.create_collection:
+        # Row 269's sort-only mode: the positions recorded above are the
+        # whole effect. No ``managed_collections`` row is written, so the
+        # orphan sweep has nothing to delete; the title still counts as
+        # managed (``definition_titles_for``), so a collection left behind
+        # under it is protected rather than swept.
+        outcome.actions.append(
+            "%r: sort-only; recorded %d member position(s), no collection created"
+            % (definition.title, len(items))
         )
     else:
         deltas: dict = {}
