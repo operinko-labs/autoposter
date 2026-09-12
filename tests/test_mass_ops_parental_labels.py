@@ -19,12 +19,12 @@ import pytest_asyncio
 
 from autoposter.config.loader import load_config
 from autoposter.config.schema import OperationsConfig
-from autoposter.db.models import MediaItem
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.plex.writer import apply_facts, parental_label_edits, plan_edits
 from autoposter.render.pipeline import _fetch_parental_categories, apply_metadata
 
+from conftest import seed_media_item
 from test_mass_ops_fields import FakeItem, FakeTMDB, _item
 from test_mass_ops_verbs import RecordingPlexItem, RecordingServer
 
@@ -162,9 +162,7 @@ def config():
 
 @pytest_asyncio.fixture
 async def media_item_id(session):
-    media = MediaItem(rating_key="1", library="Movies", kind="movie", title="Heat")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "1", library="Movies", kind="movie", title="Heat")
     return media.id
 
 

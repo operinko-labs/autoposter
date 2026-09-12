@@ -20,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from sqlalchemy import select
 
-from conftest import decodable_png
+from conftest import decodable_png, seed_media_item
 
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
@@ -325,13 +325,10 @@ def _seed_backup(backup_root, library, root_folder, name, data):
 
 async def _add_item(session, *, rating_key, kind="movie", library="Movies",
                     root_folder="A (1999)", logo_upload_key=None):
-    item = MediaItem(
-        rating_key=rating_key, library=library, kind=kind, title="A",
-        root_folder=root_folder, tmdb_id=101, logo_upload_key=logo_upload_key,
+    return await seed_media_item(
+        session, rating_key, library=library, kind=kind, root_folder=root_folder,
+        tmdb_id=101, logo_upload_key=logo_upload_key,
     )
-    session.add(item)
-    await session.commit()
-    return item
 
 
 # --- auth + wiring -----------------------------------------------------------

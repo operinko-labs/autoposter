@@ -10,7 +10,9 @@ from datetime import timedelta
 
 from sqlalchemy import func, select, text
 
-from autoposter.db.models import Job, MediaItem, Render, Run
+from autoposter.db.models import Job, Render, Run
+
+from conftest import seed_media_item
 from autoposter.scheduler.run_history import (
     FULL_PASS_CEILING_SECONDS,
     FULL_PASS_NAME,
@@ -158,10 +160,7 @@ async def test_retention_deletes_nothing_below_the_threshold(session):
 
 
 async def _item(session, rating_key="1"):
-    item = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="Dune")
-    session.add(item)
-    await session.flush()
-    return item
+    return await seed_media_item(session, rating_key, library="Movies", kind="movie", title="Dune")
 
 
 async def _now(session):

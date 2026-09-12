@@ -7,35 +7,37 @@ from autoposter.db.models import EventLog, Job, MediaItem, Render
 
 async def test_media_item_roundtrip(session):
     session.add(MediaItem(
-        rating_key="12345", library="Movies", kind="movie",
+        identity_key="movie:legacy:plex:12345", library="Movies", kind="movie",
         tmdb_id=693134, imdb_id="tt15239678",
         title="Dune: Part Two", year=2024, root_folder="Dune Part Two (2024)",
     ))
     await session.commit()
     found = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "12345"))
+        await session.execute(
+            select(MediaItem).where(MediaItem.identity_key == "movie:legacy:plex:12345")
+        )
     ).scalar_one()
     assert found.title == "Dune: Part Two"
     assert found.kind == "movie"
 
 
-async def test_rating_key_is_unique(session):
-    session.add(MediaItem(rating_key="dup", library="Movies", kind="movie", title="A"))
+async def test_identity_key_is_unique(session):
+    session.add(MediaItem(identity_key="movie:legacy:plex:dup", library="Movies", kind="movie", title="A"))
     await session.commit()
-    session.add(MediaItem(rating_key="dup", library="Movies", kind="movie", title="B"))
+    session.add(MediaItem(identity_key="movie:legacy:plex:dup", library="Movies", kind="movie", title="B"))
     with pytest.raises(IntegrityError):
         await session.commit()
 
 
 async def test_episode_links_to_parent_season(session):
-    show = MediaItem(rating_key="s1", library="TV Shows", kind="show", title="Severance")
+    show = MediaItem(identity_key="show:legacy:plex:s1", library="TV Shows", kind="show", title="Severance")
     session.add(show)
     await session.flush()
-    season = MediaItem(rating_key="s1s2", library="TV Shows", kind="season",
+    season = MediaItem(identity_key="season:legacy:plex:s1s2", library="TV Shows", kind="season",
                        title="Season 2", parent_id=show.id, season_number=2)
     session.add(season)
     await session.flush()
-    ep = MediaItem(rating_key="e1", library="TV Shows", kind="episode",
+    ep = MediaItem(identity_key="episode:legacy:plex:e1", library="TV Shows", kind="episode",
                    title="Who Is Alive?", parent_id=season.id,
                    season_number=2, episode_number=3)
     session.add(ep)
@@ -44,7 +46,7 @@ async def test_episode_links_to_parent_season(session):
 
 
 async def test_render_defaults_to_generate_source_mode(session):
-    item = MediaItem(rating_key="r1", library="Movies", kind="movie", title="X")
+    item = MediaItem(identity_key="movie:legacy:plex:r1", library="Movies", kind="movie", title="X")
     session.add(item)
     await session.flush()
     render = Render(item_id=item.id, art_kind="poster",
@@ -56,7 +58,7 @@ async def test_render_defaults_to_generate_source_mode(session):
 
 
 async def test_one_render_per_item_and_art_kind(session):
-    item = MediaItem(rating_key="r2", library="Movies", kind="movie", title="Y")
+    item = MediaItem(identity_key="movie:legacy:plex:r2", library="Movies", kind="movie", title="Y")
     session.add(item)
     await session.flush()
     session.add(Render(item_id=item.id, art_kind="poster", asset_path="/a.jpg"))
@@ -67,7 +69,7 @@ async def test_one_render_per_item_and_art_kind(session):
 
 
 async def test_two_art_kinds_for_one_item_are_allowed(session):
-    item = MediaItem(rating_key="r3", library="Movies", kind="movie", title="Z")
+    item = MediaItem(identity_key="movie:legacy:plex:r3", library="Movies", kind="movie", title="Z")
     session.add(item)
     await session.flush()
     session.add(Render(item_id=item.id, art_kind="poster", asset_path="/p.jpg"))

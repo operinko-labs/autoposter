@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty
 from autoposter.db.models import MediaItem
+from autoposter.db.refs import native_ids
 from autoposter.plex.writer import _PLEX_FIELD_NAMES, _locked_in_plex, WRITABLE_BY_KIND
 
 logger = logging.getLogger(__name__)
@@ -175,10 +176,12 @@ class MetadataBackupMode:
         rows = (
             await session.execute(
                 select(
-                    MediaItem.rating_key, MediaItem.library, MediaItem.kind
+                    MediaItem.id, MediaItem.library, MediaItem.kind
                 ).order_by(MediaItem.id)
             )
         ).all()
+        # One query for the whole walk's Plex ids, not one per row.
+        plex_ids = await native_ids(session, [row.id for row in rows], "plex")
         # End the read transaction before the walk: what follows is a Plex
         # request per item and a file write per library, and nothing reads the
         # database again (backup.py:177-181's precedent).
@@ -188,29 +191,34 @@ class MetadataBackupMode:
         items = captured = failed = missing = 0
         for row in rows:
             items += 1
+            native_id = plex_ids.get(row.id)
+            if native_id is None:
+                logger.info("metadata backup: %s has no Plex ref, skipped", row.id)
+                missing += 1
+                continue
             try:
-                plex_item = await self._server.fetch_item(row.rating_key)
+                plex_item = await self._server.fetch_item(native_id)
             except PlexNotFound:
                 logger.info(
-                    "metadata backup: %s no longer in Plex, skipped", row.rating_key
+                    "metadata backup: %s no longer in Plex, skipped", native_id
                 )
                 missing += 1
                 continue
             except Exception:  # noqa: BLE001 - one bad item must not abort the walk
                 logger.warning(
                     "metadata backup: could not fetch Plex item %s",
-                    row.rating_key, exc_info=True,
+                    native_id, exc_info=True,
                 )
                 failed += 1
                 continue
             try:
-                by_library.setdefault(row.library, {})[str(row.rating_key)] = (
+                by_library.setdefault(row.library, {})[str(native_id)] = (
                     capture_item(plex_item, row.kind)
                 )
             except Exception:  # noqa: BLE001 - see above
                 logger.warning(
                     "metadata backup: could not read metadata for %s",
-                    row.rating_key, exc_info=True,
+                    native_id, exc_info=True,
                 )
                 failed += 1
                 continue

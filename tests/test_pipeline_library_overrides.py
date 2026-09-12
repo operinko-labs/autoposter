@@ -41,12 +41,13 @@ from autoposter.config.loader import (
     read_config_document,
     render_version_for,
 )
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.render.pipeline import apply_badges, apply_metadata, process_item
 
+from conftest import seed_media_item
 from test_mass_ops_fields import FakeTMDB, _item
 from test_mass_ops_verbs import FakePlexServer, RecordingPlexItem, RecordingServer
 from test_overlay_entrypoint import BASE, REF, FakeServer, _FakePlexItem, _Facts, _render
@@ -56,11 +57,7 @@ EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 @pytest.fixture
 async def media_item_id(session):
-    from autoposter.db.models import MediaItem
-
-    media = MediaItem(rating_key="1", library="Movies", kind="movie", title="Heat")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "1", library="Movies", kind="movie", title="Heat")
     return media.id
 
 
@@ -324,11 +321,9 @@ async def test_a_per_library_badges_override_moves_only_that_librarys_fingerprin
         FakeServer(_FakePlexItem()), REF, _Facts(),
     )
 
-    shows_item = MediaItem(
-        kind="movie", rating_key="per-lib-shows", library="TV Shows", title="X",
+    shows_item = await seed_media_item(
+        session, "per-lib-shows", kind="movie", library="TV Shows", title="X",
     )
-    session.add(shows_item)
-    await session.flush()
     shows_render = Render(
         item_id=shows_item.id, art_kind="poster", base_sha256="abc",
         status="rendered", asset_path=str(BASE),

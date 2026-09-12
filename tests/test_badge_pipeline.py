@@ -5,10 +5,12 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
 from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
 from autoposter.render.pipeline import apply_badges
 from autoposter.servers.base import CAP_ARTWORK_PROVENANCE, CAP_LOCK_ARTWORK, ServerItemRef
+
+from conftest import seed_media_item
 
 ORACLE = Path("tests/fixtures/oracle")
 
@@ -73,9 +75,7 @@ class FakeServer:
 
 
 async def _render(session, **kw):
-    item = MediaItem(kind="movie", rating_key="1", library="Movies", title="X")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, "1", kind="movie", library="Movies", title="X")
     kw.setdefault("status", "rendered")
     kw.setdefault("asset_path", str(ORACLE / "All_Souls_base_no_overlay.jpg"))
     render = Render(item_id=item.id, art_kind="poster", base_sha256="abc", **kw)
@@ -262,9 +262,7 @@ async def test_a_successful_upload_survives_a_later_rollback(
 async def test_backgrounds_are_never_badged(session, config_with_badges):
     """The tool being replaced overlays posters, season posters and episode
     title cards only -- never fanart backdrops."""
-    item = MediaItem(kind="movie", rating_key="2", library="Movies", title="Y")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, "2", kind="movie", library="Movies", title="Y")
     render = Render(item_id=item.id, art_kind="background",
                     asset_path=str(ORACLE / "All_Souls_base_no_overlay.jpg"),
                     base_sha256="abc")
@@ -551,7 +549,7 @@ async def test_an_exempt_item_s_badge_ignores_the_override_too(
     ))
     await session.commit()
     config_with_badges.operations.item_overrides_enabled = True
-    config_with_badges.operations.ignore_ids = [item.rating_key]
+    config_with_badges.operations.ignore_ids = ["1"]
     plex_item = FakePlexItem()
 
     await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())

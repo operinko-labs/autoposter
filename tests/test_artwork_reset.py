@@ -19,7 +19,6 @@ from PIL import Image
 
 from autoposter.artwork_modes.reset import ResetMode
 from autoposter.config.loader import load_config
-from autoposter.db.models import MediaItem
 from autoposter.plex.artwork import artwork_provenance as _plex_artwork_provenance
 from autoposter.plex.artwork import (
     reset_artwork_to_agent_default as _plex_reset_artwork_to_agent_default,
@@ -28,6 +27,7 @@ from autoposter.plex.exif import PROVENANCE_TAG, format_provenance
 from autoposter.servers.base import (
     CAP_ARTWORK_PROVENANCE, CAP_RESET_TO_AGENT_DEFAULT, ServerItemRef,
 )
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PLEX_URL = "http://plex.local"
@@ -204,13 +204,9 @@ def _headers():
 
 
 async def _add_item(session, *, rating_key, kind="movie", library="Movies"):
-    item = MediaItem(
-        rating_key=rating_key, library=library, kind=kind, title="A",
-        root_folder="A (1999)",
+    return await seed_media_item(
+        session, rating_key, kind=kind, library=library, root_folder="A (1999)",
     )
-    session.add(item)
-    await session.commit()
-    return item
 
 
 async def test_dry_run_changes_nothing(session, config, serving):

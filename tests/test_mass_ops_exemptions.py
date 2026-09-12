@@ -6,13 +6,15 @@ still persisted, and the Plex edit is the thing that must not happen.
 from pathlib import Path
 
 from autoposter.config.loader import load_config
-from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.db.models import ItemFacts
 from autoposter.facts.models import GatheredFacts
 from autoposter.plex.client import ResolvedItem
 from autoposter.plex.writer import apply_facts as _plex_apply_facts
 from autoposter.plex.writer import exemption_reason
 from autoposter.render import pipeline
 from sqlalchemy import select
+
+from conftest import seed_media_item
 
 EXAMPLE = Path("config/autoposter.example.yaml")
 
@@ -76,10 +78,7 @@ class RecordingServer:
 
 
 async def _media(session, rating_key="w1"):
-    media = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
-    return media
+    return await seed_media_item(session, rating_key, library="Movies", kind="movie", title="X")
 
 
 def _config(**operations):

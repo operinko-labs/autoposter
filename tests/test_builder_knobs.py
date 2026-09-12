@@ -1594,6 +1594,7 @@ async def test_a_swept_family_delete_is_routed_to_the_family_webhook(session):
         "library": "Movies",
         "collection": "Top Western movies",
         "rating_key": "c-Top Western movies",
+        "refs": {"plex": "c-Top Western movies"},
         "reason": "the 'Genres' family no longer builds it",
     }
 

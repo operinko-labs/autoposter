@@ -23,7 +23,9 @@ from autoposter.collections.credits import (
     scan_credits,
     scan_library_credits,
 )
-from autoposter.db.models import ItemCredit, MediaItem
+from autoposter.db.models import ItemCredit, MediaItem, MediaItemServerRef
+
+from conftest import seed_media_item
 
 
 class FakeTag:
@@ -74,10 +76,7 @@ def config():
 
 
 async def _item(session, rating_key, *, library="Movies", kind="movie", title="X"):
-    item = MediaItem(rating_key=rating_key, library=library, kind=kind, title=title)
-    session.add(item)
-    await session.flush()
-    return item
+    return await seed_media_item(session, rating_key, library=library, kind=kind, title=title)
 
 
 def _movies(*items) -> FakeServer:
@@ -95,7 +94,9 @@ async def _rows(session, item_id) -> list[tuple[str, str]]:
 
 async def _stamps(session) -> dict[str, object]:
     result = await session.execute(
-        select(MediaItem.rating_key, MediaItem.credits_attempted_at)
+        select(MediaItemServerRef.native_id, MediaItem.credits_attempted_at)
+        .join(MediaItem, MediaItem.id == MediaItemServerRef.item_id)
+        .where(MediaItemServerRef.server == "plex")
     )
     return {key: stamp for key, stamp in result.all()}
 
@@ -157,6 +158,23 @@ async def test_rescan_replaces_an_items_rows(session, config):
     await scan_credits(session, _movies(FakeItem(1, actors=("A",))), config)
 
     assert await _rows(session, item.id) == [("actor", "A")]
+
+
+async def test_two_plex_refs_on_one_item_cannot_double_insert_a_credit(session, config):
+    """Spec §4.1 makes one ref per (item, server) an invariant, so this shape
+    should not exist -- but ``by_key`` is inverted from (item_id, native_id)
+    pairs, so if it ever did, Plex answering for BOTH ids would hand the
+    identical (item_id, kind, person) triple to ``insert(ItemCredit)`` twice
+    and the UniqueViolation would fail the whole scan. Guarded, not assumed."""
+    item = await _item(session, "1")
+    session.add(MediaItemServerRef(item_id=item.id, server="plex", native_id="2", library="Movies"))
+    await session.flush()
+    server = _movies(FakeItem(1, actors=("Ann",)), FakeItem(2, actors=("Ann",)))
+
+    summary = await scan_credits(session, server, config)
+
+    assert summary == "Movies: 1 item(s) scanned, 1 credit(s)"
+    assert await _rows(session, item.id) == [("actor", "Ann")]
 
 
 async def test_enumerate_credits_counts_most_first_ties_on_name(session, config):

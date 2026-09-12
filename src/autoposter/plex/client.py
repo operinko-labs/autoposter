@@ -247,6 +247,14 @@ class _RawMatch:
     ``show_title`` is the SHOW's own title and is filled for a SEASON intent
     only (roadmap row 78); both producers below take it off the show object
     they already hold.
+
+    ``parent_guids`` is the show's own ``guids`` (spec §4.2's parent identity),
+    captured for a SEASON or EPISODE intent only -- empty for a movie or show,
+    which have no parent to key. It is the same read already taken for
+    ``guids`` on those two kinds; this just keeps it under its own name so
+    ``resolve()`` can fill ``ResolvedItem.parent_tmdb_id``/``parent_tvdb_id``/
+    ``parent_imdb_id`` without a caller mistaking the item's own ids for its
+    parent's.
     """
 
     rating_key: str
@@ -259,6 +267,7 @@ class _RawMatch:
     art_url: str | None
     guids: list[str]
     parent_rating_key: str | None
+    parent_guids: list[str]
     original_title: str | None = None
     show_title: str | None = None
 
@@ -315,17 +324,19 @@ class PlexClient:
         ]
 
     def _fetch_by_rating_key_sync(self, intent: RenderIntent, sections) -> _RawMatch | None:
-        """The item named by ``intent.rating_key``, or None to fall back.
+        """The item named by ``intent.native_id_on("plex")``, or None to fall back.
 
-        Adoption stored every item's exact Plex identity in
-        ``media_items.rating_key``, so an intent built from such a row does not
-        need an agent lookup at all. It also must not use one: adoption stored
-        each episode's OWN external ids, while `_search_sync` reads an episode
-        intent's ids as the *series'* ids -- true on the webhook path, where
-        Sonarr supplies them, and false for every adopted row. Episode-level
-        ids either match nothing (the job retries as "waiting for Plex" until
-        it parks) or match an unrelated item that happens to carry the same
-        number.
+        Adoption stored every item's exact Plex identity -- today a
+        ``media_item_server_refs`` row, before the identity migration the
+        ``media_items.rating_key`` column -- so an intent built from such a
+        row does not need an agent lookup at all. It also must not use one:
+        an episode intent's own ids are only ever the *series'* ids here
+        (the adoption walk takes the show's guids, mirroring what
+        ``_search_sync`` builds from the show container), and a row adopted
+        before that alignment can still carry episode-level ids of its own.
+        Those either match nothing (the job retries as "waiting for Plex"
+        until it parks) or match an unrelated item that happens to carry the
+        same number.
 
         Returning None rather than raising is the whole contract here: a
         rating key is a *hint*. Plex renumbers on a library rebuild, so a
@@ -344,10 +355,12 @@ class PlexClient:
         movie or show containing it.
         """
         try:
-            item = self._server.fetchItem(int(intent.rating_key))  # type: ignore[arg-type]
+            item = self._server.fetchItem(int(intent.native_id_on("plex")))  # type: ignore[arg-type]
         except (PlexNotFound, TypeError, ValueError):
             # NotFound: the key names nothing any more. TypeError/ValueError:
-            # `rating_key` is a text column, so a row can hold a non-number.
+            # `media_item_server_refs.native_id` is a text column (it has to
+            # be -- a Jellyfin id is a hex string), so a row can hold a
+            # non-number.
             return None
         if item is None or getattr(item, "type", None) != intent.kind:
             # Compared against the intent's kind, not the library type, so a
@@ -436,6 +449,10 @@ class PlexClient:
             art_url=getattr(container, "thumb", None),
             guids=[g.id for g in getattr(container, "guids", [])],
             parent_rating_key=parent_rating_key,
+            parent_guids=(
+                [g.id for g in getattr(container, "guids", [])]
+                if intent.kind in ("season", "episode") else []
+            ),
             original_title=getattr(item, "originalTitle", None),
             show_title=(
                 getattr(container, "title", None) if intent.kind == "season" else None
@@ -457,7 +474,7 @@ class PlexClient:
         wanted_type = "movie" if intent.kind == "movie" else "show"
         sections = self._sections(wanted_type)
 
-        if intent.rating_key:
+        if intent.native_id_on("plex"):
             match = self._fetch_by_rating_key_sync(intent, sections)
             if match is not None:
                 return match
@@ -548,6 +565,10 @@ class PlexClient:
                         art_url=getattr(item, "thumb", None),
                         guids=[g.id for g in getattr(item, "guids", [])],
                         parent_rating_key=parent_rating_key,
+                        parent_guids=(
+                            [g.id for g in getattr(item, "guids", [])]
+                            if intent.kind in ("season", "episode") else []
+                        ),
                         original_title=getattr(target, "originalTitle", None),
                         show_title=(
                             getattr(item, "title", None)
@@ -676,13 +697,13 @@ class PlexClient:
         return await asyncio.to_thread(_walk)
 
     def _key_resolves_sync(self, intent: RenderIntent) -> bool:
-        """Whether ``intent.rating_key`` is still the item's own key.
+        """Whether ``intent.native_id_on("plex")`` is still the item's own key.
 
         The wanted-type split is ``_search_sync``'s, verbatim: a movie intent
         can only be a movie; show, season and episode intents all resolve
         through a show library.
         """
-        if not intent.rating_key:
+        if not intent.native_id_on("plex"):
             return False
         wanted_type = "movie" if intent.kind == "movie" else "show"
         sections = self._sections(wanted_type)
@@ -723,6 +744,7 @@ class PlexClient:
             )
 
         guids = parse_guids(match.guids)
+        parent_guids = parse_guids(match.parent_guids)
         file_path = match.file_path
 
         if intent.kind == "movie":
@@ -763,6 +785,9 @@ class PlexClient:
             tvdb_id=as_int(guids.get("tvdb")) or intent.tvdb_id,
             imdb_id=guids.get("imdb") or intent.imdb_id,
             parent_native_id=match.parent_rating_key,
+            parent_tmdb_id=as_int(parent_guids.get("tmdb")),
+            parent_tvdb_id=as_int(parent_guids.get("tvdb")),
+            parent_imdb_id=parent_guids.get("imdb"),
             original_title=match.original_title,
             show_title=match.show_title,
         )

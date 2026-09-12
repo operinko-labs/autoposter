@@ -21,8 +21,10 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
 from autoposter.providers.base import ArtCandidate
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -101,9 +103,8 @@ async def _item(session, kind: str = "movie", **extra) -> int:
         root_folder="A Movie (1999)",
     )
     defaults.update(extra)
-    item = MediaItem(**defaults)
-    session.add(item)
-    await session.commit()
+    rating_key = defaults.pop("rating_key")
+    item = await seed_media_item(session, rating_key, **defaults)
     return item.id
 
 

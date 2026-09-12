@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.db.models import ItemFacts, MediaItem, MediaItemServerRef
 
 __all__ = ["FactsUnavailable", "ItemFactsValues", "ensure_facts"]
 
@@ -111,10 +111,15 @@ async def ensure_facts(
         raise failed
 
     statement = (
-        select(MediaItem.rating_key, *[column for _, column in _COLUMNS])
-        .select_from(MediaItem)
+        select(MediaItemServerRef.native_id, *[column for _, column in _COLUMNS])
+        .select_from(MediaItemServerRef)
+        .join(MediaItem, MediaItem.id == MediaItemServerRef.item_id)
         .outerjoin(ItemFacts, ItemFacts.item_id == MediaItem.id)
-        .where(MediaItem.library == library, MediaItem.rating_key.in_(to_fetch))
+        .where(
+            MediaItemServerRef.server == "plex",
+            MediaItem.library == library,
+            MediaItemServerRef.native_id.in_(to_fetch),
+        )
     )
     try:
         async with session.begin_nested():

@@ -4,15 +4,14 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.db.models import ItemFacts
 from autoposter.facts.models import GatheredFacts
+
+from conftest import seed_media_item
 
 
 async def _item(session, rating_key="1"):
-    item = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="X")
-    session.add(item)
-    await session.flush()
-    return item
+    return await seed_media_item(session, rating_key, library="Movies", kind="movie", title="X")
 
 
 async def test_facts_roundtrip(session):

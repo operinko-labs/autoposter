@@ -23,9 +23,9 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import MediaItem
 from autoposter.metadata_backup import capture_item
 
+from conftest import seed_media_item
 from test_mass_ops_verbs import LockableItem
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -113,9 +113,7 @@ def config(backup_root):
 
 @pytest_asyncio.fixture
 async def api_client(config, session_factory, session):
-    media = MediaItem(rating_key="rk1", library="Movies", kind="movie", title="Heat")
-    session.add(media)
-    await session.commit()
+    await seed_media_item(session, "rk1", library="Movies", kind="movie", title="Heat")
 
     app = create_app(config, session_factory, _secrets())
     app.state.plex = FakePlexClient(

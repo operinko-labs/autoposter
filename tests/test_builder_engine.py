@@ -42,7 +42,9 @@ from autoposter.collections.engine import (
 from autoposter.collections.service import _managed_titles
 from autoposter.collections.sources import AWARD_YEARS_TITLE, default_definitions
 from autoposter.config.schema import CollectionDefinition
-from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.db.models import ItemFacts
+
+from conftest import seed_media_item
 from autoposter.facts.mdblist import MDBListClient
 from autoposter.providers.tmdb_lists import TmdbListClient
 
@@ -818,8 +820,7 @@ async def test_a_family_that_built_nothing_says_why_in_the_pass(session):
     The engine asks the REGISTRY entry rather than importing the module -- the
     same protocol ``_family_state`` states for ``family_label``.
     """
-    session.add(MediaItem(rating_key="m1", library="Movies", kind="movie", title="X"))
-    await session.flush()
+    await seed_media_item(session, "m1", library="Movies", kind="movie", title="X")
 
     actions = await _run(
         session, FakeSection([("m1", ["imdb://tt1"])]),
@@ -850,9 +851,7 @@ async def test_a_familys_notes_reach_the_pass_beside_the_units_it_did_build(sess
     the same ``actions`` list as the unit's own line, and before it.
     """
     for rating_key, collection_id in (("m1", 1241), ("m2", 8091)):
-        item = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="X")
-        session.add(item)
-        await session.flush()
+        item = await seed_media_item(session, rating_key, library="Movies", kind="movie", title="X")
         session.add(ItemFacts(item_id=item.id, tmdb_collection_id=collection_id))
     await session.flush()
 

@@ -12,6 +12,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.plex.writer import apply_facts as _plex_apply_facts
 from autoposter.render import pipeline
+from autoposter.servers.identity import identity_key_for
 
 EXAMPLE = Path("config/autoposter.example.yaml")
 
@@ -68,7 +69,9 @@ class RecordingServer:
 
 
 async def _media(session):
-    media = MediaItem(rating_key="w1", library="Movies", kind="movie", title="X")
+    media = MediaItem(
+        identity_key=identity_key_for(resolved()), library="Movies", kind="movie", title="X",
+    )
     session.add(media)
     await session.flush()
     return media

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from autoposter.config.loader import load_config
 from autoposter.db.base import Base
+from autoposter.db.models import MediaItem, MediaItemServerRef
 
 # The suites a pull request defers to the merge commit. The contract itself is
 # written at the "Test" step in .forgejo/workflows/ci.yml; in short, a pull
@@ -81,6 +82,8 @@ DEEP_SUITES = frozenset(
         "test_api_stats_storage.py",
         "test_api_testing.py",
         "test_api_version.py",
+        "test_migrate_preview.py",
+        "test_migration_identity.py",
     }
 )
 
@@ -289,6 +292,52 @@ def no_outbound_network(monkeypatch):
         )
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
+
+
+async def seed_media_item(
+    session, native_id: str, *, server: str = "plex", kind: str = "movie",
+    library: str = "Movies", title: str = "A", root_folder: str | None = None,
+    season_number: int | None = None, episode_number: int | None = None,
+    parent: MediaItem | None = None, plex_ref: bool = True, **extra,
+) -> MediaItem:
+    """Seed one ``media_items`` row, plus its ``media_item_server_refs`` row
+    unless ``plex_ref`` is False.
+
+    ``media_items.rating_key`` no longer exists (Task 6): a row is identified
+    by ``identity_key``, and its per-server native id lives in a separate
+    ``MediaItemServerRef``. Shared here so every artwork-mode and
+    metadata-backup suite that used to write ``MediaItem(rating_key=...)``
+    seeds the same pair the same way, rather than repeating it per file.
+    ``identity_key`` is synthesized from ``native_id`` rather than from any
+    external id a test also passes in -- these suites care about identifying
+    an item by its server id, exactly as ``rating_key`` did, not about the
+    identity-key scheme itself (``test_scheduler_prune_job.py``'s ``_add_item``
+    precedent).
+
+    ``plex_ref=False`` seeds the row with no server ref at all -- the shape a
+    row this service has never resolved against Plex takes (or one dropped
+    from a re-key/prune), for the code paths that exist specifically to
+    handle it: db/refs.native_ids answering nothing for it, so the caller
+    counts it "missing" rather than probing Plex, and the API's 409 "this
+    item has no Plex id" when a ResolvedItem would otherwise have to be
+    rebuilt from nothing. ``native_id`` still names the row's identity_key
+    in that case -- only the ref row is skipped.
+    """
+    item = MediaItem(
+        identity_key=f"{kind}:legacy:{server}:{native_id}",
+        library=library, kind=kind, title=title, root_folder=root_folder,
+        season_number=season_number, episode_number=episode_number,
+        parent_id=parent.id if parent is not None else None,
+        **extra,
+    )
+    session.add(item)
+    await session.flush()
+    if plex_ref:
+        session.add(MediaItemServerRef(
+            item_id=item.id, server=server, native_id=native_id, library=library,
+        ))
+    await session.commit()
+    return item
 
 
 def decodable_png(size: tuple[int, int] = (8, 12)) -> bytes:

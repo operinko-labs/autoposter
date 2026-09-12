@@ -25,7 +25,7 @@ const ITEMS = {
       title: "Ghostbusters",
       library: "Movies",
       kind: "movie",
-      rating_key: "101",
+      refs: { plex: "101" },
       // Two kinds with different statuses on purpose: the status filter
       // matches ANY render row, so a tile must caption every kind rather
       // than letting the poster's status stand for the whole item.
@@ -36,7 +36,7 @@ const ITEMS = {
       title: "Arcane",
       library: "TV Shows",
       kind: "show",
-      rating_key: "202",
+      refs: { plex: "202" },
       render_status: {},
     },
   ],

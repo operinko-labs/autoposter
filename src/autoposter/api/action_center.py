@@ -41,6 +41,7 @@ from autoposter.actions import flags
 from autoposter.api.auth import require_session
 from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
+from autoposter.db.refs import native_ids, refs_for_items
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue_batch
 
@@ -130,13 +131,17 @@ def _undismissed(stmt):
     )
 
 
-def _reprocess_entries(items: list[MediaItem]) -> list[tuple[dict, str]]:
+def _reprocess_entries(
+    items: list[MediaItem], plex_ids: dict[int, str]
+) -> list[tuple[dict, str]]:
     """Build ``enqueue_batch``'s ``(payload, dedupe_key)`` entries for a list
     of items.
 
     Field-for-field the same ``RenderIntent`` construction as routes.py's
     ``_enqueue_reprocess``, so the single-item and batch enqueue paths cannot
-    disagree about what one item's job looks like.
+    disagree about what one item's job looks like. ``plex_ids`` is the whole
+    batch's Plex native ids, one query for every caller (``db/refs.native_ids``),
+    not one per item.
     """
     entries = []
     for item in items:
@@ -149,7 +154,7 @@ def _reprocess_entries(items: list[MediaItem]) -> list[tuple[dict, str]]:
             year=item.year,
             season_number=item.season_number,
             episode_number=item.episode_number,
-            rating_key=item.rating_key,
+            refs={"plex": plex_ids[item.id]} if item.id in plex_ids else {},
         )
         entries.append((asdict(intent), intent.dedupe_key))
     return entries
@@ -556,7 +561,11 @@ async def bulk_rerender_action(
             .all()
         ) if item_ids else []
 
-        enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
+        # One query for the whole batch's Plex ids, not one per item.
+        plex_ids = await native_ids(session, [item.id for item in items], "plex")
+        enqueued = await enqueue_batch(
+            session, "process_item", _reprocess_entries(items, plex_ids)
+        )
 
         status = "complete" if not item_ids else "enqueued"
         detail = (
@@ -746,7 +755,7 @@ async def rebuild_action(
                 "cleared": would_clear,
                 "items": len(preview_item_ids),
                 "enqueued": 0,
-                "rating_keys": [],
+                "items_detail": [],
             }
 
         cleared = 0
@@ -775,8 +784,14 @@ async def rebuild_action(
         # transaction -- the INSERT autoflushes them in and its commit lands
         # them -- so a batch that fails partway clears nothing rather than
         # clearing a batch's worth with nothing queued behind it.
-        enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
-        rating_keys = sorted(item.rating_key for item in items)
+        #
+        # One query for the whole batch's Plex ids and one for its refs, not
+        # one per item.
+        plex_ids = await native_ids(session, [item.id for item in items], "plex")
+        enqueued = await enqueue_batch(
+            session, "process_item", _reprocess_entries(items, plex_ids)
+        )
+        refs_by_item = await refs_for_items(session, item_ids)
 
         if batch:
             # The ops rule: a write nobody can find afterwards is not an
@@ -803,6 +818,13 @@ async def rebuild_action(
             )
         await session.commit()
 
+    # Sorted by Plex native id, the same order `rating_keys` used to guarantee
+    # (roadmap I2#4) -- not the item's own queue position, which is
+    # `Render.id` order and would otherwise leak the batch's internal shape.
+    items_detail = sorted(
+        ({"id": i, "refs": refs_by_item.get(i, {})} for i in item_ids),
+        key=lambda entry: (entry["refs"].get("plex") or "", entry["id"]),
+    )
     return {
         "status": "complete" if not batch else "enqueued",
         "matched": matched,
@@ -810,7 +832,7 @@ async def rebuild_action(
         "cleared": cleared,
         "items": len(item_ids),
         "enqueued": enqueued,
-        "rating_keys": rating_keys,
+        "items_detail": items_detail,
     }
 
 
@@ -861,7 +883,7 @@ async def _parked_by_latest_job(session) -> set[str]:
     return {dedupe_key for dedupe_key, state in rows if state == "parked"}
 
 
-def _dedupe_key_for(item: MediaItem) -> str:
+def _dedupe_key_for(item: MediaItem, plex_ids: dict[int, str]) -> str:
     return RenderIntent(
         kind=item.kind,
         title=item.title,
@@ -871,7 +893,7 @@ def _dedupe_key_for(item: MediaItem) -> str:
         year=item.year,
         season_number=item.season_number,
         episode_number=item.episode_number,
-        rating_key=item.rating_key,
+        refs={"plex": plex_ids[item.id]} if item.id in plex_ids else {},
     ).dedupe_key
 
 
@@ -992,8 +1014,10 @@ async def _backfill_state(session, config) -> tuple[int, int, int, int]:
             .scalars()
             .all()
         )
+        # One query for the whole pass's Plex ids, not one per item.
+        plex_ids = await native_ids(session, [item.id for item in unscored_items], "plex")
         for item in unscored_items:
-            key = _dedupe_key_for(item)
+            key = _dedupe_key_for(item, plex_ids)
             if key in parked_keys:
                 blocked += 1
             elif key in pending_keys:
@@ -1099,10 +1123,12 @@ async def _select_backfill_batch(session, batch_size: int, config) -> list[Rende
         if not page:
             break
         after_id = page[-1][0].id
+        # One query per page's Plex ids, not one per item.
+        plex_ids = await native_ids(session, [item.id for _, item in page], "plex")
         for render, item in page:
             if len(selected) >= batch_size:
                 break
-            key = _dedupe_key_for(item)
+            key = _dedupe_key_for(item, plex_ids)
             if key in pending_keys or key in parked_keys:
                 continue
             selected.append(render)
@@ -1192,7 +1218,11 @@ async def backfill_trigger(
             if item_ids
             else []
         )
-        enqueued = await enqueue_batch(session, "process_item", _reprocess_entries(items))
+        # One query for the whole batch's Plex ids, not one per item.
+        plex_ids = await native_ids(session, [item.id for item in items], "plex")
+        enqueued = await enqueue_batch(
+            session, "process_item", _reprocess_entries(items, plex_ids)
+        )
 
         # AFTER the enqueue, not before: the operator pressing again while a
         # previous batch is still rendering (the live report this answers,

@@ -1651,6 +1651,11 @@ async def _sweep(
             ))
             continue
         await session.delete(row)
+        plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+        # {} rather than {"plex": ""} when Plex gave no ratingKey: an empty
+        # string is not a native id, and a reader trusting "refs" at face
+        # value must not be handed a fake one.
+        refs = {"plex": plex_rating_key} if plex_rating_key else {}
         session.add(EventLog(
             source="collections",
             event_type="collection_deleted",
@@ -1659,7 +1664,10 @@ async def _sweep(
             payload={
                 "library": library,
                 "title": title,
-                "rating_key": str(getattr(collection, "ratingKey", "") or ""),
+                # Legacy key, kept for any reader still watching for it
+                # (spec §4.5); "refs" is the full per-server picture.
+                "rating_key": plex_rating_key,
+                "refs": refs,
             },
             outcome="deleted; %s" % why,
         ))
@@ -1681,7 +1689,8 @@ async def _sweep(
                 detail={
                     "library": library,
                     "collection": title,
-                    "rating_key": str(getattr(collection, "ratingKey", "") or ""),
+                    "rating_key": plex_rating_key,
+                    "refs": refs,
                     "reason": why,
                 },
                 url=_webhook_for(definitions, family_title),

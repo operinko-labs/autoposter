@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config
-from autoposter.db.models import ItemFacts, Render
+from autoposter.db.models import ItemFacts, MediaItemServerRef, Render
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
@@ -183,71 +183,34 @@ def _movie_item(rating_key, title="Identity Fork Movie", tmdb_id=1):
     )
 
 
-async def test_identity_fork_logs_when_resolve_returns_a_different_key(config, session, caplog):
-    """render/pipeline.py, right after `plex.resolve` (roadmap: the
-    unscorable-floor investigation, mechanism M1a): resolve() treats
-    `intent.rating_key` as a hint and is free to return a DIFFERENT key --
-    the live copy's, after a re-match or a library rebuild renumbers the item
-    -- silently, until now. The served surfaces stay class-name-only
-    everywhere in this queue; this is a WARNING in the pod log only, naming
-    both keys and the title, so a silent 390-row hole becomes a grep."""
+async def test_a_stale_plex_hint_is_not_a_fork_the_resolved_key_becomes_the_ref(
+    config, session, caplog
+):
+    """Rows are keyed by identity (servers/identity.py), so resolve() answering
+    a DIFFERENT Plex key than the intent's hint is no longer a fork to stop on
+    or warn about: the resolved key is simply what the item's Plex ref now
+    says. The old "differs from the intent's" WARNING and the fork stop went
+    with `_rekey_by_identity`; this pins that nothing replaced them."""
     source = GOLDEN / "source_textless.jpg"
 
     async def handler(request):
         return httpx.Response(200, content=source.read_bytes())
 
     item = _movie_item("12345")
-    # The intent's hint (a stale key resolve() refused) differs from what
-    # `item` -- what resolve() actually returned -- carries.
-    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, rating_key="99999")
+    # The intent's hint (a stale key) differs from what resolve() returns.
+    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, refs={"plex": "99999"})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
-            await process_item(
+            results = await process_item(
                 session, config, http, FakePlex(item), [FakeProvider("https://x/y.jpg")], intent,
             )
 
-    forks = [r for r in caplog.records if "differs from the intent's" in r.message]
-    assert len(forks) == 1
-    assert "12345" in forks[0].message
-    assert "99999" in forks[0].message
-    assert "Identity Fork Movie" in forks[0].message
-
-
-async def test_no_identity_fork_log_when_the_resolved_key_matches(config, session, caplog):
-    source = GOLDEN / "source_textless.jpg"
-
-    async def handler(request):
-        return httpx.Response(200, content=source.read_bytes())
-
-    item = _movie_item("12345")
-    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, rating_key="12345")
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
-            await process_item(
-                session, config, http, FakePlex(item), [FakeProvider("https://x/y.jpg")], intent,
-            )
-
+    assert results, "the item was processed, not stopped"
     assert not any("differs from the intent's" in r.message for r in caplog.records)
-
-
-async def test_no_identity_fork_log_when_the_intent_carries_no_hint(config, session, caplog):
-    """A fresh item this queue has never resolved before carries no
-    `rating_key` hint at all -- nothing to compare against, so nothing to
-    warn about."""
-    source = GOLDEN / "source_textless.jpg"
-
-    async def handler(request):
-        return httpx.Response(200, content=source.read_bytes())
-
-    item = _movie_item("12345")
-    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
-            await process_item(
-                session, config, http, FakePlex(item), [FakeProvider("https://x/y.jpg")], intent,
-            )
-
-    assert not any("differs from the intent's" in r.message for r in caplog.records)
+    refs = (
+        await session.execute(select(MediaItemServerRef.server, MediaItemServerRef.native_id))
+    ).all()
+    assert refs == [("plex", "12345")], "the resolved key is the item's Plex ref; the hint is gone"
 
 
 async def test_a_refused_kind_does_not_abort_its_sibling(config, session):

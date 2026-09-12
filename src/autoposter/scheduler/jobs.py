@@ -39,6 +39,7 @@ from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import config_for_library
 from autoposter.config.schema import RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import FactsBackfillState, ItemFacts, MediaItem, Render
+from autoposter.db.refs import native_ids
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue, reclaim_stale
 from autoposter.scheduler.core import Job
@@ -295,6 +296,8 @@ async def _stamp_and_enqueue(session: AsyncSession, items) -> int:
     # worst case one wasted Plex lookup per deferred item per week.
     # enqueue_batch() isn't a drop-in: it returns a rowcount not per-item ids,
     # and drops delay_seconds entirely.
+    # One query for every selected row's Plex id, not one per item.
+    plex_ids = await native_ids(session, [item.id for item in items], "plex")
     enqueued = 0
     for item in items:
         intent = RenderIntent(
@@ -308,13 +311,13 @@ async def _stamp_and_enqueue(session: AsyncSession, items) -> int:
             episode_number=item.episode_number,
             # The row's own Plex identity, like every other row-derived intent
             # in the tree. Without it this sweep was one of the two SILENT
-            # twin producers: no key means no rating-key hint, so every drift
+            # twin producers: no id means no shortcut hint, so every drift
             # job took the GUID walk, resolved the live key and upserted a
             # second row -- and the pipeline's fork warning never fired,
-            # because it only fires when the intent carried a key to disagree
+            # because it only fires when the intent carried an id to disagree
             # with. The pipeline's identity re-key closes the hole either way;
-            # carrying the key also makes the fork visible in the log.
-            rating_key=item.rating_key,
+            # carrying the id also makes the fork visible in the log.
+            refs={"plex": plex_ids[item.id]} if item.id in plex_ids else {},
         )
         job_id = await enqueue(
             session,

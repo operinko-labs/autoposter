@@ -29,7 +29,9 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import EventLog, Job, MediaItem, Render
+from autoposter.db.models import EventLog, Job, Render
+
+from conftest import seed_media_item
 from autoposter.providers.base import ArtCandidate
 from autoposter.queue.jobs import enqueue
 
@@ -161,9 +163,8 @@ async def _item(session, kind: str = "movie", with_render: bool = True, **extra)
         tmdb_id=TMDB_ID, tvdb_id=660, imdb_id="tt0137523", root_folder=ROOT_FOLDER,
     )
     defaults.update(extra)
-    item = MediaItem(**defaults)
-    session.add(item)
-    await session.flush()
+    rating_key = defaults.pop("rating_key")
+    item = await seed_media_item(session, rating_key, **defaults)
     if with_render:
         session.add(
             Render(
@@ -254,6 +255,24 @@ async def test_an_item_with_no_root_folder_is_409(
     response = await _pick(client, item_id, "poster", auth_headers)
 
     assert response.status_code == 409
+    assert transport.requests == []
+    assert list(manual_root.rglob("*")) == []
+    assert (await session.execute(select(Job))).scalars().all() == []
+
+
+async def test_an_item_with_no_plex_ref_is_409(
+    client, auth_headers, session, manual_root, transport
+):
+    """A row this service has never resolved against Plex (or one a re-key/
+    prune left behind) has no native id a ``ResolvedItem`` could be rebuilt
+    from -- refused before any provider is asked, same as the no-root-folder
+    case, and with the same nothing-happened proof."""
+    item_id = await _item(session, plex_ref=False)
+
+    response = await _pick(client, item_id, "poster", auth_headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "this item has no Plex id"
     assert transport.requests == []
     assert list(manual_root.rglob("*")) == []
     assert (await session.execute(select(Job))).scalars().all() == []

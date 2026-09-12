@@ -18,7 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.schema import Config
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
+from autoposter.db.refs import item_id_for
 from autoposter.plex.client import ResolvedItem, parse_guids
 from autoposter.render import naming
 from autoposter.render.pipeline import (
@@ -145,7 +146,13 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
     # Seasons and episodes carry no location of their own -- their artifacts
     # live under the show's folder, so root_folder is passed down rather than
     # derived again.
-    guids = _guids(season)
+    # A Plex season carries no provider guids of its own -- mirrors the SHOW's
+    # guids here, exactly as plex/client.py's own match resolution does
+    # (``container = item.show()`` there), so an adopted season and a
+    # pipeline-resolved season compute the SAME identity key. The same show
+    # guids are also the season's PARENT ids (parent_identity_key_for's
+    # "show" lookup), mirroring the resolver's own ``parent_guids``.
+    guids = _guids(show)
     return ResolvedItem(
         server="plex", native_id=str(season.ratingKey), library=library, kind="season",
         title=season.title, year=getattr(season, "year", None),
@@ -153,6 +160,8 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
         root_folder=root_folder, file_path=None, art_url=None,
         tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
         imdb_id=guids.get("imdb"), parent_native_id=str(show.ratingKey),
+        parent_tmdb_id=_as_int(guids.get("tmdb")), parent_tvdb_id=_as_int(guids.get("tvdb")),
+        parent_imdb_id=guids.get("imdb"),
         # Roadmap row 78. `show` is already a parameter -- the walk holds it
         # for the root folder and the parent key -- so the show's title costs
         # nothing here and must agree with what PlexClient.resolve produces,
@@ -162,15 +171,33 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
     )
 
 
-def _resolved_episode(library: str, season, episode, root_folder: str) -> ResolvedItem:
-    guids = _guids(episode)
+def _resolved_episode(library: str, show, season, episode, root_folder: str) -> ResolvedItem:
+    # An episode's OWN provider ids are the SHOW's, exactly as
+    # ``_resolved_season`` above takes them: the Plex resolver rebinds its
+    # match container to the SHOW for a season *or an episode* intent
+    # (plex/client.py:416-436) and builds ``guids`` off THAT container, so a
+    # ResolvedItem's tmdb_id/tvdb_id/imdb_id for a resolved episode are the
+    # series' ids. Reading the episode's own guids here instead would give an
+    # adopted episode a different identity_key from the one the render path
+    # computes for the same episode -- two rows for one episode on the next
+    # pass. The same show guids are also the episode's PARENT ids (its
+    # season's, which carry the show's), so both land on one source.
+    #
+    # Its file_path is always None: the resolver reads file_path off that
+    # same show container, which is always None -- no producer, adopted or
+    # resolved, can ever hand an episode a real file_path
+    # (servers/identity.py's FILE_BEARING no longer includes "episode" for
+    # exactly this reason).
+    show_guids = _guids(show)
     return ResolvedItem(
         server="plex", native_id=str(episode.ratingKey), library=library, kind="episode",
         title=episode.title, year=getattr(episode, "year", None),
         season_number=episode.parentIndex, episode_number=episode.index,
         root_folder=root_folder, file_path=None, art_url=None,
-        tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
-        imdb_id=guids.get("imdb"), parent_native_id=str(season.ratingKey),
+        tmdb_id=_as_int(show_guids.get("tmdb")), tvdb_id=_as_int(show_guids.get("tvdb")),
+        imdb_id=show_guids.get("imdb"), parent_native_id=str(season.ratingKey),
+        parent_tmdb_id=_as_int(show_guids.get("tmdb")), parent_tvdb_id=_as_int(show_guids.get("tvdb")),
+        parent_imdb_id=show_guids.get("imdb"),
     )
 
 
@@ -211,7 +238,7 @@ def _resolve_section(section) -> list[ResolvedItem]:
                 resolved.append(_resolved_season(library, top, season, show.root_folder))
                 for episode in season.episodes():
                     resolved.append(
-                        _resolved_episode(library, season, episode, show.root_folder)
+                        _resolved_episode(library, top, season, episode, show.root_folder)
                     )
     return resolved
 
@@ -222,11 +249,12 @@ def _hash_file(path: Path) -> str:
 
 
 async def _existing_render(session: AsyncSession, native_id: str, art_kind: str) -> Render | None:
+    item_id = await item_id_for(session, "plex", native_id)
+    if item_id is None:
+        return None
     return (
         await session.execute(
-            select(Render)
-            .join(MediaItem, Render.item_id == MediaItem.id)
-            .where(MediaItem.rating_key == native_id, Render.art_kind == art_kind)
+            select(Render).where(Render.item_id == item_id, Render.art_kind == art_kind)
         )
     ).scalar_one_or_none()
 
@@ -237,7 +265,7 @@ async def _adopt_item(
     counters.items += 1
     # Upserted unconditionally, one per item, regardless of what its art kinds
     # turn out to need below -- a media_items row exists for everything walked,
-    # there may already be one from a webhook, and rating_key is unique.
+    # there may already be one from a webhook, and identity_key is unique.
     media_item = None
     if not dry_run:
         media_item = await _upsert_media_item(session, resolved)
@@ -263,7 +291,7 @@ async def _adopt_item(
         if missing_number is not None:
             counters.unnumbered += 1
             logger.warning(
-                "adoption: %s %r (rating_key %s) has no %s -- skipping its %s",
+                "adoption: %s %r (native id %s) has no %s -- skipping its %s",
                 resolved.kind, resolved.title, resolved.native_id,
                 missing_number, art_kind,
             )

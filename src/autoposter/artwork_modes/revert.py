@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autoposter.api.artwork import OutsideAssetsRoot, resolve_asset
 from autoposter.artwork_modes.base import refuse_if_empty, refuse_if_implausible
 from autoposter.db.models import MediaItem, Render
+from autoposter.db.refs import native_ids
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ class RevertMode:
 
         rows = (
             await session.execute(
-                select(MediaItem.rating_key, Render.art_kind, Render.asset_path)
+                select(MediaItem.id, Render.art_kind, Render.asset_path)
                 .join(Render, Render.item_id == MediaItem.id)
                 # A NULL digest means this project never rendered or adopted
                 # bytes into the row. On a cutover library a Kometa-era file can
@@ -133,6 +134,8 @@ class RevertMode:
                 .order_by(MediaItem.id, Render.art_kind)
             )
         ).all()
+        # One query for the whole filtered set's Plex ids, not one per row.
+        plex_ids = await native_ids(session, [row.id for row in rows], "plex")
         # End the read transaction before the resolve/push phase: what follows
         # is a realpath and a stat per render row over a possible NFS mount and
         # then a push per file, and nothing reads the database again until the
@@ -141,12 +144,21 @@ class RevertMode:
 
         assets_root = Path(self._config.assets_root)
         planned: dict[str, list[tuple[str, Path]]] = defaultdict(list)
+        missing = 0
+        seen_without_ref: set[int] = set()
         for row in rows:
+            native_id = plex_ids.get(row.id)
+            if native_id is None:
+                if row.id not in seen_without_ref:
+                    seen_without_ref.add(row.id)
+                    logger.info("revert: %s has no Plex ref, skipped", row.id)
+                    missing += 1
+                continue
             resolved = await asyncio.to_thread(
                 _base_on_disk, row.asset_path, assets_root
             )
             if resolved is not None:
-                planned[row.rating_key].append((row.art_kind, resolved))
+                planned[native_id].append((row.art_kind, resolved))
 
         items_with_base = len(planned)
         files = sum(len(entries) for entries in planned.values())
@@ -158,19 +170,22 @@ class RevertMode:
         )
         if refusal is not None:
             return RevertResult(
-                total, items_with_base, files, 0, 0, not self._apply, refused=refusal
+                total, items_with_base, files, 0, 0, not self._apply,
+                missing=missing, refused=refusal,
             )
 
         if not self._apply:
-            return RevertResult(total, items_with_base, files, 0, 0, dry_run=True)
+            return RevertResult(
+                total, items_with_base, files, 0, 0, dry_run=True, missing=missing
+            )
 
-        pushed = failed = missing = 0
-        for rating_key, entries in planned.items():
+        pushed = failed = 0
+        for native_id, entries in planned.items():
             try:
-                ref = await self._server.fetch_ref(rating_key)
+                ref = await self._server.fetch_ref(native_id)
             except Exception:  # noqa: BLE001 - one bad item must not abort the run
                 logger.warning(
-                    "revert: could not fetch Plex item %s", rating_key, exc_info=True
+                    "revert: could not fetch Plex item %s", native_id, exc_info=True
                 )
                 failed += len(entries)
                 continue
@@ -179,7 +194,7 @@ class RevertMode:
                 # its render row was written. One concise line, no traceback --
                 # counted separately from real failures below (backup.py's
                 # PR #112 hotfix shape).
-                logger.info("revert: %s no longer in Plex, skipped", rating_key)
+                logger.info("revert: %s no longer in Plex, skipped", native_id)
                 missing += 1
                 continue
             for art_kind, path in entries:
@@ -190,12 +205,14 @@ class RevertMode:
                 except Exception:  # noqa: BLE001 - see above
                     logger.warning(
                         "revert: could not push %s for %s",
-                        art_kind, rating_key, exc_info=True,
+                        art_kind, native_id, exc_info=True,
                     )
                     failed += 1
 
         if missing:
-            logger.info("revert: skipped %d item(s) no longer in Plex", missing)
+            logger.info(
+                "revert: skipped %d item(s) with no Plex id or no longer in Plex", missing
+            )
 
         return RevertResult(
             total, items_with_base, files, pushed, failed, dry_run=False, missing=missing

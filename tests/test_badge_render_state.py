@@ -1,14 +1,13 @@
 """Badge upload state on the render row."""
 from sqlalchemy import select
 
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
+
+from conftest import seed_media_item
 
 
 async def _item(session):
-    item = MediaItem(kind="movie", rating_key="1", library="Movies", title="X")
-    session.add(item)
-    await session.flush()
-    return item
+    return await seed_media_item(session, "1", kind="movie", library="Movies", title="X")
 
 
 async def test_a_new_render_has_no_badge_state(session):

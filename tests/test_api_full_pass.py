@@ -11,7 +11,7 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import Job, MediaItem, Run
+from autoposter.db.models import Job, MediaItem, MediaItemServerRef, Run
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -49,7 +49,38 @@ def _item(**overrides):
         "tmdb_id": 100,
     }
     fields.update(overrides)
-    return MediaItem(**fields)
+    return fields
+
+
+async def _add_items(session, *items: dict) -> list[int]:
+    """Bulk-insert ``media_items`` rows plus their Plex refs from ``_item``'s
+    ``{"rating_key": ..., "library": ..., "kind": ..., ...}`` field dicts.
+
+    Two set-based statements regardless of how many rows -- the shape the
+    15,000-row test below needs: one awaited ``seed_media_item`` (a commit
+    each) per item would hold this suite open for minutes.
+    """
+    media_rows = [
+        {
+            "identity_key": "%s:legacy:plex:%s" % (fields["kind"], fields["rating_key"]),
+            **{k: v for k, v in fields.items() if k != "rating_key"},
+        }
+        for fields in items
+    ]
+    ids = (
+        await session.execute(insert(MediaItem).returning(MediaItem.id), media_rows)
+    ).scalars().all()
+    await session.execute(
+        insert(MediaItemServerRef),
+        [
+            {
+                "item_id": item_id, "server": "plex",
+                "native_id": fields["rating_key"], "library": fields["library"],
+            }
+            for item_id, fields in zip(ids, items, strict=True)
+        ],
+    )
+    return list(ids)
 
 
 def _one_of_each_kind():
@@ -80,7 +111,7 @@ async def test_full_pass_covers_every_kind_not_just_movies_and_shows(
     ART_KINDS_FOR[intent.kind]), so a movie/show-only pass -- the shape of
     the drift sweep's filter -- would never rebuild a season poster or a
     title card."""
-    session.add_all(_one_of_each_kind())
+    await _add_items(session, *_one_of_each_kind())
     await session.commit()
 
     response = await client.post("/api/full-pass", headers=auth_headers)
@@ -112,13 +143,13 @@ async def test_every_queued_intent_carries_its_rows_plex_rating_key(
     Asserted against the queued payload rather than the intent, because that
     payload is what ``queue/worker.py`` rebuilds the intent from.
     """
-    session.add_all(_one_of_each_kind())
+    await _add_items(session, *_one_of_each_kind())
     await session.commit()
 
     await client.post("/api/full-pass", headers=auth_headers)
 
     jobs = (await session.execute(select(Job))).scalars().all()
-    assert {job.payload["kind"]: job.payload["rating_key"] for job in jobs} == {
+    assert {job.payload["kind"]: job.payload["refs"]["plex"] for job in jobs} == {
         "movie": "rk-movie",
         "show": "rk-show",
         "season": "rk-season",
@@ -135,7 +166,7 @@ async def test_second_trigger_reports_the_dedupe_instead_of_queueing_again(
     """Double-clicking while the first pass is still pending must insert
     nothing -- uq_jobs_pending_dedupe -- and must say so, not claim to have
     queued the library twice."""
-    session.add_all(_one_of_each_kind())
+    await _add_items(session, *_one_of_each_kind())
     await session.commit()
 
     first = await client.post("/api/full-pass", headers=auth_headers)
@@ -154,10 +185,11 @@ async def test_duplicate_dedupe_keys_within_one_pass_queue_once(
     """The same movie in two libraries (a 4K copy) shares external ids and
     therefore a dedupe key; one pass must queue it once, exactly as two
     webhook events for it would."""
-    session.add_all([
+    await _add_items(
+        session,
         _item(rating_key="rk-1080", library="Movies"),
         _item(rating_key="rk-4k", library="Movies 4K"),
-    ])
+    )
     await session.commit()
 
     response = await client.post("/api/full-pass", headers=auth_headers)
@@ -168,7 +200,7 @@ async def test_duplicate_dedupe_keys_within_one_pass_queue_once(
 async def test_a_done_job_does_not_block_a_new_pass(client, auth_headers, session):
     """The dedupe index is partial over pending rows only; a completed pass
     must not make the library untriggerable forever."""
-    session.add(_item())
+    await _add_items(session, _item())
     session.add(Job(
         kind="process_item", payload={"kind": "movie", "title": "A Movie"},
         state="done", dedupe_key="process_item:movie:tmdb100",
@@ -191,9 +223,9 @@ async def test_a_library_sized_pass_answers_inside_one_request(
     one request. The bound is what makes this falsifiable: the set-based
     insert does this in about a second, while one enqueue() (a commit each)
     per item takes minutes and would hold the request open throughout."""
-    await session.execute(
-        insert(MediaItem),
-        [
+    await _add_items(
+        session,
+        *[
             {
                 "rating_key": f"rk{i}", "library": "Movies", "kind": "movie",
                 "title": f"Movie {i}", "tmdb_id": i + 1,
@@ -240,7 +272,7 @@ async def test_the_response_does_not_wait_on_the_webhook(
 
     notifier = _SlowNotifier()
     app.state.notifier = notifier
-    session.add_all(_one_of_each_kind())
+    await _add_items(session, *_one_of_each_kind())
     await session.commit()
 
     started = time.perf_counter()
@@ -263,7 +295,7 @@ async def test_the_full_pass_opens_a_run_row(client, auth_headers, session):
     """C1: a full pass is a run. Before this it was the one execution in the
     tree that persisted nothing at all -- it enqueued, notified, returned three
     numbers and left no row anywhere."""
-    session.add_all(_one_of_each_kind())
+    await _add_items(session, *_one_of_each_kind())
     await session.commit()
 
     response = await client.post("/api/full-pass", headers=auth_headers)
@@ -282,7 +314,7 @@ async def test_every_job_the_pass_enqueued_is_inside_its_own_window(client, auth
     resolve to that transaction's timestamp. Open the row in a separate
     transaction and every job of the pass could be created microseconds before
     its own run began."""
-    session.add_all(_one_of_each_kind())
+    await _add_items(session, *_one_of_each_kind())
     await session.commit()
 
     await client.post("/api/full-pass", headers=auth_headers)
@@ -297,7 +329,7 @@ async def test_the_response_body_is_unchanged(client, auth_headers, session):
     """The run row is additive. The three numbers the button has always shown
     are what the operator reads, and they still come from enqueue_batch's own
     count rather than from anything this row knows."""
-    session.add_all(_one_of_each_kind())
+    await _add_items(session, *_one_of_each_kind())
     await session.commit()
 
     body = (await client.post("/api/full-pass", headers=auth_headers)).json()
@@ -313,7 +345,7 @@ async def test_a_second_press_opens_a_second_run(client, auth_headers, session):
     same drain. Recorded here as the decided behaviour rather than left to be
     discovered, because the alternative (reusing an open row) leaks -- a row
     nothing ever closes would suppress every future full pass's history."""
-    session.add_all(_one_of_each_kind())
+    await _add_items(session, *_one_of_each_kind())
     await session.commit()
 
     await client.post("/api/full-pass", headers=auth_headers)

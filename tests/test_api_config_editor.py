@@ -36,10 +36,12 @@ from autoposter.config.overrides import (
     merge_overrides,
 )
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ConfigOverride, EventLog, Job, ManagedCollection, MediaItem, Render
+from autoposter.db.models import ConfigOverride, EventLog, Job, ManagedCollection, Render
 from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue
 from autoposter.render.pipeline import compute_fingerprint, gather_fingerprint_inputs
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -125,14 +127,12 @@ async def _seed_library(session, config) -> None:
         ),
     ]
     for item, art_kind in rows:
-        row = MediaItem(
-            rating_key=item.native_id, library=item.library, kind=item.kind,
+        row = await seed_media_item(
+            session, item.native_id, library=item.library, kind=item.kind,
             title=item.title, year=item.year, tmdb_id=item.tmdb_id,
             season_number=item.season_number, episode_number=item.episode_number,
             root_folder=item.root_folder,
         )
-        session.add(row)
-        await session.flush()
         text_inputs, asset_hashes = await gather_fingerprint_inputs(config, item, art_kind)
         session.add(
             Render(
@@ -162,12 +162,10 @@ async def _seed_logo_poster(session, config) -> None:
         root_folder="Logo Movie (1999)", file_path=None, art_url=None,
         tmdb_id=680, tvdb_id=None, imdb_id=None,
     )
-    row = MediaItem(
-        rating_key=item.native_id, library=item.library, kind=item.kind,
+    row = await seed_media_item(
+        session, item.native_id, library=item.library, kind=item.kind,
         title=item.title, year=item.year, tmdb_id=item.tmdb_id, root_folder=item.root_folder,
     )
-    session.add(row)
-    await session.flush()
     text_inputs, asset_hashes = await gather_fingerprint_inputs(
         config, item, "poster", draw_text=False, logo_sha="deadbeef"
     )
@@ -888,7 +886,7 @@ async def test_an_apply_saves_swaps_and_enqueues_the_affected_items(
     # and reprocess carry it (api/routes.py) -- without it, an apply over
     # adopted episode rows would enqueue jobs that resolve by episode-level
     # external ids instead, exactly the incident fix/guid-type-collision fixed.
-    assert {job.dedupe_key: job.payload["rating_key"] for job in jobs} == {
+    assert {job.dedupe_key: job.payload["refs"]["plex"] for job in jobs} == {
         "process_item:episode:tmdb1399:s01e01": "rk2",
     }
 

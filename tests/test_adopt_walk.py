@@ -14,8 +14,12 @@ from sqlalchemy import select
 from autoposter.adopt import walk
 from autoposter.adopt.walk import adopt_library
 from autoposter.config.loader import load_config
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import MediaItem, MediaItemServerRef, Render
+from autoposter.db.refs import item_id_for
 from autoposter.render import naming
+from autoposter.render.pipeline import _upsert_media_item
+from autoposter.servers.identity import identity_key_for
+from media_server_doubles import resolved
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -115,6 +119,16 @@ def _write(target: Path, content: bytes) -> None:
     target.write_bytes(content)
 
 
+async def _media_item_by_native_id(session, native_id: str) -> MediaItem:
+    """The ``media_items`` row for a Plex native id -- ``media_items`` no
+    longer has a ``rating_key`` column to query directly (Task 6); the id
+    lives in ``media_item_server_refs`` instead."""
+    item_id = await item_id_for(session, "plex", native_id)
+    return (
+        await session.execute(select(MediaItem).where(MediaItem.id == item_id))
+    ).scalar_one()
+
+
 # --- a movie whose poster exists on disk -------------------------------------
 
 
@@ -130,9 +144,7 @@ async def test_movie_with_poster_on_disk_gets_a_media_item_and_an_adopted_render
     assert report.renders == 1  # background is missing -- see next test
     assert report.missing_assets == 1
 
-    media_item = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "1"))
-    ).scalar_one()
+    media_item = await _media_item_by_native_id(session, "1")
     assert media_item.title == "Dune: Part Two"
     assert media_item.tmdb_id == 693134
     assert media_item.imdb_id == "tt15239678"
@@ -173,9 +185,17 @@ async def test_existing_non_adopted_render_is_left_untouched_and_skipped(session
     poster = naming.asset_path(config, "Movies", "Dune (2024)", "poster")
     _write(poster, b"poster-bytes")
 
-    media_item = MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune: Part Two")
-    session.add(media_item)
-    await session.flush()
+    # Its own row, sharing the SAME identity the walk's own discovery will
+    # compute (no guids, so a movie's identity falls back to its root folder
+    # and file's basename): upsert_server_ref repoints native_id "1" to
+    # whatever row _upsert_media_item's own call resolves to, so a row under
+    # a DIFFERENT identity here would have its ref stolen out from under it
+    # and the render below would attach to a row the walk never touches.
+    media_item = await _upsert_media_item(
+        session, resolved("plex", "1", title="Dune: Part Two", tmdb_id=None,
+                           file_path=str(tmp_path / "Movies" / "Dune (2024)" / "movie.mkv"),
+                           root_folder="Dune (2024)"),
+    )
     real_render = Render(
         item_id=media_item.id, art_kind="poster", asset_path=str(poster),
         status="rendered", fingerprint="a-real-fingerprint", adopted=False,
@@ -307,16 +327,13 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     assert report.items == 3  # show, season, episode
     assert report.renders == 4  # poster+background, season_poster, title_card
 
-    show_row = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "10"))
-    ).scalar_one()
-    season_row = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "20"))
-    ).scalar_one()
-    episode_row = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "30"))
-    ).scalar_one()
+    show_row = await _media_item_by_native_id(session, "10")
+    season_row = await _media_item_by_native_id(session, "20")
+    episode_row = await _media_item_by_native_id(session, "30")
 
+    # Two hops: a season's parent is the show, and an episode's parent is
+    # its own SEASON, not the show directly (config/impact.py's model;
+    # servers/identity.py's ``parent_identity_key_for``).
     assert season_row.parent_id == show_row.id
     assert episode_row.parent_id == season_row.id
     assert episode_row.season_number == 1
@@ -329,6 +346,68 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     ).scalar_one()
     assert season_render.adopted is True
     assert season_render.base_sha256 == hashlib.sha256(b"season-poster").hexdigest()
+
+
+async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents_when_the_show_has_a_guid(
+    session, tmp_path
+):
+    """The guid-bearing counterpart of the test above: the show carries a
+    real tvdb guid, so the season and episode's PARENT ids come from the
+    show's own guids (``_resolved_season``/``_resolved_episode`` mirror the
+    Plex resolver's own ``parent_guids``), and both hops resolve by provider
+    id rather than falling back to root_folder."""
+    config = _config(tmp_path)
+    library_root = tmp_path / "TV Shows"
+    show_dir = str(library_root / "Breaking Bad (2008)")
+    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1)
+    season = FakeSeason("20", "Season 1", season_number=1, episodes=[episode])
+    show = FakeShow("10", "Breaking Bad", show_dir, seasons=[season], guids=["tvdb://81189"])
+    section = FakeSection("TV Shows", [str(library_root)], [show])
+
+    report = await adopt_library(session, config, section, dry_run=False)
+
+    assert report.items == 3
+
+    show_row = await _media_item_by_native_id(session, "10")
+    season_row = await _media_item_by_native_id(session, "20")
+    episode_row = await _media_item_by_native_id(session, "30")
+
+    assert show_row.identity_key == "show:tvdb:81189::"
+    assert season_row.identity_key == "season:tvdb:81189:s1:"
+    assert season_row.parent_id == show_row.id
+    assert episode_row.parent_id == season_row.id
+
+
+async def test_an_adopted_episode_keys_on_its_shows_ids_not_its_own(session, tmp_path):
+    """The episode carries a tvdb guid OF ITS OWN, different from the show's.
+
+    The render path never sees that id: ``PlexClient`` rebinds its match
+    container to the SHOW for an episode intent, so the ``ResolvedItem`` it
+    builds carries the SERIES' ids. Adoption reading the episode's own guids
+    instead would store a row under a key no later pass can ever compute --
+    a second row for one episode on the next full pass. So the adopted row's
+    key must equal the key the resolver-shaped item computes.
+    """
+    config = _config(tmp_path)
+    library_root = tmp_path / "TV Shows"
+    show_dir = str(library_root / "Breaking Bad (2008)")
+    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1,
+                          guids=["tvdb://5479030"])
+    season = FakeSeason("20", "Season 1", season_number=1, episodes=[episode])
+    show = FakeShow("10", "Breaking Bad", show_dir, seasons=[season], guids=["tvdb://81189"])
+    section = FakeSection("TV Shows", [str(library_root)], [show])
+
+    await adopt_library(session, config, section, dry_run=False)
+
+    episode_row = await _media_item_by_native_id(session, "30")
+    from_the_resolver = resolved(
+        "plex", "30", kind="episode", library="TV Shows", title="Pilot", year=None,
+        tmdb_id=None, tvdb_id=81189, season_number=1, episode_number=1,
+        file_path=None, root_folder="Breaking Bad (2008)",
+    )
+    assert episode_row.identity_key == identity_key_for(from_the_resolver)
+    assert episode_row.identity_key == "episode:tvdb:81189:s1e1:"
+    assert episode_row.tvdb_id == 81189, "the episode's own 5479030 must not be stored"
 
 
 def test_the_adoption_walk_carries_the_shows_title_onto_each_season():
@@ -472,14 +551,16 @@ async def test_an_unnumbered_episode_is_counted_and_does_not_abort_the_walk(sess
     assert report.missing_assets == 1
     assert report.skipped_by_config == 0
 
-    rating_keys = {
-        m.rating_key for m in (await session.execute(select(MediaItem))).scalars().all()
-    }
-    assert rating_keys == {"10", "20", "30", "31"}
+    native_ids = set(
+        (
+            await session.execute(
+                select(MediaItemServerRef.native_id).where(MediaItemServerRef.server == "plex")
+            )
+        ).scalars()
+    )
+    assert native_ids == {"10", "20", "30", "31"}
     # The unnumbered episode has no render row -- there was no file to name.
-    unnumbered_row = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "31"))
-    ).scalar_one()
+    unnumbered_row = await _media_item_by_native_id(session, "31")
     assert (
         await session.execute(select(Render).where(Render.item_id == unnumbered_row.id))
     ).scalars().all() == []
@@ -551,8 +632,13 @@ async def test_a_rerun_splits_newly_adopted_from_re_confirmed(session, tmp_path)
     """
     config = _config(tmp_path)
     library_root = tmp_path / "Movies"
-    new_path = str(library_root / "Dune (2024)" / "movie.mkv")
-    old_path = str(library_root / "Arrival (2016)" / "movie.mkv")
+    # Distinct basenames, not both "movie.mkv": with no guids on either
+    # FakeMovie, a movie's identity falls back to ``root_folder/basename``
+    # (identity.py's path branch), so two same-named files in the SAME
+    # folder would collide onto one identity -- kept distinct here so the
+    # two rows this test needs really are two rows.
+    new_path = str(library_root / "Dune (2024)" / "Dune Part Two.mkv")
+    old_path = str(library_root / "Arrival (2016)" / "Arrival.mkv")
     section = FakeSection("Movies", [str(library_root)], [
         FakeMovie("1", "Dune: Part Two", new_path),
         FakeMovie("2", "Arrival", old_path, year=2016),
@@ -562,9 +648,15 @@ async def test_a_rerun_splits_newly_adopted_from_re_confirmed(session, tmp_path)
     _write(new_poster, b"poster-bytes")
     _write(old_poster, b"poster-bytes")
 
-    already_adopted = MediaItem(rating_key="2", library="Movies", kind="movie", title="Arrival")
-    session.add(already_adopted)
-    await session.flush()
+    # Sharing the SAME identity the walk's own discovery will compute for
+    # "2" (no guids, so a movie's identity falls back to its root folder and
+    # file's basename) -- see test_existing_non_adopted_render_is_left_untouched_
+    # and_skipped's comment for why a mismatch here would have
+    # upsert_server_ref steal the ref out from under this row.
+    already_adopted = await _upsert_media_item(
+        session, resolved("plex", "2", title="Arrival", tmdb_id=None, file_path=old_path,
+                           root_folder="Arrival (2016)"),
+    )
     session.add(Render(
         item_id=already_adopted.id, art_kind="poster", asset_path=str(old_poster),
         status="rendered", fingerprint="a-stale-fingerprint", adopted=True,

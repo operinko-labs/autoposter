@@ -19,6 +19,44 @@ is not a first start, though, and is refused rather than served the wizard:
 `boot` logs one line naming the two paths it looked at and exits non-zero,
 the same restart loop a missing document produced before this row existed.
 
+### Upgrading to the identity-keyed schema
+
+One migration on the upgrade path needs a look before you deploy it: alembic
+revision `c1d2e3f4a5b6` re-keys `media_items` on the item's **identity**
+(provider ids, or its path) instead of Plex's rating key, moves every
+server's own id into `media_item_server_refs`, and drops
+`media_items.rating_key`. Identity is UNIQUE, so rows that were separate only
+because Plex gave them separate rating keys are **merged** — and a merge
+deletes a row.
+
+**Before deploying, ask what it will merge.** The report is read-only, needs
+no Plex, and is safe on a live database:
+
+```bash
+AUTOPOSTER_DATABASE_URL=<your production URL> python -m autoposter.migrate_preview
+```
+
+It prints one line per identity collision — the key, the surviving row and
+the ids that merge into it — or `no identity collisions`. Run it against the
+database you are about to migrate, not a copy with different data. After the
+migration has run it says so and exits 0, so it is safe to leave in a script.
+
+**What boot then does.** The migration is part of `alembic upgrade head`, so
+it runs unattended at boot and never refuses. Each collision is resolved
+deterministically — the most recently updated row survives, ties broken
+toward the higher id — and logs one `WARNING` naming the key and both row
+ids. The stale row's renders, facts, credits, overrides, dismissals and
+children move onto the survivor first; a duplicate of something the survivor
+already has is dropped rather than overwriting it. The whole revision is one
+transaction: a failure anywhere rolls all of it back.
+
+**What the downgrade does not give back.** `alembic downgrade` restores the
+`rating_key` column, **not** the merged rows — those merges are permanent. An
+item known to more than one server keeps only its newest Plex id, and an item
+Plex never held gets a placeholder key (`jf-<id>`) that resolves to nothing
+until it is adopted again. Plan the upgrade as a one-way step with a database
+backup behind it, not as something to roll back.
+
 ## First-start setup
 
 A deployment is CONFIGURED when both of two things are true: every hard
@@ -2271,18 +2309,23 @@ forever while the artwork on screen looked fresh: the *twin's* render rewrote
 the same file (asset paths are keyed by library and root folder, never by the
 rating key), and only the twin's row got the score.
 
-The pipeline no longer forks: when it resolves an item to a key no row holds
-and exactly one row carries that identity — same kind, same library, same
-season and episode numbers, and at least one external id in common — it moves
-that row onto the live key and records the move in `events_log`
-(`source = 'rekey'`, `event_type = 'media_item_rekeyed'`, carrying both keys).
-Nothing on disk changes.
+The pipeline cannot fork any more, and the re-key machinery that used to
+prevent it is gone with the column it worked on. A `media_items` row is keyed
+by its **identity** — `identity_key`, computed from the item's provider ids
+or its path, never from any one server's id — and each server's own id lives
+in `media_item_server_refs` (one row per item per server). A rating key that
+moves is now an ordinary update of that ref row: same item, new Plex id,
+nothing to re-key and nothing audited. There is no `media_item_rekeyed`
+event any more, so a query for one matches nothing on a migrated database.
+
+To see which Plex id an item currently holds:
 
 ```sql
-SELECT payload->>'old_rating_key', payload->>'new_rating_key',
-       payload->>'title', received_at
-  FROM events_log WHERE event_type = 'media_item_rekeyed'
- ORDER BY received_at DESC;
+SELECT m.id, m.identity_key, m.title, r.native_id AS rating_key
+  FROM media_items m
+  LEFT JOIN media_item_server_refs r
+    ON r.item_id = m.id AND r.server = 'plex'
+ ORDER BY m.id;
 ```
 
 The `plex_merge` job reconciles the pairs that already existed. Per pair, with
@@ -2377,8 +2420,9 @@ and its previous reports of "0 moved" were correct.
 
 1. Deploy. The pipeline stops forking immediately.
 2. Let one ratings-drift cadence and one `arr_sync` cadence pass (or press the
-   Action Center's backfill), so re-matched rows get re-keyed as they are
-   visited. Re-keys are visible in `events_log` with the query above.
+   Action Center's backfill), so re-matched rows have their Plex ref
+   re-pointed as they are visited. The ref query above shows which id each
+   row currently holds.
 3. Run `plex_merge` from the dashboard with `merge.apply: false` and **read
    the report.** Cross-check it against the sizing queries below.
 4. Set `merge.apply: true`, run it again, and read the summary.
@@ -2396,12 +2440,13 @@ That is acceptable for a one-time cutover tool — run `plex_merge` afterwards.
 need no Plex, and are safe on a live database. The first counts the pairs; the
 second splits the render outcome into repoints and drops, and its
 `twin_also_unscored` column is the "neither row is scored" population the job
-reports separately.
+reports separately. The rating keys come from `media_item_server_refs` —
+`media_items.rating_key` is gone, and a query against it now errors.
 
 ```sql
 SELECT s.kind,
-       count(*)                                                            AS twin_pairs,
-       count(*) FILTER (WHERE t.rating_key::bigint > s.rating_key::bigint) AS newer_is_twin
+       count(*)                                                              AS twin_pairs,
+       count(*) FILTER (WHERE tk.native_id::bigint > sk.native_id::bigint)   AS newer_is_twin
   FROM media_items s
   JOIN media_items t
     ON t.id <> s.id
@@ -2412,6 +2457,8 @@ SELECT s.kind,
    AND ( (s.tmdb_id IS NOT NULL AND t.tmdb_id = s.tmdb_id)
       OR (s.tvdb_id IS NOT NULL AND t.tvdb_id = s.tvdb_id)
       OR (s.imdb_id IS NOT NULL AND t.imdb_id = s.imdb_id) )
+  JOIN media_item_server_refs sk ON sk.item_id = s.id AND sk.server = 'plex'
+  JOIN media_item_server_refs tk ON tk.item_id = t.id AND tk.server = 'plex'
  GROUP BY 1 ORDER BY 2 DESC;
 ```
 
@@ -2472,10 +2519,11 @@ families appear under one library name the strict minority is the fossil.
 
 ```sql
 WITH families AS (
-  SELECT id, rating_key, kind, library, title, year,
-         tmdb_id, tvdb_id, imdb_id, root_folder,
-         CASE WHEN kind = 'movie' THEN 'movie' ELSE 'show' END AS family
-    FROM media_items
+  SELECT m.id, r.native_id AS plex_key, m.kind, m.library, m.title, m.year,
+         m.tmdb_id, m.tvdb_id, m.imdb_id, m.root_folder,
+         CASE WHEN m.kind = 'movie' THEN 'movie' ELSE 'show' END AS family
+    FROM media_items m
+    LEFT JOIN media_item_server_refs r ON r.item_id = m.id AND r.server = 'plex'
 ), tally AS (
   SELECT library, family, count(*) AS n
     FROM families GROUP BY library, family

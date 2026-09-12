@@ -127,26 +127,26 @@ def test_a_rating_key_does_not_change_the_dedupe_key():
     )
     with_key = RenderIntent(
         kind="episode", title="Pilot", tvdb_id=200, season_number=1, episode_number=1,
-        rating_key="77632",
+        refs={"plex": "77632"},
     )
     assert with_key.dedupe_key == without.dedupe_key
     assert without.dedupe_key == "process_item:episode:tvdb200:s01e01"
 
 
 def test_a_payload_queued_before_rating_keys_existed_still_rebuilds():
-    """``queue/worker.py`` does ``RenderIntent(**job.payload)``. Pending rows
-    written by the previous release carry no ``rating_key`` key at all, so the
+    """``queue/worker.py`` does ``RenderIntent.from_payload(job.payload)``. Pending
+    rows written by the previous release carry no ``refs`` key at all, so the
     field has to default rather than be required."""
     intent = RenderIntent(**{"kind": "movie", "title": "A Movie", "tmdb_id": 100})
-    assert intent.rating_key is None
+    assert intent.native_id_on("plex") is None
 
 
 def test_webhook_intents_carry_no_rating_key():
     """Sonarr/Radarr know nothing about Plex, so the webhook path keeps
     resolving by GUID -- there is no key to shortcut with."""
     intents = parse_sonarr(load("sonarr_download_single.json"))
-    assert [i.rating_key for i in intents] == [None, None, None]
-    assert parse_radarr(load("radarr_download.json"))[0].rating_key is None
+    assert [i.native_id_on("plex") for i in intents] == [None, None, None]
+    assert parse_radarr(load("radarr_download.json"))[0].native_id_on("plex") is None
 
 
 def test_intent_is_hashable_for_set_deduplication():
