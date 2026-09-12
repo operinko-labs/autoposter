@@ -7,15 +7,6 @@
   color: var(--ok);
 }
 
-/* The server's note about this row's identity, under the outcome line. Muted
- * rather than an error colour: nothing has failed, and the re-run really was
- * queued -- this says only that it may find nothing to do. */
-.item-twin-note {
-  margin: -8px 0 16px;
-  color: var(--text-muted);
-  font-size: 13px;
-}
-
 /* The art kind above its own pair of panes. Without it two pairs on one page
  * carry identical captions and nothing says which is the background. */
 .art-kind-label {

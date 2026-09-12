@@ -172,7 +172,7 @@ export interface CancelJobResponse {
 /** One row of GET /api/id-mismatches.
  *
  * The same shape carries all three groups, so the unmatched ones leave the
- * other side null: `rating_key`/`plex_title`/`library` are null for an
+ * other side empty: `refs`/`plex_title`/`library` are empty/null for an
  * `arr_only` row, `arr_title` is null for a `plex_only` one, and that absence
  * is the finding rather than missing data.
  *
@@ -189,7 +189,7 @@ export interface IdMismatchRow {
   kind: string;
   path: string;
   library: string | null;
-  rating_key: string | null;
+  refs: Record<string, string>;
   plex_title: string | null;
   arr_title: string | null;
   year: number | null;
@@ -261,7 +261,7 @@ export interface ItemSummary {
   title: string;
   library: string;
   kind: string;
-  rating_key: string | null;
+  refs: Record<string, string>;
   /** art_kind -> render status. */
   render_status: Record<string, string>;
 }
@@ -614,7 +614,7 @@ export interface ItemDetailResponse {
   title: string;
   library: string;
   kind: string;
-  rating_key: string | null;
+  refs: Record<string, string>;
   /** From the item's own row. Null for a movie or show; a season carries
    * only `season_number`, an episode carries both. */
   season_number: number | null;
@@ -1012,10 +1012,12 @@ export interface BulkRerenderResponse {
  * the distinct items behind those rows and `enqueued` counts jobs actually
  * created, which is fewer whenever the pending dedupe swallowed one.
  *
- * `rating_keys` names the Plex items this press queued. It is the only
- * non-numeric field, and it is deliberate: row 213 permits counts and rating
- * keys and nothing else, so there is no `detail` sentence here -- the page
- * writes its own copy from these numbers.
+ * `items_detail` names the items this press queued, each with its `refs`
+ * (every server's id for that item). It is the only non-numeric field, and it
+ * is deliberate: row 213 permits counts and ids and nothing else, so there is
+ * no `detail` sentence here -- the page writes its own copy from these
+ * numbers. Named `items_detail` rather than `items` because `items` already
+ * names the distinct-item count above.
  */
 export interface RebuildResponse {
   status: "dry run" | "enqueued" | "complete";
@@ -1024,7 +1026,7 @@ export interface RebuildResponse {
   cleared: number;
   items: number;
   enqueued: number;
-  rating_keys: string[];
+  items_detail: { id: number; refs: Record<string, string> }[];
 }
 
 /** `GET /api/actions/backfill` -- the quality backfill's standing progress.

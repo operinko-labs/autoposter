@@ -26,7 +26,7 @@ const MOVIE = {
   title: "Ghostbusters",
   library: "Movies",
   kind: "movie",
-  rating_key: "101",
+  refs: { plex: "101" },
   season_number: null,
   episode_number: null,
   parent: null,
@@ -62,15 +62,6 @@ const MOVIE = {
  * apart. Asserted below to be plain text. */
 const OVERRIDE_PATH = "/manualassets/Movies/Ghostbusters (1984)/poster.jpg";
 
-/** The server's exact words, held verbatim. The page must render what the
- * server sent and must not own a copy of this sentence -- a client-side
- * rewrite would drift from the constant `api/routes.py` actually serves, and
- * an operator would be reading two different explanations of one condition. */
-const TWIN_NOTE =
-  "another row carries this item's identity under a different Plex rating " +
-  "key, so this re-run may complete without changing anything; the " +
-  "plex_merge job is what reconciles such a pair";
-
 /** The same movie with both of its art kinds rendered, one of them from a
  * hand-placed override file. Listed poster-first on purpose: the panes are
  * specified as ordered by art kind, so a page that simply followed the array
@@ -104,7 +95,7 @@ const EPISODE = {
   title: "Fly",
   library: "TV Shows",
   kind: "episode",
-  rating_key: "909",
+  refs: { plex: "909" },
   season_number: null,
   episode_number: null,
   parent: null,
@@ -121,7 +112,7 @@ const EPISODE_WITH_PARENT = {
   ...EPISODE,
   id: 154245,
   title: "Episode 26",
-  rating_key: "154245",
+  refs: { plex: "154245" },
   season_number: 2,
   episode_number: 26,
   parent: { id: 42, title: "Firefly" },
@@ -134,7 +125,7 @@ const SEASON_WITH_PARENT = {
   title: "Season 2",
   library: "TV Shows",
   kind: "season",
-  rating_key: "8080",
+  refs: { plex: "8080" },
   season_number: 2,
   episode_number: null,
   parent: { id: 42, title: "Firefly" },
@@ -647,99 +638,6 @@ describe("ItemDetail", () => {
     expect(document.querySelector(".item-outcome")).toBeNull();
   });
 
-  it("shows the server's twin note beside the queued outcome", async () => {
-    // The fork stop's whole visible symptom: the job is queued, completes,
-    // and does nothing. The note is the only thing on any served surface that
-    // says why -- job.last_error is deliberately null and /api/events never
-    // serves the payload that would tie its audit row to this item.
-    stubFetch(
-      movieRoutes({
-        "/api/items/3/reprocess": () =>
-          json({ queued: true, job_id: 412, note: TWIN_NOTE }),
-      }),
-    );
-
-    await renderItem();
-
-    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
-
-    await waitFor(() =>
-      expect(document.querySelector(".item-twin-note")?.textContent).toBe(TWIN_NOTE),
-    );
-    // Its own line, not folded into the outcome: the outcome is about this
-    // click, the note is about the row, and blurring them would have the page
-    // claim the queueing itself was doubtful.
-    expect(document.querySelector(".item-outcome")?.textContent).toBe(
-      "Queued as job #412.",
-    );
-  });
-
-  it("shows the twin note on a de-duplicated re-run too", async () => {
-    // The note is a property of the ROW, not of whether this particular click
-    // inserted a job. A page that gated it on `queued` would go silent exactly
-    // when an operator is clicking twice because nothing appeared to happen.
-    stubFetch(
-      movieRoutes({
-        "/api/items/3/reprocess": () =>
-          json({ queued: false, job_id: null, note: TWIN_NOTE }),
-      }),
-    );
-
-    await renderItem();
-
-    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
-
-    await waitFor(() =>
-      expect(document.querySelector(".item-outcome")?.textContent).toBe(
-        "Already queued — nothing new was added.",
-      ),
-    );
-    expect(document.querySelector(".item-twin-note")?.textContent).toBe(TWIN_NOTE);
-  });
-
-  it("shows no twin note when the server sends none", async () => {
-    // The shipped case, and the one that must stay quiet: a note on every
-    // re-run would be wallpaper an operator learns to ignore.
-    stubFetch(
-      movieRoutes({
-        "/api/items/3/reprocess": () => json({ queued: true, job_id: 412, note: null }),
-      }),
-    );
-
-    await renderItem();
-
-    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
-
-    await waitFor(() =>
-      expect(document.querySelector(".item-outcome")?.textContent).toBe(
-        "Queued as job #412.",
-      ),
-    );
-    expect(document.querySelector(".item-twin-note")).toBeNull();
-  });
-
-  it("shows no twin note when the server omits the key entirely", async () => {
-    // An older API pod mid-rollout answers without a `note` key at all, so
-    // response.note is undefined rather than null. A strict `!== null` check
-    // would let that through and render an empty, textless paragraph.
-    stubFetch(
-      movieRoutes({
-        "/api/items/3/reprocess": () => json({ queued: true, job_id: 412 }),
-      }),
-    );
-
-    await renderItem();
-
-    fireEvent.click(screen.getByRole("button", { name: "Re-run" }));
-
-    await waitFor(() =>
-      expect(document.querySelector(".item-outcome")?.textContent).toBe(
-        "Queued as job #412.",
-      ),
-    );
-    expect(document.querySelector(".item-twin-note")).toBeNull();
-  });
-
   it("shows a labelled base+live pair for every art kind the item has rendered", async () => {
     // A movie has both a poster and a background. Showing only the poster hid
     // half of what this page exists to compare, and there was no way to see a
@@ -1025,9 +923,24 @@ describe("ItemDetail parentage", () => {
     expect(breadcrumb.textContent).toContain("TV Shows");
     expect(breadcrumb.textContent).toContain("Firefly");
     expect(breadcrumb.textContent).toContain("episode");
-    expect(breadcrumb.textContent).toContain("rating key 154245");
+    expect(breadcrumb.textContent).toContain("plex 154245");
     const showLink = within(breadcrumb).getByRole("link", { name: "Firefly" });
     expect(showLink).toHaveAttribute("href", "/items/42");
+  });
+
+  it("renders every server's ref, not just plex's", async () => {
+    stubFetch({
+      "/api/items/154245": () =>
+        json({ ...EPISODE_WITH_PARENT, refs: { plex: "154245", jellyfin: "0a1b" } }),
+      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+    });
+
+    await renderItem(154245);
+
+    const breadcrumb = document.querySelector(".item-meta") as HTMLElement;
+    expect(breadcrumb.textContent).toContain("plex 154245");
+    expect(breadcrumb.textContent).toContain("jellyfin 0a1b");
   });
 
   it("names the show in a season's header and breadcrumb, analogous to an episode", async () => {
@@ -1700,7 +1613,7 @@ describe("ItemDetail candidate picker", () => {
       ...MOVIE,
       id: 42,
       title: "Firefly",
-      rating_key: "42042",
+      refs: { plex: "42042" },
       renders: [{ ...MOVIE.renders[0], art_kind: "title_card" }],
     };
     stubFetch({

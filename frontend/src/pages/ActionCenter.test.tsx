@@ -135,7 +135,7 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
       return json(
         overrides.rebuild ?? {
           status: "enqueued", matched: 1, selected: 1, cleared: 1,
-          items: 1, enqueued: 1, rating_keys: ["7"],
+          items: 1, enqueued: 1, items_detail: [{ id: 7, refs: { plex: "7" } }],
         },
       );
     }
@@ -656,7 +656,7 @@ describe("ActionCenter", () => {
     const fetchMock = stubFetch({
       rebuild: {
         status: "enqueued", matched: 1, selected: 1, cleared: 0,
-        items: 1, enqueued: 0, rating_keys: ["7"],
+        items: 1, enqueued: 0, items_detail: [{ id: 7, refs: { plex: "7" } }],
       },
     });
     renderPage();
@@ -678,7 +678,7 @@ describe("ActionCenter", () => {
     const fetchMock = stubFetch({
       rebuild: {
         status: "dry run", matched: 2, selected: 2, cleared: 1,
-        items: 2, enqueued: 0, rating_keys: [],
+        items: 2, enqueued: 0, items_detail: [],
       },
     });
     renderPage();
@@ -732,7 +732,7 @@ describe("ActionCenter", () => {
     stubFetch({
       rebuild: {
         status: "dry run", matched: 2, selected: 2, cleared: 1,
-        items: 2, enqueued: 0, rating_keys: [],
+        items: 2, enqueued: 0, items_detail: [],
       },
     });
     renderPage();
@@ -773,7 +773,11 @@ describe("ActionCenter", () => {
     const fetchMock = stubFetch({
       rebuild: {
         status: "enqueued", matched: 2, selected: 2, cleared: 2,
-        items: 2, enqueued: 2, rating_keys: ["7", "8"],
+        items: 2, enqueued: 2,
+        items_detail: [
+          { id: 7, refs: { plex: "7" } },
+          { id: 8, refs: { plex: "8" } },
+        ],
       },
     });
     renderPage();

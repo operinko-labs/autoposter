@@ -97,7 +97,7 @@ function Row({ row }: { row: IdMismatchRow }) {
       <td>
         <Ids ids={row.arr_ids} differing={row.differing} side="arr" />
       </td>
-      <td className="muted mono cell-time">{row.rating_key ?? "—"}</td>
+      <td className="muted mono cell-time">{row.refs.plex ?? "—"}</td>
     </tr>
   );
 }
