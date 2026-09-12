@@ -2519,10 +2519,11 @@ families appear under one library name the strict minority is the fossil.
 
 ```sql
 WITH families AS (
-  SELECT id, rating_key, kind, library, title, year,
-         tmdb_id, tvdb_id, imdb_id, root_folder,
-         CASE WHEN kind = 'movie' THEN 'movie' ELSE 'show' END AS family
-    FROM media_items
+  SELECT m.id, r.native_id AS plex_key, m.kind, m.library, m.title, m.year,
+         m.tmdb_id, m.tvdb_id, m.imdb_id, m.root_folder,
+         CASE WHEN m.kind = 'movie' THEN 'movie' ELSE 'show' END AS family
+    FROM media_items m
+    LEFT JOIN media_item_server_refs r ON r.item_id = m.id AND r.server = 'plex'
 ), tally AS (
   SELECT library, family, count(*) AS n
     FROM families GROUP BY library, family

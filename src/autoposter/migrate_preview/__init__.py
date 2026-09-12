@@ -37,7 +37,7 @@ def show_provider_ids(row, by_id) -> tuple:
         return (row["tmdb_id"], row["tvdb_id"], row["imdb_id"])
     current = row
     for _ in range(2):  # episode -> season -> show is the longest chain
-        parent = by_id.get(current["parent_id"]) if current["parent_id"] is not None else None
+        parent = by_id.get(current.get("parent_id")) if current.get("parent_id") is not None else None
         if parent is None:
             break
         current = parent
