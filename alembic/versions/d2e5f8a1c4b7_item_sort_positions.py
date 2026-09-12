@@ -1,7 +1,7 @@
 """item sort positions
 
 Revision ID: d2e5f8a1c4b7
-Revises: b7c4e1a92f30
+Revises: c1d2e3f4a5b6
 Create Date: 2026-09-12 00:00:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'd2e5f8a1c4b7'
-down_revision: Union[str, Sequence[str], None] = 'b7c4e1a92f30'
+down_revision: Union[str, Sequence[str], None] = 'c1d2e3f4a5b6'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

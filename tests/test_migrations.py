@@ -473,7 +473,7 @@ async def test_the_item_sort_positions_migration_is_reversible():
     if not await _postgres_reachable():
         _unreachable_postgres()
 
-    before = "b7c4e1a92f30"
+    before = "c1d2e3f4a5b6"
     suffix = "_sortpos"
 
     maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)

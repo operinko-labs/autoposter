@@ -15,8 +15,10 @@ from sqlalchemy import select
 from autoposter.collections.builders import REGISTRY, BuilderContext, BuilderResult, register
 from autoposter.collections.engine import run_library
 from autoposter.config.schema import CollectionDefinition
-from autoposter.db.models import ItemSortPosition, ManagedCollection, MediaItem
+from autoposter.db.models import ItemSortPosition, ManagedCollection
+from autoposter.db.refs import native_ids
 
+from conftest import seed_media_item
 from test_builder_engine import FakeSection, _config
 
 
@@ -55,19 +57,16 @@ class _Dead:
 
 
 async def _seed_items(session, keys):
-    """``media_items`` rows for the fake section's items, one per rating key."""
+    """``media_items`` rows plus their Plex refs for the fake section's items,
+    one per rating key -- ``conftest.seed_media_item`` writes the pair."""
     for key in keys:
-        session.add(MediaItem(rating_key=key, library="Movies", kind="movie", title=key))
-    await session.flush()
+        await seed_media_item(session, key, library="Movies", kind="movie", title=key)
 
 
 async def _rows(session):
-    """``{rating_key: (definition_title, base, position, total, released)}``."""
-    keys = {
-        media.id: media.rating_key
-        for media in (await session.execute(select(MediaItem))).scalars()
-    }
+    """``{plex id: (definition_title, base, position, total, released)}``."""
     rows = (await session.execute(select(ItemSortPosition))).scalars().all()
+    keys = await native_ids(session, [row.item_id for row in rows], "plex")
     return {
         keys[row.item_id]: (
             row.definition_title, row.base, row.position, row.total,
@@ -105,7 +104,7 @@ async def test_positions_follow_the_builders_order_after_the_limit(session, regi
         "m1": ("The Bond Collection", "Bond", 2, 3, False),
         "m2": ("The Bond Collection", "Bond", 3, 3, False),
     }
-    assert {payload["rating_key"] for payload, _ in run.reprocess} == {"m1", "m2", "m3"}
+    assert {payload["refs"]["plex"] for payload, _ in run.reprocess} == {"m1", "m2", "m3"}
     assert all(payload["kind"] == "movie" for payload, _ in run.reprocess)
 
 
@@ -170,7 +169,7 @@ async def test_a_departed_member_is_released_and_a_returning_one_re_held(
     rows = await _rows(session)
     assert rows["m1"] == ("Bond", "Bond", 1, 1, False)
     assert rows["m2"][4] is True, "released, not deleted"
-    assert {payload["rating_key"] for payload, _ in run.reprocess} == {"m1", "m2"}
+    assert {payload["refs"]["plex"] for payload, _ in run.reprocess} == {"m1", "m2"}
 
     listing._ids = [("imdb", "tt1"), ("imdb", "tt2")]
     await run_library(session, section, "Movies", "Movie", definitions, _config())

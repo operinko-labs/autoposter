@@ -14,12 +14,13 @@ from sqlalchemy import func, select, update
 
 from autoposter.config.loader import load_config
 from autoposter.config.schema import OperationsConfig
-from autoposter.db.models import ItemMetadataOverride, ItemSortPosition, MediaItem
+from autoposter.db.models import ItemMetadataOverride, ItemSortPosition
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.plex.writer import plan_edits
 from autoposter.render.pipeline import apply_metadata
 
+from conftest import seed_media_item
 from test_mass_ops_fields import FakeItem, FakeTMDB, _item
 from test_mass_ops_verbs import FakeField, LockableItem, RecordingPlexItem, RecordingServer
 
@@ -33,9 +34,8 @@ def config():
 
 @pytest_asyncio.fixture
 async def media_item_id(session):
-    media = MediaItem(rating_key="1", library="Movies", kind="movie", title="Aliens")
-    session.add(media)
-    await session.flush()
+    """The row ``_item()`` resolves to (Plex id "1"), with its server ref."""
+    media = await seed_media_item(session, "1", library="Movies", kind="movie", title="Aliens")
     return media.id
 
 

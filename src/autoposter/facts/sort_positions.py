@@ -8,9 +8,9 @@ query at all.
 
 Keyed on ``media_items.id`` and NOTHING else, on purpose: the pipeline holds
 the id by the time it gathers, and the Jellyfin design
-(``docs/design/2026-09-12-jellyfin-media-server-design.md`` §4.6-4.7) drops
+(``docs/design/2026-09-12-jellyfin-media-server-design.md`` §4.6-4.7) dropped
 ``media_items.rating_key`` for an identity key plus per-server refs. A read
-that joined on the Plex key would have to move with it; this one does not.
+that joined on the Plex key would have had to move with it; this one did not.
 """
 from dataclasses import replace
 

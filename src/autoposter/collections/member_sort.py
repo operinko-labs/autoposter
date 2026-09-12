@@ -28,7 +28,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import ItemSortPosition, MediaItem
+from autoposter.db.models import ItemSortPosition, MediaItem, MediaItemServerRef
+from autoposter.db.refs import _chunked, native_ids
 from autoposter.facts.franchise_sort import sort_base
 from autoposter.intake.arr import RenderIntent
 
@@ -89,28 +90,37 @@ def hold_releases(run_cache: dict, library: str, reason: str) -> None:
     _assignment(run_cache, library).hold_reason = reason
 
 async def _media_by_native_id(
-    session: AsyncSession, library: str, native_ids: list[str]
+    session: AsyncSession, library: str, plex_ids: list[str]
 ) -> dict[str, MediaItem]:
     """``{plex rating key: MediaItem}`` for the members the pass resolved.
 
-    The ONE place this module maps a server's key to a media item, kept
-    separate so the Jellyfin identity migration
-    (``docs/design/2026-09-12-jellyfin-media-server-design.md`` §4.1, §4.7)
-    swaps a single function: today the key is ``media_items.rating_key``;
-    after it, a ``media_item_server_refs`` row with ``server='plex'``. The
-    collections engine resolves against plexapi objects, so the key it
-    holds is Plex's by construction.
+    The ONE place this module maps a server's key to a media item. Since the
+    identity migration (spec ``docs/design/2026-09-12-jellyfin-media-server-
+    design.md`` §4.1) that key lives in ``media_item_server_refs`` under
+    ``server='plex'``, never on ``media_items`` itself. The collections
+    engine resolves against plexapi objects, so the key it holds is Plex's
+    by construction. Batched: one IN(...) per ``db/refs`` chunk, never a
+    query per member.
     """
-    if not native_ids:
+    if not plex_ids:
         return {}
-    rows = (
-        await session.execute(
-            select(MediaItem).where(
-                MediaItem.library == library, MediaItem.rating_key.in_(native_ids)
+    media: dict[str, MediaItem] = {}
+    for chunk in _chunked(plex_ids):
+        rows = (
+            await session.execute(
+                select(MediaItemServerRef.native_id, MediaItem)
+                .join(MediaItem, MediaItem.id == MediaItemServerRef.item_id)
+                .where(
+                    MediaItemServerRef.server == "plex",
+                    MediaItemServerRef.native_id.in_(chunk),
+                    MediaItem.library == library,
+                )
+                .order_by(MediaItemServerRef.id.desc())
             )
-        )
-    ).scalars().all()
-    return {row.rating_key: row for row in rows}
+        ).all()
+        for native_id, row in rows:
+            media.setdefault(native_id, row)
+    return media
 
 
 async def commit_assignment(
@@ -215,6 +225,7 @@ async def commit_assignment(
 
     reprocess: list[tuple[dict, str]] = []
     released_rows: dict[int, MediaItem] = {}
+    released_keys: dict[int, str] = {}
     if to_release:
         released_rows = {
             row.id: row
@@ -222,14 +233,30 @@ async def commit_assignment(
                 await session.execute(select(MediaItem).where(MediaItem.id.in_(to_release)))
             ).scalars()
         }
+        released_keys = await native_ids(session, to_release, "plex")
+    unaddressable = 0
     for item_id in [*changed, *to_release]:
-        row = media[wanted[item_id][0]] if item_id in wanted else released_rows[item_id]
+        if item_id in wanted:
+            row, plex_id = media[wanted[item_id][0]], wanted[item_id][0]
+        else:
+            row, plex_id = released_rows[item_id], released_keys.get(item_id)
+        if plex_id is None:
+            # A released item this service no longer knows on Plex (its ref
+            # was pruned): nothing can be written for it, and the tombstone
+            # waits for a pass that resolves it again.
+            unaddressable += 1
+            continue
         intent = RenderIntent(
             kind=row.kind, title=row.title, tmdb_id=row.tmdb_id, tvdb_id=row.tvdb_id,
             imdb_id=row.imdb_id, year=row.year, season_number=row.season_number,
-            episode_number=row.episode_number, rating_key=row.rating_key,
+            episode_number=row.episode_number, refs={"plex": plex_id},
         )
         reprocess.append((asdict(intent), intent.dedupe_key))
+    if unaddressable:
+        logger.info(
+            "%s: %d released member(s) have no Plex ref and were not queued",
+            library, unaddressable,
+        )
 
     actions: list[str] = []
     if wanted or to_release:

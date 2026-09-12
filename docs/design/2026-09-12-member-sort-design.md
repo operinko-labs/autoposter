@@ -96,8 +96,8 @@ One row per item is the ownership rule made structural (§6): the pass decides
 the owner, the table cannot hold two. Nothing is stored on `item_facts`, for
 row 99's reason — that row is the provider's record.
 
-Alembic: one hand-numbered revision after the current head
-`b7c4e1a92f30`, create and drop only, using `a4db89c94eaa_item_credits.py`
+Alembic: one hand-numbered revision after the identity migration's head
+`c1d2e3f4a5b6`, create and drop only, using `a4db89c94eaa_item_credits.py`
 as the template. Upgrade, downgrade and re-upgrade are proven in the
 lane's scratch database (the test image has no `psql`; go through the
 `postgres` service).
@@ -123,8 +123,9 @@ ordered, filtered, capped members (`items` after the `limit` slice, today
    everywhere else, and disclosed in the row.
 3. After every definition in the library has run (in `run_library`, before
    the sweep), commit the library's assignment in one place:
-   - resolve rating keys to `media_items.id` with the `facts_read.py` join
-     shape (`MediaItem.library == library, MediaItem.rating_key.in_(...)`);
+   - resolve Plex rating keys to `media_items.id` through
+     `media_item_server_refs` (`server='plex'`, the identity migration's
+     home for every server id), batched, in one helper;
      a member with no `media_items` row yet (imported but never processed)
      is logged once per pass with its count and skipped — it gets a row on
      its first `process_item`, and the next pass positions it;
