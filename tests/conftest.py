@@ -81,6 +81,7 @@ DEEP_SUITES = frozenset(
         "test_api_stats_storage.py",
         "test_api_testing.py",
         "test_api_version.py",
+        "test_migration_identity.py",
     }
 )
 

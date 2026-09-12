@@ -24,12 +24,13 @@ from autoposter.db.base import Base
 
 
 class MediaItem(Base):
-    """One movie, show, season or episode, keyed by its Plex rating key."""
+    """One movie, show, season or episode, keyed by a server-neutral identity
+    (servers/identity.py). Per-server ids live in media_item_server_refs."""
 
     __tablename__ = "media_items"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    rating_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    identity_key: Mapped[str] = mapped_column(Text, unique=True, index=True)
     library: Mapped[str] = mapped_column(String(255), index=True)
     kind: Mapped[str] = mapped_column(String(16), index=True)  # movie|show|season|episode
     parent_id: Mapped[int | None] = mapped_column(
@@ -96,7 +97,7 @@ class Render(Base):
     # re-compositing the base.
     badge_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # pending | uploaded | skipped | failed
+    # pending | uploaded | skipped | failed  (the roll-up of render_deliveries, spec §5.2)
     # server_default, not just default: `default` is Python-side only, so
     # ADD COLUMN NOT NULL would fail against the populated renders table a
     # deployed instance already has.
@@ -206,6 +207,45 @@ class Render(Base):
     # migration. It is what makes the coverage gap visible instead of letting
     # an unscored row read as a clean one.
     quality_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MediaItemServerRef(Base):
+    """One server's id for one item (spec §4.1). Unique per (server, native_id)."""
+
+    __tablename__ = "media_item_server_refs"
+    __table_args__ = (UniqueConstraint("server", "native_id", name="uq_server_ref"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+    )
+    server: Mapped[str] = mapped_column(String(16))
+    native_id: Mapped[str] = mapped_column(String(128))
+    library: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RenderDelivery(Base):
+    """One server's outcome for one render (spec §5.2). `Render.upload_status`
+    stays as the roll-up; this is the per-server truth and the retry queue."""
+
+    __tablename__ = "render_deliveries"
+    __table_args__ = (UniqueConstraint("render_id", "server", name="uq_delivery_render_server"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    render_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("renders.id", ondelete="CASCADE"), index=True
+    )
+    server: Mapped[str] = mapped_column(String(16))
+    # uploaded | skipped | failed | pending
+    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    detail: Mapped[str | None] = mapped_column(Text)
 
 
 class Job(Base):
