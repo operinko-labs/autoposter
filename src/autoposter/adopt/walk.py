@@ -172,26 +172,30 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
 
 
 def _resolved_episode(library: str, show, season, episode, root_folder: str) -> ResolvedItem:
-    # An episode's own guids come from the episode itself, same as the
-    # resolver. Its file_path is always None: the Plex resolver rebinds its
-    # match container to the SHOW for a season/episode intent
-    # (plex/client.py:416-436) and reads file_path off THAT container, which
-    # for a show is always None -- no producer, adopted or resolved, can
-    # ever hand an episode a real file_path (servers/identity.py's
-    # FILE_BEARING no longer includes "episode" for exactly this reason).
-    guids = _guids(episode)
-    # The episode's PARENT is its season, which the resolver's own
-    # ``parent_guids`` -- and this walk's ``_resolved_season`` above -- key
-    # off the SHOW's guids, not the episode's own. Mirrored here so
-    # parent_identity_key_for's season lookup lands on that same row.
+    # An episode's OWN provider ids are the SHOW's, exactly as
+    # ``_resolved_season`` above takes them: the Plex resolver rebinds its
+    # match container to the SHOW for a season *or an episode* intent
+    # (plex/client.py:416-436) and builds ``guids`` off THAT container, so a
+    # ResolvedItem's tmdb_id/tvdb_id/imdb_id for a resolved episode are the
+    # series' ids. Reading the episode's own guids here instead would give an
+    # adopted episode a different identity_key from the one the render path
+    # computes for the same episode -- two rows for one episode on the next
+    # pass. The same show guids are also the episode's PARENT ids (its
+    # season's, which carry the show's), so both land on one source.
+    #
+    # Its file_path is always None: the resolver reads file_path off that
+    # same show container, which is always None -- no producer, adopted or
+    # resolved, can ever hand an episode a real file_path
+    # (servers/identity.py's FILE_BEARING no longer includes "episode" for
+    # exactly this reason).
     show_guids = _guids(show)
     return ResolvedItem(
         server="plex", native_id=str(episode.ratingKey), library=library, kind="episode",
         title=episode.title, year=getattr(episode, "year", None),
         season_number=episode.parentIndex, episode_number=episode.index,
         root_folder=root_folder, file_path=None, art_url=None,
-        tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
-        imdb_id=guids.get("imdb"), parent_native_id=str(season.ratingKey),
+        tmdb_id=_as_int(show_guids.get("tmdb")), tvdb_id=_as_int(show_guids.get("tvdb")),
+        imdb_id=show_guids.get("imdb"), parent_native_id=str(season.ratingKey),
         parent_tmdb_id=_as_int(show_guids.get("tmdb")), parent_tvdb_id=_as_int(show_guids.get("tvdb")),
         parent_imdb_id=show_guids.get("imdb"),
     )

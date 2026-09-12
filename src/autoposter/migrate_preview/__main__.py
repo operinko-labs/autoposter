@@ -24,8 +24,9 @@ async def main() -> int:
                 print("media_items.rating_key is already gone; the identity migration has run")
                 return 0
             rows = (await conn.execute(sa.text(
-                "SELECT id, kind, tmdb_id, tvdb_id, imdb_id, season_number, episode_number, file_path, "
-                "root_folder, rating_key, title, updated_at FROM media_items"))).mappings().all()
+                "SELECT id, parent_id, kind, tmdb_id, tvdb_id, imdb_id, season_number, "
+                "episode_number, file_path, root_folder, rating_key, title, updated_at "
+                "FROM media_items"))).mappings().all()
     finally:
         await engine.dispose()
     collisions = preview([dict(r) for r in rows])

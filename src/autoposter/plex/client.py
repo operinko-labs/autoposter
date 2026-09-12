@@ -326,15 +326,17 @@ class PlexClient:
     def _fetch_by_rating_key_sync(self, intent: RenderIntent, sections) -> _RawMatch | None:
         """The item named by ``intent.native_id_on("plex")``, or None to fall back.
 
-        Adoption stored every item's exact Plex identity in
-        ``media_items.rating_key``, so an intent built from such a row does not
-        need an agent lookup at all. It also must not use one: adoption stored
-        each episode's OWN external ids, while `_search_sync` reads an episode
-        intent's ids as the *series'* ids -- true on the webhook path, where
-        Sonarr supplies them, and false for every adopted row. Episode-level
-        ids either match nothing (the job retries as "waiting for Plex" until
-        it parks) or match an unrelated item that happens to carry the same
-        number.
+        Adoption stored every item's exact Plex identity -- today a
+        ``media_item_server_refs`` row, before the identity migration the
+        ``media_items.rating_key`` column -- so an intent built from such a
+        row does not need an agent lookup at all. It also must not use one:
+        an episode intent's own ids are only ever the *series'* ids here
+        (the adoption walk takes the show's guids, mirroring what
+        ``_search_sync`` builds from the show container), and a row adopted
+        before that alignment can still carry episode-level ids of its own.
+        Those either match nothing (the job retries as "waiting for Plex"
+        until it parks) or match an unrelated item that happens to carry the
+        same number.
 
         Returning None rather than raising is the whole contract here: a
         rating key is a *hint*. Plex renumbers on a library rebuild, so a
@@ -356,7 +358,9 @@ class PlexClient:
             item = self._server.fetchItem(int(intent.native_id_on("plex")))  # type: ignore[arg-type]
         except (PlexNotFound, TypeError, ValueError):
             # NotFound: the key names nothing any more. TypeError/ValueError:
-            # `rating_key` is a text column, so a row can hold a non-number.
+            # `media_item_server_refs.native_id` is a text column (it has to
+            # be -- a Jellyfin id is a hex string), so a row can hold a
+            # non-number.
             return None
         if item is None or getattr(item, "type", None) != intent.kind:
             # Compared against the intent's kind, not the library type, so a

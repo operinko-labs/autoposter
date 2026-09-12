@@ -34,6 +34,30 @@ SEED = [
      -- this migration now carries through via `root_folder`.
      ('10', 'TV', 'show', NULL, NULL, NULL, 'Orphan Show', 2001, NULL, NULL, '/tv/Orphan Show (2001)', 'Orphan Show (2001)', '2026-01-08 00:00:00+00');
     """,
+    # An adopted-style show/season/episode chain (C1). Adoption before
+    # 2026-09-13 stored each EPISODE's OWN tvdb id, while the Plex resolver
+    # has always keyed an episode on its SHOW's (its match container is the
+    # show). The migration has to reach the show through parent_id, or this
+    # row lands under a key no later pass can ever compute and the next full
+    # pass mints a second row for the same episode. Three statements,
+    # because each parent_id needs the id the statement before it minted.
+    """
+    INSERT INTO media_items (rating_key, library, kind, tmdb_id, tvdb_id, imdb_id, title, year,
+                             season_number, episode_number, file_path, root_folder, updated_at) VALUES
+     ('11', 'TV', 'show', NULL, 121361, NULL, 'Game of Thrones', 2011, NULL, NULL, '/tv/Game of Thrones (2011)', 'Game of Thrones (2011)', '2026-03-01 00:00:00+00');
+    """,
+    """
+    INSERT INTO media_items (rating_key, library, kind, tmdb_id, tvdb_id, imdb_id, title, year,
+                             season_number, episode_number, file_path, root_folder, parent_id, updated_at) VALUES
+     ('12', 'TV', 'season', NULL, 121361, NULL, 'Season 1', 2011, 1, NULL, NULL, 'Game of Thrones (2011)',
+      (SELECT id FROM media_items WHERE rating_key = '11'), '2026-03-02 00:00:00+00');
+    """,
+    """
+    INSERT INTO media_items (rating_key, library, kind, tmdb_id, tvdb_id, imdb_id, title, year,
+                             season_number, episode_number, file_path, root_folder, parent_id, updated_at) VALUES
+     ('13', 'TV', 'episode', NULL, 3254641, NULL, 'Winter Is Coming', 2011, 1, 1, NULL, 'Game of Thrones (2011)',
+      (SELECT id FROM media_items WHERE rating_key = '12'), '2026-03-03 00:00:00+00');
+    """,
     """
     INSERT INTO renders (item_id, art_kind, source_mode, asset_path, upload_status, status) VALUES
      (1, 'poster', 'generate', '/a/1.jpg', 'uploaded', 'rendered'),
@@ -98,6 +122,12 @@ async def test_up_down_up_with_every_identity_shape():
     # resolver's match container for a season/episode intent is the show).
     assert keys[6] == "episode:tvdb:71663:s2e3:"
     assert keys[10] == "show:path:::Orphan Show (2001)"
+    # C1: the season and the episode key on the SHOW's tvdb id, reached
+    # through parent_id -- the episode's own 3254641 is never in the key,
+    # because the Plex resolver would never produce it.
+    assert keys[11] == "show:tvdb:121361::"
+    assert keys[12] == "season:tvdb:121361:s1:"
+    assert keys[13] == "episode:tvdb:121361:s1e1:"
     assert 7 not in keys, "the duplicate 4K row merged into the newest row"
     assert (1, "plex", "7") in refs, "the merged row's Plex id now points at the survivor"
     assert deliveries == {(1, "plex", "uploaded")}, "the stale row's render was a duplicate art_kind and was dropped, not delivered"
@@ -120,8 +150,8 @@ async def test_up_down_up_with_every_identity_shape():
     assert back[1] == "1" and back[3] == "3"
 
     _alembic("upgrade", "head")
-    # 8, not the original 10: both collisions (7 into 1, 8 into 9) are
-    # permanent, so the round trip is stable at the eight surviving items,
+    # 11, not the original 13: both collisions (7 into 1, 8 into 9) are
+    # permanent, so the round trip is stable at the eleven surviving items,
     # each with one ref.
-    assert len(await _rows(engine, "SELECT 1 FROM media_item_server_refs")) == 8
+    assert len(await _rows(engine, "SELECT 1 FROM media_item_server_refs")) == 11
     await engine.dispose()

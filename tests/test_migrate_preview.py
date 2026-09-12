@@ -56,6 +56,35 @@ def test_preview_uses_root_folder_for_provider_less_movies():
     ]
 
 
+def test_preview_keys_seasons_and_episodes_on_their_shows_ids():
+    """C1: an adopted episode stored its OWN tvdb id, but the Plex resolver
+    keys an episode on its SHOW's -- so the preview, like the migration,
+    walks parent_id up to the show. Rows 22 and 23 carry different
+    episode-level ids and therefore collide onto one identity; row 24's
+    chain is broken (no parent at all), so its own id is all there is to key
+    on and it stands alone."""
+    rows = [
+        dict(id=20, parent_id=None, kind="show", tmdb_id=None, tvdb_id=121361, imdb_id=None,
+             season_number=None, episode_number=None, file_path=None,
+             root_folder="Game of Thrones (2011)", rating_key="20", title="GoT", updated_at=5),
+        dict(id=21, parent_id=20, kind="season", tmdb_id=None, tvdb_id=121361, imdb_id=None,
+             season_number=1, episode_number=None, file_path=None,
+             root_folder="Game of Thrones (2011)", rating_key="21", title="S1", updated_at=4),
+        dict(id=22, parent_id=21, kind="episode", tmdb_id=None, tvdb_id=3254641, imdb_id=None,
+             season_number=1, episode_number=1, file_path=None,
+             root_folder="Game of Thrones (2011)", rating_key="22", title="Ep", updated_at=3),
+        dict(id=23, parent_id=21, kind="episode", tmdb_id=None, tvdb_id=9999999, imdb_id=None,
+             season_number=1, episode_number=1, file_path=None,
+             root_folder="Game of Thrones (2011)", rating_key="23", title="Ep dup", updated_at=2),
+        dict(id=24, parent_id=None, kind="episode", tmdb_id=None, tvdb_id=555, imdb_id=None,
+             season_number=2, episode_number=4, file_path=None, root_folder="Orphaned",
+             rating_key="24", title="Parentless", updated_at=1),
+    ]
+    assert preview(rows) == [
+        Collision(key="episode:tvdb:121361:s1e1:", survivor_id=22, merged_ids=[23]),
+    ]
+
+
 def test_main_requires_a_database_url():
     """No database needed: __main__ must check up front rather than raise a
     bare KeyError traceback."""

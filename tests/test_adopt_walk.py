@@ -18,6 +18,7 @@ from autoposter.db.models import MediaItem, MediaItemServerRef, Render
 from autoposter.db.refs import item_id_for
 from autoposter.render import naming
 from autoposter.render.pipeline import _upsert_media_item
+from autoposter.servers.identity import identity_key_for
 from media_server_doubles import resolved
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -377,6 +378,38 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents_when_t
     assert episode_row.parent_id == season_row.id
 
 
+async def test_an_adopted_episode_keys_on_its_shows_ids_not_its_own(session, tmp_path):
+    """The episode carries a tvdb guid OF ITS OWN, different from the show's.
+
+    The render path never sees that id: ``PlexClient`` rebinds its match
+    container to the SHOW for an episode intent, so the ``ResolvedItem`` it
+    builds carries the SERIES' ids. Adoption reading the episode's own guids
+    instead would store a row under a key no later pass can ever compute --
+    a second row for one episode on the next full pass. So the adopted row's
+    key must equal the key the resolver-shaped item computes.
+    """
+    config = _config(tmp_path)
+    library_root = tmp_path / "TV Shows"
+    show_dir = str(library_root / "Breaking Bad (2008)")
+    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1,
+                          guids=["tvdb://5479030"])
+    season = FakeSeason("20", "Season 1", season_number=1, episodes=[episode])
+    show = FakeShow("10", "Breaking Bad", show_dir, seasons=[season], guids=["tvdb://81189"])
+    section = FakeSection("TV Shows", [str(library_root)], [show])
+
+    await adopt_library(session, config, section, dry_run=False)
+
+    episode_row = await _media_item_by_native_id(session, "30")
+    from_the_resolver = resolved(
+        "plex", "30", kind="episode", library="TV Shows", title="Pilot", year=None,
+        tmdb_id=None, tvdb_id=81189, season_number=1, episode_number=1,
+        file_path=None, root_folder="Breaking Bad (2008)",
+    )
+    assert episode_row.identity_key == identity_key_for(from_the_resolver)
+    assert episode_row.identity_key == "episode:tvdb:81189:s1e1:"
+    assert episode_row.tvdb_id == 81189, "the episode's own 5479030 must not be stored"
+
+
 def test_the_adoption_walk_carries_the_shows_title_onto_each_season():
     """The third producer. ``_resolve_section`` already holds the show (``top``)
     and passes it into ``_resolved_season``, so this is a field to thread, not
@@ -600,10 +633,10 @@ async def test_a_rerun_splits_newly_adopted_from_re_confirmed(session, tmp_path)
     config = _config(tmp_path)
     library_root = tmp_path / "Movies"
     # Distinct basenames, not both "movie.mkv": with no guids on either
-    # FakeMovie, a movie's identity falls back to its file's basename alone
-    # (identity.py), so two same-named files in different folders would
-    # collide onto ONE identity -- exactly the twin-avoidance this suite's
-    # own rows must not accidentally trigger.
+    # FakeMovie, a movie's identity falls back to ``root_folder/basename``
+    # (identity.py's path branch), so two same-named files in the SAME
+    # folder would collide onto one identity -- kept distinct here so the
+    # two rows this test needs really are two rows.
     new_path = str(library_root / "Dune (2024)" / "Dune Part Two.mkv")
     old_path = str(library_root / "Arrival (2016)" / "Arrival.mkv")
     section = FakeSection("Movies", [str(library_root)], [
