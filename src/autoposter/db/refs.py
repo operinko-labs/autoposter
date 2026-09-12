@@ -21,12 +21,26 @@ def _chunked(item_ids: list[int]) -> list[list[int]]:
     return [item_ids[i:i + _IN_CHUNK] for i in range(0, len(item_ids), _IN_CHUNK)]
 
 
+# ONE ref per (item, server) is an invariant -- ``upsert_server_ref`` deletes
+# the item's other refs for a server it just resolved, and the migration's
+# merge drops a stale row's ref for a server the survivor already has (spec
+# §4.1). So the three lookups below normally have nothing to choose between.
+# They still read ``id DESC`` and keep the FIRST row seen for a key
+# (``setdefault``, never a dict comprehension's last-one-wins), so that a
+# database written by some other version of this code -- or a hand-edited
+# row -- resolves to the NEWEST ref rather than to whichever one Postgres
+# happened to return first. Arbitrary is the failure this replaces; every
+# reader now agrees on the same answer.
 async def refs_for(session: AsyncSession, item_id: int) -> dict[str, str]:
     rows = await session.execute(
         select(MediaItemServerRef.server, MediaItemServerRef.native_id)
-        .where(MediaItemServerRef.item_id == item_id).order_by(MediaItemServerRef.id)
+        .where(MediaItemServerRef.item_id == item_id)
+        .order_by(MediaItemServerRef.id.desc())
     )
-    return {server: native_id for server, native_id in rows.all()}
+    refs: dict[str, str] = {}
+    for server, native_id in rows.all():
+        refs.setdefault(server, native_id)
+    return refs
 
 
 async def item_id_for(session: AsyncSession, server: str, native_id: str) -> int | None:
@@ -44,8 +58,10 @@ async def native_ids(session: AsyncSession, item_ids: list[int], server: str) ->
         rows = await session.execute(
             select(MediaItemServerRef.item_id, MediaItemServerRef.native_id)
             .where(MediaItemServerRef.item_id.in_(chunk), MediaItemServerRef.server == server)
+            .order_by(MediaItemServerRef.id.desc())
         )
-        result.update(rows.all())
+        for item_id, native_id in rows.all():
+            result.setdefault(item_id, native_id)
     return result
 
 
@@ -63,8 +79,8 @@ async def refs_for_items(session: AsyncSession, item_ids: list[int]) -> dict[int
         rows = await session.execute(
             select(MediaItemServerRef.item_id, MediaItemServerRef.server, MediaItemServerRef.native_id)
             .where(MediaItemServerRef.item_id.in_(chunk))
-            .order_by(MediaItemServerRef.id)
+            .order_by(MediaItemServerRef.id.desc())
         )
         for item_id, server, native_id in rows.all():
-            result[item_id][server] = native_id
+            result[item_id].setdefault(server, native_id)
     return result

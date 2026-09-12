@@ -160,6 +160,23 @@ async def test_rescan_replaces_an_items_rows(session, config):
     assert await _rows(session, item.id) == [("actor", "A")]
 
 
+async def test_two_plex_refs_on_one_item_cannot_double_insert_a_credit(session, config):
+    """Spec §4.1 makes one ref per (item, server) an invariant, so this shape
+    should not exist -- but ``by_key`` is inverted from (item_id, native_id)
+    pairs, so if it ever did, Plex answering for BOTH ids would hand the
+    identical (item_id, kind, person) triple to ``insert(ItemCredit)`` twice
+    and the UniqueViolation would fail the whole scan. Guarded, not assumed."""
+    item = await _item(session, "1")
+    session.add(MediaItemServerRef(item_id=item.id, server="plex", native_id="2", library="Movies"))
+    await session.flush()
+    server = _movies(FakeItem(1, actors=("Ann",)), FakeItem(2, actors=("Ann",)))
+
+    summary = await scan_credits(session, server, config)
+
+    assert summary == "Movies: 1 item(s) scanned, 1 credit(s)"
+    assert await _rows(session, item.id) == [("actor", "Ann")]
+
+
 async def test_enumerate_credits_counts_most_first_ties_on_name(session, config):
     """The GROUP BY shape ``facts_enumeration.enumerate_values`` keeps: a
     (person, item_count) pair, most appearances first, ties on the person

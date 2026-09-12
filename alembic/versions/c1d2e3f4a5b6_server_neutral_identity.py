@@ -122,6 +122,16 @@ def _merge_into(conn, *, stale_id: int, survivor_id: int, key: str) -> None:
         'identity collision on %s: merging media_items %d into %d', key, stale_id, survivor_id
     )
     p = {'s': survivor_id, 'o': stale_id}
+    # ONE ref per (item, server) is an invariant (spec §4.1): re-pointing the
+    # stale row's refs wholesale would leave the survivor with two live Plex
+    # ids, and every reader that asks "what is this item's Plex id" would
+    # then pick one of them arbitrarily. The stale row's ref for a server the
+    # survivor already has is dropped instead -- the survivor's own id is the
+    # newer row's, which is the same row the merge picked as authoritative.
+    # Same EXISTS-correlate shape as DEPENDENTS below, on (item_id, server).
+    conn.execute(sa.text(
+        "DELETE FROM media_item_server_refs o WHERE o.item_id = :o AND EXISTS "
+        "(SELECT 1 FROM media_item_server_refs s WHERE s.item_id = :s AND s.server = o.server)"), p)
     conn.execute(sa.text("UPDATE media_item_server_refs SET item_id = :s WHERE item_id = :o"), p)
     conn.execute(sa.text(
         "DELETE FROM renders WHERE item_id = :o AND art_kind IN "
@@ -138,14 +148,32 @@ def _merge_into(conn, *, stale_id: int, survivor_id: int, key: str) -> None:
 
 
 def downgrade() -> None:
-    """Back through the Plex ref rows. A Jellyfin-only item has no Plex id to
-    go back to and gets a unique placeholder rather than failing the step."""
+    """Back through the Plex ref rows. This is NOT a round trip: three things
+    the upgrade did cannot be undone, and an operator running it must know
+    which.
+
+    1. **Merges are permanent.** ``upgrade`` deletes each stale row of an
+       identity collision after moving its children onto the survivor. Going
+       back down re-creates the ``rating_key`` column, not the rows that
+       carried the other keys -- their renders, facts, credits, overrides and
+       dismissals live on the survivor now, and a second upgrade is stable at
+       the surviving population.
+    2. **A second ref per (item, server) is discarded.** ``rating_key`` holds
+       one value, so only the newest Plex ref survives the trip down (the
+       ``id DESC`` below). Spec §4.1 now makes one ref per (item, server) an
+       invariant, so this should be unreachable -- but the down path is what
+       runs on a database written by some other version of this code, and it
+       must say what it drops rather than pick silently.
+    3. **A Jellyfin-only item has no Plex id to go back to** and gets a unique
+       ``jf-<id>`` placeholder rather than failing the step. Nothing resolves
+       that key; the row is adopted afresh on the next pass.
+    """
     conn = op.get_bind()
     op.add_column('media_items', sa.Column('rating_key', sa.String(length=64), nullable=True))
     conn.execute(sa.text(
         "UPDATE media_items m SET rating_key = r.native_id FROM ("
         "  SELECT DISTINCT ON (item_id) item_id, native_id FROM media_item_server_refs "
-        "  WHERE server = 'plex' ORDER BY item_id, id) r WHERE r.item_id = m.id"))
+        "  WHERE server = 'plex' ORDER BY item_id, id DESC) r WHERE r.item_id = m.id"))
     conn.execute(sa.text("UPDATE media_items SET rating_key = 'jf-' || id WHERE rating_key IS NULL"))
     op.alter_column('media_items', 'rating_key', nullable=False)
     op.create_index('ix_media_items_rating_key', 'media_items', ['rating_key'], unique=True)

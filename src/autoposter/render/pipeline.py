@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -647,10 +647,21 @@ async def fetch_plex_generated_base(
 
 
 async def upsert_server_ref(session: AsyncSession, item_id: int, item: ResolvedItem) -> None:
-    """One (server, native_id) row per item. A key that moved to another item
-    (a Plex re-match) is re-pointed here, which is the whole of the old
+    """ONE ref per (item, server) -- spec §4.1's invariant, enforced here.
+
+    A key that moved to another item (a Plex re-match, a library rebuild) is
+    re-pointed by the upsert, which is the whole of the old
     ``_rekey_by_identity``: identity is the row, the server id is an
-    attribute."""
+    attribute. But re-pointing alone would leave the item holding BOTH ids
+    for that server -- the old one still points at this row -- and every
+    reader that asks "what is this item's Plex id" (``db/refs.py``, the API
+    payloads, the credits scan) would then have to pick one of several
+    arbitrarily. The item's other ids for THIS server are deleted instead:
+    the one just resolved is the live one, by construction.
+
+    Only this server's other refs. A Jellyfin id and a Plex id for the same
+    item are the point of the table, not a conflict.
+    """
     stmt = insert(MediaItemServerRef).values(
         item_id=item_id, server=item.server, native_id=item.native_id, library=item.library,
     )
@@ -659,6 +670,13 @@ async def upsert_server_ref(session: AsyncSession, item_id: int, item: ResolvedI
         set_={"item_id": item_id, "library": item.library, "updated_at": func.now()},
     )
     await session.execute(stmt)
+    await session.execute(
+        delete(MediaItemServerRef).where(
+            MediaItemServerRef.item_id == item_id,
+            MediaItemServerRef.server == item.server,
+            MediaItemServerRef.native_id != item.native_id,
+        )
+    )
 
 
 async def _promote_weak_key(session: AsyncSession, item: ResolvedItem, key: str) -> None:

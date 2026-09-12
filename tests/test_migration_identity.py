@@ -120,6 +120,8 @@ async def test_up_down_up_with_every_identity_shape():
     assert keys[5] == "show:tvdb:71663::"
     # No file field: an episode never carries its own file_path (the Plex
     # resolver's match container for a season/episode intent is the show).
+    # Its parent chain is broken (no parent_id at all), so C1's show lookup
+    # falls back to the row's own ids -- there is nothing else to key on.
     assert keys[6] == "episode:tvdb:71663:s2e3:"
     assert keys[10] == "show:path:::Orphan Show (2001)"
     # C1: the season and the episode key on the SHOW's tvdb id, reached
@@ -129,12 +131,19 @@ async def test_up_down_up_with_every_identity_shape():
     assert keys[12] == "season:tvdb:121361:s1:"
     assert keys[13] == "episode:tvdb:121361:s1e1:"
     assert 7 not in keys, "the duplicate 4K row merged into the newest row"
-    assert (1, "plex", "7") in refs, "the merged row's Plex id now points at the survivor"
+    # ONE ref per (item, server), spec §4.1: the survivor already has a Plex
+    # ref of its own, so the merged row's is DROPPED rather than re-pointed.
+    # Two live Plex ids on one item is the state every reader would then
+    # have to choose between.
+    assert (1, "plex", "1") in refs, "the survivor keeps its own Plex id"
+    assert (1, "plex", "7") not in refs, "the merged row's Plex id was dropped, not re-pointed"
     assert deliveries == {(1, "plex", "uploaded")}, "the stale row's render was a duplicate art_kind and was dropped, not delivered"
 
     assert keys[9] == "movie:tmdb:42::e.mkv"
     assert 8 not in keys, "identical-timestamp tie breaks toward the higher id (id DESC)"
-    assert (9, "plex", "8") in refs, "the tied stale row's Plex id now points at the higher-id survivor"
+    assert (9, "plex", "9") in refs, "the higher-id survivor keeps its own Plex id"
+    assert (9, "plex", "8") not in refs, "the tied stale row's Plex id was dropped too"
+    assert len(refs) == 11, "eleven surviving rows, one Plex ref each"
 
     # The per-table unique-key dedupe (not item_id alone): the survivor's own
     # field_x is untouched, the stale row's clashing field_x is dropped, and

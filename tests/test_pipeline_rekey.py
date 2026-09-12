@@ -31,10 +31,14 @@ async def test_upsert_keys_on_identity_and_writes_one_ref_per_server(session):
 
 
 async def test_a_moved_plex_key_updates_the_ref_not_the_item(session):
+    """One row, its Plex ref re-pointed -- and exactly ONE Plex ref left
+    (spec §4.1). The id the item used to be known by is gone: leaving it
+    behind would give the item two live Plex ids and every reader an
+    arbitrary choice between them."""
     await pipeline._upsert_media_item(session, resolved("plex", "42", tmdb_id=603, file_path="/m.mkv"))
     row = await pipeline._upsert_media_item(session, resolved("plex", "99", tmdb_id=603, file_path="/m.mkv"))
     refs = (await session.execute(select(MediaItemServerRef.native_id))).scalars().all()
-    assert set(refs) == {"42", "99"} and (await session.execute(select(MediaItem.id))).scalars().all() == [row.id]
+    assert set(refs) == {"99"} and (await session.execute(select(MediaItem.id))).scalars().all() == [row.id]
 
 
 async def test_an_episode_finds_its_parent_by_identity(session):
@@ -175,7 +179,10 @@ async def test_a_legacy_key_is_not_promoted_when_the_full_key_already_exists_els
     refs = dict((
         await session.execute(select(MediaItemServerRef.native_id, MediaItemServerRef.item_id))
     ).all())
-    assert refs == {"4": full_row.id, "44": full_row.id}
+    # ONE ref per (item, server), spec §4.1: the row keeps the Plex id the
+    # LAST resolve gave it. "44" was how it was found first; "4" is what
+    # Plex says now, and holding both would leave every reader to choose.
+    assert refs == {"4": full_row.id}
 
 
 async def test_a_legacy_key_is_never_promoted_by_a_non_plex_ref(session):
