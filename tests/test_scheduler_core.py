@@ -12,7 +12,9 @@ from autoposter.actions import flags
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
 from autoposter.config.schema import NotificationsConfig
-from autoposter.db.models import MediaItem, Render, Run, ScheduledRun
+from autoposter.db.models import Render, Run, ScheduledRun
+
+from conftest import seed_media_item
 from autoposter.notify.dispatch import build_notifier
 from autoposter.scheduler import core
 from autoposter.scheduler.core import Job, Scheduler, claim_due
@@ -910,12 +912,10 @@ async def _scored_render(session_factory, *, source_mode="plex_generated"):
     """One media item and a render the database has just scored, so it lands
     inside the backdated window above."""
     async with session_factory() as session:
-        item = MediaItem(
-            rating_key=f"rk-digest-{source_mode}", library="Movies",
+        item = await seed_media_item(
+            session, f"rk-digest-{source_mode}", library="Movies",
             kind="movie", title="Dune",
         )
-        session.add(item)
-        await session.flush()
         session.add(
             Render(
                 item_id=item.id, art_kind="poster", asset_path="/x.jpg",
@@ -1172,11 +1172,9 @@ async def _scored_render_minutes_ago(
     rather than at ``now()``, so it can be placed inside one closing row's
     window and outside another's."""
     async with session_factory() as session:
-        item = MediaItem(
-            rating_key=rating_key, library="Movies", kind="movie", title="Dune",
+        item = await seed_media_item(
+            session, rating_key, library="Movies", kind="movie", title="Dune",
         )
-        session.add(item)
-        await session.flush()
         render = Render(
             item_id=item.id, art_kind="poster", asset_path="/x.jpg",
             status="rendered", source_mode=source_mode,

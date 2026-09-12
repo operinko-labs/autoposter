@@ -17,15 +17,14 @@ from sqlalchemy import select
 
 from autoposter.db.models import ItemMetadataOverride, MediaItem
 
+from conftest import seed_media_item
+
 
 async def _item(session, rating_key: str = "1", kind: str = "movie") -> MediaItem:
-    item = MediaItem(
-        rating_key=rating_key, library="Movies", kind=kind, title="Heat",
+    return await seed_media_item(
+        session, rating_key, library="Movies", kind=kind, title="Heat",
         year=1995, tmdb_id=949,
     )
-    session.add(item)
-    await session.flush()
-    return item
 
 
 async def test_an_override_row_round_trips(session):

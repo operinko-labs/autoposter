@@ -34,7 +34,9 @@ from autoposter.collections.builders.credits_family import (
     generated_titles,
 )
 from autoposter.config.schema import CollectionDefinition
-from autoposter.db.models import ItemCredit, ManagedCollection, MediaItem
+from autoposter.db.models import ItemCredit, ManagedCollection
+
+from conftest import seed_media_item
 
 LABEL = "autoposter"
 SECTION_KEY = "2"
@@ -209,19 +211,17 @@ async def _seed(session, counts, *, kind="actor", library="Movies",
     total = max(counts.values(), default=0)
     items = []
     for index in range(1, total + 1):
-        item = MediaItem(
-            rating_key=str(index), library=library, kind=item_kind,
+        item = await seed_media_item(
+            session, str(index), library=library, kind=item_kind,
             title="Item %d" % index,
             credits_attempted_at=dt.datetime(2026, 8, 29, 12, 0),
         )
-        session.add(item)
         items.append(item)
     for index in range(total + 1, total + 1 + unvisited):
-        session.add(MediaItem(
-            rating_key=str(index), library=library, kind=item_kind,
+        await seed_media_item(
+            session, str(index), library=library, kind=item_kind,
             title="Unvisited %d" % index,
-        ))
-    await session.flush()
+        )
     for person, count in counts.items():
         for item in items[:count]:
             session.add(ItemCredit(item_id=item.id, kind=kind, person=person))
@@ -698,9 +698,7 @@ async def test_the_enumeration_is_this_librarys_and_this_kinds(session):
     ``enumerate_credits``' own scoping -- asserted here because this builder is
     where getting either wrong would build a plausible, wrong collection."""
     await _seed(session, {"Ann": 2})
-    other = MediaItem(rating_key="99", library="Other", kind="movie", title="Elsewhere")
-    session.add(other)
-    await session.flush()
+    other = await seed_media_item(session, "99", library="Other", kind="movie", title="Elsewhere")
     session.add_all([
         ItemCredit(item_id=other.id, kind="actor", person="Elsewhere Person"),
         ItemCredit(item_id=other.id, kind="director", person="Ann"),

@@ -10,8 +10,10 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import Job, MediaItem
+from autoposter.db.models import Job
 from autoposter.queue.jobs import fail
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -398,16 +400,14 @@ async def test_dismissing_an_already_dismissed_job_is_404_not_500(client, auth_h
 
 
 async def test_reprocess_requires_a_session(client, session):
-    session.add(MediaItem(rating_key="rk1", library="Movies", kind="movie", title="A"))
-    await session.commit()
+    await seed_media_item(session, "rk1", library="Movies", kind="movie", title="A")
     response = await client.post("/api/items/1/reprocess")
     assert response.status_code == 401
 
 
 async def test_reprocess_enqueues_a_job(client, auth_headers, session):
-    session.add(MediaItem(rating_key="rk1", library="Movies", kind="movie", title="A"))
-    await session.commit()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    item = await seed_media_item(session, "rk1", library="Movies", kind="movie", title="A")
+    item_id = item.id
 
     response = await client.post(f"/api/items/{item_id}/reprocess", headers=auth_headers)
     assert response.status_code == 200
@@ -427,12 +427,11 @@ async def test_reprocess_carries_the_items_plex_rating_key(client, auth_headers,
     that -- for an adopted season or episode -- are the item's own rather than
     the series', and so resolve to nothing or to the wrong thing. The dedupe
     key is asserted alongside it because it must not have moved."""
-    session.add(MediaItem(
-        rating_key="77632", library="TV", kind="episode", title="The Pirate Solution",
+    item = await seed_media_item(
+        session, "77632", library="TV", kind="episode", title="The Pirate Solution",
         tmdb_id=64677, tvdb_id=1123661, season_number=3, episode_number=4,
-    ))
-    await session.commit()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    )
+    item_id = item.id
 
     await client.post(f"/api/items/{item_id}/reprocess", headers=auth_headers)
 
@@ -442,9 +441,8 @@ async def test_reprocess_carries_the_items_plex_rating_key(client, auth_headers,
 
 
 async def test_reprocessing_twice_still_queues_once(client, auth_headers, session):
-    session.add(MediaItem(rating_key="rk1", library="Movies", kind="movie", title="A"))
-    await session.commit()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    item = await seed_media_item(session, "rk1", library="Movies", kind="movie", title="A")
+    item_id = item.id
 
     first = await client.post(f"/api/items/{item_id}/reprocess", headers=auth_headers)
     second = await client.post(f"/api/items/{item_id}/reprocess", headers=auth_headers)
@@ -473,13 +471,10 @@ async def test_reprocessing_an_unknown_item_is_404(client, auth_headers):
 
 
 async def test_reprocess_note_is_always_null(client, auth_headers, session):
-    session.add(MediaItem(
-        rating_key="rk-solo", library="Movies", kind="movie", title="A", tmdb_id=555,
-    ))
-    await session.commit()
-    item_id = (await session.execute(
-        select(MediaItem).where(MediaItem.rating_key == "rk-solo")
-    )).scalars().one().id
+    item = await seed_media_item(
+        session, "rk-solo", library="Movies", kind="movie", title="A", tmdb_id=555,
+    )
+    item_id = item.id
 
     body = (await client.post(
         f"/api/items/{item_id}/reprocess", headers=auth_headers

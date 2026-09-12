@@ -18,9 +18,11 @@ from sqlalchemy import select
 from autoposter.api.routes import SCHEDULED_JOB_NAMES
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
 from autoposter.scheduler import jobs as jobs_module
 from autoposter.scheduler.jobs import make_asset_stats_job
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -33,12 +35,7 @@ def _holder(**scheduler_overrides):
 
 
 async def _item(session, rating_key="1"):
-    item = MediaItem(
-        rating_key=rating_key, library="Movies", kind="movie", title="Dune",
-    )
-    session.add(item)
-    await session.flush()
-    return item
+    return await seed_media_item(session, rating_key, library="Movies", kind="movie", title="Dune")
 
 
 async def _render(session, item, art_kind, asset_path, *, status="rendered",

@@ -26,6 +26,8 @@ from autoposter.db.models import EventLog, FactsBackfillState, ItemFacts, Job, M
 from autoposter.facts.tmdb_budget import TmdbRateBudget
 from autoposter.scheduler.jobs import backfill_facts
 
+from conftest import seed_media_item
+
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
 
@@ -33,17 +35,17 @@ _next_rating_key = iter(str(n) for n in range(1, 1_000_000))
 
 
 async def _make_item(session, *, kind="movie", title="Item", tmdb_id=None, parent_id=None):
-    item = MediaItem(
-        rating_key=next(_next_rating_key),
+    parent = None
+    if parent_id is not None:
+        parent = (await session.execute(select(MediaItem).where(MediaItem.id == parent_id))).scalar_one()
+    return await seed_media_item(
+        session, next(_next_rating_key),
         library="Movies" if kind == "movie" else "TV Shows",
         kind=kind,
         title=title,
         tmdb_id=tmdb_id,
-        parent_id=parent_id,
+        parent=parent,
     )
-    session.add(item)
-    await session.commit()
-    return item
 
 
 async def _make_fresh_facts(session, item_id: int) -> None:

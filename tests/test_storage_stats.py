@@ -23,12 +23,12 @@ libraries in front of it at once.
 from pathlib import Path
 
 import httpx
-from conftest import decodable_png
+from conftest import decodable_png, seed_media_item
 from sqlalchemy import select
 
 from autoposter.api.stats import ART_KINDS, storage_snapshot
 from autoposter.config.loader import load_config
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
@@ -129,12 +129,10 @@ async def _seed(session, library, rows):
     call, keyed by the library name and the call count, so a test can seed two
     libraries without inventing rating keys by hand.
     """
-    item = MediaItem(
-        rating_key=f"{library}-{len(rows)}-{id(rows)}",
+    item = await seed_media_item(
+        session, f"{library}-{len(rows)}-{id(rows)}",
         library=library, kind="movie", title=f"{library} title",
     )
-    session.add(item)
-    await session.flush()
     for art_kind, status, size_bytes in rows:
         session.add(Render(
             item_id=item.id, art_kind=art_kind, asset_path=FAKE_ASSET,
