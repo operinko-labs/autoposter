@@ -58,6 +58,7 @@ from autoposter.db.models import (
     Render,
 )
 from autoposter.db.refs import native_ids as native_ids_for
+from autoposter.db.refs import refs_for
 from autoposter.intake.arr import RenderIntent
 from autoposter.scheduler.core import Job
 # Reused verbatim rather than reimplemented: an in-flight payload names a
@@ -916,6 +917,12 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
         )
         children_repointed_now = children_result.rowcount
 
+        # Read before the delete below: the FK from media_item_server_refs
+        # cascades on that same statement, so a refs_for read taken after it
+        # would find nothing left to report for the stale row.
+        stale_refs = await refs_for(session, stale.id)
+        survivor_refs = await refs_for(session, survivor.id)
+
         removed = (
             await session.execute(
                 delete(MediaItem)
@@ -945,8 +952,10 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
                 # Legacy key names, kept for any reader still watching for
                 # them (spec §4.5): the value is now the Plex native id.
                 "stale_rating_key": pair.stale.native_id,
+                "stale_refs": stale_refs,
                 "survivor_media_item_id": pair.survivor.id,
                 "survivor_rating_key": pair.survivor.native_id,
+                "survivor_refs": survivor_refs,
                 "kind": pair.stale.kind,
                 "library": pair.stale.library,
                 "title": pair.stale.title,

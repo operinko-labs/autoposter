@@ -456,6 +456,11 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
                 .where(Render.item_id == candidate.id)
             )
         ).scalar_one()
+        # Read before the delete below, for the same reason render_count is:
+        # the FK from media_item_server_refs cascades on that same
+        # statement, so a refs_for call placed after it would find nothing
+        # left to report.
+        refs = await refs_for(session, candidate.id)
         # synchronize_session=False because nothing here holds ORM MediaItem
         # objects -- the sweep reads columns -- and the default strategies have
         # to guess at how to reconcile a criteria DELETE with an identity map
@@ -478,10 +483,6 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
                 blocked.add(candidate.parent_id)
             skipped += 1
             continue
-        # Read before the row is gone: the FK from media_item_server_refs
-        # cascades on this same delete, so a refs_for read taken after it
-        # would find nothing to report.
-        refs = await refs_for(session, candidate.id)
         session.add(EventLog(
             source=PRUNE_SOURCE,
             event_type=PRUNE_EVENT,

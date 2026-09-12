@@ -537,6 +537,30 @@ async def test_the_merge_writes_one_audit_row_carrying_both_identities(session):
     assert audit.payload["renders_repointed"] == ["poster"]
 
 
+async def test_the_audit_row_carries_both_rows_full_refs(session):
+    """Spec §4.5: every EventLog/webhook payload keeps the legacy scalar
+    key AND adds the full refs dict. The stale row's second-server ref must
+    be read BEFORE the delete that cascades media_item_server_refs away --
+    seeded here so a refs_for call placed after that delete would find it
+    already gone and this test would catch it."""
+    stale, survivor = await _pair(session)
+    session.add(MediaItemServerRef(
+        item_id=stale.id, server="jellyfin", native_id="0a", library="Movies",
+    ))
+    await session.commit()
+    scan = await find_mergeable(session)
+
+    await merge(session, scan.plans)
+    await session.commit()
+
+    session.expire_all()
+    audit = (
+        await session.execute(select(EventLog).where(EventLog.source == MERGE_SOURCE))
+    ).scalar_one()
+    assert audit.payload["stale_refs"] == {"plex": "1", "jellyfin": "0a"}
+    assert audit.payload["survivor_refs"] == {"plex": "2"}
+
+
 async def test_a_row_re_upserted_under_the_pass_is_skipped_and_nothing_is_lost(
     session,
 ):

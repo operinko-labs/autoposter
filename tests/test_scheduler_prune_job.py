@@ -363,6 +363,7 @@ async def test_each_delete_writes_one_audit_row_carrying_the_whole_identity(sess
     event = events[0]
     assert (event.source, event.event_type) == (PRUNE_SOURCE, PRUNE_EVENT)
     assert event.payload["rating_key"] == "11"
+    assert event.payload["refs"] == {"plex": "11"}
     assert event.payload["title"] == "A Movie"
     assert event.payload["library"] == "Movies"
     assert event.payload["kind"] == "movie"
@@ -372,6 +373,24 @@ async def test_each_delete_writes_one_audit_row_carrying_the_whole_identity(sess
     assert event.payload["render_count"] == 1
     assert event.payload["logo_upload_key"] == "upload://abc123"
     assert "no Plex item" in event.outcome
+
+
+async def test_the_audit_rows_refs_include_every_server(session):
+    """A row this service also knows through a second server keeps every
+    ref in the audit, not just the Plex one the legacy ``rating_key`` scalar
+    names."""
+    item = await _add_item(session, "12", title="A Show")
+    session.add(MediaItemServerRef(
+        item_id=item.id, server="jellyfin", native_id="0a", library=item.library,
+    ))
+    await session.commit()
+    scan = await find_prunable(session, FakePlex(live=set()))
+
+    await retire(session, scan.prunable)
+    await session.commit()
+
+    event = (await session.execute(select(EventLog))).scalar_one()
+    assert event.payload["refs"] == {"plex": "12", "jellyfin": "0a"}
 
 
 async def test_every_row_of_a_pruned_family_gets_its_own_audit_row(session):
