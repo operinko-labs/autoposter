@@ -205,7 +205,7 @@ async def test_resolve_finds_a_movie_by_tmdb_id(server, tmp_path):
     client = PlexClient(server=server, excluded_libraries=["Photos"])
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134)
     item = await client.resolve(intent)
-    assert item.rating_key == "12345"
+    assert item.native_id == "12345"
     assert item.library == "Movies"
     assert item.root_folder == "Dune Part Two (2024)"
     assert item.imdb_id == "tt15239678"
@@ -502,10 +502,10 @@ async def test_resolve_a_season_intent_returns_the_seasons_own_identity():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "556"
+    assert item.native_id == "556"
     assert item.title == "Season 2"
     assert item.root_folder == "Severance (2022)"
-    assert item.parent_rating_key == "555"
+    assert item.parent_native_id == "555"
 
 
 async def test_resolve_an_episode_intent_returns_the_episodes_own_identity():
@@ -519,10 +519,10 @@ async def test_resolve_an_episode_intent_returns_the_episodes_own_identity():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "557"
+    assert item.native_id == "557"
     assert item.title == "Who Is Alive?"
     assert item.root_folder == "Severance (2022)"
-    assert item.parent_rating_key == "556"
+    assert item.parent_native_id == "556"
 
 
 async def test_resolve_a_season_plex_has_not_scanned_yet_raises_item_not_found():
@@ -595,7 +595,7 @@ async def test_an_episode_intent_with_coordinates_still_descends():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "557"
+    assert item.native_id == "557"
     assert await client.exists_many([intent]) == [True]
 
 
@@ -625,7 +625,7 @@ async def test_a_live_special_with_no_episode_number_still_resolves_by_rating_ke
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "601"
+    assert item.native_id == "601"
     assert await client.exists_many([intent]) == [True]
     assert shows.getguid_calls == [], (
         "the stored rating key resolved it; the descend was never reached"
@@ -662,7 +662,7 @@ async def test_a_season_intent_with_a_number_still_descends():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "556"
+    assert item.native_id == "556"
     assert await client.exists_many([intent]) == [True]
 
 
@@ -734,7 +734,7 @@ async def test_a_direct_rating_key_fetch_of_a_season_carries_the_shows_own_title
         )
     )
 
-    assert item.rating_key == "556", "the stored key resolved it"
+    assert item.native_id == "556", "the stored key resolved it"
     assert item.show_title == "Severance"
 
 
@@ -800,7 +800,7 @@ async def test_an_episode_intent_never_queries_a_movie_library():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "557"
+    assert item.native_id == "557"
     assert movies.getguid_calls == []
     assert shows.getguid_calls == ["tmdb://64677"]
 
@@ -901,9 +901,9 @@ async def test_an_episode_with_a_rating_key_resolves_without_any_guid_search():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "557"
+    assert item.native_id == "557"
     assert item.title == "Who Is Alive?"
-    assert item.parent_rating_key == "556"
+    assert item.parent_native_id == "556"
     assert item.library == "Shows"
     assert item.root_folder == "Severance (2022)"
     assert shows.getguid_calls == []
@@ -920,9 +920,9 @@ async def test_a_season_with_a_rating_key_resolves_without_any_guid_search():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "556"
+    assert item.native_id == "556"
     assert item.title == "Season 2"
-    assert item.parent_rating_key == "555"
+    assert item.parent_native_id == "555"
     assert item.root_folder == "Severance (2022)"
     assert shows.getguid_calls == []
 
@@ -944,7 +944,7 @@ async def test_a_movie_with_a_rating_key_resolves_directly_with_its_own_file():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "12345"
+    assert item.native_id == "12345"
     assert item.root_folder == "Dune Part Two (2024)"
     assert item.file_path == "/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv"
     assert item.imdb_id == "tt15239678"
@@ -992,7 +992,7 @@ async def test_a_stale_rating_key_falls_back_to_the_guid_search():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "557"
+    assert item.native_id == "557"
     assert shows.getguid_calls == ["tvdb://371980"]
 
 
@@ -1015,7 +1015,7 @@ async def test_a_rating_key_naming_the_wrong_kind_of_item_falls_back():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "557"
+    assert item.native_id == "557"
     assert item.title == "Who Is Alive?"
     assert shows.getguid_calls == ["tvdb://371980"]
 
@@ -1090,7 +1090,7 @@ async def test_a_renumbered_rating_key_landing_on_the_wrong_episode_falls_back()
     item = await client.resolve(intent)
 
     assert item.title == "Who Is Alive?"
-    assert item.rating_key == "557"
+    assert item.native_id == "557"
     assert section.getguid_calls == ["tvdb://371980"]
 
 
@@ -1119,7 +1119,7 @@ async def test_a_renumbered_rating_key_landing_on_the_wrong_movie_falls_back():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "77777"
+    assert item.native_id == "77777"
     assert item.title == "Dune: Part Two"
     assert movies.getguid_calls == ["tmdb://693134"]
 
@@ -1138,7 +1138,7 @@ async def test_a_malformed_rating_key_falls_back_instead_of_raising():
 
     item = await client.resolve(intent)
 
-    assert item.rating_key == "557"
+    assert item.native_id == "557"
     assert shows.getguid_calls == ["tvdb://371980"]
 
 
@@ -1175,7 +1175,7 @@ async def test_a_discovery_enqueued_item_resolves_by_rating_key_when_the_crosswa
     client = PlexClient(server=server, excluded_libraries=[])
     item = await client.resolve(intent)
 
-    assert item.rating_key == "999"
+    assert item.native_id == "999"
     assert item.title == "Bamse"
 
 
@@ -1209,7 +1209,7 @@ async def test_list_items_returns_plain_data_for_one_section_type():
 
     assert [item.title for item in items] == ["Dune: Part Two", "Private Film"]
     first = items[0]
-    assert first.rating_key == "12345"
+    assert first.native_id == "12345"
     assert first.library == "Movies"
     assert first.year == 2024
     assert first.locations == ["/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv"]

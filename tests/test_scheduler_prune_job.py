@@ -402,7 +402,8 @@ async def test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped(
     assert [c.rating_key for c in scan.prunable] == ["11"]
 
     resolved = ResolvedItem(
-        rating_key="11", library="Movies", kind="movie", title="New Title",
+        server="plex", native_id="11", library="Movies", kind="movie",
+        title="New Title",
         year=2001, season_number=None, episode_number=None,
         root_folder="New Title (2001)", file_path="/mnt/Media/Movies/x.mkv",
         art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
@@ -447,11 +448,12 @@ async def test_a_re_upserted_child_holds_its_whole_family_back_from_the_delete(s
     # would come back detached and out of the cascade's reach, which is the
     # very thing this test needs to stay in it.
     resolved = ResolvedItem(
-        rating_key="111", library="TV Shows", kind="episode", title="New Title",
+        server="plex", native_id="111", library="TV Shows", kind="episode",
+        title="New Title",
         year=2001, season_number=1, episode_number=3,
         root_folder="A Show (2001)", file_path="/mnt/Media/TV/x.mkv",
         art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
-        parent_rating_key="110",
+        parent_native_id="110",
     )
     await _upsert_media_item(session, resolved)
     await session.commit()
@@ -488,11 +490,12 @@ async def test_a_blocked_family_does_not_spare_an_unrelated_gone_row(session):
     # would come back detached and out of the cascade's reach, which is the
     # very thing this test needs to stay in it.
     resolved = ResolvedItem(
-        rating_key="111", library="TV Shows", kind="episode", title="New Title",
+        server="plex", native_id="111", library="TV Shows", kind="episode",
+        title="New Title",
         year=2001, season_number=1, episode_number=3,
         root_folder="A Show (2001)", file_path="/mnt/Media/TV/x.mkv",
         art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
-        parent_rating_key="110",
+        parent_native_id="110",
     )
     await _upsert_media_item(session, resolved)
     await session.commit()
@@ -633,7 +636,7 @@ class _ReupsertingPlex(FakePlex):
 def _resolved_movie(rating_key, *, title="New Title"):
     """What a worker would write back for a movie it has just re-resolved."""
     return ResolvedItem(
-        rating_key=rating_key, library="Movies", kind="movie", title=title,
+        server="plex", native_id=rating_key, library="Movies", kind="movie", title=title,
         year=2001, season_number=None, episode_number=None,
         root_folder=f"{title} (2001)", file_path="/mnt/Media/Movies/x.mkv",
         art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,

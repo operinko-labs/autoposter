@@ -48,8 +48,8 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.render.pipeline import apply_badges, apply_metadata, process_item
 
 from test_mass_ops_fields import FakeTMDB, _item
-from test_mass_ops_verbs import FakePlexServer, RecordingPlexItem
-from test_overlay_entrypoint import BASE, _FakePlexItem, _Facts, _render
+from test_mass_ops_verbs import FakePlexServer, RecordingPlexItem, RecordingServer
+from test_overlay_entrypoint import BASE, REF, FakeServer, _FakePlexItem, _Facts, _render
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -117,14 +117,16 @@ async def test_apply_metadata_uses_the_library_value(session, media_item_id):
 
     movies_item = RecordingPlexItem(audienceRating=None, locks=[])
     await apply_metadata(
-        session, config, media_item_id, _item(library="Movies"), movies_item,
+        session, config, media_item_id, _item(library="Movies"),
+        RecordingServer(movies_item),
         _facts(), NullMDBListClient(),
     )
     assert movies_item.edits == [], "Movies' write_to_plex: false was ignored"
 
     shows_item = RecordingPlexItem(audienceRating=None, locks=[])
     await apply_metadata(
-        session, config, media_item_id, _item(library="TV Shows"), shows_item,
+        session, config, media_item_id, _item(library="TV Shows"),
+        RecordingServer(shows_item),
         _facts(), NullMDBListClient(),
     )
     assert shows_item.edits != [], "TV Shows should inherit write_to_plex: true"
@@ -183,7 +185,7 @@ async def test_apply_badges_uses_the_library_value(session, monkeypatch):
         def __init__(self, library):
             self.library = library
 
-    await apply_badges(session, config, _Render(), _Row("Movies"), object(), None)
+    await apply_badges(session, config, _Render(), _Row("Movies"), object(), None, None)
     assert reached == [], "badges.enabled: false for this library was ignored"
 
 
@@ -214,7 +216,7 @@ async def test_process_item_uses_the_library_value_for_operations(
         shows_item = RecordingPlexItem(audienceRating=None, locks=[])
         await process_item(
             session, config, http,
-            FakePlexServer(_item(rating_key="2", library="TV Shows"), shows_item), [],
+            FakePlexServer(_item(native_id="2", library="TV Shows"), shows_item), [],
             _intent(), tmdb_facts=_facts(), mdblist=NullMDBListClient(),
         )
         assert shows_item.edits != [], (
@@ -257,7 +259,7 @@ async def test_process_item_uses_the_library_value_for_badges(
         await process_item(
             session, config, http,
             FakePlexServer(
-                _item(rating_key="2", library="TV Shows"), RecordingPlexItem(locks=[]),
+                _item(native_id="2", library="TV Shows"), RecordingPlexItem(locks=[]),
             ),
             [], _intent(),
         )
@@ -312,12 +314,14 @@ async def test_a_per_library_badges_override_moves_only_that_librarys_fingerprin
 
     baseline_item, baseline_render = await _render(session, rating_key="per-lib-baseline")
     await apply_badges(
-        session, baseline, baseline_render, baseline_item, _FakePlexItem(), _Facts(),
+        session, baseline, baseline_render, baseline_item,
+        FakeServer(_FakePlexItem()), REF, _Facts(),
     )
 
     movies_item, movies_render = await _render(session, rating_key="per-lib-movies")
     await apply_badges(
-        session, overridden, movies_render, movies_item, _FakePlexItem(), _Facts(),
+        session, overridden, movies_render, movies_item,
+        FakeServer(_FakePlexItem()), REF, _Facts(),
     )
 
     shows_item = MediaItem(
@@ -332,7 +336,8 @@ async def test_a_per_library_badges_override_moves_only_that_librarys_fingerprin
     session.add(shows_render)
     await session.flush()
     await apply_badges(
-        session, overridden, shows_render, shows_item, _FakePlexItem(), _Facts(),
+        session, overridden, shows_render, shows_item,
+        FakeServer(_FakePlexItem()), REF, _Facts(),
     )
 
     assert movies_render.badge_fingerprint != baseline_render.badge_fingerprint, (

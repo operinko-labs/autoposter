@@ -21,7 +21,7 @@ from autoposter.plex.writer import plan_edits
 from autoposter.render.pipeline import apply_metadata
 
 from test_mass_ops_fields import FakeItem, FakeTMDB, _item
-from test_mass_ops_verbs import FakeField, LockableItem, RecordingPlexItem
+from test_mass_ops_verbs import FakeField, LockableItem, RecordingPlexItem, RecordingServer
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -65,8 +65,10 @@ async def _row(session, item_id):
 
 
 def _apply(session, config, media_item_id, plex_item):
+    # ``RecordingServer``: since PR #236 the pipeline writes through the
+    # MediaServer protocol by ref, never a plexapi object directly.
     return apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts()), NullMDBListClient(),
     )
 

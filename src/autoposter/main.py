@@ -1,5 +1,6 @@
 import logging
 
+import httpx
 import uvicorn
 from fastapi import FastAPI
 from plexapi.server import PlexServer
@@ -85,7 +86,7 @@ def build() -> FastAPI:
     engine = make_engine(secrets.database_url)
     session_factory = make_session_factory(engine)
 
-    def plex_client(effective: Config) -> PlexClient:
+    def plex_client(effective: Config, http: httpx.AsyncClient) -> PlexClient:
         """The Plex client, built by the lifespan once it holds the effective
         config rather than here.
 
@@ -97,10 +98,18 @@ def build() -> FastAPI:
         jobs run at all watched the overridden one -- a split no operator
         could be expected to diagnose. Passing the recipe instead keeps the
         Plex wiring in this module and its timing in the lifespan's.
+
+        ``http``/``base_url``/``token`` are what let this client actually read
+        artwork (``fetch_artwork``/``artwork_provenance`` go over HTTP, never
+        through ``plexapi``) -- the lifespan hands its own ``http`` in here so
+        this is the one real ``PlexClient`` in the process with all of them
+        wired, unlike the prune/merge jobs' own clients (app.py), which never
+        read artwork and so never needed them.
         """
         return PlexClient(
             server=_LazyPlexServer(effective.plex.url, secrets.plex_token),
             excluded_libraries=effective.plex.excluded_libraries,
+            http=http, base_url=effective.plex.url, token=secrets.plex_token,
         )
 
     # create_app publishes app.state.config_holder from this config -- the

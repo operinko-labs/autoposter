@@ -9,6 +9,7 @@ from autoposter.config.loader import load_config
 from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.facts.models import GatheredFacts
 from autoposter.plex.client import ResolvedItem
+from autoposter.plex.writer import apply_facts as _plex_apply_facts
 from autoposter.plex.writer import exemption_reason
 from autoposter.render import pipeline
 from sqlalchemy import select
@@ -18,10 +19,10 @@ EXAMPLE = Path("config/autoposter.example.yaml")
 
 def resolved(rating_key="w1", imdb_id="tt1"):
     return ResolvedItem(
-        rating_key=rating_key, library="Movies", kind="movie", title="X",
+        server="plex", native_id=rating_key, library="Movies", kind="movie", title="X",
         year=2023, season_number=None, episode_number=None, root_folder="X",
         file_path=None, art_url=None, tmdb_id=1, tvdb_id=None, imdb_id=imdb_id,
-        parent_rating_key=None,
+        parent_native_id=None,
     )
 
 
@@ -57,6 +58,23 @@ class RecordingPlexItem:
         return self
 
 
+class RecordingServer:
+    """The MediaServer surface ``apply_metadata`` now goes through, wrapping a
+    ``RecordingPlexItem`` so the real ``plex.writer.apply_facts`` still runs
+    against it -- the object under test is what got written, not this shim."""
+
+    name = "plex"
+
+    def __init__(self, plex_item):
+        self._item = plex_item
+
+    async def item_labels(self, ref):
+        return [tag.tag for tag in self._item.labels]
+
+    async def apply_facts(self, ref, facts, operations=None, parental_categories=None, overrides=None):
+        return await _plex_apply_facts(self._item, facts, operations, parental_categories, overrides)
+
+
 async def _media(session, rating_key="w1"):
     media = MediaItem(rating_key=rating_key, library="Movies", kind="movie", title="X")
     session.add(media)
@@ -76,9 +94,9 @@ async def _run(session, config, item, plex_item, monkeypatch):
         return GatheredFacts(critic_rating=4.9, sources={"critic_rating": "imdb"})
 
     monkeypatch.setattr(pipeline, "gather_facts", fake_gather)
-    media = await _media(session, item.rating_key)
+    media = await _media(session, item.native_id)
     await pipeline.apply_metadata(
-        session, config, media.id, item, plex_item, object(), object()
+        session, config, media.id, item, RecordingServer(plex_item), object(), object()
     )
     return media
 

@@ -83,17 +83,18 @@ def _stub_magick(monkeypatch):
 
 
 SEASON = ResolvedItem(
-    rating_key="556", library="TV Shows", kind="season", title="Season 2",
+    server="plex", native_id="556", library="TV Shows", kind="season", title="Season 2",
     year=None, season_number=2, episode_number=None,
     root_folder="Severance (2022)", file_path=None, art_url=None,
     tmdb_id=None, tvdb_id=371980, imdb_id=None,
-    parent_rating_key="555", show_title="Severance",
+    parent_native_id="555", show_title="Severance",
 )
 SEASON_INTENT = RenderIntent(
     kind="season", title="Severance", tvdb_id=371980, season_number=2,
 )
 MOVIE = ResolvedItem(
-    rating_key="12345", library="Movies", kind="movie", title="Dune: Part Two",
+    server="plex", native_id="12345", library="Movies", kind="movie",
+    title="Dune: Part Two",
     year=2024, season_number=None, episode_number=None,
     root_folder="Dune Part Two (2024)",
     file_path="/mnt/Media/Movies/Dune Part Two (2024)/x.mkv",

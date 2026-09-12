@@ -81,12 +81,13 @@ class _Provider:
 
 def _resolved():
     return ResolvedItem(
-        rating_key="1", library="Movies", kind="movie", title="Dune: Part Two",
+        server="plex", native_id="1", library="Movies", kind="movie",
+        title="Dune: Part Two",
         year=2024, season_number=None, episode_number=None,
         root_folder="Dune Part Two (2024)",
         file_path="/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv",
         art_url=None, tmdb_id=693134, tvdb_id=None, imdb_id="tt15239678",
-        parent_rating_key=None,
+        parent_native_id=None,
     )
 
 

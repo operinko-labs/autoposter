@@ -37,13 +37,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty
 from autoposter.db.models import MediaItem
-from autoposter.plex.artwork import fetch_artwork
 from autoposter.render import naming
 from autoposter.render.pipeline import ART_KINDS_FOR
 
@@ -126,11 +124,9 @@ def _atomic_write(path: Path, data: bytes) -> None:
 class BackupMode:
     """Copy Plex's live artwork into the backup tree. See the module docstring."""
 
-    def __init__(self, config, plex, http, headers: dict) -> None:
+    def __init__(self, config, plex) -> None:
         self._config = config
-        self._plex = plex
-        self._http = http
-        self._headers = headers
+        self._server = plex
 
     async def run(self, session: AsyncSession) -> BackupResult:
         # The empty-table guard every mode runs first: an empty media_items is
@@ -157,7 +153,6 @@ class BackupMode:
                 "from -- change nothing"
             ))
 
-        base_url = self._config.plex.url
         # The manual_override_path trick: one naming function, re-rooted from the
         # live asset tree onto the backup tree by swapping assets_root only.
         backup_config = self._config.model_copy(update={"assets_root": root})
@@ -189,19 +184,19 @@ class BackupMode:
                 skipped += 1
                 continue
             try:
-                plex_item = await self._plex.fetch_item(row.rating_key)
-            except PlexNotFound:
-                # Expected, not a crash: the item was deleted from Plex after
-                # its DB row was written. One concise line, no traceback --
-                # counted separately from real failures below.
-                logger.info("backup: %s no longer in Plex, skipped", row.rating_key)
-                missing_items += 1
-                continue
+                ref = await self._server.fetch_ref(row.rating_key)
             except Exception:  # noqa: BLE001 - one bad item must not abort the walk
                 logger.warning(
                     "backup: could not fetch Plex item %s", row.rating_key, exc_info=True
                 )
                 failed += 1
+                continue
+            if ref is None:
+                # Expected, not a crash: the item was deleted from Plex after
+                # its DB row was written. One concise line, no traceback --
+                # counted separately from real failures below.
+                logger.info("backup: %s no longer in Plex, skipped", row.rating_key)
+                missing_items += 1
                 continue
 
             # Per-(item, kind) tally: a partial item (one kind writes, another
@@ -223,9 +218,7 @@ class BackupMode:
                     skipped += 1
                     continue
                 try:
-                    fetched = await fetch_artwork(
-                        self._http, plex_item, base_url, self._headers, art_kind
-                    )
+                    fetched = await self._server.fetch_artwork(ref, art_kind)
                 except Exception:  # noqa: BLE001 - see above
                     logger.warning(
                         "backup: could not read %s for %s",

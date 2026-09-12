@@ -1200,10 +1200,9 @@ async def run_artwork_backup(
     dry-run to run and no worker pause to raise -- nothing here writes to Plex.
     The response reports the per-item tally the walk produced.
     """
-    plex, http = _require_plex(request)
+    plex, _http = _require_plex(request)
     config = request.app.state.config
-    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
-    mode = BackupMode(config, plex, http, headers)
+    mode = BackupMode(config, plex)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         result = await mode.run(session)
@@ -1353,12 +1352,11 @@ async def run_artwork_reset(
     saying the replaced upload stays on the Plex server: nothing here can delete
     it, and the UI has to say so.
     """
-    plex, http = _require_plex(request)
+    plex, _http = _require_plex(request)
     config = request.app.state.config
-    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
     apply = body.apply if body.apply is not None else config.artwork_modes.reset_apply
     mode = ResetMode(
-        config, plex, http, headers, apply=apply,
+        config, plex, apply=apply,
         kind=body.type, library=body.library, item_id=body.item_id,
     )
     return await _run_plex_writing_mode(request, mode, apply)

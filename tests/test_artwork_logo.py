@@ -16,6 +16,7 @@ that column is set *and* Plex still has that exact key selected -- so a logo an
 operator set by hand (no marker) and a logo an operator replaced ours with
 (marker present, different key selected) are both left alone.
 """
+import asyncio
 import logging
 from pathlib import Path
 
@@ -30,7 +31,11 @@ from conftest import decodable_png
 from autoposter.artwork_modes.logo import LogoMode, LogoRevertMode
 from autoposter.config.loader import load_config
 from autoposter.db.models import MediaItem
+from autoposter.plex.artwork import clear_logo as _plex_clear_logo
+from autoposter.plex.artwork import has_clearlogo as _plex_has_clearlogo
+from autoposter.plex.artwork import upload_logo as _plex_upload_logo
 from autoposter.providers.base import LOGO, ArtCandidate
+from autoposter.servers.base import CAP_LOGO_UPLOAD_KEY, ServerItemRef
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PLEX_URL = "http://plex.local"
@@ -114,6 +119,8 @@ class FakeItem:
 
 
 class FakePlexClient:
+    capabilities = frozenset({CAP_LOGO_UPLOAD_KEY})
+
     def __init__(self, items=None):
         self._items = items or {}
         self.fetched = []
@@ -121,6 +128,25 @@ class FakePlexClient:
     async def fetch_item(self, rating_key):
         self.fetched.append(rating_key)
         return self._items[rating_key]
+
+    async def fetch_ref(self, rating_key):
+        try:
+            await self.fetch_item(rating_key)
+        except PlexNotFound:
+            return None
+        return ServerItemRef("plex", rating_key, "", "")
+
+    async def has_clearlogo(self, ref):
+        item = await self.fetch_item(ref.native_id)
+        return await _plex_has_clearlogo(item)
+
+    async def upload_logo(self, ref, data, suffix=".png"):
+        item = await self.fetch_item(ref.native_id)
+        return await asyncio.to_thread(_plex_upload_logo, item, data, suffix)
+
+    async def clear_logo(self, ref):
+        item = await self.fetch_item(ref.native_id)
+        await asyncio.to_thread(_plex_clear_logo, item)
 
 
 class FakeProvider:

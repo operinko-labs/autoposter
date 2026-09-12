@@ -35,17 +35,18 @@ from autoposter.render.textfit import FitResult
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 MOVIE = ResolvedItem(
-    rating_key="m1", library="Movies", kind="movie", title="A Movie", year=1999,
+    server="plex", native_id="m1", library="Movies", kind="movie", title="A Movie", year=1999,
     season_number=None, episode_number=None, root_folder="A Movie (1999)",
     file_path=None, art_url=None, tmdb_id=550, tvdb_id=None, imdb_id=None,
 )
 SEASON = ResolvedItem(
-    rating_key="s1", library="TV Shows", kind="season", title="A Show", year=1999,
+    server="plex", native_id="s1", library="TV Shows", kind="season", title="A Show", year=1999,
     season_number=1, episode_number=None, root_folder="A Show (1999)",
     file_path=None, art_url=None, tmdb_id=1399, tvdb_id=None, imdb_id=None,
 )
 EPISODE = ResolvedItem(
-    rating_key="e1", library="TV Shows", kind="episode", title="An Episode", year=1999,
+    server="plex", native_id="e1", library="TV Shows", kind="episode",
+    title="An Episode", year=1999,
     season_number=1, episode_number=1, root_folder="A Show (1999)",
     file_path=None, art_url=None, tmdb_id=1399, tvdb_id=None, imdb_id=None,
 )

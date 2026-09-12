@@ -387,7 +387,7 @@ async def test_the_lifespan_builds_the_plex_client_from_the_effective_config(
 
     seen = []
 
-    def plex_factory(config):
+    def plex_factory(config, http):
         seen.append(config)
         return "the-plex-client"
 
@@ -607,7 +607,11 @@ async def test_the_wired_plex_generated_base_fetches_the_generated_frame_for_one
                 ),
             ]
 
+    from autoposter.servers.base import CAP_TITLE_CARD_URL
+
     class FakePlex:
+        capabilities = frozenset({CAP_TITLE_CARD_URL})
+
         async def fetch_item(self, rating_key):
             assert rating_key == "153736"
             return FakePlexItem()

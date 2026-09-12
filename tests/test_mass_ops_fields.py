@@ -136,7 +136,7 @@ from autoposter.plex.client import ResolvedItem  # noqa: E402
 
 def _item(kind="movie", **over):
     base = dict(
-        rating_key="1", library="Movies", kind=kind, title="Heat", year=1995,
+        server="plex", native_id="1", library="Movies", kind=kind, title="Heat", year=1995,
         season_number=None, episode_number=None, root_folder="Heat (1995)",
         file_path=None, art_url=None, tmdb_id=949, tvdb_id=None,
         imdb_id="tt0113277",

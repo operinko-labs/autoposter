@@ -15,10 +15,10 @@ EXAMPLE = Path("config/autoposter.example.yaml")
 
 def item(kind="episode", season=1, number=3):
     return ResolvedItem(
-        rating_key="e1", library="TV Shows", kind=kind, title="Pilot",
+        server="plex", native_id="e1", library="TV Shows", kind=kind, title="Pilot",
         year=2020, season_number=season, episode_number=number,
         root_folder="Dark", file_path=None, art_url=None, tmdb_id=1,
-        tvdb_id=2, imdb_id="tt1", parent_rating_key="s1",
+        tvdb_id=2, imdb_id="tt1", parent_native_id="s1",
     )
 
 
@@ -177,10 +177,11 @@ async def test_the_ladder_is_walked_when_the_switch_is_unset(
 
 def _movie():
     return ResolvedItem(
-        rating_key="m1", library="Movies", kind="movie", title="Dune: Part Two",
+        server="plex", native_id="m1", library="Movies", kind="movie",
+        title="Dune: Part Two",
         year=2024, season_number=None, episode_number=None, root_folder="Dune (2024)",
         file_path=None, art_url=None, tmdb_id=1, tvdb_id=None, imdb_id="tt1",
-        parent_rating_key=None,
+        parent_native_id=None,
     )
 
 

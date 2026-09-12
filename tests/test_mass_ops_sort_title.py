@@ -424,7 +424,7 @@ from autoposter.config.loader import load_config  # noqa: E402
 from autoposter.db.models import MediaItem  # noqa: E402
 from autoposter.render.pipeline import apply_metadata  # noqa: E402
 
-from test_mass_ops_verbs import FakeField, RecordingPlexItem  # noqa: E402
+from test_mass_ops_verbs import FakeField, RecordingPlexItem, RecordingServer  # noqa: E402
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -453,7 +453,7 @@ async def test_entry_point_gate_off_is_byte_identical(session, media_item_id, co
         order=parse_collection_order(ALIEN),
     )
     await apply_metadata(
-        session, config, media_item_id, _item(tmdb_id=679), plex_item, tmdb,
+        session, config, media_item_id, _item(tmdb_id=679), RecordingServer(plex_item), tmdb,
         NullMDBListClient(),
     )
     assert plex_item.edits == []
@@ -470,7 +470,7 @@ async def test_entry_point_source_named_but_apply_off_still_writes_nothing(
         GatheredFacts(tmdb_collection_id=8091), order=parse_collection_order(ALIEN)
     )
     await apply_metadata(
-        session, config, media_item_id, _item(tmdb_id=679), plex_item, tmdb,
+        session, config, media_item_id, _item(tmdb_id=679), RecordingServer(plex_item), tmdb,
         NullMDBListClient(),
     )
     assert plex_item.edits == []
@@ -491,7 +491,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     # (b) GATE ON: the write reaches Plex through the real seam, as one value
     # plus one lock, inside one batched edit.
     await apply_metadata(
-        session, config, media_item_id, _item(tmdb_id=679), plex_item, tmdb,
+        session, config, media_item_id, _item(tmdb_id=679), RecordingServer(plex_item), tmdb,
         NullMDBListClient(),
     )
     assert plex_item.edits == [{"titleSort.value": "Alien 02", "titleSort.locked": 1}]
@@ -502,7 +502,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     plex_item.titleSort = "Alien 02"
     plex_item.fields = [FakeField("titleSort", True)]
     await apply_metadata(
-        session, config, media_item_id, _item(tmdb_id=679), plex_item, tmdb,
+        session, config, media_item_id, _item(tmdb_id=679), RecordingServer(plex_item), tmdb,
         NullMDBListClient(),
     )
     assert len(plex_item.edits) == 1

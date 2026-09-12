@@ -452,7 +452,7 @@ from autoposter.config.loader import load_config  # noqa: E402
 from autoposter.db.models import MediaItem  # noqa: E402
 from autoposter.render.pipeline import apply_metadata  # noqa: E402
 
-from test_mass_ops_verbs import RecordingPlexItem  # noqa: E402
+from test_mass_ops_verbs import RecordingPlexItem, RecordingServer  # noqa: E402
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -496,7 +496,7 @@ async def test_entry_point_gate_off_is_byte_identical(session, media_item_id, co
     ``added_at`` out."""
     plex_item = AddedAtPlexItem(studio="Warner", addedAt=datetime(2005, 1, 1), locks=[])
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(studio="Warner"), release_date=date(1999, 10, 15)),
         NullMDBListClient(),
     )
@@ -513,7 +513,7 @@ async def test_entry_point_source_named_but_apply_off_still_writes_nothing(
     config.operations.added_at_source = "tmdb_digital"
     plex_item = AddedAtPlexItem(studio="Warner", addedAt=datetime(2005, 1, 1), locks=[])
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(), release_date=date(1999, 10, 15)),
         NullMDBListClient(),
     )
@@ -534,7 +534,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     plex_item = AddedAtPlexItem(studio="Warner", addedAt=datetime(2005, 1, 1), locks=[])
 
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(), release_date=date(1999, 10, 15)),
         NullMDBListClient(),
     )
@@ -549,7 +549,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     # the date-granular compare finds nothing to do. This is the one-time
     # cost, ending -- and the whole basis of the blast-radius claim.
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(), release_date=date(1999, 10, 15)),
         NullMDBListClient(),
     )

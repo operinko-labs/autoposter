@@ -249,7 +249,7 @@ async def gather_facts(
             # the URL: an httpx error's str() carries it in full.
             logger.warning(
                 "tmdb release_dates request failed for %s; skipping added_at: %s",
-                item.rating_key, type(exc).__name__,
+                item.native_id, type(exc).__name__,
             )
     if added_at is not None:
         sources["added_at"] = added_at_source
@@ -267,7 +267,7 @@ async def gather_facts(
         # CLEAR -- which the writer turns into one blank-and-unlock edit and
         # ``apply_metadata`` then drops the row.
         if item.kind in ("movie", "show"):
-            row = await load_sort_position(session, item.rating_key)
+            row = await load_sort_position(session, item.native_id)
             if row is not None:
                 sort_title = (
                     "" if row.released_at is not None
@@ -293,7 +293,7 @@ async def gather_facts(
             # only -- the URL carries a TMDb id.
             logger.warning(
                 "tmdb collection request failed for %s; skipping sort_title: %s",
-                item.rating_key, type(exc).__name__,
+                item.native_id, type(exc).__name__,
             )
         else:
             sort_title = franchise_sort_title(order, item.tmdb_id)

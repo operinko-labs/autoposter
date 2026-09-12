@@ -8,12 +8,16 @@ network.
 """
 from pathlib import Path
 
+import asyncio
+
 from plexapi.exceptions import NotFound as PlexNotFound
 import pytest
 
 from autoposter.artwork_modes.revert import RevertMode
 from autoposter.config.loader import load_config
 from autoposter.db.models import MediaItem, Render
+from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
+from autoposter.servers.base import ServerItemRef
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PLEX_URL = "http://plex.local"
@@ -56,6 +60,17 @@ class FakePlexClient:
     async def fetch_item(self, rating_key):
         self.fetched.append(rating_key)
         return self._items[rating_key]
+
+    async def fetch_ref(self, rating_key):
+        try:
+            await self.fetch_item(rating_key)
+        except PlexNotFound:
+            return None
+        return ServerItemRef("plex", rating_key, "", "")
+
+    async def upload_artwork(self, ref, data, art_kind, lock=True):
+        item = self._items[ref.native_id]
+        await asyncio.to_thread(_plex_upload_artwork, item, data, art_kind, lock)
 
 
 @pytest.fixture

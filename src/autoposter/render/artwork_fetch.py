@@ -231,7 +231,7 @@ async def pick_guarded_logo(
     request: ArtRequest,
     tmpdir: Path,
     *,
-    rating_key: str,
+    native_id: str,
     raster_only: bool = False,
 ) -> tuple[Path | None, str, int]:
     """The clearlogo for this item: ``(path, sha256, candidates skipped)``.
@@ -314,14 +314,14 @@ async def pick_guarded_logo(
             # bytes (dimensions, or the decode exception's class name), and a
             # provider URL in a log line is the one thing row 209 keeps out of
             # them. `_download` has already removed the partial file.
-            logger.warning("clearlogo candidate refused for %s: %s", rating_key, exc)
+            logger.warning("clearlogo candidate refused for %s: %s", native_id, exc)
             continue
         if raster_only and _looks_like_svg(logo_path):
             skipped += 1
             logo_path.unlink(missing_ok=True)
             logger.warning(
                 "clearlogo candidate for %s is an SVG, which Plex's clearLogo "
-                "field cannot take", rating_key,
+                "field cannot take", native_id,
             )
             continue
         return logo_path, logo_sha, skipped
