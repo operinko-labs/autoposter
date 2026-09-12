@@ -14,7 +14,9 @@ import dataclasses
 
 from sqlalchemy import select
 
-from autoposter.db.models import EventLog, MediaItem, MediaItemServerRef
+from autoposter.db.models import (
+    ActionDismissal, EventLog, ItemMetadataOverride, MediaItem, MediaItemServerRef,
+)
 from autoposter.render import pipeline
 from media_server_doubles import resolved
 
@@ -98,7 +100,7 @@ async def test_a_later_upsert_with_no_parent_id_does_not_clobber_an_existing_one
     assert row2.parent_id == season.id, "a parent-less upsert nulled out an existing parent_id"
 
 
-# --- weak-key promotion (task 8d, spec §4.2 amendment) ----------------------
+# --- re-key in place (spec §4.2/§4.6 amendments) -----------------------------
 
 
 async def test_a_legacy_placeholder_key_is_promoted_to_the_full_key(session):
@@ -123,10 +125,97 @@ async def test_a_legacy_placeholder_key_is_promoted_to_the_full_key(session):
     assert len(rows) == 1
 
 
-async def test_a_genuine_rematch_is_not_promoted(session):
-    """A Plex re-match onto a genuinely DIFFERENT identity is not weak -- the
-    old row is left exactly as it was, and the ref simply re-points, same as
-    today's behaviour after Task 7."""
+async def test_a_file_replacement_rekeys_the_row_in_place(session):
+    """A Radarr quality upgrade replaces a movie's file: same Plex
+    ratingKey, same tmdb id, new basename -- and the basename is in the key.
+
+    Inserting a second row under the new key would leave every child the
+    operator created (an override they typed, a dismissal they made) on a
+    row nothing will ever resolve again. Same ref plus the same
+    ``kind:provider:id:coords:`` prefix means the same item, so the row
+    itself moves onto the new key and keeps its id and its children.
+    """
+    row = await pipeline._upsert_media_item(
+        session, resolved("plex", "42", tmdb_id=603,
+                          file_path="/m/The Matrix (1999)/old.mkv"),
+    )
+    assert row.identity_key == "movie:tmdb:603::old.mkv"
+    session.add(ItemMetadataOverride(item_id=row.id, field="critic_rating", value="8.5"))
+    session.add(ActionDismissal(item_id=row.id, art_kind="poster", evidence="deadbeef"))
+    await session.flush()
+
+    upgraded = await pipeline._upsert_media_item(
+        session, resolved("plex", "42", tmdb_id=603,
+                          file_path="/m/The Matrix (1999)/new.mkv"),
+    )
+
+    assert upgraded.id == row.id
+    assert upgraded.identity_key == "movie:tmdb:603::new.mkv"
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
+    override = (await session.execute(select(ItemMetadataOverride))).scalar_one()
+    assert override.item_id == row.id
+    dismissal = (await session.execute(select(ActionDismissal))).scalar_one()
+    assert dismissal.item_id == row.id
+
+
+async def test_a_different_plex_item_with_the_same_tmdb_id_stays_a_second_row(session):
+    """The 4K/HD pair: two Plex items, one tmdb id, two files. The ref is
+    what separates them from the file-replacement case above -- ratingKey 43
+    points at no row of ours, so nothing is re-keyed and the second file
+    gets its own row, exactly as identity.py's basename rule intends."""
+    hd = await pipeline._upsert_media_item(
+        session, resolved("plex", "42", tmdb_id=603, file_path="/m/m - 1080p.mkv"),
+    )
+    uhd = await pipeline._upsert_media_item(
+        session, resolved("plex", "43", tmdb_id=603, file_path="/m/m - 4K.mkv"),
+    )
+
+    assert uhd.id != hd.id
+    assert {r.identity_key for r in (await session.execute(select(MediaItem))).scalars().all()} == {
+        "movie:tmdb:603::m - 1080p.mkv", "movie:tmdb:603::m - 4K.mkv",
+    }
+    refs = dict((
+        await session.execute(select(MediaItemServerRef.native_id, MediaItemServerRef.item_id))
+    ).all())
+    assert refs == {"42": hd.id, "43": uhd.id}
+
+
+async def test_the_prefix_match_is_exact_on_all_four_fields(session):
+    """Only the FILE field may differ. Kind, provider, provider id and the
+    season/episode coordinates must all match, or the two keys name two
+    items and re-keying one onto the other would silently merge them."""
+    assert pipeline._is_file_replacement("movie:tmdb:603::old.mkv", "movie:tmdb:603::new.mkv")
+    assert not pipeline._is_file_replacement("movie:tmdb:1::a.mkv", "movie:tmdb:2::a.mkv")
+    assert not pipeline._is_file_replacement("movie:tmdb:603::a.mkv", "show:tmdb:603::a.mkv")
+    assert not pipeline._is_file_replacement("movie:imdb:tt1::a.mkv", "movie:tmdb:603::a.mkv")
+    assert not pipeline._is_file_replacement("episode:tvdb:71663:s2e3:a", "episode:tvdb:71663:s2e4:b")
+    assert not pipeline._is_file_replacement("movie:tmdb:603::a.mkv", "movie:tmdb:603::a.mkv")
+    # The legacy placeholder is four fields, not five: it has its own branch.
+    assert not pipeline._is_file_replacement("movie:legacy:plex:4", "movie:tmdb:603::a.mkv")
+
+    episode = dataclasses.replace(
+        resolved("plex", "6", kind="episode", tvdb_id=71663, tmdb_id=None,
+                 season_number=2, episode_number=3, file_path=None),
+        parent_tvdb_id=71663,
+    )
+    third = await pipeline._upsert_media_item(session, episode)
+    assert third.identity_key == "episode:tvdb:71663:s2e3:"
+
+    fourth = await pipeline._upsert_media_item(
+        session, dataclasses.replace(episode, episode_number=4),
+    )
+    assert fourth.id != third.id
+    reloaded = (
+        await session.execute(select(MediaItem).where(MediaItem.id == third.id))
+    ).scalar_one()
+    assert reloaded.identity_key == "episode:tvdb:71663:s2e3:", "s2e4 claimed s2e3's row"
+
+
+async def test_a_rematch_onto_a_different_identity_is_not_rekeyed(session):
+    """A Plex re-match onto a genuinely different item -- another tmdb id --
+    is neither the legacy placeholder nor a file replacement. The old row is
+    left exactly as it was and the ref simply re-points; the stale row is
+    ``scheduler/prune.py``'s business, not this function's."""
     old = await pipeline._upsert_media_item(
         session, resolved("plex", "42", tmdb_id=1, file_path="/a.mkv"),
     )

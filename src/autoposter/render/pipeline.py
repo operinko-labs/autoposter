@@ -679,25 +679,55 @@ async def upsert_server_ref(session: AsyncSession, item_id: int, item: ResolvedI
     )
 
 
-async def _promote_weak_key(session: AsyncSession, item: ResolvedItem, key: str) -> None:
-    """Promote the migration's legacy placeholder key onto the incoming full
-    key IN PLACE, the first time Plex actually resolves that row.
+def _is_file_replacement(existing_key: str, key: str) -> bool:
+    """Do these two keys differ ONLY in ``identity_key``'s file field?
 
-    The migration keys a row it cannot otherwise identify on its Plex id
-    alone (``kind:legacy:plex:<id>``) -- a placeholder, not a real identity.
-    Without this, the first real resolve of that same native id would upsert
-    a SECOND row under the full key and just re-point the ref onto it,
-    leaving the placeholder row behind as an orphan. A genuine re-match onto
-    a DIFFERENT identity (a Plex re-match, a rename to a different item) is
-    not this placeholder and must not be promoted -- the ref simply
-    re-points, same as today.
+    ``kind:provider:id:coords:file`` (servers/identity.py, five fields, the
+    last of which may itself contain colons -- hence ``maxsplit=4``). The
+    same first four fields mean the same kind, the same provider id and the
+    same season/episode coordinates: the same *item*. A different fifth
+    field is a different file for it.
 
-    (There is no "bare key" case to promote here: every producer that can
-    ever reach ``_upsert_media_item`` -- the pipeline's resolve, and
-    ``adopt/walk.py`` -- hands a movie its file_path, and a show/season/
-    episode never carries one at all (servers/identity.py's FILE_BEARING),
-    so there is no producer that can ever compute a "weaker" form of a
-    movie's key than another, nor any file-shaped form for the others.)
+    The legacy placeholder ``kind:legacy:plex:<id>`` has only four fields and
+    is deliberately not matched here -- it is handled on its own branch.
+    """
+    a = existing_key.split(":", 4)
+    b = key.split(":", 4)
+    return len(a) == 5 and len(b) == 5 and a[:4] == b[:4] and a[4] != b[4]
+
+
+async def _rekey_in_place(session: AsyncSession, item: ResolvedItem, key: str) -> None:
+    """Move an existing row onto the incoming key IN PLACE when the server
+    ref says it is the same item under a new key (spec §4.2/§4.6).
+
+    Two shapes reach this, both keyed on the row the incoming
+    ``(server, native_id)`` already points at:
+
+    **The migration's legacy placeholder.** A row the migration could not
+    otherwise identify is keyed on its Plex id alone
+    (``kind:legacy:plex:<id>``) -- a placeholder, not a real identity. Plex
+    only, because that is what the placeholder was minted from; a Jellyfin
+    ref carrying the same id string is a different item entirely.
+
+    **A file replacement.** A Radarr quality upgrade replaces a movie's file
+    in place: same Plex ratingKey, same tmdb id, new basename -- and the
+    basename is in the key. Without this the upsert would INSERT a second row
+    under the new key and re-point the ref onto it, orphaning the original's
+    overrides, dismissals and renders on a row nothing will ever resolve
+    again. The same ref plus the same ``kind:provider:id:coords:`` prefix is
+    what makes that safe to assert: it is the same item, the same server, the
+    same season and episode -- only its file moved. A DIFFERENT ref with the
+    same prefix is the 4K/HD pair and stays two rows, which is why the ref
+    lookup, not the prefix, is the first test.
+
+    Either way, a genuine re-match onto a different identity (a Plex re-match
+    onto another item, a rename to a different film) matches neither shape:
+    the ref simply re-points, same as before.
+
+    The full key may already belong to ANOTHER row, in which case there is
+    nothing to promote onto -- the unique index would abort it. The existing
+    row is left as it is and the upsert below hits that other row, with the
+    ref re-pointing to it.
 
     Not atomic across two concurrent workers resolving the same native id at
     once: both could read the same pre-promotion ``existing_key`` before
@@ -706,31 +736,26 @@ async def _promote_weak_key(session: AsyncSession, item: ResolvedItem, key: str)
     rather than corrupting anything -- the loser's caller retries the whole
     upsert, same as any other constraint-violation retry in this module.
     """
-    if item.server != "plex":
-        # The legacy form is the migration's placeholder for a PLEX id
-        # specifically (``kind:legacy:plex:<id>``) -- a Jellyfin ref can
-        # never be the row that placeholder was minted for.
-        return
     existing_id = await item_id_for(session, item.server, item.native_id)
     if existing_id is None:
         return
     existing_key = (
         await session.execute(select(MediaItem.identity_key).where(MediaItem.id == existing_id))
     ).scalar_one_or_none()
-    legacy_key = f"{item.kind}:legacy:plex:{item.native_id}"
-    if existing_key != legacy_key:
+    if existing_key is None or existing_key == key:
         return
-    # The full key may already belong to ANOTHER row (a real, previously
-    # resolved item) -- promoting the placeholder row on top of it would
-    # collide with the unique constraint. Leave the placeholder row as-is;
-    # the upsert below hits the other row instead and the ref re-points to it.
+    is_legacy = (
+        item.server == "plex" and existing_key == f"{item.kind}:legacy:plex:{item.native_id}"
+    )
+    if not (is_legacy or _is_file_replacement(existing_key, key)):
+        return
     already_used = (
         await session.execute(select(MediaItem.id).where(MediaItem.identity_key == key))
     ).scalar_one_or_none()
     if already_used is not None:
         return
     await session.execute(update(MediaItem).where(MediaItem.id == existing_id).values(identity_key=key))
-    logger.info("identity promoted: %s -> %s (item %d)", existing_key, key, existing_id)
+    logger.info("identity re-keyed in place: %s -> %s (item %d)", existing_key, key, existing_id)
 
 
 async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> MediaItem:
@@ -752,7 +777,7 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
     upsert already set.
     """
     key = identity_key_for(item)
-    await _promote_weak_key(session, item, key)
+    await _rekey_in_place(session, item, key)
     parent_id = None
     parent_key = parent_identity_key_for(item)
     if parent_key is not None:
