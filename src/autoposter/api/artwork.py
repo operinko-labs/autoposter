@@ -31,6 +31,7 @@ from sqlalchemy import select
 from autoposter.api.auth import require_session
 from autoposter.db.models import MediaItem, Render
 from autoposter.db.models import Session as SessionModel
+from autoposter.db.refs import native_ids
 from autoposter.plex.artwork import PLEX_ART_FIELDS
 from autoposter.render.pipeline import ART_KINDS_FOR
 
@@ -229,14 +230,14 @@ async def live_artwork(
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        row = (
+        kind = (
             await session.execute(
-                select(MediaItem.rating_key, MediaItem.kind).where(MediaItem.id == item_id)
+                select(MediaItem.kind).where(MediaItem.id == item_id)
             )
-        ).one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="item not found")
-    rating_key, kind = row
+        ).scalar_one_or_none()
+        if kind is None:
+            raise HTTPException(status_code=404, detail="item not found")
+        native_id = (await native_ids(session, [item_id], "plex")).get(item_id)
 
     # The kind has to be checked against the item, not only against the field
     # map: plexapi exposes `.art` on an Episode, so /title-card-item/background
@@ -272,8 +273,10 @@ async def live_artwork(
     try:
         # A plain GET for the item (see PlexClient.fetch_item, behind
         # fetch_ref); never .refresh(), which would have Plex re-pull from its
-        # agents and can overwrite the artwork this service uploaded.
-        ref = await plex.fetch_ref(rating_key)
+        # agents and can overwrite the artwork this service uploaded. Nothing
+        # to fetch when the row carries no Plex ref at all -- the same "Plex
+        # no longer has this item" outcome as a fetch that resolves to None.
+        ref = await plex.fetch_ref(native_id) if native_id is not None else None
     except (requests.RequestException, PlexApiException) as exc:
         logger.warning("could not reach Plex for item %d: %s", item_id, exc)
         raise HTTPException(

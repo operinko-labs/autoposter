@@ -49,6 +49,7 @@ from autoposter.api.candidates import (
 from autoposter.collections.posters import PosterPathRefused, poster_override_target
 from autoposter.db.models import EventLog, ManagedCollection, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
+from autoposter.db.refs import native_ids
 from autoposter.net.guard import BodyRefused, FetchRefused, TargetRefused, guarded_download
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers import base as art
@@ -201,9 +202,9 @@ async def _staged_source(config, http, source: str, workspace: Path) -> Path:
     return destination
 
 
-def _resolved(item: MediaItem) -> ResolvedItem:
+def _resolved(item: MediaItem, native_id: str) -> ResolvedItem:
     return ResolvedItem(
-        server="plex", native_id=item.rating_key, library=item.library, kind=item.kind,
+        server="plex", native_id=native_id, library=item.library, kind=item.kind,
         title=item.title, year=item.year,
         season_number=item.season_number, episode_number=item.episode_number,
         root_folder=item.root_folder, file_path=item.file_path, art_url=None,
@@ -348,7 +349,10 @@ async def _target_item(session_factory, item_id: int, art_kind: str) -> Resolved
         item = await _item_for_kind(session, item_id, art_kind)
         if item.root_folder is None:
             raise HTTPException(status_code=409, detail="this item has no asset folder")
-        return _resolved(item)
+        native_id = (await native_ids(session, [item.id], "plex")).get(item.id)
+        if native_id is None:
+            raise HTTPException(status_code=409, detail="this item has no Plex id")
+        return _resolved(item, native_id)
 
 
 async def _install_and_record(

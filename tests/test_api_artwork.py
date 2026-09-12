@@ -31,10 +31,12 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
 from autoposter.plex.artwork import ARTWORK_FETCH_TIMEOUT
 from autoposter.plex.artwork import fetch_artwork as _plex_fetch_artwork
 from autoposter.servers.base import ServerItemRef
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -101,9 +103,7 @@ async def _item_with_render(
     ``select(MediaItem).one()`` raised MultipleResultsFound the moment a test
     called this twice.
     """
-    item = MediaItem(rating_key="rk1", library="Movies", kind="movie", title="A")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, "rk1", library="Movies", kind="movie", title="A")
     session.add(
         Render(
             item_id=item.id, art_kind=art_kind, status="rendered",
@@ -541,9 +541,7 @@ async def _media_item(session, rating_key: str = "rk-live", kind: str = "movie")
     ``kind`` decides which art kinds the item can have at all (ART_KINDS_FOR),
     so a title card needs an episode and a background needs a movie or show.
     """
-    item = MediaItem(rating_key=rating_key, library="Movies", kind=kind, title="A")
-    session.add(item)
-    await session.commit()
+    item = await seed_media_item(session, rating_key, library="Movies", kind=kind, title="A")
     return item.id
 
 

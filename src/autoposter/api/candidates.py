@@ -39,6 +39,7 @@ from sqlalchemy import select
 from autoposter.api.auth import require_session
 from autoposter.db.models import EventLog, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
+from autoposter.db.refs import native_ids
 from autoposter.net.guard import FetchRefused, store_body
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers import base as art
@@ -413,8 +414,11 @@ async def pick_candidate(
         if item.root_folder is None:
             # Nullable, and the whole mirror layout is rooted at it.
             raise HTTPException(status_code=409, detail="this item has no asset folder")
+        native_id = (await native_ids(session, [item.id], "plex")).get(item.id)
+        if native_id is None:
+            raise HTTPException(status_code=409, detail="this item has no Plex id")
         resolved = ResolvedItem(
-            server="plex", native_id=item.rating_key, library=item.library, kind=item.kind,
+            server="plex", native_id=native_id, library=item.library, kind=item.kind,
             title=item.title, year=item.year,
             season_number=item.season_number, episode_number=item.episode_number,
             root_folder=item.root_folder, file_path=item.file_path, art_url=None,

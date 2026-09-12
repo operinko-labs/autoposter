@@ -18,8 +18,10 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
+from autoposter.db.models import ActionDismissal, EventLog, Job, Render
 from autoposter.intake.arr import RenderIntent
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -50,9 +52,9 @@ async def auth_headers(client):
 
 
 async def _seed(session, *, rating_key, library="Movies", art_kind="poster", **render_fields):
-    item = MediaItem(rating_key=rating_key, library=library, kind="movie", title=f"T{rating_key}")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(
+        session, rating_key, library=library, kind="movie", title=f"T{rating_key}",
+    )
     fields = {"status": "rendered", "asset_path": f"/assets/{rating_key}.jpg"}
     fields.update(render_fields)
     render = Render(item_id=item.id, art_kind=art_kind, **fields)
@@ -518,9 +520,7 @@ async def test_the_bulk_apply_collapses_two_flagged_kinds_of_one_item_into_one_j
     """11b's stated risk is a burst. The unit of the queue is a render row and
     the unit of the queue's work is an ITEM, so 400 flagged rows across 200
     items are 200 jobs, not 400 -- and the pending dedupe collapses the rest."""
-    item = MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, "1", library="Movies", kind="movie", title="Dune")
     session.add_all([
         Render(item_id=item.id, art_kind="poster", status="no_art", asset_path="/a.jpg"),
         Render(item_id=item.id, art_kind="background", status="no_art", asset_path="/b.jpg"),
@@ -906,9 +906,7 @@ async def test_the_backfill_leaves_an_already_scored_rows_fingerprint_alone(
 async def test_the_backfill_queues_one_job_per_item_and_records_one_event(
     client, auth_headers, session
 ):
-    item = MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, "1", library="Movies", kind="movie", title="Dune")
     session.add_all([
         Render(item_id=item.id, art_kind="poster", status="rendered", asset_path="/a.jpg"),
         Render(item_id=item.id, art_kind="background", status="rendered", asset_path="/b.jpg"),

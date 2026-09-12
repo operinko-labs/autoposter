@@ -84,6 +84,7 @@ from autoposter.db.models import (
     ScheduledRun,
 )
 from autoposter.db.models import Session as SessionModel
+from autoposter.db.refs import native_ids, refs_for_items
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue, enqueue_batch
@@ -455,6 +456,9 @@ async def list_items(
             for item_id, art_kind, render_status in render_rows:
                 render_status_by_item[item_id][art_kind] = render_status
 
+        # One query for the whole page's refs, not one per row.
+        refs_by_item = await refs_for_items(session, item_ids)
+
     return {
         "total": total,
         "items": [
@@ -463,7 +467,7 @@ async def list_items(
                 "title": item.title,
                 "library": item.library,
                 "kind": item.kind,
-                "rating_key": item.rating_key,
+                "refs": refs_by_item.get(item.id, {}),
                 "render_status": render_status_by_item[item.id],
             }
             for item in items
@@ -549,12 +553,14 @@ async def item_detail(
                     )
                 ).scalar_one_or_none()
 
+        refs = await refs_for_items(session, [item.id])
+
     return {
         "id": item.id,
         "title": item.title,
         "library": item.library,
         "kind": item.kind,
-        "rating_key": item.rating_key,
+        "refs": refs.get(item.id, {}),
         "season_number": item.season_number,
         "episode_number": item.episode_number,
         # The show an episode or season belongs to, or null when the item has
@@ -789,12 +795,13 @@ async def _enqueue_reprocess(session, item: MediaItem) -> int | None:
     while the first request is still pending queue nothing the second time,
     and two hand-built RenderIntents would eventually disagree about it.
 
-    The row's ``rating_key`` rides along: this item has already been resolved
-    once, so the job need not ask an agent to find it again -- and for an
-    adopted season or episode the stored external ids are the *item's* own,
-    which the GUID search would misread as the series'. It does not enter the
-    dedupe key (intake/arr.py).
+    The row's Plex ref rides along: this item has already been resolved once,
+    so the job need not ask an agent to find it again -- and for an adopted
+    season or episode the stored external ids are the *item's* own, which the
+    GUID search would misread as the series'. It does not enter the dedupe key
+    (intake/arr.py).
     """
+    plex_ids = await native_ids(session, [item.id], "plex")
     intent = RenderIntent(
         kind=item.kind,
         title=item.title,
@@ -804,7 +811,7 @@ async def _enqueue_reprocess(session, item: MediaItem) -> int | None:
         year=item.year,
         season_number=item.season_number,
         episode_number=item.episode_number,
-        refs={"plex": item.rating_key},
+        refs={"plex": plex_ids[item.id]} if item.id in plex_ids else {},
     )
     return await enqueue(
         session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key
@@ -879,8 +886,13 @@ async def clear_manual_override(
             # one has nowhere an override could have been filed.
             raise HTTPException(status_code=409, detail="no manual override for this art kind")
 
+        plex_ids = await native_ids(session, [item.id], "plex")
+        native_id = plex_ids.get(item.id)
+        if native_id is None:
+            raise HTTPException(status_code=409, detail="this item has no Plex id")
+
         resolved = ResolvedItem(
-            server="plex", native_id=item.rating_key, library=item.library, kind=item.kind,
+            server="plex", native_id=native_id, library=item.library, kind=item.kind,
             title=item.title, year=item.year,
             season_number=item.season_number, episode_number=item.episode_number,
             root_folder=item.root_folder, file_path=item.file_path, art_url=None,
@@ -998,10 +1010,10 @@ async def run_full_pass(
     response reports that honestly via ``skipped`` rather than claiming to
     have queued everything again.
 
-    Each intent carries its row's ``rating_key`` so the job resolves straight
-    to the item instead of searching by external id. That matters most for the
+    Each intent carries its row's Plex ref so the job resolves straight to the
+    item instead of searching by external id. That matters most for the
     adopted seasons and episodes, whose stored ids are their own rather than
-    the series' -- see ``PlexClient._fetch_by_rating_key_sync``. The key is not
+    the series' -- see ``PlexClient._fetch_by_rating_key_sync``. The ref is not
     part of the dedupe key, so this changes nothing about what deduplicates.
 
     Recorded as a run (roadmap row 53): a `runs` row of kind `full_pass` is
@@ -1023,6 +1035,7 @@ async def run_full_pass(
         rows = (
             await session.execute(
                 select(
+                    MediaItem.id,
                     MediaItem.kind,
                     MediaItem.title,
                     MediaItem.tmdb_id,
@@ -1031,10 +1044,11 @@ async def run_full_pass(
                     MediaItem.year,
                     MediaItem.season_number,
                     MediaItem.episode_number,
-                    MediaItem.rating_key,
                 )
             )
         ).all()
+        # One query for the whole pass's Plex ids, not one per row.
+        plex_ids = await native_ids(session, [row.id for row in rows], "plex")
         entries = []
         for row in rows:
             intent = RenderIntent(
@@ -1046,7 +1060,7 @@ async def run_full_pass(
                 year=row.year,
                 season_number=row.season_number,
                 episode_number=row.episode_number,
-                refs={"plex": row.rating_key},
+                refs={"plex": plex_ids[row.id]} if row.id in plex_ids else {},
             )
             entries.append((asdict(intent), intent.dedupe_key))
         # Before enqueue_batch, which is what commits this transaction: the

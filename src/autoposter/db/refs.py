@@ -33,3 +33,23 @@ async def native_ids(session: AsyncSession, item_ids: list[int], server: str) ->
         .where(MediaItemServerRef.item_id.in_(item_ids), MediaItemServerRef.server == server)
     )
     return dict(rows.all())
+
+
+async def refs_for_items(session: AsyncSession, item_ids: list[int]) -> dict[int, dict[str, str]]:
+    """``refs_for``, batched over a page of items in one query.
+
+    Grouped by item rather than by server, unlike ``native_ids``: an API
+    list/detail/mismatch/action-centre row wants every server an item is
+    known to at once, not one server across many items.
+    """
+    if not item_ids:
+        return {}
+    rows = await session.execute(
+        select(MediaItemServerRef.item_id, MediaItemServerRef.server, MediaItemServerRef.native_id)
+        .where(MediaItemServerRef.item_id.in_(item_ids))
+        .order_by(MediaItemServerRef.id)
+    )
+    result: dict[int, dict[str, str]] = {item_id: {} for item_id in item_ids}
+    for item_id, server, native_id in rows.all():
+        result[item_id][server] = native_id
+    return result

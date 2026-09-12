@@ -61,6 +61,7 @@ from autoposter.api.auth import require_session
 from autoposter.config.loader import config_for_library
 from autoposter.db.models import ItemMetadataOverride, MediaItem
 from autoposter.db.models import Session as SessionModel
+from autoposter.db.refs import native_ids
 from autoposter.plex.item_overrides import (
     OverrideValueError,
     canonical_value,
@@ -366,15 +367,19 @@ async def delete_metadata_override(
             raise HTTPException(
                 status_code=503, detail="this instance is not connected to Plex"
             )
+        plex_ids = await native_ids(session, [item.id], "plex")
+        native_id = plex_ids.get(item.id)
+        if native_id is None:
+            raise HTTPException(status_code=409, detail="this item has no Plex id")
         _attribute, plex_field = _PLEX_FIELD_NAMES[field]
         exempt = None
         try:
-            plex_item = await plex.fetch_item(item.rating_key)
+            plex_item = await plex.fetch_item(native_id)
             exempt = exemption_reason(
                 config_for_library(
                     request.app.state.config_holder.current, item.library,
                 ).operations,
-                item.rating_key, item.imdb_id,
+                native_id, item.imdb_id,
                 getattr(plex_item, "labels", None),
             )
             if exempt is None:
@@ -386,7 +391,7 @@ async def delete_metadata_override(
             # anchored -- does not touch that shape, so serving the message
             # would leak it to whoever called this endpoint.
             logger.warning(
-                "could not unlock %s on %s: %s", field, item.rating_key, exc,
+                "could not unlock %s on %s: %s", field, native_id, exc,
             )
             raise HTTPException(
                 status_code=503, detail=type(exc).__name__
@@ -395,7 +400,7 @@ async def delete_metadata_override(
         if exempt is not None:
             logger.info(
                 "plex: skipped clearing %s on %s: %s",
-                field, item.rating_key, exempt,
+                field, native_id, exempt,
             )
 
         await session.delete(row)

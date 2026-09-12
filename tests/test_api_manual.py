@@ -30,7 +30,9 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import EventLog, Job, ManagedCollection, MediaItem, Render
+from autoposter.db.models import EventLog, Job, ManagedCollection, Render
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -152,9 +154,8 @@ async def _item(session, kind: str = "movie", with_render: bool = True, **extra)
         tmdb_id=TMDB_ID, tvdb_id=660, imdb_id="tt0137523", root_folder=ROOT_FOLDER,
     )
     defaults.update(extra)
-    item = MediaItem(**defaults)
-    session.add(item)
-    await session.flush()
+    rating_key = defaults.pop("rating_key")
+    item = await seed_media_item(session, rating_key, **defaults)
     if with_render:
         session.add(
             Render(
