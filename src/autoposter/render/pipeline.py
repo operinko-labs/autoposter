@@ -30,6 +30,7 @@ from autoposter.db.models import EventLog, ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
+from autoposter.facts.sort_positions import delete_sort_position
 from autoposter.intake.arr import RenderIntent
 from autoposter.overlays.selection import OverlayItemView
 from autoposter.overlays.selection import select as select_overlay_definitions
@@ -1706,6 +1707,17 @@ async def apply_metadata(
             await apply_facts(
                 plex_item, facts, config.operations, parental_categories, overrides,
             )
+
+    # Row 269. A released sort position is acted on ONCE: the clear above
+    # was sent -- or the item is exempt, row 99's own ruling for its DELETE
+    # endpoint (the row goes, the write does not), or Plex already reports
+    # the field unlocked and the writer had nothing to send. Under apply-off
+    # the write was only reported, so the tombstone stays for the pass that
+    # arms it. Its own commit: nothing else in this function commits, and
+    # the tombstone must not outlive the write it authorised.
+    if facts.sort_title == "" and config.operations.sort_title_apply:
+        await delete_sort_position(session, media_item_id)
+        await session.commit()
     return facts
 
 

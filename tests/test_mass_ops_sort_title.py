@@ -397,13 +397,16 @@ def test_a_field_verb_on_sort_title_wins():
     assert edits == {"titleSort.locked": 1}
 
 
-def test_a_show_is_never_written_even_with_both_gates_on():
-    """Belt and braces below the gather's own guard: a show carries no
-    franchise, but a hand-built facts object must not reach Plex either."""
+def test_an_episode_is_never_written_even_with_both_gates_on():
+    """Belt and braces below the gather's own guard: ``sort_title`` sits in
+    the episode kind's ``WRITABLE_BY_KIND`` set for the override path, so the
+    writer's own guard is what keeps a hand-built facts object off an
+    episode. (Shows are allowed since row 269 -- a list may hold them -- and
+    the show refusal for THIS source is the gather's, pinned above.)"""
     from autoposter.plex.writer import WRITABLE_BY_KIND
 
-    assert "sort_title" in WRITABLE_BY_KIND["show"], "the override path keeps it writable"
-    item = FakeItem(kind="show", titleSort="Dark")
+    assert "sort_title" in WRITABLE_BY_KIND["episode"], "the override path keeps it writable"
+    item = FakeItem(kind="episode", titleSort="Pilot")
     edits = plan_edits(
         item, GatheredFacts(sort_title="Dark 01"),
         OperationsConfig(sort_title_source="tmdb_collection", sort_title_apply=True),

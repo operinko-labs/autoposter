@@ -71,7 +71,9 @@ class GatheredFacts:
                 self.user_rating is not None,
                 self.original_title,
                 self.added_at,
-                self.sort_title,
+                # ``is not None``: "" means CLEAR (row 269) and must reach the
+                # writer, where a falsy check would drop it at this gate.
+                self.sort_title is not None,
                 self.tmdb_origin_country,
                 self.tmdb_original_language,
                 self.tmdb_collection_id is not None,

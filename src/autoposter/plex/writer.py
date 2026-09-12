@@ -684,18 +684,35 @@ def plan_edits(
                 )
 
     if (
-        "sort_title" in writable and facts.sort_title
-        and getattr(item, "type", "movie") == "movie"
+        "sort_title" in writable and facts.sort_title is not None
+        and getattr(item, "type", "movie") in ("movie", "show")
     ):
-        # Roadmap row 268. Movies only, ENFORCED HERE as well as at the
-        # gather: ``sort_title`` is in every kind's ``WRITABLE_BY_KIND`` set
-        # for the row-99 override path, so the map cannot do it for this
-        # branch the way it does for ``added_at``. Plain text compare, like
-        # the seven text fields in ``override_edits``; ``_ensure_locked`` on
-        # the equal case is deliberately absent, matching every provider
-        # branch above.
-        if getattr(item, "titleSort", None) != facts.sort_title:
-            if getattr(operations, "sort_title_apply", False):
+        # Roadmap rows 268/269. The per-source kind rule lives at the gather
+        # (``tmdb_collection`` never sets this for a show); this guard only
+        # keeps seasons and episodes out, since ``sort_title`` sits in every
+        # kind's ``WRITABLE_BY_KIND`` set for the row-99 override path and
+        # the map cannot do it the way it does for ``added_at``.
+        #
+        # "" means CLEAR (row 269, a released member): blank AND unlock, the
+        # mirror of ``put``, so Plex derives the sort title again -- steady
+        # once Plex reports the field unlocked. A value is a plain text
+        # compare, like the seven text fields in ``override_edits``;
+        # ``_ensure_locked`` on the equal case is deliberately absent,
+        # matching every provider branch above.
+        apply = getattr(operations, "sort_title_apply", False)
+        if facts.sort_title == "":
+            if _locked_in_plex(item, "titleSort") is not False:
+                if apply:
+                    edits["titleSort.value"] = ""
+                    edits["titleSort.locked"] = 0
+                else:
+                    logger.info(
+                        "plex: would clear sort_title on %s "
+                        "(operations.sort_title_apply is off)",
+                        _item_label(item),
+                    )
+        elif getattr(item, "titleSort", None) != facts.sort_title:
+            if apply:
                 put("titleSort", facts.sort_title)
             else:
                 # Row 213: the item and the field, never the value.

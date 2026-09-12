@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.facts import imdb
-from autoposter.facts.franchise_sort import franchise_sort_title
+from autoposter.facts.franchise_sort import format_position, franchise_sort_title
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
+from autoposter.facts.sort_positions import load_sort_position
 from autoposter.facts.tmdb_budget import TmdbRateLimited
 from autoposter.plex.client import ResolvedItem
 
@@ -259,7 +260,20 @@ async def gather_facts(
     # movie in no franchise -- most of them -- costs no request at all.
     sort_title = None
     sort_title_source = getattr(operations, "sort_title_source", None)
-    if sort_title_source and item.kind != "movie":
+    if sort_title_source == "collections":
+        # Row 269. Movies and shows -- a list may hold either -- and no
+        # warning for a season or episode: lists never hold them, so silence
+        # is the truthful report. A RELEASED row (spec §8) yields "" --
+        # CLEAR -- which the writer turns into one blank-and-unlock edit and
+        # ``apply_metadata`` then drops the row.
+        if item.kind in ("movie", "show"):
+            row = await load_sort_position(session, item.rating_key)
+            if row is not None:
+                sort_title = (
+                    "" if row.released_at is not None
+                    else format_position(row.base, row.position, row.total)
+                )
+    elif sort_title_source == "tmdb_collection" and item.kind != "movie":
         global _sort_title_non_movie_warned
         if not _sort_title_non_movie_warned:
             logger.warning(
@@ -268,7 +282,7 @@ async def gather_facts(
                 "item"
             )
             _sort_title_non_movie_warned = True
-    elif sort_title_source and facts.tmdb_collection_id is not None:
+    elif sort_title_source == "tmdb_collection" and facts.tmdb_collection_id is not None:
         try:
             order = await tmdb.collection_order(facts.tmdb_collection_id)
         except TmdbRateLimited as exc:
