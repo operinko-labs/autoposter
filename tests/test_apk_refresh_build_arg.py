@@ -16,12 +16,19 @@ from pathlib import Path
 
 import yaml
 
-REPO = Path(__file__).parent.parent
-DOCKERFILE = (REPO / "Dockerfile").read_text(encoding="utf-8")
-CI = yaml.safe_load((REPO / ".forgejo" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
-RELEASE = yaml.safe_load(
-    (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-)
+# Paths only at import time, reads inside the tests: CI's ImageMagick-marked
+# pytest run happens inside the dev image, which carries /app/tests but no
+# /app/Dockerfile, and a module-level read there errors at COLLECTION even
+# though nothing here is selected (run 477, 2026-09-12). The sibling
+# ``test_version_stamp.py`` reads lazily for the same reason.
+REPO = Path(__file__).resolve().parent.parent
+DOCKERFILE = REPO / "Dockerfile"
+CI_WORKFLOW = REPO / ".forgejo" / "workflows" / "ci.yml"
+RELEASE_WORKFLOW = REPO / ".github" / "workflows" / "release.yml"
+
+
+def _load(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def _steps(workflow):
@@ -39,13 +46,17 @@ def _build_steps(workflow):
 def test_the_dockerfile_declares_apk_refresh_directly_above_the_upgrade():
     """Directly above, in the SAME stage: an ARG in an earlier stage does not
     reach ``pybase``, and one below the RUN keys nothing."""
-    pybase = DOCKERFILE.split("AS pybase", 1)[1].split("\nFROM ", 1)[0]
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    pybase = text.split("AS pybase", 1)[1].split("\nFROM ", 1)[0]
     match = re.search(r"^ARG APK_REFRESH[^\n]*\n(?:#[^\n]*\n)*RUN apk upgrade", pybase, re.M)
     assert match, "pybase needs `ARG APK_REFRESH` immediately above `RUN apk upgrade`"
 
 
 def test_every_image_build_passes_todays_date_as_apk_refresh():
-    for name, workflow, step_id in (("ci", CI, "gen_tag"), ("release", RELEASE, "version")):
+    for name, path, step_id in (
+        ("ci", CI_WORKFLOW, "gen_tag"), ("release", RELEASE_WORKFLOW, "version"),
+    ):
+        workflow = _load(path)
         builds = _build_steps(workflow)
         assert builds, f"{name}: no build-push-action step found"
         for build in builds:
