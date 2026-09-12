@@ -84,12 +84,20 @@ operations:
   # touches, and turning the flag back off does not put the old dates back.
   # added_at_source: tmdb_digital
   # added_at_apply: false
-  # Roadmap row 268 -- sort a TMDb franchise's films in the order TMDb lists
-  # them. Writes each franchise movie's sort title as '<franchise> <NN>' ("Alien 01",
-  # "Alien 02", ...), so the library's own title sort lists the franchise in
-  # order instead of alphabetically. Movie libraries only. Two flags, like
-  # row 227: naming the source gates the fetch, `apply` gates the write, and
-  # turning the flag back off leaves the sort titles it wrote in place.
+  # Roadmap rows 268/269 -- where an item's sort title comes from, written
+  # as '<name> <NN>' ("Alien 01", "Alien 02", ...) so the library's own title
+  # sort keeps a franchise or list together and in order, at its own letter.
+  # 'tmdb_collection': the TMDb franchise a movie's own record names, in the
+  # order TMDb lists it; no collection config needed; movie libraries only.
+  # 'collections': the positions your own collection definitions with
+  # `member_sort: true` recorded, in each list's own order (see the
+  # definitions example below). Two flags, like row 227: naming the source
+  # gates the read, `apply` gates the write. To retire 'collections', remove
+  # `member_sort` from the definitions FIRST -- a pass then releases every
+  # member and the next item pass hands the field back to Plex -- and only
+  # then unset the source; the other order leaves the values in place.
+  # 'tmdb_collection' has no release path: turning it off leaves its sort
+  # titles where they are.
   # sort_title_source: tmdb_collection
   # sort_title_apply: false
   # Roadmap row 99 -- per-item metadata overrides, declared one item at a time
@@ -296,6 +304,15 @@ collections:
   #   presets:
   #     - award_cannes # Cannes Golden Palm Winners + one per recent festival
   #     - content_genres # one collection per genre the library holds
+  # Roadmap row 269 -- sort a list's members inside the library's own title
+  # sort, in the list's order, with or without a Plex collection. Needs
+  # operations.sort_title_source: collections (and sort_title_apply) above.
+  # One more entry under the `definitions:` example below:
+  #     - title: The Bond Collection
+  #       builder: tmdb_list
+  #       params: { id: 8296 }
+  #       member_sort: true # members' sort titles become 'Bond 01', 'Bond 02', ... in the list's order
+  #       create_collection: false # sort-only: no Plex collection is created for this list
   # Operator-configured collections, each built by a registered builder. An
   # unknown `builder:` is rejected when the config loads, not hours later in a
   # reconcile. Empty by default; the toggles above are unaffected. Example:

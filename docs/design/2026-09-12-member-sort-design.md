@@ -1,8 +1,8 @@
 # Member sort — a list source's order as the library's title order
 
 **Date:** 2026-09-12
-**Status:** Design for review, pre-implementation
-**Roadmap:** row 269 (to be filed with the PR); builds on row 268
+**Status:** Implemented — roadmap row 269 records what shipped
+**Roadmap:** row 269; builds on row 268
 
 ## 1. Purpose
 
