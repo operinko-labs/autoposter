@@ -247,6 +247,14 @@ class _RawMatch:
     ``show_title`` is the SHOW's own title and is filled for a SEASON intent
     only (roadmap row 78); both producers below take it off the show object
     they already hold.
+
+    ``parent_guids`` is the show's own ``guids`` (spec §4.2's parent identity),
+    captured for a SEASON or EPISODE intent only -- empty for a movie or show,
+    which have no parent to key. It is the same read already taken for
+    ``guids`` on those two kinds; this just keeps it under its own name so
+    ``resolve()`` can fill ``ResolvedItem.parent_tmdb_id``/``parent_tvdb_id``/
+    ``parent_imdb_id`` without a caller mistaking the item's own ids for its
+    parent's.
     """
 
     rating_key: str
@@ -259,6 +267,7 @@ class _RawMatch:
     art_url: str | None
     guids: list[str]
     parent_rating_key: str | None
+    parent_guids: list[str]
     original_title: str | None = None
     show_title: str | None = None
 
@@ -436,6 +445,10 @@ class PlexClient:
             art_url=getattr(container, "thumb", None),
             guids=[g.id for g in getattr(container, "guids", [])],
             parent_rating_key=parent_rating_key,
+            parent_guids=(
+                [g.id for g in getattr(container, "guids", [])]
+                if intent.kind in ("season", "episode") else []
+            ),
             original_title=getattr(item, "originalTitle", None),
             show_title=(
                 getattr(container, "title", None) if intent.kind == "season" else None
@@ -548,6 +561,10 @@ class PlexClient:
                         art_url=getattr(item, "thumb", None),
                         guids=[g.id for g in getattr(item, "guids", [])],
                         parent_rating_key=parent_rating_key,
+                        parent_guids=(
+                            [g.id for g in getattr(item, "guids", [])]
+                            if intent.kind in ("season", "episode") else []
+                        ),
                         original_title=getattr(target, "originalTitle", None),
                         show_title=(
                             getattr(item, "title", None)
@@ -723,6 +740,7 @@ class PlexClient:
             )
 
         guids = parse_guids(match.guids)
+        parent_guids = parse_guids(match.parent_guids)
         file_path = match.file_path
 
         if intent.kind == "movie":
@@ -763,6 +781,9 @@ class PlexClient:
             tvdb_id=as_int(guids.get("tvdb")) or intent.tvdb_id,
             imdb_id=guids.get("imdb") or intent.imdb_id,
             parent_native_id=match.parent_rating_key,
+            parent_tmdb_id=as_int(parent_guids.get("tmdb")),
+            parent_tvdb_id=as_int(parent_guids.get("tvdb")),
+            parent_imdb_id=parent_guids.get("imdb"),
             original_title=match.original_title,
             show_title=match.show_title,
         )

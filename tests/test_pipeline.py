@@ -296,13 +296,14 @@ def test_publish_removes_the_staging_file_when_replace_fails(tmp_path, monkeypat
     assert not (target.parent / ".poster.jpg.tmp").exists()
 
 
-async def test_concurrent_upserts_of_the_same_rating_key_succeed_and_leave_one_row(
+async def test_concurrent_upserts_of_the_same_identity_succeed_and_leave_one_row(
     session_factory,
 ):
     # Two workers can both resolve a fresh job for the same item while an earlier
     # one is still running (spec: finding 3). A select-then-insert would race;
     # the Postgres upsert must not.
     from autoposter.render.pipeline import _upsert_media_item
+    from autoposter.servers.identity import identity_key_for
 
     async def upsert(title):
         async with session_factory() as s:
@@ -313,12 +314,14 @@ async def test_concurrent_upserts_of_the_same_rating_key_succeed_and_leave_one_r
 
     async with session_factory() as s:
         rows = (
-            await s.execute(select(MediaItem).where(MediaItem.rating_key == "1"))
+            await s.execute(
+                select(MediaItem).where(MediaItem.identity_key == identity_key_for(item()))
+            )
         ).scalars().all()
     assert len(rows) == 1
 
 
-async def test_second_upsert_of_the_same_rating_key_refreshes_updated_at(session_factory):
+async def test_second_upsert_of_the_same_identity_refreshes_updated_at(session_factory):
     # on_conflict_do_update is an INSERT statement, so SQLAlchemy's onupdate=
     # hook (which only fires for genuine UPDATEs) never runs on its own; the
     # set_ mapping must refresh updated_at explicitly on every conflict.
@@ -326,6 +329,7 @@ async def test_second_upsert_of_the_same_rating_key_refreshes_updated_at(session
     # clock: this machine's Postgres clock lags the host clock by several
     # seconds (see project constraints).
     from autoposter.render.pipeline import _upsert_media_item
+    from autoposter.servers.identity import identity_key_for
 
     async with session_factory() as s:
         await _upsert_media_item(s, item(title="Dune: Part Two"))
@@ -333,7 +337,9 @@ async def test_second_upsert_of_the_same_rating_key_refreshes_updated_at(session
 
     async with session_factory() as s:
         first = (
-            await s.execute(select(MediaItem).where(MediaItem.rating_key == "1"))
+            await s.execute(
+                select(MediaItem).where(MediaItem.identity_key == identity_key_for(item()))
+            )
         ).scalar_one()
 
     await asyncio.sleep(1.1)
@@ -344,7 +350,9 @@ async def test_second_upsert_of_the_same_rating_key_refreshes_updated_at(session
 
     async with session_factory() as s:
         second = (
-            await s.execute(select(MediaItem).where(MediaItem.rating_key == "1"))
+            await s.execute(
+                select(MediaItem).where(MediaItem.identity_key == identity_key_for(item()))
+            )
         ).scalar_one()
 
     assert second.created_at == first.created_at
@@ -365,48 +373,50 @@ async def test_show_two_seasons_and_two_episodes_produce_five_distinct_rows(
     # of its seasons and two of its episodes collapsed onto one media_items row
     # (whose kind/season_number/episode_number churned as each intent overwrote
     # the last) and three renders rows (later intents overwriting earlier ones'
-    # season_poster/title_card). With each item carrying its own rating key,
-    # the same five intents must produce five distinct rows in each table, with
-    # distinct asset_paths and fingerprints, and parent_id wired up as each
-    # parent is processed before its children. Exercises the real upsert
-    # functions (_upsert_media_item, _get_or_create_render) against the live
-    # test database, not a mock.
+    # season_poster/title_card). With each item keyed on its own identity
+    # (spec §4.2), the same five intents must produce five distinct rows in
+    # each table, with distinct asset_paths and fingerprints, and parent_id
+    # wired up to the show for every season and episode -- identity's parent
+    # is always the show, never a season, ``parent_identity_key_for`` builds
+    # a "show" key regardless of the child's own kind. Exercises the real
+    # upsert functions (_upsert_media_item, _get_or_create_render) against
+    # the live test database, not a mock.
     from autoposter.render.pipeline import _get_or_create_render, _upsert_media_item
+    from autoposter.servers.identity import identity_key_for
 
     show = ResolvedItem(
         server="plex", native_id="900", library="Shows", kind="show",
         title="Severance", year=2022,
         season_number=None, episode_number=None, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_native_id=None,
     )
     season1 = ResolvedItem(
         server="plex", native_id="901", library="Shows", kind="season",
         title="Season 1", year=None,
         season_number=1, episode_number=None, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_native_id="900",
+        parent_native_id="900", parent_tvdb_id=371980,
     )
     season2 = ResolvedItem(
         server="plex", native_id="902", library="Shows", kind="season",
         title="Season 2", year=None,
         season_number=2, episode_number=None, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_native_id="900",
+        parent_native_id="900", parent_tvdb_id=371980,
     )
     episode1 = ResolvedItem(
         server="plex", native_id="903", library="Shows", kind="episode",
         title="Who Is Alive?", year=None,
         season_number=2, episode_number=3, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_native_id="902",
+        parent_native_id="902", parent_tvdb_id=371980,
     )
     episode2 = ResolvedItem(
         server="plex", native_id="904", library="Shows", kind="episode",
         title="Woe's Hollow", year=None,
         season_number=2, episode_number=4, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_native_id="902",
+        parent_native_id="902", parent_tvdb_id=371980,
     )
 
     entries = [
@@ -438,17 +448,18 @@ async def test_show_two_seasons_and_two_episodes_produce_five_distinct_rows(
         render_rows = (await s.execute(select(Render))).scalars().all()
 
     assert len(media_rows) == 5
-    assert {row.rating_key for row in media_rows} == {"900", "901", "902", "903", "904"}
+    assert {row.identity_key for row in media_rows} == {
+        identity_key_for(resolved) for resolved, _ in entries
+    }
     assert len(render_rows) == 5
     assert len({row.asset_path for row in render_rows}) == 5
     assert len({row.fingerprint for row in render_rows}) == 5
 
-    by_rating_key = {row.rating_key: row for row in media_rows}
-    assert by_rating_key["900"].parent_id is None
-    assert by_rating_key["901"].parent_id == by_rating_key["900"].id
-    assert by_rating_key["902"].parent_id == by_rating_key["900"].id
-    assert by_rating_key["903"].parent_id == by_rating_key["902"].id
-    assert by_rating_key["904"].parent_id == by_rating_key["902"].id
+    by_identity_key = {row.identity_key: row for row in media_rows}
+    show_row = by_identity_key[identity_key_for(show)]
+    assert show_row.parent_id is None
+    for child in (season1, season2, episode1, episode2):
+        assert by_identity_key[identity_key_for(child)].parent_id == show_row.id
 
 
 class _LogoAwareProvider:
