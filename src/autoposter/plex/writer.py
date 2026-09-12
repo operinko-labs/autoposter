@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 # four TEXT fields below (``title``, ``sort_title``, ``summary``, ``tagline``)
 # have NO provider source in this service at all and are never written from
 # ``GatheredFacts`` -- they exist here so that a per-item OVERRIDE can name
-# them. Their per-libtype placement is plexapi's own capability matrix
+# them. (Row 268 later gave ``sort_title`` one conditional source, a movie's
+# TMDb franchise position behind ``operations.sort_title_source``; the other
+# three remain override-only.) Their per-libtype placement is plexapi's own
+# capability matrix
 # (``plexapi/mixins/__init__.py:35-70``), which is also what Kometa's
 # ``add_edit`` writes through: a season carries no ``titleSort`` and no
 # ``tagline``, and an episode carries no ``tagline``.
@@ -677,6 +680,28 @@ def plan_edits(
                 logger.info(
                     "plex: would set added_at on %s "
                     "(operations.added_at_apply is off)",
+                    _item_label(item),
+                )
+
+    if (
+        "sort_title" in writable and facts.sort_title
+        and getattr(item, "type", "movie") == "movie"
+    ):
+        # Roadmap row 268. Movies only, ENFORCED HERE as well as at the
+        # gather: ``sort_title`` is in every kind's ``WRITABLE_BY_KIND`` set
+        # for the row-99 override path, so the map cannot do it for this
+        # branch the way it does for ``added_at``. Plain text compare, like
+        # the seven text fields in ``override_edits``; ``_ensure_locked`` on
+        # the equal case is deliberately absent, matching every provider
+        # branch above.
+        if getattr(item, "titleSort", None) != facts.sort_title:
+            if getattr(operations, "sort_title_apply", False):
+                put("titleSort", facts.sort_title)
+            else:
+                # Row 213: the item and the field, never the value.
+                logger.info(
+                    "plex: would set sort_title on %s "
+                    "(operations.sort_title_apply is off)",
                     _item_label(item),
                 )
 

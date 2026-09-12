@@ -297,7 +297,9 @@ async def delete_metadata_override(
       facts path on the next pass;
     * a field with NO source (``title``, ``sort_title``, ``summary``,
       ``tagline``) keeps the operator's last value in Plex until Plex itself
-      refreshes it.
+      refreshes it -- except ``sort_title`` on a franchise movie under
+      ``operations.sort_title_source`` (row 268), which has a source for that
+      item and is rewritten like the first group.
 
     There is deliberately no "write the provider value back immediately": that
     would need a source for every field -- which four of them do not have --

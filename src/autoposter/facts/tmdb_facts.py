@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime
 
 import httpx
@@ -321,6 +322,48 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
     )
 
 
+@dataclass(frozen=True)
+class CollectionOrder:
+    """A franchise collection's name and its parts' TMDb ids, in TMDb's order.
+
+    Roadmap row 268. ``parts`` holds ints, where ``providers/tmdb_lists.py``'s
+    ``collection_parts`` hands the collections engine strings: that engine
+    resolves ids as strings everywhere, and this value is compared against
+    ``ResolvedItem.tmdb_id``, which is an int.
+    """
+
+    name: str
+    parts: list[int]
+
+
+def parse_collection_order(payload: dict) -> CollectionOrder | None:
+    """``/collection/{id}``'s parts, exactly as TMDb lists them.
+
+    The order is the SOURCE's and nothing is re-sorted here (operator rule,
+    2026-09-12: "the sort order should be whatever comes from the list
+    source"). ``providers/tmdb_lists.py::collection_parts`` hands the
+    collections engine this same array in this same order, so a franchise
+    collection and its members' sort titles agree by construction.
+
+    A payload with no ``parts`` array is no order at all, never an empty one:
+    an empty order would give every member "not in its own collection", which
+    is indistinguishable from a real answer downstream.
+    """
+    parts = payload.get("parts")
+    if not isinstance(parts, list):
+        return None
+    ids: list[int] = []
+    for entry in parts:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            ids.append(int(entry["id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    name = payload.get("name")
+    return CollectionOrder(name=name if isinstance(name, str) else "", parts=ids)
+
+
 def parse_season_episode_ratings(payload: dict) -> dict[int, float]:
     """``{episode_number: vote_average}`` for one season, skipping unrated."""
     ratings: dict[int, float] = {}
@@ -469,3 +512,17 @@ class TMDBFactsClient:
             return None
         overview = payload.get("overview")
         return overview if isinstance(overview, str) and overview else None
+
+    async def collection_order(self, collection_id: int) -> CollectionOrder | None:
+        """A franchise collection's name and parts, in TMDb's order (row 268).
+
+        The SAME request ``collection_summary`` makes, so the two share one
+        ``provider_cache`` row per franchise per TTL. Through ``_get`` for the
+        reasons ``release_date`` gives: the bearer header, the shared rate
+        budget and the 429 backoff come with it. ``None`` for an id TMDb does
+        not know -- a movie whose ``belongs_to_collection`` points at a
+        collection that has since been deleted -- and for a response with no
+        parts array; the caller writes nothing in either case.
+        """
+        payload = await self._get(f"/collection/{collection_id}")
+        return parse_collection_order(payload) if payload else None

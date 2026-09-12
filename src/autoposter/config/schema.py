@@ -1113,6 +1113,32 @@ class OperationsConfig(BaseModel):
         ),
     )
 
+    # Roadmap row 268. Row 227's two-key shape: naming the source gates the
+    # fetch, ``sort_title_apply`` gates the write. A ``Literal`` with one value
+    # today, so that ordering by some other collection's membership -- the
+    # half of the idea this row does not ship -- is a second value here rather
+    # than a second key. The apply flag is off by default for row 227's reason:
+    # the write touches every franchise movie in a library, and turning the
+    # flag back off leaves the sort titles it wrote (locked) in place.
+    sort_title_source: Literal["tmdb_collection"] | None = Field(
+        default=None,
+        description=(
+            "Where a movie's sort title comes from, library-wide. "
+            "'tmdb_collection' writes '<franchise> <NN>' -- the TMDb franchise "
+            "collection's name and the film's position in it, in the order TMDb "
+            "lists the parts -- so the library's title sort lists a franchise "
+            "in that order. Movie "
+            "libraries only. Unset writes no sort title at all."
+        ),
+    )
+    sort_title_apply: bool = Field(
+        default=False,
+        description=(
+            "Actually write the franchise sort title to Plex; off only reports "
+            "which items it would set."
+        ),
+    )
+
     @field_validator("field_verbs")
     @classmethod
     def _known_fields_and_verbs(cls, value: dict[str, str]) -> dict[str, str]:
@@ -1681,6 +1707,10 @@ class OperationsOverride(BaseModel):
         default=None, description=_per_library("operations", "added_at_source"))
     added_at_apply: bool | None = Field(
         default=None, description=_per_library("operations", "added_at_apply"))
+    sort_title_source: Literal["tmdb_collection"] | None = Field(
+        default=None, description=_per_library("operations", "sort_title_source"))
+    sort_title_apply: bool | None = Field(
+        default=None, description=_per_library("operations", "sort_title_apply"))
     parental_labels_enabled: bool | None = Field(
         default=None, description=_per_library("operations", "parental_labels_enabled"))
     parental_labels_apply: bool | None = Field(

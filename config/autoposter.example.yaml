@@ -84,6 +84,14 @@ operations:
   # touches, and turning the flag back off does not put the old dates back.
   # added_at_source: tmdb_digital
   # added_at_apply: false
+  # Roadmap row 268 -- sort a TMDb franchise's films in the order TMDb lists
+  # them. Writes each franchise movie's sort title as '<franchise> <NN>' ("Alien 01",
+  # "Alien 02", ...), so the library's own title sort lists the franchise in
+  # order instead of alphabetically. Movie libraries only. Two flags, like
+  # row 227: naming the source gates the fetch, `apply` gates the write, and
+  # turning the flag back off leaves the sort titles it wrote in place.
+  # sort_title_source: tmdb_collection
+  # sort_title_apply: false
   # Roadmap row 99 -- per-item metadata overrides, declared one item at a time
   # from the item page. Off leaves any stored overrides in place and ignored
   # (the panel goes read-only), so turning this back on restores them.

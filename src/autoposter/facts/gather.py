@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.facts import imdb
+from autoposter.facts.franchise_sort import franchise_sort_title
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
 from autoposter.facts.tmdb_budget import TmdbRateLimited
@@ -27,6 +28,10 @@ _tvdb_source_unconfigured_warned = False
 # and is enforced here instead. One warning per PROCESS, not one per item: a
 # library-wide misconfiguration must not cost 13,841 warning lines a pass.
 _added_at_non_movie_warned = False
+
+# Roadmap row 268, the third latch of the same shape: TMDb collections are
+# movie franchises, and a show library naming the source is told so once.
+_sort_title_non_movie_warned = False
 
 
 def format_critic(value: float | None) -> str | None:
@@ -248,6 +253,39 @@ async def gather_facts(
     if added_at is not None:
         sources["added_at"] = added_at_source
 
+    # Row 268. Row 227's shape one field along: only when config NAMES the
+    # source, only for a movie, and only for one TMDb has already placed in a
+    # franchise (``belongs_to_collection`` on the movie payload above). A
+    # movie in no franchise -- most of them -- costs no request at all.
+    sort_title = None
+    sort_title_source = getattr(operations, "sort_title_source", None)
+    if sort_title_source and item.kind != "movie":
+        global _sort_title_non_movie_warned
+        if not _sort_title_non_movie_warned:
+            logger.warning(
+                "operations.sort_title_source names a TMDb franchise collection, "
+                "which exists for movies only; it is ignored on every non-movie "
+                "item"
+            )
+            _sort_title_non_movie_warned = True
+    elif sort_title_source and facts.tmdb_collection_id is not None:
+        try:
+            order = await tmdb.collection_order(facts.tmdb_collection_id)
+        except TmdbRateLimited as exc:
+            logger.warning("tmdb rate budget reached; skipping tmdb facts: %s", exc)
+        except httpx.HTTPError as exc:
+            # The added_at precedent directly above: one optional read's
+            # transient failure costs this value and nothing else. Class name
+            # only -- the URL carries a TMDb id.
+            logger.warning(
+                "tmdb collection request failed for %s; skipping sort_title: %s",
+                item.rating_key, type(exc).__name__,
+            )
+        else:
+            sort_title = franchise_sort_title(order, item.tmdb_id)
+    if sort_title is not None:
+        sources["sort_title"] = sort_title_source
+
     return replace(
         facts,
         critic_rating=critic,
@@ -255,6 +293,7 @@ async def gather_facts(
         user_rating=user_rating,
         original_title=original_title,
         added_at=added_at,
+        sort_title=sort_title,
         sources=sources,
     )
 
