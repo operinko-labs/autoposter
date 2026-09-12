@@ -90,6 +90,7 @@ A new table, `item_sort_positions`, one row per item at most:
 | `position` | int | One-based, in the definition's order after `limit`. |
 | `total` | int | Member count after `limit`, so the pipeline pads to `max(2, len(str(total)))` exactly as row 268 does. |
 | `recorded_at` | timestamptz | Set on every write. |
+| `released_at` | timestamptz, nullable | NULL while the item holds a position. Set when the item leaves its list (§8); the row is then a tombstone the pipeline acts on once and deletes. |
 
 One row per item is the ownership rule made structural (§6): the pass decides
 the owner, the table cannot hold two. Nothing is stored on `item_facts`, for
@@ -128,16 +129,21 @@ ordered, filtered, capped members (`items` after the `limit` slice, today
      is logged once per pass with its count and skipped — it gets a row on
      its first `process_item`, and the next pass positions it;
    - apply the ownership rule (§6) to collapse the list to one entry per item;
-   - upsert the survivors (`ON CONFLICT (item_id) DO UPDATE`), and delete
-     every row for this library whose `item_id` is not among them. A
-     definition that dropped `member_sort`, or a member that left its list,
-     loses its row here;
-   - enqueue `process_item` for every item whose row was inserted or whose
-     `(base, position, total)` changed, through `queue.jobs.enqueue_batch`
-     under a `dedupe_key` per rating key, so the sort title lands minutes
-     after the pass rather than at the next drift sweep. Unchanged rows
-     enqueue nothing.
-   `dry_run` (`collections.apply_to_plex` off) skips the upsert, the delete
+   - upsert the survivors (`ON CONFLICT (item_id) DO UPDATE`, clearing
+     `released_at` if a released item came back);
+   - **release** every held row for this library whose `item_id` is not
+     among the survivors AND whose owning definition *settled* this pass
+     (§9): set `released_at = now()`, keep `base`/`position`/`total` for the
+     log. A definition that dropped `member_sort`, was removed from config,
+     or ran and no longer lists the item, releases it; a definition that
+     failed, was outside its schedule, or produced no members at all does
+     not (§9). Rows already released are left for the pipeline;
+   - enqueue `process_item` for every item whose row was inserted, whose
+     `(base, position, total)` changed, or which was released this pass,
+     through `queue.jobs.enqueue_batch` under a `dedupe_key` per rating
+     key, so the change lands minutes after the pass rather than at the
+     next drift sweep. Unchanged rows enqueue nothing.
+   `dry_run` (`collections.apply_to_plex` off) skips the upsert, the release
    and the enqueue, and reports the would-be counts, matching how every other
    write in the pass behaves under it.
 
@@ -170,6 +176,22 @@ item's `item_sort_positions` row by joining
 `width = max(2, len(str(total)))`. No row means no value and no write, exactly
 as a movie in no franchise today. `sources["sort_title"] = "collections"`.
 
+A **released** row (`released_at` set) yields the empty string instead of a
+value: `GatheredFacts.sort_title = ""` means "clear", and `is_empty()` tests
+`sort_title is not None` so a clear still reaches `apply_facts`. The writer
+branch sends `titleSort.value = ""` with `titleSort.locked = 0` in the same
+batched edit as everything else — the shape row 87's `remove` verb already
+sends for its clearable fields — when Plex reports the field locked or
+holding a value; nothing when it is already blank and unlocked. Plex then
+derives the sort title from the title again, which is what clearing the Sort
+Title field in Plex Web does through the same PUT. After `apply_facts`
+returns with the clear applied, `apply_metadata` deletes the tombstone, so
+the clear is written exactly once and the second pass is steady. Under
+`sort_title_apply` off the tombstone stays (the write was only reported);
+for an item `exemption_reason` exempts, the tombstone is deleted without a
+write, row 99's own ruling for its DELETE endpoint, and disclosed the same
+way.
+
 The write goes through row 268's `plan_edits` branch, the apply gate, the
 exemption gate and the lock. One change there: the branch's kind guard widens
 from `movie` to `movie`/`show`. The guard exists because `sort_title` sits in
@@ -180,24 +202,51 @@ either kind under `collections`. Seasons and episodes stay out at both ends.
 
 ## 8. What a departed member looks like
 
-An item whose row was deleted (it left the list, the definition dropped
-`member_sort`, or the definition was removed) gets no sort-title value on its
-next pass, so the pipeline writes nothing and Plex keeps the last locked
-value. This cut does **not** unlock or restore it: doing so needs a tombstone
-the pipeline can act on once, and a decision about what to restore to (row
-86's backup value, or Plex's own agent value, which this service has never
-called for — row 230's territory). Filed as the row's named residual; the
-recovery paths today are the item page's override panel and the metadata
-backup.
+Operator rule: "a member that leaves a list should not keep its last locked
+sort position; the sort position should be removed as well, which would
+return it to however Plex wants it."
+
+An item that leaves its list, or whose definition dropped `member_sort` or
+was removed, is *released* by the pass (§5) and cleared by the pipeline (§7):
+one write blanks `titleSort` and unlocks it, Plex regenerates the sort title
+from the title, and the tombstone is deleted. Nothing is restored from a
+backup and no agent refresh is called; "however Plex wants it" is Plex's own
+derivation, reached by handing the field back.
+
+Two consequences, stated so they are chosen rather than discovered:
+
+- **Off-switch order.** Removing `member_sort` from definitions (or the
+  definitions themselves) releases every member on the next pass, and the
+  pipeline clears them. Unsetting `operations.sort_title_source` first would
+  stop the pipeline reading rows at all, leaving the values in place; the
+  example config says which to do first. `tmdb_collection` (row 268) has no
+  release path of its own — its membership is TMDb's, not a definition's —
+  and keeps row 268's stated no-undo; a deployment that moves from it to
+  `collections` gets releases through the franchise pack like any list.
+- **A sort title the operator set by hand before this service touched the
+  item is not preserved.** The clear returns the field to Plex's derivation,
+  not to a prior manual value; row 86's metadata backup is the record of
+  what was there.
+
+**Live verification owed:** that a `titleSort.value=""` + `titleSort.locked=0`
+PUT makes the server re-derive the sort title is Plex Web's behaviour on
+clearing the field, pinned here against fakes; the first deployment turning
+this on should check one released item in Plex.
 
 ## 9. Error handling
 
-- A definition's builder failure is contained exactly as today, and a failed
-  definition contributes nothing to the assignment, so its members' rows are
-  deleted at commit like any departed member's. This is deliberate and
-  disclosed: a dead source is not evidence the order still holds, and the
-  next successful pass re-records them. The pipeline writes nothing in
-  between (§8), so nothing churns.
+- **A definition releases members only when it settled.** Settled means it
+  ran this pass and resolved at least one member. A builder failure, a 429
+  window, a schedule gate, a source that returned nothing, or a filter that
+  excluded everyone leaves that definition's existing rows exactly as they
+  were: neither re-recorded nor released. A transient outage must not strip a
+  franchise's sort titles and then rewrite them a pass later, and "the source
+  returned no items" is already the case the collection reconciler refuses
+  to act on (`lists.py`'s "leaving the collection untouched"). The cost is
+  that a list which genuinely emptied never releases its members until the
+  definition is removed — the same posture the collection object takes, and
+  disclosed. The pass logs, per unsettled definition, how many rows it left
+  alone.
 - The assignment commit is one transaction per library; a failure there is
   logged with the library and the exception class, the library's rows are
   left as they were, and the rest of the pass is unaffected.
@@ -212,20 +261,27 @@ Through the real entry points, per the standing law for gated features:
   alone, playlist keys), expansion inheritance onto family units, the example
   config round-trips.
 - Engine: positions follow builder order after filter and limit; `sort`
-  does not reorder; first definition wins with one log line; the library's
-  rows are replaced (departed member deleted, retitled definition moves the
-  base); sort-only creates no Plex collection and no `managed_collections`
-  row and reports the action; `dry_run` and `preview` write nothing; the
-  enqueue fires only for changed rows.
+  does not reorder; first definition wins with one log line; a departed
+  member is released, a retitled definition moves the base, a released item
+  that returns is re-held; a failed, gated, empty or filter-emptied
+  definition releases nothing; sort-only creates no Plex collection and no
+  `managed_collections` row and reports the action; `dry_run` and `preview`
+  write nothing; the enqueue fires for inserted, changed and released rows
+  only.
 - Pipeline: `sort_title_source: collections` reads the row and the trio
   through `apply_metadata` — gate-off byte-identical, gate-on writes
   `titleSort` once, second pass steady; a show member is written; a row 99
-  override wins.
+  override wins. The release trio: a tombstone writes one blank-and-unlock
+  edit and is deleted, the second pass is steady; under apply-off the
+  tombstone survives and nothing is written; an exempt item's tombstone is
+  deleted without a write.
 - Migration: up, down, up in a scratch database.
 
 ## 11. Out of this cut, by name
 
-- Restoring a departed member's sort title (§8).
+- Restoring a departed member to a *prior manual* sort title rather than to
+  Plex's derivation (§8).
+- A release path for row 268's `tmdb_collection` source (§8).
 - A `member_sort_base` key; retitle the definition instead.
 - `create_collection: false` for a label-only definition.
 - Smart builders: no ordered output exists to record.
