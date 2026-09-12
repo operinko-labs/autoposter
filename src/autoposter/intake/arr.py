@@ -1,5 +1,5 @@
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
@@ -174,11 +174,11 @@ def _str_or_none(value: object) -> str | None:
 class RenderIntent:
     """One item whose artwork may need rebuilding.
 
-    ``rating_key`` is the item's Plex identity, and is set only by the paths
-    that already know it: the full pass and reprocess in ``api/routes.py``
+    ``refs`` (server -> native id) is a hint, and is set only by the paths
+    that already know one: the full pass and reprocess in ``api/routes.py``
     (from a ``media_items`` row we already resolved once), and discovery in
     ``arr/sync.py`` (from the Plex item it just listed). The webhook paths
-    below leave it None: Sonarr and Radarr know nothing about Plex.
+    below leave it empty: Sonarr and Radarr know nothing about any server.
     """
 
     kind: str  # movie | show | season | episode
@@ -189,11 +189,31 @@ class RenderIntent:
     year: int | None = None
     season_number: int | None = None
     episode_number: int | None = None
-    rating_key: str | None = None
+    refs: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_payload(cls, payload: dict) -> "RenderIntent":
+        """Decode a persisted job payload. Accepts the pre-refs shape, whose
+        `rating_key` was the Plex id, so in-flight jobs survive the re-key."""
+        data = dict(payload)
+        legacy = data.pop("rating_key", None)
+        refs = dict(data.pop("refs", None) or {})
+        if legacy and "plex" not in refs:
+            refs["plex"] = str(legacy)
+        return cls(**data, refs=refs)
+
+    def native_id_on(self, server: str) -> str | None:
+        return self.refs.get(server)
+
+    def __hash__(self) -> int:
+        # ``refs`` is a dict -- unhashable -- so the auto-generated frozen-dataclass
+        # hash (which would include it) is replaced with one over the other fields.
+        return hash((self.kind, self.title, self.tmdb_id, self.tvdb_id, self.imdb_id,
+                     self.year, self.season_number, self.episode_number))
 
     @property
     def dedupe_key(self) -> str:
-        """Stable queue key. External ids are used because the Plex rating key is
+        """Stable queue key. External ids are used because a server's native id is
         not known until the job runs -- and it stays out of the key even when it
         *is* known, so that a job queued without one still dedupes against a
         later enqueue of the same item."""

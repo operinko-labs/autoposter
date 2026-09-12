@@ -251,8 +251,8 @@ def test_make_credits_job_reads_its_cadence_live():
 async def test_the_enqueued_intent_carries_the_rows_rating_key(session):
     """The first of the two silent twin producers.
 
-    ``_stamp_and_enqueue`` built its ``RenderIntent`` with no ``rating_key``
-    field at all, so every drift job went straight to the GUID walk, resolved
+    ``_stamp_and_enqueue`` built its ``RenderIntent`` with no ``refs``
+    at all, so every drift job went straight to the GUID walk, resolved
     the LIVE key and upserted a second row -- silently, because the pipeline's
     fork warning only fires when the intent carried a key to disagree with.
     Carrying the key is what every other row-derived intent already does
@@ -266,4 +266,4 @@ async def test_the_enqueued_intent_carries_the_rows_rating_key(session):
 
     assert count == 1
     (job,) = (await session.execute(select(Job).order_by(Job.id))).scalars().all()
-    assert job.payload["rating_key"] == item.rating_key
+    assert job.payload["refs"]["plex"] == item.rating_key

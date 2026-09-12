@@ -438,7 +438,7 @@ async def test_reprocess_carries_the_items_plex_rating_key(client, auth_headers,
     await client.post(f"/api/items/{item_id}/reprocess", headers=auth_headers)
 
     job = (await session.execute(select(Job))).scalars().one()
-    assert job.payload["rating_key"] == "77632"
+    assert job.payload["refs"]["plex"] == "77632"
     assert job.dedupe_key == "process_item:episode:tmdb64677:s03e04"
 
 

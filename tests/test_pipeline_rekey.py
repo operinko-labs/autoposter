@@ -186,7 +186,7 @@ async def test_a_re_matched_item_re_keys_its_own_row_and_creates_no_twin(
     seen = _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(
         kind="movie", title="Dune: Part Two", tmdb_id=693134,
-        imdb_id="tt15239678", year=2024, rating_key="1",
+        imdb_id="tt15239678", year=2024, refs={"plex": "1"},
     )
 
     await pipeline.process_item(
@@ -210,7 +210,7 @@ async def test_the_re_key_writes_one_audit_row_carrying_both_keys(
     await _row(session, "1")
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     await pipeline.process_item(
         session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
@@ -251,7 +251,7 @@ async def test_the_re_key_leaves_every_asset_path_untouched(
     await session.commit()
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     await pipeline.process_item(
         session, config, None, _FakePlex(_resolved("2")), [], intent,
@@ -280,7 +280,7 @@ async def test_a_webhook_intent_with_no_rating_key_still_re_keys(
     stale_id = stale.id
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(
-        kind="movie", title="Dune: Part Two", tmdb_id=693134, rating_key=None,
+        kind="movie", title="Dune: Part Two", tmdb_id=693134,
     )
 
     await pipeline.process_item(
@@ -304,7 +304,7 @@ async def test_an_unchanged_item_is_byte_identical(session, tmp_path, monkeypatc
     stale_id = stale.id
     seen = _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     await pipeline.process_item(
         session, _config(tmp_path), None, _FakePlex(_resolved("1")), [], intent,
@@ -330,7 +330,7 @@ async def test_a_cross_library_match_is_not_a_re_key(session, tmp_path, monkeypa
     await _row(session, "1", library="Movies 4K")
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     await pipeline.process_item(
         session, _config(tmp_path), None,
@@ -353,7 +353,7 @@ async def test_an_id_disjoint_match_is_not_a_re_key(session, tmp_path, monkeypat
     await _row(session, "1", tmdb_id=111, imdb_id="tt0000111")
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=111,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     await pipeline.process_item(
         session, _config(tmp_path), None,
@@ -374,7 +374,7 @@ async def test_a_kind_mismatch_is_not_a_re_key(session, tmp_path, monkeypatch):
                imdb_id=None)
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     await pipeline.process_item(
         session, _config(tmp_path), None,
@@ -394,7 +394,7 @@ async def test_a_row_with_no_external_ids_is_never_re_keyed_on_a_title_match(
     the resolver's own six refusals exist to avoid."""
     await _row(session, "1", tmdb_id=None, tvdb_id=None, imdb_id=None)
     _row_level_render_artifact(monkeypatch)
-    intent = RenderIntent(kind="movie", title="Dune: Part Two", rating_key="1")
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", refs={"plex": "1"})
 
     await pipeline.process_item(
         session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
@@ -414,7 +414,7 @@ async def test_two_identity_matches_refuse_the_re_key_and_warn(
     await _row(session, "3")
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     with caplog.at_level(logging.WARNING):
         await pipeline.process_item(
@@ -444,7 +444,7 @@ async def test_a_season_is_not_re_keyed_onto_another_season_of_the_same_show(
                tmdb_id=None, tvdb_id=77, imdb_id=None, season_number=2)
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="season", title="A Show", tvdb_id=77,
-                          season_number=2, rating_key="11")
+                          season_number=2, refs={"plex": "11"})
     resolved = _resolved(
         "12", kind="season", library="TV Shows", title="A Show",
         season_number=2, tmdb_id=None, tvdb_id=77, imdb_id=None,
@@ -484,7 +484,7 @@ async def test_a_taken_key_leaves_the_existing_twin_alone(
     stale_id, twin_id = stale.id, twin.id
     seen = _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     results = await pipeline.process_item(
         session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,
@@ -532,7 +532,7 @@ async def test_a_lost_race_does_not_fail_the_job(
     monkeypatch.setattr(pipeline, "_identity_candidates", racing_candidates)
     seen = _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     with caplog.at_level(logging.WARNING):
         results = await pipeline.process_item(
@@ -599,7 +599,7 @@ async def test_a_deadlock_does_not_fail_the_job(
     monkeypatch.setattr(session, "flush", flush_or_deadlock)
     seen = _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     with caplog.at_level(logging.WARNING):
         results = await pipeline.process_item(
@@ -645,7 +645,7 @@ async def test_a_non_deadlock_dbapi_error_still_fails_the_job(
 
     monkeypatch.setattr(session, "flush", flush_connection_failure)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     with pytest.raises(DBAPIError):
         await pipeline.process_item(
@@ -738,7 +738,7 @@ async def test_the_real_render_scores_the_re_keyed_row(
         lambda *a, **k: FitResult(point_size=120, truncated=False),
     )
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          imdb_id="tt15239678", year=2024, rating_key="1")
+                          imdb_id="tt15239678", year=2024, refs={"plex": "1"})
 
     async with _fake_http() as http:
         await pipeline.process_item(
@@ -826,7 +826,7 @@ async def test_a_refused_re_key_stops_before_any_render_row(
     await _row(session, "2", library="Movies", title="Boss Level")
     seen = _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     results = await pipeline.process_item(
         session, _config(tmp_path), None,
@@ -857,7 +857,7 @@ async def test_the_fork_stop_writes_no_field_to_the_resolved_plex_item(
     config.operations.enabled = True
     plex = _CountingPlex(_resolved("2", library="Movies"))
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     results = await pipeline.process_item(
         session, config, None, plex, [], intent, tmdb_facts=object(),
@@ -878,7 +878,7 @@ async def test_the_fork_stop_warns_once_and_leaves_one_audit_row(
     await _row(session, "2", library="Movies")
     _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     with caplog.at_level(logging.WARNING):
         await pipeline.process_item(
@@ -906,7 +906,7 @@ async def test_a_successful_re_key_still_renders_the_intents_own_row(
 
     A row does now exist under the resolved key -- the re-key just moved it
     there -- so an existence check on its own would stop the very case the
-    re-key phase exists to enable. ``rekeyed_from == intent.rating_key`` is
+    re-key phase exists to enable. ``rekeyed_from == intent.native_id_on("plex")`` is
     what settles it, and it settles it without a query.
 
     The stop's other over-firing guard is a refusal onto a ROW-LESS resolved
@@ -919,7 +919,7 @@ async def test_a_successful_re_key_still_renders_the_intents_own_row(
     stale_id = stale.id
     seen = _row_level_render_artifact(monkeypatch)
     intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                          rating_key="1")
+                          refs={"plex": "1"})
 
     results = await pipeline.process_item(
         session, _config(tmp_path), None, _FakePlex(_resolved("2")), [], intent,

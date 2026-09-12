@@ -149,7 +149,7 @@ def _reprocess_entries(items: list[MediaItem]) -> list[tuple[dict, str]]:
             year=item.year,
             season_number=item.season_number,
             episode_number=item.episode_number,
-            rating_key=item.rating_key,
+            refs={"plex": item.rating_key},
         )
         entries.append((asdict(intent), intent.dedupe_key))
     return entries
@@ -871,7 +871,7 @@ def _dedupe_key_for(item: MediaItem) -> str:
         year=item.year,
         season_number=item.season_number,
         episode_number=item.episode_number,
-        rating_key=item.rating_key,
+        refs={"plex": item.rating_key},
     ).dedupe_key
 
 

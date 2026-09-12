@@ -373,7 +373,7 @@ async def affected_items(session: AsyncSession, new_config: Config) -> list[Rend
             year=candidate.year,
             season_number=candidate.season_number,
             episode_number=candidate.episode_number,
-            rating_key=candidate.rating_key,
+            refs={"plex": candidate.rating_key},
         )
         if intent.dedupe_key in seen:
             continue

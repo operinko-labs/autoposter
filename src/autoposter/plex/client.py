@@ -315,7 +315,7 @@ class PlexClient:
         ]
 
     def _fetch_by_rating_key_sync(self, intent: RenderIntent, sections) -> _RawMatch | None:
-        """The item named by ``intent.rating_key``, or None to fall back.
+        """The item named by ``intent.native_id_on("plex")``, or None to fall back.
 
         Adoption stored every item's exact Plex identity in
         ``media_items.rating_key``, so an intent built from such a row does not
@@ -344,7 +344,7 @@ class PlexClient:
         movie or show containing it.
         """
         try:
-            item = self._server.fetchItem(int(intent.rating_key))  # type: ignore[arg-type]
+            item = self._server.fetchItem(int(intent.native_id_on("plex")))  # type: ignore[arg-type]
         except (PlexNotFound, TypeError, ValueError):
             # NotFound: the key names nothing any more. TypeError/ValueError:
             # `rating_key` is a text column, so a row can hold a non-number.
@@ -457,7 +457,7 @@ class PlexClient:
         wanted_type = "movie" if intent.kind == "movie" else "show"
         sections = self._sections(wanted_type)
 
-        if intent.rating_key:
+        if intent.native_id_on("plex"):
             match = self._fetch_by_rating_key_sync(intent, sections)
             if match is not None:
                 return match
@@ -676,13 +676,13 @@ class PlexClient:
         return await asyncio.to_thread(_walk)
 
     def _key_resolves_sync(self, intent: RenderIntent) -> bool:
-        """Whether ``intent.rating_key`` is still the item's own key.
+        """Whether ``intent.native_id_on("plex")`` is still the item's own key.
 
         The wanted-type split is ``_search_sync``'s, verbatim: a movie intent
         can only be a movie; show, season and episode intents all resolve
         through a show library.
         """
-        if not intent.rating_key:
+        if not intent.native_id_on("plex"):
             return False
         wanted_type = "movie" if intent.kind == "movie" else "show"
         sections = self._sections(wanted_type)

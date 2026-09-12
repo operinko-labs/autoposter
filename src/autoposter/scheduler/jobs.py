@@ -314,7 +314,7 @@ async def _stamp_and_enqueue(session: AsyncSession, items) -> int:
             # because it only fires when the intent carried a key to disagree
             # with. The pipeline's identity re-key closes the hole either way;
             # carrying the key also makes the fork visible in the log.
-            rating_key=item.rating_key,
+            refs={"plex": item.rating_key},
         )
         job_id = await enqueue(
             session,

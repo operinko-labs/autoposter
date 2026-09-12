@@ -887,7 +887,7 @@ async def _enqueue_reprocess(session, item: MediaItem) -> int | None:
         year=item.year,
         season_number=item.season_number,
         episode_number=item.episode_number,
-        rating_key=item.rating_key,
+        refs={"plex": item.rating_key},
     )
     return await enqueue(
         session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key
@@ -1135,7 +1135,7 @@ async def run_full_pass(
                 year=row.year,
                 season_number=row.season_number,
                 episode_number=row.episode_number,
-                rating_key=row.rating_key,
+                refs={"plex": row.rating_key},
             )
             entries.append((asdict(intent), intent.dedupe_key))
         # Before enqueue_batch, which is what commits this transaction: the

@@ -163,7 +163,7 @@ def intent_for(candidate: PruneCandidate) -> RenderIntent:
         year=candidate.year,
         season_number=candidate.season_number,
         episode_number=candidate.episode_number,
-        rating_key=candidate.rating_key,
+        refs={"plex": candidate.rating_key},
     )
 
 

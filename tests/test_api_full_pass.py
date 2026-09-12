@@ -118,7 +118,7 @@ async def test_every_queued_intent_carries_its_rows_plex_rating_key(
     await client.post("/api/full-pass", headers=auth_headers)
 
     jobs = (await session.execute(select(Job))).scalars().all()
-    assert {job.payload["kind"]: job.payload["rating_key"] for job in jobs} == {
+    assert {job.payload["kind"]: job.payload["refs"]["plex"] for job in jobs} == {
         "movie": "rk-movie",
         "show": "rk-show",
         "season": "rk-season",

@@ -186,7 +186,7 @@ def _movie_item(rating_key, title="Identity Fork Movie", tmdb_id=1):
 async def test_identity_fork_logs_when_resolve_returns_a_different_key(config, session, caplog):
     """render/pipeline.py, right after `plex.resolve` (roadmap: the
     unscorable-floor investigation, mechanism M1a): resolve() treats
-    `intent.rating_key` as a hint and is free to return a DIFFERENT key --
+    `intent.native_id_on("plex")` as a hint and is free to return a DIFFERENT key --
     the live copy's, after a re-match or a library rebuild renumbers the item
     -- silently, until now. The served surfaces stay class-name-only
     everywhere in this queue; this is a WARNING in the pod log only, naming
@@ -199,7 +199,7 @@ async def test_identity_fork_logs_when_resolve_returns_a_different_key(config, s
     item = _movie_item("12345")
     # The intent's hint (a stale key resolve() refused) differs from what
     # `item` -- what resolve() actually returned -- carries.
-    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, rating_key="99999")
+    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, refs={"plex": "99999"})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
             await process_item(
@@ -220,7 +220,7 @@ async def test_no_identity_fork_log_when_the_resolved_key_matches(config, sessio
         return httpx.Response(200, content=source.read_bytes())
 
     item = _movie_item("12345")
-    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, rating_key="12345")
+    intent = RenderIntent(kind="movie", title="Identity Fork Movie", tmdb_id=1, refs={"plex": "12345"})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
             await process_item(

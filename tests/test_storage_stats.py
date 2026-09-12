@@ -94,7 +94,7 @@ def _resolved():
 def _intent():
     return RenderIntent(
         kind="movie", title="Dune: Part Two", tmdb_id=693134,
-        imdb_id="tt15239678", year=2024, rating_key="1",
+        imdb_id="tt15239678", year=2024, refs={"plex": "1"},
     )
 
 

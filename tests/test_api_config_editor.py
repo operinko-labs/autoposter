@@ -888,7 +888,7 @@ async def test_an_apply_saves_swaps_and_enqueues_the_affected_items(
     # and reprocess carry it (api/routes.py) -- without it, an apply over
     # adopted episode rows would enqueue jobs that resolve by episode-level
     # external ids instead, exactly the incident fix/guid-type-collision fixed.
-    assert {job.dedupe_key: job.payload["rating_key"] for job in jobs} == {
+    assert {job.dedupe_key: job.payload["refs"]["plex"] for job in jobs} == {
         "process_item:episode:tmdb1399:s01e01": "rk2",
     }
 

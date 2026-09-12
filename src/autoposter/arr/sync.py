@@ -488,7 +488,7 @@ async def enqueue_unknown_items(
                 tvdb_id=stale.tvdb_id,
                 imdb_id=stale.imdb_id,
                 year=stale.year,
-                rating_key=stale.rating_key,
+                refs={"plex": stale.rating_key},
             )
         else:
             guids = guids_by_key[key]
@@ -499,7 +499,7 @@ async def enqueue_unknown_items(
                 tvdb_id=as_int(guids.get("tvdb")),
                 imdb_id=guids.get("imdb"),
                 year=getattr(item, "year", None),
-                rating_key=key,
+                refs={"plex": key},
             )
         job_id = await enqueue(
             session, kind="process_item", payload=asdict(intent), dedupe_key=intent.dedupe_key,

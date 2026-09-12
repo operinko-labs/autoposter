@@ -1121,7 +1121,7 @@ async def test_a_row_in_an_excluded_library_is_neither_listed_nor_counted_nor_qu
     press = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
     assert press["selected"] == 1
     queued = {
-        job.payload["rating_key"]
+        job.payload["refs"]["plex"]
         for job in (await session.execute(select(Job))).scalars()
     }
     assert queued == {"1"}
@@ -1266,7 +1266,7 @@ async def test_a_dismissed_unscored_row_is_never_selected_by_the_backfill(
 
     assert press["selected"] == 1
     queued = {
-        job.payload["rating_key"]
+        job.payload["refs"]["plex"]
         for job in (await session.execute(select(Job))).scalars()
     }
     assert queued == {"1"}

@@ -57,7 +57,7 @@ class FakePlex:
         if self._error is not None:
             raise self._error
         self.asked.extend(intents)
-        return [intent.rating_key in self._live for intent in intents]
+        return [intent.native_id_on("plex") in self._live for intent in intents]
 
 
 async def _add_item(session, rating_key, *, kind="movie", parent=None, **columns):
@@ -109,7 +109,7 @@ async def test_the_probe_is_asked_exactly_what_the_pipeline_asks(session):
     await find_prunable(session, plex)
 
     (intent,) = plex.asked
-    assert intent.rating_key == "42"
+    assert intent.native_id_on("plex") == "42"
     assert intent.kind == "episode"
     assert intent.title == "An Episode"
     assert intent.tvdb_id == 77
@@ -275,7 +275,7 @@ def test_intent_for_leaves_no_identity_behind():
     intent = intent_for(candidate)
 
     assert (intent.tmdb_id, intent.tvdb_id, intent.imdb_id) == (1, 2, "tt3")
-    assert intent.rating_key == "9"
+    assert intent.native_id_on("plex") == "9"
     assert intent.kind == "movie"
 
 

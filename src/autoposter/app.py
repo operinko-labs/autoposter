@@ -281,7 +281,7 @@ def create_app(
         # entries here as they land -- this is the one place that both holds the
         # per-process dependencies a handler needs and can reach app.state.
         async def process_item_handler(session, job):
-            await handler(session, RenderIntent(**job.payload))
+            await handler(session, RenderIntent.from_payload(job.payload))
 
         handlers = {"process_item": process_item_handler}
         imdb_refresh = ImdbAutoRefresh(

@@ -745,7 +745,7 @@ async def _rekey_by_identity(
     ``logo_upload_key`` and its children and is never written again.
 
     The precondition is proved from the DATABASE, not from a key comparison,
-    and that is the whole design. Comparing ``intent.rating_key`` to
+    and that is the whole design. Comparing ``intent.native_id_on("plex")`` to
     ``item.native_id`` covers only the paths that CARRY a key; the ratings
     drift sweep and the Sonarr/Radarr webhooks carry none by construction, and
     both minted twins with no warning at all. Two facts, in this order:
@@ -2046,7 +2046,7 @@ async def process_item(
     item = await plex.resolve(intent)
 
     # The identity fork (roadmap: the ~411 unscorable floor investigation).
-    # `resolve()` treats `intent.rating_key` as a hint and is free to return a
+    # `resolve()` treats `intent.native_id_on("plex")` as a hint and is free to return a
     # DIFFERENT key -- the live copy's, after a re-match or a library rebuild
     # renumbers the item. Everything below this point (media_item upsert, the
     # render rows, the Plex field writes) is keyed on the RESOLVED item, not
@@ -2054,12 +2054,13 @@ async def process_item(
     # everywhere else in this queue; the pod log is the trusted sink, so this
     # is a WARNING there and nowhere else -- but it turns a silent hole into a
     # grep.
-    forked = intent.rating_key is not None and item.native_id != intent.rating_key
+    intent_rating_key = intent.native_id_on("plex")
+    forked = intent_rating_key is not None and item.native_id != intent_rating_key
     if forked:
         logger.warning(
             "resolved rating key %s for %r differs from the intent's %s; "
             "the intent's row will not be scored by this job",
-            item.native_id, item.title, intent.rating_key,
+            item.native_id, item.title, intent_rating_key,
         )
 
     # The re-key. The WARNING above only fires when the intent CARRIED a key,
@@ -2083,7 +2084,7 @@ async def process_item(
     #
     # Two filters, cheapest first, and the order is the whole design:
     #
-    # 1. `rekeyed_from != intent.rating_key`. A re-key that MOVED this
+    # 1. `rekeyed_from != intent.native_id_on("plex")`. A re-key that MOVED this
     #    intent's row onto the resolved key is the success this phase exists
     #    for: the row under that key is ours, and the job goes on. Checking it
     #    first also means the hot path -- an unforked item, or a successful
@@ -2112,7 +2113,7 @@ async def process_item(
     # `else: complete(...)`), so it is never retried, deferred or parked; a
     # job that cannot do anything useful must not look like a failure an
     # operator has to clear.
-    if forked and rekeyed_from != intent.rating_key:
+    if forked and rekeyed_from != intent_rating_key:
         resolved_row_id = (
             await session.execute(
                 select(MediaItem.id).where(MediaItem.rating_key == item.native_id)
@@ -2123,7 +2124,7 @@ async def process_item(
                 source=REKEY_SOURCE,
                 event_type=FORK_EVENT,
                 payload={
-                    "intent_rating_key": intent.rating_key,
+                    "intent_rating_key": intent_rating_key,
                     "resolved_rating_key": item.native_id,
                     "kind": item.kind,
                     "library": item.library,

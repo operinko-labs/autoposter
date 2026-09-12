@@ -64,7 +64,7 @@ class FakePlex:
         if self._error is not None:
             raise self._error
         self.asked.extend(intents)
-        return [intent.rating_key in self._live for intent in intents]
+        return [intent.native_id_on("plex") in self._live for intent in intents]
 
 
 async def _item(session, rating_key, **columns):
@@ -867,7 +867,7 @@ async def test_intent_for_row_carries_the_rows_stored_key_and_ids(session):
 
     intent = intent_for_row(scan.plans[0].pair.stale)
 
-    assert intent.rating_key == stale.rating_key
+    assert intent.native_id_on("plex") == stale.rating_key
     assert intent.kind == "movie"
     assert intent.tmdb_id == 693134
     assert intent.title == "Dune: Part Two"

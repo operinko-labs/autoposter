@@ -234,7 +234,7 @@ def intent_for_row(row: MergeRow) -> RenderIntent:
         year=row.year,
         season_number=row.season_number,
         episode_number=row.episode_number,
-        rating_key=row.rating_key,
+        refs={"plex": row.rating_key},
     )
 
 

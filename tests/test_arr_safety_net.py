@@ -102,7 +102,7 @@ async def test_the_enqueued_payload_carries_the_items_rating_key(session):
 
     assert count == 1
     jobs = await _pending_jobs(session)
-    assert jobs[0].payload["rating_key"] == "40"
+    assert jobs[0].payload["refs"]["plex"] == "40"
 
 
 async def test_an_empty_section_enqueues_nothing(session):
@@ -148,7 +148,7 @@ async def test_an_identity_already_stored_under_another_key_is_enqueued_from_tha
 
     assert count == 1
     jobs = await _pending_jobs(session)
-    assert jobs[0].payload["rating_key"] == "900", (
+    assert jobs[0].payload["refs"]["plex"] == "900", (
         "discovery enqueued the live key and would have minted a twin"
     )
     assert jobs[0].payload["title"] == "Old Title"
@@ -170,7 +170,7 @@ async def test_two_rows_for_one_identity_fall_back_to_the_live_key(session):
 
     assert count == 1
     jobs = await _pending_jobs(session)
-    assert jobs[0].payload["rating_key"] == "901"
+    assert jobs[0].payload["refs"]["plex"] == "901"
     assert jobs[0].payload["title"] == "Dune"
 
 
@@ -211,7 +211,7 @@ async def test_a_stale_row_in_a_different_library_is_not_the_guess(
 
     assert count == 1
     jobs = await _pending_jobs(session)
-    assert jobs[0].payload["rating_key"] == "901", (
+    assert jobs[0].payload["refs"]["plex"] == "901", (
         "the guess crossed into another library and enqueued that row's "
         "intent instead of the discovered item's own"
     )
