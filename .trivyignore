@@ -21,12 +21,15 @@
 #   exception nobody revisits is how a real finding gets waved through.
 #
 # ONE CAVEAT worth knowing before this file is next touched. `apk upgrade` is a
-# RUN layer keyed on this Dockerfile's text, not on time, so a build that
-# reuses a cached `pybase` from before 2026-09-11 still carries 2.42.1-r0 and
-# will now fail the gate instead of being waved past it. That failure is the
-# correct one -- it says the image really does contain those CVEs. Bust the
-# cache (`docker build --no-cache-filter pybase`) rather than restoring these
-# lines.
+# RUN layer keyed on this Dockerfile's text, so a build that reuses a cached
+# `pybase` from before 2026-09-11 still carries 2.42.1-r0 and will fail the
+# gate instead of being waved past it. That failure is the correct one -- it
+# says the image really does contain those CVEs. It happened on 2026-09-12:
+# forgejo-runner1's gha cache served exactly that base to a PR. Since then
+# both workflows pass today's date as the Dockerfile's `ARG APK_REFRESH`,
+# which re-keys the layer daily per runner (tests/test_apk_refresh_build_arg.py).
+# A LOCAL build passes nothing and keeps the file-keyed layer: bust its cache
+# (`docker build --no-cache-filter pybase`) rather than restoring these lines.
 #
 # Adding an entry here: give the CVE id, the package and version, the date, why
 # the fix cannot be reached today, and the condition under which the line comes
