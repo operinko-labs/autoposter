@@ -210,7 +210,16 @@ class Render(Base):
 
 
 class MediaItemServerRef(Base):
-    """One server's id for one item (spec §4.1). Unique per (server, native_id)."""
+    """One server's id for one item (spec §4.1). Unique per (server, native_id).
+
+    At most ONE row per ``(item_id, server)`` too -- an invariant
+    ``render/pipeline.py``'s ``upsert_server_ref`` enforces by deleting the
+    item's other refs for that server, not a constraint. A UNIQUE
+    ``(item_id, server)`` could not be one: re-pointing a moved native id
+    onto an item that still holds its previous id for that server passes
+    through exactly the state such a constraint forbids. ``db/refs.py``
+    resolves to the newest ref should a database ever hold two anyway.
+    """
 
     __tablename__ = "media_item_server_refs"
     __table_args__ = (UniqueConstraint("server", "native_id", name="uq_server_ref"),)
