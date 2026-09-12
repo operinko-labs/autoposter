@@ -474,6 +474,42 @@ class ItemMetadataOverride(Base):
     )
 
 
+class ItemSortPosition(Base):
+    """One item's position in the ordered list that owns its sort title.
+
+    Roadmap row 269. Written by the collections pass
+    (``collections/member_sort.py``), read by the render pipeline
+    (``facts/sort_positions.py``). One row per item AT MOST -- the ownership
+    rule (the first definition in config order wins) made structural.
+
+    Keyed on ``media_items.id`` with ``ON DELETE CASCADE`` for
+    ``ItemMetadataOverride``'s reason verbatim: a re-key mutates
+    ``rating_key`` in place and a child keyed on ``id`` survives it.
+
+    ``released_at`` NULL means the item holds ``position``; set means the
+    item left its list and the pipeline owes it one blank-and-unlock write,
+    after which it deletes the row. ``base``/``position``/``total`` are kept
+    on a released row for the log only.
+    """
+
+    __tablename__ = "item_sort_positions"
+
+    item_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), primary_key=True
+    )
+    library: Mapped[str] = mapped_column(String(255), index=True)
+    definition_title: Mapped[str] = mapped_column(String(255))
+    base: Mapped[str] = mapped_column(String(255))
+    position: Mapped[int] = mapped_column(Integer)
+    total: Mapped[int] = mapped_column(Integer)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class ImdbRating(Base):
     """One IMDb title rating, from the bulk dataset.
 

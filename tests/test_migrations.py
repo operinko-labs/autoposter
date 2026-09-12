@@ -465,3 +465,61 @@ async def test_the_runs_history_migration_is_reversible():
             await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}_runs"')
         finally:
             await maint.close()
+
+
+async def test_the_item_sort_positions_migration_is_reversible():
+    """Roadmap row 269's table, up -> down -> up on a scratch database, the
+    ``runs`` test's shape verbatim."""
+    if not await _postgres_reachable():
+        _unreachable_postgres()
+
+    before = "b7c4e1a92f30"
+    suffix = "_sortpos"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
+        await maint.execute(f'CREATE DATABASE "{SCRATCH_DB_NAME}{suffix}"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, SCRATCH_DB_NAME + suffix)
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    async def table_exists() -> bool:
+        conn = await asyncpg.connect(
+            url.replace("postgresql+asyncpg", "postgresql"), timeout=5
+        )
+        try:
+            return await conn.fetchval(
+                "SELECT to_regclass('public.item_sort_positions') IS NOT NULL"
+            )
+        finally:
+            await conn.close()
+
+    try:
+        up = alembic("upgrade", "head")
+        assert up.returncode == 0, up.stdout + up.stderr
+        assert await table_exists(), "upgrade to head did not create `item_sort_positions`"
+
+        down = alembic("downgrade", before)
+        assert down.returncode == 0, down.stdout + down.stderr
+        assert not await table_exists(), (
+            "downgrade left `item_sort_positions` behind; the revision is not reversible"
+        )
+
+        again = alembic("upgrade", "head")
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert await table_exists(), "the second upgrade did not recreate `item_sort_positions`"
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
+        finally:
+            await maint.close()

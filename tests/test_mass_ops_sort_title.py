@@ -167,6 +167,29 @@ def test_a_name_that_is_only_the_suffix_is_kept_rather_than_blanked():
     assert franchise_sort_title(CollectionOrder("", [1]), 1) is None
 
 
+from autoposter.facts.franchise_sort import format_position, sort_base  # noqa: E402
+
+
+def test_sort_base_strips_the_suffix_and_the_article():
+    """Row 269 shares this with the definition path, so one shape is written
+    whichever source names the base."""
+    assert sort_base("The Lord of the Rings Collection") == "Lord of the Rings"
+    assert sort_base("Alien Collection") == "Alien"
+    assert sort_base("Best Bond Films") == "Best Bond Films"
+    assert sort_base("Collection") == "Collection"
+    assert sort_base("") == ""
+
+
+def test_format_position_pads_to_the_total():
+    assert format_position("Alien", 2, 3) == "Alien 02"
+    assert format_position("Big", 7, 100) == "Big 007"
+
+
+def test_franchise_sort_title_is_the_two_helpers_composed():
+    order = CollectionOrder(name="Alien Collection", parts=[348, 679, 8077])
+    assert franchise_sort_title(order, 679) == format_position(sort_base(order.name), 2, 3)
+
+
 # --- the explicit-source model at the gather seam ---------------------------
 
 import pytest_asyncio  # noqa: E402,F401  (imported for the plugin's fixtures)
