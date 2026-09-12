@@ -414,7 +414,7 @@ async def pick_candidate(
             # Nullable, and the whole mirror layout is rooted at it.
             raise HTTPException(status_code=409, detail="this item has no asset folder")
         resolved = ResolvedItem(
-            rating_key=item.rating_key, library=item.library, kind=item.kind,
+            server="plex", native_id=item.rating_key, library=item.library, kind=item.kind,
             title=item.title, year=item.year,
             season_number=item.season_number, episode_number=item.episode_number,
             root_folder=item.root_folder, file_path=item.file_path, art_url=None,

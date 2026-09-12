@@ -181,7 +181,7 @@ def _row(
         "kind": ITEM_KIND[service],
         "path": path,
         "library": item.library if item is not None else None,
-        "rating_key": item.rating_key if item is not None else None,
+        "rating_key": item.native_id if item is not None else None,
         "plex_title": item.title if item is not None else None,
         "arr_title": entry.get("title") if entry is not None else None,
         "year": (item.year if item is not None else None)

@@ -57,7 +57,7 @@ def movie(
     location="/mnt/Media/Movies/Dune (2021)/dune.mkv", library="Movies", **guids,
 ) -> SectionItem:
     return SectionItem(
-        rating_key=rating_key, library=library, title=title, year=year,
+        server="plex", native_id=rating_key, library=library, title=title, year=year,
         locations=[location], guids=guids,
     )
 
@@ -67,7 +67,7 @@ def show(
     location="/mnt/Media/TV/Severance", library="TV", **guids,
 ) -> SectionItem:
     return SectionItem(
-        rating_key=rating_key, library=library, title=title, year=year,
+        server="plex", native_id=rating_key, library=library, title=title, year=year,
         locations=[location], guids=guids,
     )
 

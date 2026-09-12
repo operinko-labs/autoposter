@@ -504,7 +504,8 @@ async def test_a_protected_name_in_another_case_cannot_be_uploaded(
 
 def _item() -> ResolvedItem:
     return ResolvedItem(
-        rating_key="rk1",
+        server="plex",
+        native_id="rk1",
         library="Movies",
         kind="movie",
         title="A Movie",

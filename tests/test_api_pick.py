@@ -735,7 +735,7 @@ async def test_a_new_logo_suffix_replaces_the_old_one_instead_of_being_shadowed(
 
     config = load_config(EXAMPLE).model_copy(update={"manual_assets_root": manual_root})
     resolved = ResolvedItem(
-        rating_key="rk1", library=LIBRARY, kind="movie", title="A Movie", year=1999,
+        server="plex", native_id="rk1", library=LIBRARY, kind="movie", title="A Movie", year=1999,
         season_number=None, episode_number=None, root_folder=ROOT_FOLDER, file_path=None,
         art_url=None, tmdb_id=TMDB_ID, tvdb_id=660, imdb_id="tt0137523",
     )

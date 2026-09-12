@@ -969,7 +969,7 @@ async def clear_manual_override(
             raise HTTPException(status_code=409, detail="no manual override for this art kind")
 
         resolved = ResolvedItem(
-            rating_key=item.rating_key, library=item.library, kind=item.kind,
+            server="plex", native_id=item.rating_key, library=item.library, kind=item.kind,
             title=item.title, year=item.year,
             season_number=item.season_number, episode_number=item.episode_number,
             root_folder=item.root_folder, file_path=item.file_path, art_url=None,
