@@ -85,14 +85,14 @@ async def test_deleting_the_item_cascades_the_overrides(session):
 
 async def test_an_override_survives_a_re_key(session):
     """The whole reason the FK is ``media_items.id``. A re-key mutates
-    ``rating_key`` on the SAME row and leaves ``id`` alone, so the override
-    stays attached with no work at all. A ``rating_key``-keyed table would
+    ``identity_key`` on the SAME row and leaves ``id`` alone, so the override
+    stays attached with no work at all. An ``identity_key``-keyed table would
     have detached here, silently."""
     item = await _item(session, rating_key="16201")
     session.add(ItemMetadataOverride(item_id=item.id, field="studio", value="A24"))
     await session.commit()
 
-    item.rating_key = "165269"
+    item.identity_key = "movie:legacy:plex:165269"
     await session.commit()
     session.expire_all()
 
@@ -100,7 +100,7 @@ async def test_an_override_survives_a_re_key(session):
     reloaded = (
         await session.execute(select(MediaItem).where(MediaItem.id == row.item_id))
     ).scalar_one()
-    assert reloaded.rating_key == "165269"
+    assert reloaded.identity_key == "movie:legacy:plex:165269"
 
 
 # --- the vocabulary, the parser and the loader -----------------------------
