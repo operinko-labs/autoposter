@@ -1,12 +1,14 @@
 """Merging the twin ``media_items`` rows a re-key was too late to prevent.
 
 An item re-matched or renumbered in Plex resolves to a key its stored row does
-not hold. ``_upsert_media_item`` (``render/pipeline.py``) is an ``ON CONFLICT
-(rating_key)`` upsert, so before that module learned to re-key, a new key
-conflicted with nothing and INSERTED: a second row that inherited every future
-render, while the original kept its renders, its facts, its credits, its
-dismissals, its ``logo_upload_key`` and its children and was never written
-again.
+not hold. ``_upsert_media_item`` (``render/pipeline.py``) used to be an ``ON
+CONFLICT (rating_key)`` upsert, so before that module learned to re-key, a new
+key conflicted with nothing and INSERTED: a second row that inherited every
+future render, while the original kept its renders, its facts, its credits,
+its dismissals, its ``logo_upload_key`` and its children and was never written
+again. (That upsert is keyed on ``identity_key`` now and Plex's own id is a
+``media_item_server_refs`` row, so no new twin can be minted -- this job
+exists for the population the old shape already left behind.)
 
 ``scheduler/prune.py`` cannot own this population and could not be made to
 without changing what "gone" means: its probe asks whether the pipeline can
@@ -873,13 +875,14 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
         carried_logo = stale.logo_upload_key if carry_logo else None
         # Same reasoning, for the survivor's OWN parent link. A season or
         # episode minted by the fork resolved its parent by the LIVE rating
-        # key while the show's row still held the STALE one
-        # (``render/pipeline.py``'s ``_upsert_media_item`` looks
-        # ``parent_rating_key`` up against the CURRENT ``rating_key``), so the
-        # lookup missed and the survivor was inserted with ``parent_id =
-        # NULL``. The stale row holds the correct link; without this it dies
+        # key while the show's row still held the STALE one -- back when
+        # ``_upsert_media_item`` looked ``parent_rating_key`` up against the
+        # CURRENT ``rating_key`` column -- so the lookup missed and the
+        # survivor was inserted with ``parent_id = NULL``. (It resolves the
+        # parent by identity key now, which is why no NEW row reaches this
+        # state.) The stale row holds the correct link; without this it dies
         # with the row and the survivor is orphaned from its show until a
-        # later pass happens to re-resolve the parent's own key.
+        # later pass happens to re-resolve the parent.
         carry_parent = stale.parent_id is not None and survivor.parent_id is None
         carried_parent = stale.parent_id if carry_parent else None
         survivor_values = {

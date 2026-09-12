@@ -467,13 +467,14 @@ class ItemMetadataOverride(Base):
     future provider change -- and it is pinned by a named test rather than
     left to discipline.
 
-    **Keyed on ``media_items.id``, never on ``rating_key``.** The 2026-09-03
-    identity re-key mutates ``rating_key`` IN PLACE when Plex re-keys an item
-    (``render/pipeline.py``'s ``_rekey_by_identity``), precisely so that
-    children keyed on ``id`` survive the move. A rating-key-keyed override
-    table would detach silently on every re-key -- the exact defect that era
-    spent three tasks closing -- so an override survives a re-key here for
-    free, and ``scheduler/merge.py`` carries one across a twin merge.
+    **Keyed on ``media_items.id``, never on a server's own id.** A Plex
+    rating key moves -- a re-match, a library rebuild -- and it is not even a
+    column on ``media_items`` any more: it is a ``media_item_server_refs``
+    row the pipeline re-points (``render/pipeline.py``'s
+    ``upsert_server_ref``). An override table keyed on it would detach
+    silently every time that happened, the exact defect the 2026-09-03 era
+    spent three tasks closing. Keyed on ``id``, an override survives the move
+    for free, and ``scheduler/merge.py`` carries one across a twin merge.
 
     ``ON DELETE CASCADE`` like every other child of ``media_items``:
     ``scheduler/prune.py`` hard-deletes item rows, and an override must not

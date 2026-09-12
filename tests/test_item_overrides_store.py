@@ -5,10 +5,10 @@ writes to ``item_facts`` and nothing here reads a provider: an override row
 holds only what an operator typed, which is the freezing hazard's own rule
 (``frontend/src/api/overrides.ts:13-21``) read onto this row.
 
-Keyed on ``media_items.id`` and never on ``rating_key``: the 2026-09-03
-identity re-key MUTATES ``rating_key`` in place (``render/pipeline.py``'s
-``_rekey_by_identity``) precisely so that children keyed on ``id`` survive the
-move, and a rating-key-keyed table would silently detach on every re-key.
+Keyed on ``media_items.id`` and never on a server's own id: a Plex rating key
+moves, and since the identity re-key it is a ``media_item_server_refs`` row
+the pipeline re-points rather than a column on ``media_items`` at all. A table
+keyed on it would silently detach every time that happened.
 """
 from datetime import datetime
 
