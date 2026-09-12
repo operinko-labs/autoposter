@@ -346,12 +346,11 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     season_row = await _media_item_by_native_id(session, "20")
     episode_row = await _media_item_by_native_id(session, "30")
 
+    # Two hops: a season's parent is the show, and an episode's parent is
+    # its own SEASON, not the show directly (config/impact.py's model;
+    # servers/identity.py's ``parent_identity_key_for``).
     assert season_row.parent_id == show_row.id
-    # ``parent_identity_key_for`` always targets the SHOW's own identity key,
-    # for a season or an episode alike (servers/identity.py) -- there is no
-    # intermediate season->show->episode chain; both a season's and an
-    # episode's parent_id point directly at the show row.
-    assert episode_row.parent_id == show_row.id
+    assert episode_row.parent_id == season_row.id
     assert episode_row.season_number == 1
     assert episode_row.episode_number == 1
 

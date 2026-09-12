@@ -53,10 +53,29 @@ def identity_key_for(item) -> str:
 
 
 def parent_identity_key_for(item) -> str | None:
+    """The item's immediate parent, one hop up -- not always the show.
+
+    A season's parent IS the show. An episode's parent is its own SEASON,
+    not the show directly (config/impact.py documents this two-hop model:
+    "the show's id for a season and the season's id for an episode", and
+    api/routes.py's item-detail breadcrumb walks the two hops explicitly).
+    The season key reuses the item's OWN season_number and its parent's
+    provider ids -- a season carries the same provider ids as its show (Plex
+    gives seasons no ids of their own; ``adopt/walk.py`` and the Plex
+    resolver both key a season off the show's guids), so an episode's parent
+    season and that season's own identity_key_for land on the same key.
+    root_folder alone is enough when no provider id survived either hop: the
+    show's folder IS the item's own root_folder for both a season and an
+    episode (both live under it).
+    """
     if item.kind not in ("season", "episode"):
         return None
     if not (item.parent_tmdb_id or item.parent_tvdb_id or item.parent_imdb_id or item.root_folder):
         return None
+    if item.kind == "episode":
+        return identity_key("season", tmdb_id=item.parent_tmdb_id, tvdb_id=item.parent_tvdb_id,
+                            imdb_id=item.parent_imdb_id, season_number=item.season_number,
+                            episode_number=None, file_path=None, root_folder=item.root_folder)
     return identity_key("show", tmdb_id=item.parent_tmdb_id, tvdb_id=item.parent_tvdb_id,
                         imdb_id=item.parent_imdb_id, season_number=None, episode_number=None,
                         file_path=None, root_folder=item.root_folder)

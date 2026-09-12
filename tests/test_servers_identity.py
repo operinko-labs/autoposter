@@ -127,4 +127,6 @@ def test_identity_key_for_a_resolved_item_and_its_parent():
                   episode_number=3, file_path="/tv/s02e03.mkv")
     ep = dataclasses.replace(ep, parent_tvdb_id=71663)
     assert identity_key_for(ep) == "episode:tvdb:71663:s2e3:s02e03.mkv"
-    assert parent_identity_key_for(ep) == "show:tvdb:71663::"
+    # An episode's parent is its own SEASON, not the show directly (two-hop
+    # model: config/impact.py, api/routes.py's detail breadcrumb).
+    assert parent_identity_key_for(ep) == "season:tvdb:71663:s2:"

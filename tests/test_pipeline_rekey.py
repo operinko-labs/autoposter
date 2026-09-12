@@ -38,14 +38,23 @@ async def test_a_moved_plex_key_updates_the_ref_not_the_item(session):
 
 
 async def test_an_episode_finds_its_parent_by_identity(session):
+    """Two hops: a season's parent is the show, and an episode's parent is
+    its own SEASON, not the show directly (config/impact.py's model;
+    servers/identity.py's ``parent_identity_key_for``)."""
     show = await pipeline._upsert_media_item(session, resolved("plex", "5", kind="show", tvdb_id=71663, tmdb_id=None, file_path=None, root_folder="The Simpsons"))
+    season = await pipeline._upsert_media_item(session, dataclasses.replace(
+        resolved("plex", "20", kind="season", tvdb_id=71663, tmdb_id=None, season_number=2, file_path=None),
+        parent_tvdb_id=71663,
+    ))
+    assert season.parent_id == show.id
+
     ep = dataclasses.replace(resolved("plex", "6", kind="episode", tvdb_id=71663, tmdb_id=None, season_number=2, episode_number=3, file_path="/tv/s02e03.mkv"), parent_tvdb_id=71663)
     row = await pipeline._upsert_media_item(session, ep)
-    assert row.parent_id == show.id
+    assert row.parent_id == season.id
 
 
-async def test_an_episode_upserted_before_its_show_gets_its_parent_once_the_show_arrives(session):
-    """No trigger walks back over an episode when its show is later upserted
+async def test_an_episode_upserted_before_its_season_gets_its_parent_once_the_season_arrives(session):
+    """No trigger walks back over an episode when its season is later upserted
     -- the fill-in happens the next time THIS episode itself is upserted, the
     same "a later pass fills it in" contract ``_upsert_media_item`` has always
     carried for a not-yet-processed parent."""
@@ -57,22 +66,20 @@ async def test_an_episode_upserted_before_its_show_gets_its_parent_once_the_show
     first = await pipeline._upsert_media_item(session, ep)
     assert first.parent_id is None
 
-    show = await pipeline._upsert_media_item(session, resolved(
-        "plex", "5", kind="show", tvdb_id=71663, tmdb_id=None, file_path=None,
-        root_folder="The Simpsons",
+    season = await pipeline._upsert_media_item(session, resolved(
+        "plex", "20", kind="season", tvdb_id=71663, tmdb_id=None, season_number=2, file_path=None,
     ))
 
     second = await pipeline._upsert_media_item(session, ep)
-    assert second.parent_id == show.id
+    assert second.parent_id == season.id
 
 
 async def test_a_later_upsert_with_no_parent_id_does_not_clobber_an_existing_one(session):
     """The upsert's ``set_`` must not overwrite a resolved ``parent_id`` with
     NULL just because THIS pass found none -- a re-visit through a path that
     carries no parent guids at all must leave an already-linked child alone."""
-    show = await pipeline._upsert_media_item(session, resolved(
-        "plex", "5", kind="show", tvdb_id=71663, tmdb_id=None, file_path=None,
-        root_folder="The Simpsons",
+    season = await pipeline._upsert_media_item(session, resolved(
+        "plex", "20", kind="season", tvdb_id=71663, tmdb_id=None, season_number=2, file_path=None,
     ))
     ep = dataclasses.replace(
         resolved("plex", "6", kind="episode", tvdb_id=71663, tmdb_id=None,
@@ -80,11 +87,11 @@ async def test_a_later_upsert_with_no_parent_id_does_not_clobber_an_existing_one
         parent_tvdb_id=71663,
     )
     row = await pipeline._upsert_media_item(session, ep)
-    assert row.parent_id == show.id
+    assert row.parent_id == season.id
 
     ep_no_parent_guid = dataclasses.replace(ep, parent_tvdb_id=None)
     row2 = await pipeline._upsert_media_item(session, ep_no_parent_guid)
-    assert row2.parent_id == show.id, "a parent-less upsert nulled out an existing parent_id"
+    assert row2.parent_id == season.id, "a parent-less upsert nulled out an existing parent_id"
 
 
 # --- weak-key promotion (task 8d, spec §4.2 amendment) ----------------------

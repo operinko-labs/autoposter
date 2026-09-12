@@ -146,7 +146,11 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
     # Seasons and episodes carry no location of their own -- their artifacts
     # live under the show's folder, so root_folder is passed down rather than
     # derived again.
-    guids = _guids(season)
+    # A Plex season carries no provider guids of its own -- mirrors the SHOW's
+    # guids here, exactly as plex/client.py's own match resolution does
+    # (``container = item.show()`` there), so an adopted season and a
+    # pipeline-resolved season compute the SAME identity key.
+    guids = _guids(show)
     return ResolvedItem(
         server="plex", native_id=str(season.ratingKey), library=library, kind="season",
         title=season.title, year=getattr(season, "year", None),

@@ -376,11 +376,12 @@ async def test_show_two_seasons_and_two_episodes_produce_five_distinct_rows(
     # season_poster/title_card). With each item keyed on its own identity
     # (spec §4.2), the same five intents must produce five distinct rows in
     # each table, with distinct asset_paths and fingerprints, and parent_id
-    # wired up to the show for every season and episode -- identity's parent
-    # is always the show, never a season, ``parent_identity_key_for`` builds
-    # a "show" key regardless of the child's own kind. Exercises the real
-    # upsert functions (_upsert_media_item, _get_or_create_render) against
-    # the live test database, not a mock.
+    # wired up two hops deep: a season's parent is the show, and an episode's
+    # parent is its OWN season, not the show directly (config/impact.py's
+    # model; ``parent_identity_key_for`` builds a "show" key for a season and
+    # a "season" key for an episode). Exercises the real upsert functions
+    # (_upsert_media_item, _get_or_create_render) against the live test
+    # database, not a mock.
     from autoposter.render.pipeline import _get_or_create_render, _upsert_media_item
     from autoposter.servers.identity import identity_key_for
 
@@ -457,9 +458,14 @@ async def test_show_two_seasons_and_two_episodes_produce_five_distinct_rows(
 
     by_identity_key = {row.identity_key: row for row in media_rows}
     show_row = by_identity_key[identity_key_for(show)]
+    season2_row = by_identity_key[identity_key_for(season2)]
     assert show_row.parent_id is None
-    for child in (season1, season2, episode1, episode2):
-        assert by_identity_key[identity_key_for(child)].parent_id == show_row.id
+    for season in (season1, season2):
+        assert by_identity_key[identity_key_for(season)].parent_id == show_row.id
+    # Both episodes are season 2's -- their parent is THAT season row, not
+    # the show directly.
+    for episode in (episode1, episode2):
+        assert by_identity_key[identity_key_for(episode)].parent_id == season2_row.id
 
 
 class _LogoAwareProvider:
