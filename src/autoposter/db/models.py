@@ -241,7 +241,7 @@ class RenderDelivery(Base):
     )
     server: Mapped[str] = mapped_column(String(16))
     # uploaded | skipped | failed | pending
-    status: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    status: Mapped[str] = mapped_column(String(24), default="pending", server_default="pending")
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)

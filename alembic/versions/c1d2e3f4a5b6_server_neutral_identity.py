@@ -18,12 +18,22 @@ down_revision: Union[str, Sequence[str], None] = 'b7c4e1a92f30'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-# Tables that hang off media_items.id and must follow a merged row.
-DEPENDENTS = ('item_facts', 'item_credits', 'item_metadata_overrides')
+# Tables that hang off media_items.id and must follow a merged row. Each
+# entry names the columns -- besides item_id -- that make up the table's
+# actual unique key, so the dedupe-on-merge below can EXISTS-correlate on
+# that real key instead of collapsing every row under item_id alone (which
+# would silently drop every other row of a same-item multi-row child, e.g.
+# item_metadata_overrides' many fields or item_credits' many people).
+DEPENDENTS = (
+    ('item_facts', ()),
+    ('item_credits', ('kind', 'person')),
+    ('item_metadata_overrides', ('field',)),
+    ('action_dismissals', ('art_kind',)),
+)
 
 
 def upgrade() -> None:
-    """Spec §4.7, in order; each step idempotent on re-run."""
+    """Spec §4.7, in order; one transaction; a failure rolls the whole revision back."""
     conn = op.get_bind()
     # 1. refs, backfilled from the column about to go.
     op.create_table(
@@ -51,6 +61,7 @@ def upgrade() -> None:
         "file_path, rating_key FROM media_items ORDER BY updated_at DESC, id DESC"
     )).mappings().all()
     survivors: dict[str, int] = {}
+    updates: list[dict] = []
     for row in rows:
         key = identity_key(
             row['kind'], tmdb_id=row['tmdb_id'], tvdb_id=row['tvdb_id'], imdb_id=row['imdb_id'],
@@ -61,8 +72,14 @@ def upgrade() -> None:
             _merge_into(conn, stale_id=row['id'], survivor_id=survivors[key], key=key)
             continue
         survivors[key] = row['id']
-        conn.execute(sa.text("UPDATE media_items SET identity_key = :k WHERE id = :i"),
-                     {'k': key, 'i': row['id']})
+        updates.append({'k': key, 'i': row['id']})
+    # The merge decisions above are made row by row in Python and each one
+    # touches the database immediately (a later row's decision can depend on
+    # an earlier merge's effect). The survivors' own identity_key, by
+    # contrast, is independent of every other row, so those writes batch into
+    # one executemany rather than one round trip per row.
+    if updates:
+        conn.execute(sa.text("UPDATE media_items SET identity_key = :k WHERE id = :i"), updates)
     op.alter_column('media_items', 'identity_key', nullable=False)
     op.create_index('ix_media_items_identity_key', 'media_items', ['identity_key'], unique=True)
     # 3. deliveries, one plex row per render, from the roll-up column.
@@ -71,7 +88,7 @@ def upgrade() -> None:
         sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
         sa.Column('render_id', sa.BigInteger(), sa.ForeignKey('renders.id', ondelete='CASCADE'), nullable=False),
         sa.Column('server', sa.String(length=16), nullable=False),
-        sa.Column('status', sa.String(length=16), server_default='pending', nullable=False),
+        sa.Column('status', sa.String(length=24), server_default='pending', nullable=False),
         sa.Column('attempted_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('uploaded_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=True),
@@ -100,10 +117,11 @@ def _merge_into(conn, *, stale_id: int, survivor_id: int, key: str) -> None:
         "DELETE FROM renders WHERE item_id = :o AND art_kind IN "
         "(SELECT art_kind FROM renders WHERE item_id = :s)"), p)
     conn.execute(sa.text("UPDATE renders SET item_id = :s WHERE item_id = :o"), p)
-    for table in DEPENDENTS:
+    for table, unique_cols in DEPENDENTS:
+        key_match = ''.join(f" AND s.{col} = o.{col}" for col in unique_cols)
         conn.execute(sa.text(
-            f"DELETE FROM {table} WHERE item_id = :o AND EXISTS "
-            f"(SELECT 1 FROM {table} WHERE item_id = :s)"), p)
+            f"DELETE FROM {table} o WHERE o.item_id = :o AND EXISTS "
+            f"(SELECT 1 FROM {table} s WHERE s.item_id = :s{key_match})"), p)
         conn.execute(sa.text(f"UPDATE {table} SET item_id = :s WHERE item_id = :o"), p)
     conn.execute(sa.text("UPDATE media_items SET parent_id = :s WHERE parent_id = :o"), p)
     conn.execute(sa.text("DELETE FROM media_items WHERE id = :o"), p)
