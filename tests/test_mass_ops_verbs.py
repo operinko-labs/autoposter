@@ -31,6 +31,7 @@ from autoposter.config.schema import OperationsConfig
 from autoposter.db.models import MediaItem
 from autoposter.facts.models import GatheredFacts
 from autoposter.plex.writer import _PLEX_FIELD_NAMES, plan_edits, verb_edits
+from autoposter.plex.writer import apply_facts as _plex_apply_facts
 
 from test_mass_ops_fields import FakeItem
 
@@ -338,13 +339,31 @@ class RecordingPlexItem(LockableItem):
         pass
 
 
+class RecordingServer:
+    """The MediaServer surface ``apply_metadata``/``process_item`` now go
+    through, wrapping a plexapi-shaped fake so the real
+    ``plex.writer.apply_facts`` still runs against it -- the object under
+    test is what got written, not this shim."""
+
+    name = "plex"
+
+    def __init__(self, plex_item):
+        self._item = plex_item
+
+    async def item_labels(self, ref):
+        return [tag.tag for tag in getattr(self._item, "labels", None) or []]
+
+    async def apply_facts(self, ref, facts, operations=None, parental_categories=None, overrides=None):
+        return await _plex_apply_facts(self._item, facts, operations, parental_categories, overrides)
+
+
 @pytest.mark.asyncio
 async def test_entry_point_gate_off_is_byte_identical(session, media_item_id, config):
     # (a) GATE OFF. field_verbs unset -- apply_metadata must produce exactly
     # the edits it produced before this row existed.
     plex_item = RecordingPlexItem(studio="Warner", locks=[("studio", True)])
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts()), NullMDBListClient(),
     )
     assert plex_item.edits == []
@@ -360,7 +379,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     plex_item = RecordingPlexItem(studio="Warner", locks=[("studio", True)])
 
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts()), NullMDBListClient(),
     )
     assert plex_item.edits == [{"studio.locked": 0}]
@@ -369,7 +388,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     # (c) SECOND PASS: steady state. Plex now reports the field unlocked, so
     # the verb has nothing left to do and no second write happens.
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts()), NullMDBListClient(),
     )
     assert plex_item.edits == [{"studio.locked": 0}]
@@ -397,7 +416,7 @@ async def test_the_genre_lock_reaches_plex_through_the_real_entry_point(
     # genre field untouched, not the outer short-circuit.
     plex_item = RecordingPlexItem(studio="Warner", genres=["Crime", "Drama"], locks=[])
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(studio="Warner")), NullMDBListClient(),
     )
     assert plex_item.edits == []
@@ -407,7 +426,7 @@ async def test_the_genre_lock_reaches_plex_through_the_real_entry_point(
     # SINGULAR key, which is what survives apply_facts' plural filter -- and
     # no add and no removal alongside it.
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(genres=["Drama", "Crime"])), NullMDBListClient(),
     )
     assert plex_item.edits == [{"genre.locked": 1}]
@@ -417,7 +436,7 @@ async def test_the_genre_lock_reaches_plex_through_the_real_entry_point(
     # what this item reports about its locks, so _locked_in_plex answers True
     # and the pass writes nothing. This is the one-time cost, ending.
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(genres=["Drama", "Crime"])), NullMDBListClient(),
     )
     assert plex_item.edits == [{"genre.locked": 1}]
@@ -440,7 +459,7 @@ async def test_the_genres_remove_verb_through_the_real_entry_point(
     # term is what leaves the field alone (row 246 C3).
     plex_item = RecordingPlexItem(studio="Warner", genres=["Crime", "Drama"], locks=[])
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(studio="Warner")), NullMDBListClient(),
     )
     assert plex_item.edits == []
@@ -453,7 +472,7 @@ async def test_the_genres_remove_verb_through_the_real_entry_point(
     config.operations.field_verbs = {"genres": "remove"}
     config.operations.remove_apply = True
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(studio="Warner")), NullMDBListClient(),
     )
     assert plex_item.edits == [{"genre[].tag.tag-": "Crime,Drama", "genre.locked": 1}]
@@ -466,7 +485,7 @@ async def test_the_genres_remove_verb_through_the_real_entry_point(
     # -- that would send genre[].tag.tag-='' (row 246), and the double asserts
     # against it.
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts(studio="Warner")), NullMDBListClient(),
     )
     assert plex_item.edits == [{"genre[].tag.tag-": "Crime,Drama", "genre.locked": 1}]
@@ -500,6 +519,14 @@ class FakePlexServer:
 
     async def fetch_item(self, rating_key):
         return self._plex_item
+
+    async def item_labels(self, ref):
+        return [tag.tag for tag in getattr(self._plex_item, "labels", None) or []]
+
+    async def apply_facts(self, ref, facts, operations=None, parental_categories=None, overrides=None):
+        return await _plex_apply_facts(
+            self._plex_item, facts, operations, parental_categories, overrides
+        )
 
 
 def _movie_intent():

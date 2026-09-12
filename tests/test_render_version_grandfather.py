@@ -60,7 +60,7 @@ def _url_for(art_kind: str) -> str:
 
 
 ITEM = ResolvedItem(
-    rating_key="1", library="Movies", kind="movie", title="A Movie", year=1999,
+    server="plex", native_id="1", library="Movies", kind="movie", title="A Movie", year=1999,
     season_number=None, episode_number=None, root_folder="A Movie (1999)",
     file_path=None, art_url=None, tmdb_id=550, tvdb_id=None, imdb_id=None,
 )
@@ -269,10 +269,12 @@ async def test_a_whole_item_re_renders_through_process_item(session, tmp_path, m
     config = _config(tmp_path)
     png = decodable_png()
     uploads: list = []
+
+    class _RecordingPlex(_Plex):
+        async def upload_artwork(self, ref, data, art_kind, lock):
+            uploads.append((ref, data, art_kind, lock))
+
     composites = _allow_compositing(monkeypatch)
-    monkeypatch.setattr(
-        pipeline_module, "upload_artwork", lambda *a, **k: uploads.append(a)
-    )
 
     legacy = {}
     for art_kind in ("poster", "background"):
@@ -283,7 +285,7 @@ async def test_a_whole_item_re_renders_through_process_item(session, tmp_path, m
 
     async with _http(png) as http:
         renders = await process_item(
-            session, config, http, _Plex(), [_Provider()],
+            session, config, http, _RecordingPlex(), [_Provider()],
             RenderIntent(kind="movie", title="A Movie", tmdb_id=550),
         )
 

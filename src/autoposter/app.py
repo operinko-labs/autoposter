@@ -35,7 +35,6 @@ from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.arr import RenderIntent
 from autoposter.intake.routes import router
 from autoposter.notify.dispatch import NullNotifier, build_notifier
-from autoposter.plex.artwork import artwork_provenance
 from autoposter.plex.client import PlexClient
 from autoposter.plex.health import PlexHealth
 from autoposter.providers.cache import ProviderCache
@@ -239,11 +238,7 @@ def create_app(
         # Reads our own EXIF provenance back off whatever artwork Plex is
         # currently serving, so the badge stage can tell that the correct image
         # is already there and skip the upload -- see pipeline._already_in_plex.
-        artwork_probe = functools.partial(
-            artwork_provenance, http,
-            base_url=config.plex.url,
-            headers={"X-Plex-Token": secrets.plex_token},
-        )
+        artwork_probe = functools.partial(_artwork_provenance_probe, app.state.plex)
         # The plex-preview fallback (roadmap row 241): when no provider has
         # a title_card, ask Plex for the frame it derived from the media
         # file itself (posters(), the media://-prefixed entry -- never our
@@ -688,6 +683,17 @@ def _build_mdblist(
         "while other metadata operations continue"
     )
     return NullMDBListClient()
+
+
+async def _artwork_provenance_probe(plex, ref, art_kind):
+    """``artwork_probe``'s callable shape, built over ``server.artwork_provenance``.
+
+    ``plex`` is captured as a plain argument, like ``plex_generated_base``'s own
+    partial captures it, rather than read off ``app.state`` at partial-construction
+    time -- a test's ``plex_factory`` can hand back a bare stand-in that has no
+    such method, and this must not touch it until the probe is actually called.
+    """
+    return await plex.artwork_provenance(ref, art_kind)
 
 
 async def _handle_intent(

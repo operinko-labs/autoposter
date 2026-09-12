@@ -7,6 +7,7 @@ test. The write side is a ``FakeItem`` carrying ``unlockPoster``/``posters``/
 ``setPoster`` spies and their ``unlockArt``/``arts``/``setArt`` mirrors, plus a
 ``refresh`` that exists only to prove nothing calls it.
 """
+import asyncio
 import io
 from pathlib import Path
 
@@ -19,7 +20,14 @@ from PIL import Image
 from autoposter.artwork_modes.reset import ResetMode
 from autoposter.config.loader import load_config
 from autoposter.db.models import MediaItem
+from autoposter.plex.artwork import artwork_provenance as _plex_artwork_provenance
+from autoposter.plex.artwork import (
+    reset_artwork_to_agent_default as _plex_reset_artwork_to_agent_default,
+)
 from autoposter.plex.exif import PROVENANCE_TAG, format_provenance
+from autoposter.servers.base import (
+    CAP_ARTWORK_PROVENANCE, CAP_RESET_TO_AGENT_DEFAULT, ServerItemRef,
+)
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PLEX_URL = "http://plex.local"
@@ -101,6 +109,16 @@ class FakeItem:
 
 
 class FakePlexClient:
+    """Stands in for PlexClient. ``artwork_provenance`` and
+    ``reset_artwork_to_agent_default`` are the real ones, run against whatever
+    ``MockTransport`` the ``serving`` fixture most recently built -- the same
+    one every test in this file already hands ``ResetMode`` directly, so
+    nothing here needs its own copy threaded through the constructor.
+    """
+
+    capabilities = frozenset({CAP_ARTWORK_PROVENANCE, CAP_RESET_TO_AGENT_DEFAULT})
+    name = "plex"
+
     def __init__(self, items=None):
         self._items = items or {}
         self.fetched = []
@@ -108,6 +126,31 @@ class FakePlexClient:
     async def fetch_item(self, rating_key):
         self.fetched.append(rating_key)
         return self._items[rating_key]
+
+    async def fetch_ref(self, rating_key):
+        try:
+            await self.fetch_item(rating_key)
+        except PlexNotFound:
+            return None
+        return ServerItemRef("plex", rating_key, "", "")
+
+    async def artwork_provenance(self, ref, art_kind):
+        item = await self.fetch_item(ref.native_id)
+        return await _plex_artwork_provenance(
+            _current_http, item, PLEX_URL, _headers(), art_kind
+        )
+
+    async def reset_artwork_to_agent_default(self, ref, art_kind):
+        item = await self.fetch_item(ref.native_id)
+        return await asyncio.to_thread(_plex_reset_artwork_to_agent_default, item, art_kind)
+
+
+# The MockTransport the ``serving`` fixture most recently built -- FakePlexClient
+# reads it lazily rather than taking it in its own constructor, so every one of
+# this file's existing ``FakePlexClient({...})`` call sites keeps working
+# unchanged even though ``ResetMode`` no longer routes its http reads through
+# its own ``http``/``headers`` (it now goes through the server).
+_current_http = None
 
 
 def _ranged(data, request):
@@ -139,11 +182,14 @@ async def serving():
 
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         clients.append(http)
+        global _current_http
+        _current_http = http
         return http
 
     yield install
     for http in clients:
         await http.aclose()
+    _current_http = None
 
 
 @pytest.fixture
@@ -454,11 +500,22 @@ async def test_reset_counts_a_failed_reset(session, config, serving):
     the tally, not the run."""
 
     class OneShotPlex(FakePlexClient):
-        async def fetch_item(self, rating_key):
-            item = await super().fetch_item(rating_key)
-            if rating_key == "rk-bad" and self.fetched.count("rk-bad") > 1:
-                raise RuntimeError("Plex went away")
-            return item
+        """Fails the SECOND time this item is resolved to a ref -- once for
+        the probe, then again for the write -- rather than counting raw
+        ``fetch_item`` calls: ``artwork_provenance`` re-resolves the item once
+        per art kind it checks, so a plain call count would trip during
+        probing instead of at the write this test is about."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._ref_calls = 0
+
+        async def fetch_ref(self, rating_key):
+            if rating_key == "rk-bad":
+                self._ref_calls += 1
+                if self._ref_calls > 1:
+                    raise RuntimeError("Plex went away")
+            return await super().fetch_ref(rating_key)
 
     await _add_item(session, rating_key="rk-good")
     await _add_item(session, rating_key="rk-bad")
@@ -522,11 +579,21 @@ async def test_reset_logs_a_missing_item_at_apply_at_info_not_warning(
     item = FakeItem(thumb="/ours")
 
     class SecondFetchGoneClient(FakePlexClient):
-        async def fetch_item(self, rating_key):
-            self.fetched.append(rating_key)
-            if self.fetched.count(rating_key) > 1:
-                raise PlexNotFound(f"(404) not_found ({rating_key})")
-            return self._items[rating_key]
+        """Fails the SECOND time this item is resolved to a ref -- once for
+        the probe, then again for the write -- rather than counting raw
+        ``fetch_item`` calls: ``artwork_provenance`` re-resolves the item once
+        per art kind it checks, so a plain call count would trip during
+        probing instead of at the apply-loop fetch this test is about."""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._ref_calls = 0
+
+        async def fetch_ref(self, rating_key):
+            self._ref_calls += 1
+            if self._ref_calls > 1:
+                return None
+            return await super().fetch_ref(rating_key)
 
     plex = SecondFetchGoneClient({"rk1": item})
     http = serving({"/ours": _stamped_jpeg("fp-abc")})

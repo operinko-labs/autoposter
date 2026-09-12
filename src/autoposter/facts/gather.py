@@ -248,7 +248,7 @@ async def gather_facts(
             # the URL: an httpx error's str() carries it in full.
             logger.warning(
                 "tmdb release_dates request failed for %s; skipping added_at: %s",
-                item.rating_key, type(exc).__name__,
+                item.native_id, type(exc).__name__,
             )
     if added_at is not None:
         sources["added_at"] = added_at_source

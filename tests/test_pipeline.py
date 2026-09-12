@@ -31,7 +31,7 @@ def config():
 
 def item(kind="movie", title="Dune: Part Two", season=None, episode=None, root="Dune (2024)"):
     return ResolvedItem(
-        rating_key="1", library="Movies", kind=kind, title=title, year=2024,
+        server="plex", native_id="1", library="Movies", kind=kind, title=title, year=2024,
         season_number=season, episode_number=episode, root_folder=root,
         file_path="/mnt/Media/Movies/Dune (2024)/x.mkv", art_url=None,
         tmdb_id=693134, tvdb_id=None, imdb_id="tt15239678",
@@ -374,34 +374,39 @@ async def test_show_two_seasons_and_two_episodes_produce_five_distinct_rows(
     from autoposter.render.pipeline import _get_or_create_render, _upsert_media_item
 
     show = ResolvedItem(
-        rating_key="900", library="Shows", kind="show", title="Severance", year=2022,
+        server="plex", native_id="900", library="Shows", kind="show",
+        title="Severance", year=2022,
         season_number=None, episode_number=None, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_rating_key=None,
+        parent_native_id=None,
     )
     season1 = ResolvedItem(
-        rating_key="901", library="Shows", kind="season", title="Season 1", year=None,
+        server="plex", native_id="901", library="Shows", kind="season",
+        title="Season 1", year=None,
         season_number=1, episode_number=None, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_rating_key="900",
+        parent_native_id="900",
     )
     season2 = ResolvedItem(
-        rating_key="902", library="Shows", kind="season", title="Season 2", year=None,
+        server="plex", native_id="902", library="Shows", kind="season",
+        title="Season 2", year=None,
         season_number=2, episode_number=None, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_rating_key="900",
+        parent_native_id="900",
     )
     episode1 = ResolvedItem(
-        rating_key="903", library="Shows", kind="episode", title="Who Is Alive?", year=None,
+        server="plex", native_id="903", library="Shows", kind="episode",
+        title="Who Is Alive?", year=None,
         season_number=2, episode_number=3, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_rating_key="902",
+        parent_native_id="902",
     )
     episode2 = ResolvedItem(
-        rating_key="904", library="Shows", kind="episode", title="Woe's Hollow", year=None,
+        server="plex", native_id="904", library="Shows", kind="episode",
+        title="Woe's Hollow", year=None,
         season_number=2, episode_number=4, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_rating_key="902",
+        parent_native_id="902",
     )
 
     entries = [
@@ -521,6 +526,8 @@ class _FakeGeneratedPlexItem:
 
 
 class _FakePlexForGenerated:
+    capabilities = frozenset({pipeline_module.CAP_TITLE_CARD_URL})
+
     def __init__(self, plex_item, expected_rating_key="900"):
         self._plex_item = plex_item
         self._expected_rating_key = expected_rating_key
@@ -1069,7 +1076,7 @@ async def test_title_card_falls_back_to_plexs_generated_frame(session, tmp_path,
         )
 
     assert render.status == "rendered"
-    assert render.source_url == f"plex://{resolved.rating_key}/title_card"
+    assert render.source_url == f"plex://{resolved.native_id}/title_card"
     assert render.source_mode == "plex_generated"
     assert render.provider == "plex"
     assert render.provider_rank is None

@@ -71,12 +71,13 @@ def _config(tmp_path):
 
 def item():
     return ResolvedItem(
-        rating_key="1", library="Movies", kind="movie", title="Inside Out 2",
+        server="plex", native_id="1", library="Movies", kind="movie",
+        title="Inside Out 2",
         year=2024, season_number=None, episode_number=None,
         root_folder="Inside Out 2 (2024)",
         file_path="/mnt/Media/Movies/Inside Out 2 (2024)/x.mkv", art_url=None,
         tmdb_id=1022789, tvdb_id=None, imdb_id="tt22022452",
-        parent_rating_key=None,
+        parent_native_id=None,
     )
 
 

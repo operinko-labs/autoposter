@@ -10,6 +10,7 @@ from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
+from autoposter.plex.writer import apply_facts as _plex_apply_facts
 from autoposter.render import pipeline
 
 EXAMPLE = Path("config/autoposter.example.yaml")
@@ -17,9 +18,9 @@ EXAMPLE = Path("config/autoposter.example.yaml")
 
 def resolved():
     return ResolvedItem(
-        rating_key="w1", library="Movies", kind="movie", title="X", year=2023,
+        server="plex", native_id="w1", library="Movies", kind="movie", title="X", year=2023,
         season_number=None, episode_number=None, root_folder="X", file_path=None,
-        art_url=None, tmdb_id=1, tvdb_id=None, imdb_id="tt1", parent_rating_key=None,
+        art_url=None, tmdb_id=1, tvdb_id=None, imdb_id="tt1", parent_native_id=None,
     )
 
 
@@ -49,6 +50,23 @@ class RecordingPlexItem:
         return self
 
 
+class RecordingServer:
+    """The MediaServer surface ``apply_metadata`` now goes through, wrapping a
+    ``RecordingPlexItem`` so the real ``plex.writer.apply_facts`` still runs
+    against it -- the object under test is what got written, not this shim."""
+
+    name = "plex"
+
+    def __init__(self, plex_item):
+        self._item = plex_item
+
+    async def item_labels(self, ref):
+        return [tag.tag for tag in getattr(self._item, "labels", None) or []]
+
+    async def apply_facts(self, ref, facts, operations=None, parental_categories=None, overrides=None):
+        return await _plex_apply_facts(self._item, facts, operations, parental_categories, overrides)
+
+
 async def _media(session):
     media = MediaItem(rating_key="w1", library="Movies", kind="movie", title="X")
     session.add(media)
@@ -67,7 +85,7 @@ async def test_facts_are_gathered_persisted_and_written(session, monkeypatch):
     config = load_config(EXAMPLE)
 
     facts = await pipeline.apply_metadata(
-        session, config, media.id, resolved(), plex_item, object(), object()
+        session, config, media.id, resolved(), RecordingServer(plex_item), object(), object()
     )
 
     assert facts.critic_rating == pytest.approx(4.9)
@@ -87,7 +105,8 @@ async def test_disabling_operations_skips_everything(session, monkeypatch):
     config.operations.enabled = False
 
     facts = await pipeline.apply_metadata(
-        session, config, media.id, resolved(), RecordingPlexItem(), object(), object()
+        session, config, media.id, resolved(), RecordingServer(RecordingPlexItem()),
+        object(), object(),
     )
     assert facts.is_empty()
     assert (await session.execute(select(ItemFacts))).scalars().all() == []
@@ -106,7 +125,7 @@ async def test_write_to_plex_false_still_stores_facts(session, monkeypatch):
     plex_item = RecordingPlexItem()
 
     await pipeline.apply_metadata(
-        session, config, media.id, resolved(), plex_item, object(), object()
+        session, config, media.id, resolved(), RecordingServer(plex_item), object(), object()
     )
 
     assert (await session.execute(select(ItemFacts))).scalar_one().critic_rating
@@ -135,7 +154,7 @@ async def test_no_mdblist_key_still_gathers_persists_and_writes_other_ratings(se
     plex_item = RecordingPlexItem()
 
     facts = await pipeline.apply_metadata(
-        session, config, media.id, resolved(), plex_item,
+        session, config, media.id, resolved(), RecordingServer(plex_item),
         FakeTMDBFacts(), NullMDBListClient(),
     )
 
@@ -156,7 +175,8 @@ async def test_no_mdblist_key_still_gathers_persists_and_writes_other_ratings(se
 class _FakePlex:
     """Minimal Plex stand-in for process_item tests below: resolve() returns
     a fixed item and fetch_item() a fresh RecordingPlexItem, without any real
-    Plex or network access."""
+    Plex or network access. item_labels/apply_facts are the MediaServer
+    surface apply_metadata now goes through directly."""
 
     def __init__(self, item):
         self._item = item
@@ -166,6 +186,14 @@ class _FakePlex:
 
     async def fetch_item(self, rating_key):
         return RecordingPlexItem()
+
+    async def item_labels(self, ref):
+        return []
+
+    async def apply_facts(self, ref, facts, operations=None, parental_categories=None, overrides=None):
+        return await _plex_apply_facts(
+            RecordingPlexItem(), facts, operations, parental_categories, overrides
+        )
 
 
 async def test_metadata_failure_does_not_block_artwork(session, monkeypatch, caplog):
@@ -282,27 +310,41 @@ async def test_metadata_runs_before_the_artifact_loop(session, monkeypatch):
     assert order == ["metadata", "artifact:poster", "artifact:background"]
 
 
-async def test_a_plex_without_fetch_item_is_not_swallowed(session, monkeypatch):
-    """A `plex` missing fetch_item is a wiring bug, not the runtime failure
-    the badge stage contains: it must propagate rather than become a WARNING
-    that resurfaces later as an unrelated error."""
+async def test_a_plex_missing_fetch_item_is_contained_in_the_badge_stage(
+    session, monkeypatch, caplog
+):
+    """Task 4 moved the badge stage's raw-item read behind ``apply_badges``
+    itself (``server.fetch_item(ref.native_id)``, still Plex-only), which now
+    sits INSIDE that call's own frame rather than behind a standalone
+    ``fetch_item = plex.fetch_item`` bound outside process_item's try block
+    (deleted by this task). So a `plex` missing ``fetch_item`` -- a wiring
+    bug -- is now caught by the same containment a runtime Plex hiccup gets,
+    logged rather than propagated. This pins the new shape."""
 
     class PlexWithoutFetchItem:
         async def resolve(self, intent):
             return resolved()
 
+    class _RenderStub:
+        art_kind = "poster"
+        status = "rendered"
+        badge_fingerprint = None
+
     async def fake_render_artifact(session, config, http, item, art_kind, providers, **_kwargs):
-        return object()
+        return _RenderStub()
 
     monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
     config = load_config(EXAMPLE)
     assert config.badges.enabled, "the badge stage must be reached for this to mean anything"
 
-    with pytest.raises(AttributeError, match="fetch_item"):
-        await pipeline.process_item(
+    with caplog.at_level("WARNING"):
+        results = await pipeline.process_item(
             session, config, None, PlexWithoutFetchItem(), [],
             RenderIntent(kind="movie", title="X", tmdb_id=1),
         )
+
+    assert len(results) == 2
+    assert any("badge stage failed" in r.message for r in caplog.records)
 
 
 @pytest.mark.imagemagick
@@ -339,9 +381,10 @@ async def test_title_card_self_feed_is_refused_through_process_item(session, tmp
             ]
 
     class _FakePlex:
+        capabilities = frozenset({pipeline.CAP_TITLE_CARD_URL})
         async def resolve(self, intent):
             return ResolvedItem(
-                rating_key="900", library="Severance (2022)", kind="episode",
+                server="plex", native_id="900", library="Severance (2022)", kind="episode",
                 title="Chapter One", year=2022, season_number=1, episode_number=1,
                 root_folder="Severance (2022)", file_path="/mnt/Media/x.mkv",
                 art_url=None, tmdb_id=1, tvdb_id=None, imdb_id=None,
@@ -422,9 +465,10 @@ async def test_title_card_refusal_is_contained_and_carries_no_token(session, cap
             ]
 
     class _FakePlex:
+        capabilities = frozenset({pipeline.CAP_TITLE_CARD_URL})
         async def resolve(self, intent):
             return ResolvedItem(
-                rating_key="900", library="Severance (2022)", kind="episode",
+                server="plex", native_id="900", library="Severance (2022)", kind="episode",
                 title="Chapter One", year=2022, season_number=1, episode_number=1,
                 root_folder="Severance (2022)", file_path="/mnt/Media/x.mkv",
                 art_url=None, tmdb_id=1, tvdb_id=None, imdb_id=None,
@@ -510,9 +554,10 @@ async def test_title_card_non_2xx_from_plex_records_no_art_through_process_item(
             ]
 
     class _FakePlex:
+        capabilities = frozenset({pipeline.CAP_TITLE_CARD_URL})
         async def resolve(self, intent):
             return ResolvedItem(
-                rating_key="900", library="Severance (2022)", kind="episode",
+                server="plex", native_id="900", library="Severance (2022)", kind="episode",
                 title="Chapter One", year=2022, season_number=1, episode_number=1,
                 root_folder="Severance (2022)", file_path="/mnt/Media/x.mkv",
                 art_url=None, tmdb_id=1, tvdb_id=None, imdb_id=None,

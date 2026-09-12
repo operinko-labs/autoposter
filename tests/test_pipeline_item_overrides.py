@@ -34,7 +34,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.render.pipeline import process_item
 
 from test_mass_ops_fields import FakeTMDB, _item
-from test_mass_ops_verbs import FakeField, RecordingPlexItem
+from test_mass_ops_verbs import FakeField, FakePlexServer, RecordingPlexItem
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -44,20 +44,6 @@ def config():
     """The example config, exactly as ``tests/test_mass_ops_verbs.py`` builds
     it for row 87's own entry-point tests."""
     return load_config(EXAMPLE)
-
-
-class FakePlexServer:
-    """The minimum ``plex`` surface ``process_item`` calls."""
-
-    def __init__(self, item, plex_item):
-        self._item = item
-        self._plex_item = plex_item
-
-    async def resolve(self, intent):
-        return self._item
-
-    async def fetch_item(self, rating_key):
-        return self._plex_item
 
 
 def _intent() -> RenderIntent:

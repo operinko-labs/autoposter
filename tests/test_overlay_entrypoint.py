@@ -5,6 +5,7 @@ which render/pipeline.py::apply_badges calls -- not through
 overlays/render.py alone. With no definitions configured, the output must be
 byte-identical to the recorded pre-swap baseline.
 """
+import asyncio
 import hashlib
 import io
 from datetime import date, timedelta
@@ -21,7 +22,9 @@ from autoposter.db.models import MediaItem, Render
 from autoposter.overlays.assets import FONTS
 from autoposter.overlays.families import FAMILIES
 from autoposter.overlays.schema import OverlayDefinition
+from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
 from autoposter.render.pipeline import apply_badges
+from autoposter.servers.base import CAP_LOCK_ARTWORK, ServerItemRef
 # Bare module import, not `tests.test_overlay_engine_golden`: this repo has no
 # tests/__init__.py, so `tests` is not an importable package -- the precedent
 # is test_config_safety.py's `from test_api_config_editor import (...)`.
@@ -514,11 +517,11 @@ async def test_apply_badges_draws_a_blur_definition_through_the_real_entry_point
     config_with_badges.badges.definitions = []
     item, render = await _render(session, rating_key="blur-entrypoint-item")
     plex_item = _FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     baseline_bytes = plex_item.last_bytes
 
     config_with_badges.badges.definitions = [OverlayDefinition(name="blur(30)")]
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 2
     assert _sha(plex_item.last_bytes) != _sha(baseline_bytes), "the blur must actually be applied"
 
@@ -558,6 +561,28 @@ class _Facts:
     content_rating = "17"
 
 
+class FakeServer:
+    """The MediaServer surface ``apply_badges`` now goes through, wrapping a
+    ``_FakePlexItem``-shaped fake so the real ``plex.artwork.upload_artwork``
+    still runs against it -- the object under test is what got uploaded, not
+    this shim."""
+
+    name = "plex"
+    capabilities = frozenset({CAP_LOCK_ARTWORK})
+
+    def __init__(self, item):
+        self._item = item
+
+    async def fetch_item(self, native_id):
+        return self._item
+
+    async def upload_artwork(self, ref, data, art_kind, lock):
+        await asyncio.to_thread(_plex_upload_artwork, self._item, data, art_kind, lock)
+
+
+REF = ServerItemRef("plex", "1", "Movies", "movie")
+
+
 async def _render(session, rating_key="overlay-entrypoint-item"):
     item = MediaItem(kind="movie", rating_key=rating_key, library="Movies", title="X")
     session.add(item)
@@ -585,7 +610,7 @@ async def test_apply_badges_draws_a_file_sourced_definition_through_the_real_ent
 
     item, render = await _render(session)
     plex_item = _FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 1
     baseline_bytes = plex_item.last_bytes
     baseline_fingerprint = render.badge_fingerprint
@@ -601,7 +626,7 @@ async def test_apply_badges_draws_a_file_sourced_definition_through_the_real_ent
             vertical_align="center", vertical_offset=0,
         )
     ]
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 2, "configuring a definition must re-badge an already-uploaded item"
     assert plex_item.last_bytes != baseline_bytes, "the definition must actually be drawn"
     assert render.badge_fingerprint != baseline_fingerprint
@@ -609,7 +634,7 @@ async def test_apply_badges_draws_a_file_sourced_definition_through_the_real_ent
     # Remove it again: the fingerprint must revert exactly, and Plex must
     # receive the original (un-stamped) bytes back.
     config_with_badges.badges.definitions = []
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 3
     assert render.badge_fingerprint == baseline_fingerprint
     assert plex_item.last_bytes == baseline_bytes
@@ -641,13 +666,13 @@ async def test_a_definition_whose_image_fails_to_resolve_does_not_stamp_an_empty
     baseline_item, baseline_render = await _render(session, rating_key="baseline")
     baseline_plex = _FakePlexItem()
     await apply_badges(
-        session, config_with_badges, baseline_render, baseline_item, baseline_plex, _Facts()
+        session, config_with_badges, baseline_render, baseline_item, FakeServer(baseline_plex), REF, _Facts()
     )
 
     config_with_badges.badges.definitions = [broken]
     item, render = await _render(session, rating_key="broken-definition")
     plex_item = _FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
 
     assert _sha(plex_item.last_bytes) == _sha(baseline_plex.last_bytes)
 
@@ -661,13 +686,13 @@ async def test_apply_badges_draws_a_backdrop_definition_through_the_real_entry_p
     config_with_badges.badges.definitions = []
     item, render = await _render(session, rating_key="backdrop-entrypoint-item")
     plex_item = _FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     baseline_bytes = plex_item.last_bytes
 
     config_with_badges.badges.definitions = [
         OverlayDefinition(name="backdrop", back_color="#00000099"),
     ]
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 2
     assert _sha(plex_item.last_bytes) != _sha(baseline_bytes), "the full-canvas backdrop must actually be drawn"
 
@@ -706,7 +731,7 @@ async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(
     plex_item = _FakePlexItem()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         await apply_badges(
-            session, config_with_badges, render, item, plex_item, _Facts(), http=http
+            session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts(), http=http
         )
     assert len(calls) == 1, "the definition's url must actually be requested"
     assert plex_item.uploads == 1
@@ -715,7 +740,7 @@ async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(
     baseline_item, baseline_render = await _render(session, rating_key="url-baseline")
     baseline_plex = _FakePlexItem()
     await apply_badges(
-        session, config_with_badges, baseline_render, baseline_item, baseline_plex, _Facts()
+        session, config_with_badges, baseline_render, baseline_item, FakeServer(baseline_plex), REF, _Facts()
     )
     assert _sha(plex_item.last_bytes) != _sha(baseline_plex.last_bytes), (
         "the downloaded image must actually be drawn, not skipped"
@@ -751,7 +776,7 @@ async def test_a_definition_whose_condition_fails_draws_exactly_the_gate_off_pix
     config_with_badges.badges.definitions = []
     base_item, base_render = await _render(session, rating_key="cond-baseline")
     base_plex = _FakePlexItem()
-    await apply_badges(session, config_with_badges, base_render, base_item, base_plex, _Facts())
+    await apply_badges(session, config_with_badges, base_render, base_item, FakeServer(base_plex), REF, _Facts())
 
     config_with_badges.badges.definitions = [
         OverlayDefinition(
@@ -763,7 +788,7 @@ async def test_a_definition_whose_condition_fails_draws_exactly_the_gate_off_pix
     ]
     item, render = await _render(session, rating_key="cond-unmatched")
     plex_item = _FakePlexItem()  # 1080 -- does not satisfy the condition
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
 
     assert _sha(plex_item.last_bytes) == _sha(base_plex.last_bytes)
 
@@ -779,7 +804,7 @@ async def test_a_definition_whose_condition_holds_is_actually_drawn(
     config_with_badges.badges.definitions = []
     base_item, base_render = await _render(session, rating_key="cond-baseline-4k")
     base_plex = _FakePlexItem4k()
-    await apply_badges(session, config_with_badges, base_render, base_item, base_plex, _Facts())
+    await apply_badges(session, config_with_badges, base_render, base_item, FakeServer(base_plex), REF, _Facts())
 
     config_with_badges.badges.definitions = [
         OverlayDefinition(
@@ -791,7 +816,7 @@ async def test_a_definition_whose_condition_holds_is_actually_drawn(
     ]
     item, render = await _render(session, rating_key="cond-matched")
     plex_item = _FakePlexItem4k()
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
 
     assert _sha(plex_item.last_bytes) != _sha(base_plex.last_bytes)
 
@@ -825,12 +850,12 @@ async def test_an_item_whose_match_outcome_changes_re_badges(
 
     item, render = await _render(session, rating_key="outcome-moves")
     plex_item = _FakePlexItem()  # no contentRating: does not match
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 1
     unmatched_fingerprint = render.badge_fingerprint
 
     plex_item.contentRating = "PG-13"  # the item changed
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 2, "a changed match outcome must re-badge"
     assert render.badge_fingerprint != unmatched_fingerprint
 
@@ -868,7 +893,7 @@ async def test_an_unmatched_definition_never_resolves_its_image(
     plex_item = _FakePlexItem()  # 1080
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         await apply_badges(
-            session, config_with_badges, render, item, plex_item, _Facts(), http=http
+            session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts(), http=http
         )
     assert calls == [], "an unmatched definition must not resolve its image"
 
@@ -920,7 +945,7 @@ class _FactsNoContentRating:
 async def _badged(session, config, plex_item, rating_key, facts=None):
     item, render = await _render(session, rating_key=rating_key)
     await apply_badges(
-        session, config, render, item, plex_item, facts or _Facts()
+        session, config, render, item, FakeServer(plex_item), REF, facts or _Facts()
     )
     return plex_item.last_bytes
 
@@ -1023,7 +1048,7 @@ async def test_mdblist_ratings_reach_the_variable_map(session, config_with_badge
     plex_item = _FakePlexItem()
     mdblist = _RecordingMDBList({"mdb_average_rating": 6.5})
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, _Facts(), mdblist=mdblist
+        session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts(), mdblist=mdblist
     )
     assert mdblist.calls == [(item.tmdb_id, item.tvdb_id, item.kind == "movie")]
 
@@ -1036,7 +1061,7 @@ async def test_mdblist_quota_exhaustion_degrades_ratings_only_not_the_whole_badg
     item, render = await _render(session, rating_key="mdb-limit")
     plex_item = _FakePlexItem()
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, _Facts(),
+        session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts(),
         mdblist=_RaisingMDBList(MDBListLimitReached("API Limit Reached!")),
     )
     assert render.badge_fingerprint is not None  # the badge stage completed
@@ -1048,7 +1073,7 @@ async def test_mdblist_transport_failure_degrades_ratings_only(session, config_w
     item, render = await _render(session, rating_key="mdb-httperror")
     plex_item = _FakePlexItem()
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, _Facts(),
+        session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts(),
         mdblist=_RaisingMDBList(httpx_module.ConnectError("boom")),
     )
     assert render.badge_fingerprint is not None
@@ -1058,7 +1083,7 @@ async def test_no_mdblist_client_is_a_no_op_not_an_error(session, config_with_ba
     """`mdblist=None` is what every test predating this phase passes -- the
     same shape `http=None` already has."""
     item, render = await _render(session, rating_key="mdb-none")
-    await apply_badges(session, config_with_badges, render, item, _FakePlexItem(), _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(_FakePlexItem()), REF, _Facts())
     assert render.badge_fingerprint is not None
 
 
@@ -1082,21 +1107,21 @@ async def test_a_used_rating_value_changing_moves_the_fingerprint_through_the_re
     plex_item = _FakePlexItem()
 
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, _Facts(),
+        session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts(),
         mdblist=_RecordingMDBList({"mdb_average_rating": 6.5}),
     )
     first_fingerprint = render.badge_fingerprint
     assert first_fingerprint is not None
 
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, _Facts(),
+        session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts(),
         mdblist=_RecordingMDBList({"mdb_average_rating": 7.0}),
     )
     second_fingerprint = render.badge_fingerprint
     assert second_fingerprint != first_fingerprint, "a changed rating value must re-badge"
 
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, _Facts(),
+        session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts(),
         mdblist=_RecordingMDBList({"mdb_average_rating": 7.0}),
     )
     assert render.badge_fingerprint == second_fingerprint, (
@@ -1216,12 +1241,12 @@ async def test_enabling_a_family_re_badges_an_already_uploaded_item(
     config_with_badges.badges.families = []
     item, render = await _render(session, rating_key="family-rebadge")
     plex_item = _FakePlexItem4k()
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 1
     before = render.badge_fingerprint
 
     config_with_badges.badges.families = ["direct_play"]
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 2
     assert render.badge_fingerprint != before
 
@@ -1234,9 +1259,9 @@ async def test_enabling_no_family_moves_no_fingerprint(
     config_with_badges.badges.families = []
     item, render = await _render(session, rating_key="family-storm")
     plex_item = _FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 1
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 1, "an unchanged config must not re-badge"
 
 
@@ -1439,22 +1464,22 @@ async def test_enabling_a_c2b_family_re_badges_once_and_the_second_pass_is_uncha
     config_with_badges.badges.families = []
     config_with_badges.badges.definitions = []
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 1
     gate_off_fingerprint = render.badge_fingerprint
 
     config_with_badges.badges.families = ["aspect"]
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 2, "enabling a family must re-badge an already-uploaded item"
     enabled_fingerprint = render.badge_fingerprint
     assert enabled_fingerprint != gate_off_fingerprint
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 2, "the second pass must upload nothing"
     assert render.badge_fingerprint == enabled_fingerprint
 
     config_with_badges.badges.families = []
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert plex_item.uploads == 3
     assert render.badge_fingerprint == gate_off_fingerprint, (
         "disabling the family must revert the fingerprint exactly"
@@ -1482,9 +1507,9 @@ async def test_a_family_this_config_does_not_name_costs_nothing(
     plex_item = _FakePlexItemShot()
     config_with_badges.badges.families = ["direct_play"]
     config_with_badges.badges.definitions = []
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     first = render.badge_fingerprint
-    await apply_badges(session, config_with_badges, render, item, plex_item, _Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, _Facts())
     assert render.badge_fingerprint == first
     assert plex_item.uploads == 1
 
@@ -1675,22 +1700,22 @@ async def test_enabling_the_status_family_re_badges_once_and_the_second_pass_is_
     config_with_badges.badges.families = []
     config_with_badges.badges.definitions = []
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, facts)
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, facts)
     assert plex_item.uploads == 1
     gate_off_fingerprint = render.badge_fingerprint
 
     config_with_badges.badges.families = ["status"]
-    await apply_badges(session, config_with_badges, render, item, plex_item, facts)
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, facts)
     assert plex_item.uploads == 2, "enabling a family must re-badge an already-uploaded item"
     enabled_fingerprint = render.badge_fingerprint
     assert enabled_fingerprint != gate_off_fingerprint
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, facts)
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, facts)
     assert plex_item.uploads == 2, "the second pass must upload nothing"
     assert render.badge_fingerprint == enabled_fingerprint
 
     config_with_badges.badges.families = []
-    await apply_badges(session, config_with_badges, render, item, plex_item, facts)
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, facts)
     assert plex_item.uploads == 3
     assert render.badge_fingerprint == gate_off_fingerprint, (
         "disabling the family must revert the fingerprint exactly"
@@ -1719,11 +1744,11 @@ async def test_the_family_list_gaining_status_moves_no_fingerprint_for_a_config_
     config_with_badges.badges.families = ["direct_play"]
     config_with_badges.badges.definitions = []
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, _StatusFacts()
+        session, config_with_badges, render, item, FakeServer(plex_item), REF, _StatusFacts()
     )
     first = render.badge_fingerprint
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, _StatusFacts()
+        session, config_with_badges, render, item, FakeServer(plex_item), REF, _StatusFacts()
     )
     assert render.badge_fingerprint == first
     assert plex_item.uploads == 1

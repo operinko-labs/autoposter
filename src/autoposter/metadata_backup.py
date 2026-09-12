@@ -148,7 +148,7 @@ class MetadataBackupMode:
 
     def __init__(self, config, plex) -> None:
         self._config = config
-        self._plex = plex
+        self._server = plex
 
     async def run(self, session: AsyncSession) -> MetadataBackupResult:
         if not self._config.operations.metadata_backup_enabled:
@@ -189,7 +189,7 @@ class MetadataBackupMode:
         for row in rows:
             items += 1
             try:
-                plex_item = await self._plex.fetch_item(row.rating_key)
+                plex_item = await self._server.fetch_item(row.rating_key)
             except PlexNotFound:
                 logger.info(
                     "metadata backup: %s no longer in Plex, skipped", row.rating_key

@@ -34,17 +34,15 @@ Never ``.refresh()``: it would have Plex re-pull from its agents and revert
 locked fields elsewhere in the library.
 """
 
-import asyncio
 import logging
 from dataclasses import dataclass
 
-from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty, refuse_if_implausible
 from autoposter.db.models import MediaItem
-from autoposter.plex.artwork import artwork_provenance, reset_artwork_to_agent_default
+from autoposter.servers.base import CAP_ARTWORK_PROVENANCE, CAP_RESET_TO_AGENT_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +141,7 @@ class ResetMode:
         kind: str | None = None, library: str | None = None, item_id: int | None = None,
     ) -> None:
         self._config = config
-        self._plex = plex
+        self._server = plex
         self._http = http
         self._headers = headers
         self._apply = apply
@@ -182,11 +180,10 @@ class ResetMode:
         # pinning the oldest xmin and blocking autovacuum meanwhile.
         await session.commit()
 
-        base_url = self._config.plex.url
         # Which fields of which candidates are showing art we uploaded. Rating
-        # keys rather than the fetched plexapi objects: the probe walks the whole
+        # keys rather than the fetched refs: the probe walks the whole
         # filtered set, which can be the entire library, while the write walks at
-        # most ``max_changes`` of it -- holding every probed object alive to save
+        # most ``max_changes`` of it -- holding every probed ref alive to save
         # the applied run one fetch each would be the wrong trade. A dry run, the
         # default, never re-fetches at all.
         ours: dict[str, list[str]] = {}
@@ -194,8 +191,14 @@ class ResetMode:
         probe_failed = 0
         for row in rows:
             try:
-                plex_item = await self._plex.fetch_item(row.rating_key)
-            except PlexNotFound:
+                ref = await self._server.fetch_ref(row.rating_key)
+            except Exception:  # noqa: BLE001 - one bad item must not abort the probe
+                logger.warning(
+                    "reset: could not fetch Plex item %s", row.rating_key, exc_info=True
+                )
+                probe_failed += 1
+                continue
+            if ref is None:
                 # Expected, not a crash: the item was deleted from Plex since
                 # it was last scanned. One concise line, no traceback --
                 # counted separately from a real probe failure below (backup.py's
@@ -203,23 +206,23 @@ class ResetMode:
                 logger.info("reset: %s no longer in Plex, skipped", row.rating_key)
                 missing += 1
                 continue
-            except Exception:  # noqa: BLE001 - one bad item must not abort the probe
-                logger.warning(
-                    "reset: could not fetch Plex item %s", row.rating_key, exc_info=True
-                )
-                probe_failed += 1
-                continue
             # None for artwork nobody stamped, for a field the item has nothing
             # in, and for a Plex that could not be asked -- all of which mean
             # "not provably ours", which is the safe direction here. Per field,
             # so an item whose poster is ours but whose background an operator
             # set by hand has only its poster reset.
-            kinds = [
-                art_kind for art_kind in RESET_ART_KINDS[row.kind]
-                if await artwork_provenance(
-                    self._http, plex_item, base_url, self._headers, art_kind
-                ) is not None
-            ]
+            try:
+                kinds = [
+                    art_kind for art_kind in RESET_ART_KINDS[row.kind]
+                    if CAP_ARTWORK_PROVENANCE in self._server.capabilities
+                    and await self._server.artwork_provenance(ref, art_kind) is not None
+                ]
+            except Exception:  # noqa: BLE001 - one bad item must not abort the probe
+                logger.warning(
+                    "reset: could not probe Plex item %s", row.rating_key, exc_info=True
+                )
+                probe_failed += 1
+                continue
             if kinds:
                 ours[row.rating_key] = kinds
 
@@ -256,22 +259,27 @@ class ResetMode:
         reset = failed = 0
         for rating_key, kinds in ours.items():
             try:
-                plex_item = await self._plex.fetch_item(rating_key)
-            except PlexNotFound:
-                logger.info("reset: %s no longer in Plex, skipped", rating_key)
-                missing += 1
-                continue
+                ref = await self._server.fetch_ref(rating_key)
             except Exception:  # noqa: BLE001 - see above
                 logger.warning(
                     "reset: could not fetch Plex item %s", rating_key, exc_info=True
                 )
                 failed += len(kinds)
                 continue
+            if ref is None:
+                logger.info("reset: %s no longer in Plex, skipped", rating_key)
+                missing += 1
+                continue
             for art_kind in kinds:
-                try:
-                    selected = await asyncio.to_thread(
-                        reset_artwork_to_agent_default, plex_item, art_kind
+                if CAP_RESET_TO_AGENT_DEFAULT not in self._server.capabilities:
+                    logger.warning(
+                        "reset: %s does not support resetting %s to the agent default",
+                        self._server.name, art_kind,
                     )
+                    failed += 1
+                    continue
+                try:
+                    selected = await self._server.reset_artwork_to_agent_default(ref, art_kind)
                 except Exception:  # noqa: BLE001 - see above
                     logger.warning(
                         "reset: could not reset %s for %s",

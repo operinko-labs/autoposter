@@ -17,10 +17,10 @@ EXAMPLE = Path("config/autoposter.example.yaml")
 
 def episode(title="Pilot", season=1, number=3):
     return ResolvedItem(
-        rating_key="e1", library="TV Shows", kind="episode", title=title,
+        server="plex", native_id="e1", library="TV Shows", kind="episode", title=title,
         year=2020, season_number=season, episode_number=number,
         root_folder="Dark", file_path=None, art_url=None, tmdb_id=1,
-        tvdb_id=2, imdb_id="tt1", parent_rating_key="s1",
+        tvdb_id=2, imdb_id="tt1", parent_native_id="s1",
     )
 
 

@@ -87,12 +87,12 @@ class _FakePlex:
 def _resolved(rating_key, **overrides):
     """What ``resolve()`` hands ``process_item`` for a movie."""
     fields = dict(
-        rating_key=rating_key, library="Movies", kind="movie",
+        server="plex", native_id=rating_key, library="Movies", kind="movie",
         title="Dune: Part Two", year=2024, season_number=None,
         episode_number=None, root_folder="Dune Part Two (2024)",
         file_path="/mnt/Media/Movies/Dune Part Two (2024)/dune.mkv",
         art_url=None, tmdb_id=693134, tvdb_id=None, imdb_id="tt15239678",
-        parent_rating_key=None,
+        parent_native_id=None,
     )
     fields.update(overrides)
     return ResolvedItem(**fields)
@@ -523,7 +523,7 @@ async def test_a_lost_race_does_not_fail_the_job(
         rows = await real_candidates(inner_session, item)
         async with session_factory() as other:
             other.add(MediaItem(
-                rating_key=item.rating_key, library="Movies", kind="movie",
+                rating_key=item.native_id, library="Movies", kind="movie",
                 title="Winner", tmdb_id=693134, imdb_id="tt15239678",
             ))
             await other.commit()

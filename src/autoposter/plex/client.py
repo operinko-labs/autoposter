@@ -815,6 +815,10 @@ class PlexClient:
         item = await self.fetch_item(ref.native_id)
         return await asyncio.to_thread(plex_artwork.reset_artwork_to_agent_default, item, art_kind)
 
+    async def item_labels(self, ref: ServerItemRef) -> list[str]:
+        item = await self.fetch_item(ref.native_id)
+        return [t.tag for t in getattr(item, "labels", None) or []]
+
     async def apply_facts(
         self, ref: ServerItemRef, facts, operations=None,
         parental_categories=None, overrides=None,

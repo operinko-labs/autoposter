@@ -16,6 +16,8 @@ from plexapi.exceptions import NotFound as PlexNotFound
 from autoposter.artwork_modes.backup import BackupMode
 from autoposter.config.loader import load_config
 from autoposter.db.models import MediaItem
+from autoposter.plex.artwork import fetch_artwork as _plex_fetch_artwork
+from autoposter.servers.base import ServerItemRef
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PLEX_URL = "http://plex.local"
@@ -45,6 +47,11 @@ class FakePlexClient:
         self._error = error
         self._errors = errors or {}
         self.fetched = []
+        # Lazily built on first use, from the same MockTransport handler
+        # every test in this file already shares -- so a test only has to
+        # hand this class its items, exactly as before ``fetch_artwork``
+        # needed an http client of its own.
+        self._http = None
 
     async def fetch_item(self, rating_key):
         self.fetched.append(rating_key)
@@ -53,6 +60,21 @@ class FakePlexClient:
         if self._error is not None:
             raise self._error
         return self._items[rating_key]
+
+    async def fetch_ref(self, rating_key):
+        try:
+            await self.fetch_item(rating_key)
+        except PlexNotFound:
+            return None
+        return ServerItemRef("plex", rating_key, "", "")
+
+    async def fetch_artwork(self, ref, art_kind):
+        if self._http is None:
+            self._http = AsyncClient(transport=httpx.MockTransport(_serves()))
+        item = self._items[ref.native_id]
+        return await _plex_fetch_artwork(
+            self._http, item, PLEX_URL, _headers(), art_kind
+        )
 
 
 @pytest.fixture

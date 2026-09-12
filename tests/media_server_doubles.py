@@ -78,6 +78,9 @@ class FakeMediaServer:
             for i in intents
         ]
 
+    async def item_labels(self, ref) -> list[str]:
+        return []
+
     async def list_items(self, kind: str) -> list[SectionItem]:
         return [
             SectionItem(server=self.name, native_id=i.native_id, library=i.library, title=i.title,
