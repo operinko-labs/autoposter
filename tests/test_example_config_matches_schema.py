@@ -74,16 +74,21 @@ def test_every_schema_section_appears_in_the_example():
     immediately on the many optional subkeys the example rightly omits,
     which is a different and larger decision.
 
-    The ONE exemption: ``version`` is the derived render-version hash
+    The exemptions: ``version`` is the derived render-version hash
     (config/loader.py's render_version), never operator-set, so the example
-    deliberately omits it.
+    deliberately omits it. ``jellyfin`` (roadmap row 267) is a real section
+    with a live block commented out right after `plex:` -- an operator finds
+    it by reading the file, just not by `yaml.safe_load`ing it -- so an
+    existing plex-only deployment's example stays exactly what it was before
+    Jellyfin existed.
     """
     data = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    exempt = {"version", "jellyfin"}
     missing = set(Config.model_fields) - set(data)
 
-    assert missing == {"version"}, (
+    assert missing == exempt, (
         "these schema sections have no line in the example config, so an "
-        "operator cannot discover them: %s" % ", ".join(sorted(missing - {"version"}))
+        "operator cannot discover them: %s" % ", ".join(sorted(missing - exempt))
     )
 
 

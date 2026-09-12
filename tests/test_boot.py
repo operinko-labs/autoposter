@@ -98,9 +98,18 @@ def _write_state_secrets(values: dict[str, str]) -> None:
 
 def _write_state_config() -> Path:
     """The document the wizard's last step writes: the second half of
-    CONFIGURED."""
+    CONFIGURED.
+
+    Carries a `plex:` block naming a server, not just `workers`, since roadmap
+    row 267 added a third half: a document naming no media server is not
+    CONFIGURED either. Every test in this file that sets `AUTOPOSTER_PLEX_TOKEN`
+    -- which every one using `HARD` does -- keeps this deployment configured
+    exactly as it was before that row.
+    """
     path = state_module.state_config_path()
-    state_module.write_state_file(path, yaml.safe_dump({"workers": 2}))
+    state_module.write_state_file(
+        path, yaml.safe_dump({"workers": 2, "plex": {"url": "https://plex.example"}})
+    )
     return path
 
 
@@ -174,7 +183,11 @@ def test_an_empty_environment_value_counts_as_absent(monkeypatch):
 
     assert resolve_secret_values()["AUTOPOSTER_PLEX_TOKEN"] == "from-file"
     assert Secrets.load().plex_token == "from-file"
-    assert missing_hard_secret_names({name: "" for name in HARD}) == list(HARD)
+    # AUTOPOSTER_PLEX_TOKEN left the hard list with roadmap row 267 -- it is a
+    # server credential now, so it is absent from this list on purpose.
+    assert missing_hard_secret_names({name: "" for name in HARD}) == [
+        name for name in HARD if name != "AUTOPOSTER_PLEX_TOKEN"
+    ]
 
 
 # --- the atomic writer ------------------------------------------------------
@@ -370,6 +383,16 @@ def test_a_missing_hard_name_means_setup_mode(monkeypatch):
     assert boot.is_configured(resolve_secret_values()) is False
 
 
+def test_is_configured_needs_a_server_credential_not_the_plex_token(monkeypatch, tmp_path):
+    doc = tmp_path / "autoposter.yaml"
+    doc.write_text("jellyfin:\n  url: https://jf\n", encoding="utf-8")
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(doc))
+    hard = {n: "x" for n in boot.missing_hard_secret_names({})}
+    assert boot.is_configured({**hard}) is False
+    assert boot.is_configured({**hard, "AUTOPOSTER_JELLYFIN_APIKEY": "k"}) is True
+    assert boot.is_configured({**hard, "AUTOPOSTER_PLEX_TOKEN": "t"}) is False  # plex is not configured here
+
+
 def test_credentials_without_a_config_document_exit_instead_of_serving_the_wizard(
     monkeypatch, tmp_path
 ):
@@ -462,7 +485,9 @@ def test_both_refusals_log_names_and_paths_and_never_a_value(monkeypatch, tmp_pa
         assert boot.is_configured(resolve_secret_values()) is False
 
     logged = "\n".join(record.getMessage() for record in caplog.records)
-    assert "AUTOPOSTER_PLEX_TOKEN" in logged
+    # AUTOPOSTER_PLEX_TOKEN left the hard list with roadmap row 267; a name
+    # still on it stands in for "one of the missing ones" here.
+    assert "AUTOPOSTER_TMDB_TOKEN" in logged
     assert str(absent) in logged
     assert "row-121-db-secret" not in logged
     assert FAKE_DB_URL not in logged

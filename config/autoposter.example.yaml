@@ -25,6 +25,13 @@ plex:
   token_refresh_interval_seconds: 43200 # 12 hours
   token_refresh_enabled: true # disable if your token is server-scoped (would just log warnings forever)
 
+# jellyfin:                      # a second (or the only) media server; see deploy/README.md "Media servers"
+#   url: https://<jellyfin-host>
+#   excluded_libraries: []
+#   library_map: {}              # Plex library name -> Jellyfin library name, only when they differ
+#   replace_thumb_with_backdrop: false
+#   liveness_interval_seconds: 60
+
 providers:
   order: [TMDB, TVDB, Fanart]
   cache_ttl_seconds: 86400 # 24 hours; 0 disables response caching
@@ -32,6 +39,7 @@ providers:
 operations:
   enabled: true
   write_to_plex: true
+  write_to_jellyfin: true
   imdb_refresh_hours: 6 # how often to poll the IMDb ratings dataset in the background
   imdb_refresh_enabled: true # disable to only refresh via `python -m autoposter.facts.imdb`
   imdb_miss_refresh_minutes: 60 # rate limit for the miss-triggered refresh; 0 disables it
@@ -113,6 +121,7 @@ operations:
 badges:
   enabled: true # composite badge overlays and upload them to Plex
   upload_to_plex: false # dry run by default: compose and fingerprint, upload nothing
+  upload_to_jellyfin: false # dry run by default: compose and fingerprint, upload nothing
   lock_artwork: true # lock the Plex field after upload so the agent cannot reclaim it
   apply_overlay_label: false # add the literal Plex label "Overlay", as the previous tool did
   adopt_from_plex: true # skip the upload when Plex is already serving this exact badged image

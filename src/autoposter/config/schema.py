@@ -17,12 +17,38 @@ _LANG_RE = re.compile(r"^[a-z]{2}$")
 
 _SECRET_ENV = {
     "database_url": "AUTOPOSTER_DATABASE_URL",
-    "plex_token": "AUTOPOSTER_PLEX_TOKEN",
     "tmdb_token": "AUTOPOSTER_TMDB_TOKEN",
     "tvdb_apikey": "AUTOPOSTER_TVDB_APIKEY",
     "fanart_apikey": "AUTOPOSTER_FANART_APIKEY",
     "webhook_secret": "AUTOPOSTER_WEBHOOK_SECRET",
 }
+
+# The server credentials (spec §7.2): required iff that server is configured,
+# and at least one server must be. Neither is "hard" in the old sense, so
+# `missing_hard_secret_names` does not list them; `missing_server_setup`
+# does, against the config document.
+_SERVER_SECRET_ENV = {
+    "plex_token": "AUTOPOSTER_PLEX_TOKEN",
+    "jellyfin_api_key": "AUTOPOSTER_JELLYFIN_APIKEY",
+}
+
+NO_SERVER_CONFIGURED = "no media server is configured"
+
+
+def missing_server_setup(document: dict | None, resolved: Mapping[str, str]) -> list[str]:
+    """Why the deployment has no usable media server, as sentences naming
+    variables and never values. Empty means at least one server has both an
+    address and a credential."""
+    document = document or {}
+    configured = [name for name in ("plex", "jellyfin") if (document.get(name) or {}).get("url")]
+    if not configured:
+        return [NO_SERVER_CONFIGURED]
+    problems = []
+    for name in configured:
+        env = _SERVER_SECRET_ENV["plex_token" if name == "plex" else "jellyfin_api_key"]
+        if not resolved.get(env):
+            problems.append(f"{name} is configured but {env} is not set")
+    return problems
 
 # The soft names, in the same shape as the hard ones above. Written out as a
 # map rather than as eight `os.environ.get` lines inside `from_env` because
@@ -67,7 +93,7 @@ def resolve_secret_values() -> dict[str, str]:
     harmless because such a deployment never runs the wizard, and it is said
     here so no later caller assumes otherwise.
     """
-    env_names = (*_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
+    env_names = (*_SECRET_ENV.values(), *_SERVER_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
     # A deployment whose environment carries every hard name never opens the
     # file at all -- not merely never uses its values. That is what makes the
     # GitOps/ExternalSecrets exemption true by construction: there is no file
@@ -134,7 +160,7 @@ def state_file_secret_names() -> list[str]:
     from_file = read_secrets_file(secrets_file_path())
     return [
         name
-        for name in (*_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
+        for name in (*_SECRET_ENV.values(), *_SERVER_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
         if not os.environ.get(name) and from_file.get(name)
     ]
 
@@ -148,10 +174,22 @@ class Secrets(BaseModel):
             "with. Set from AUTOPOSTER_DATABASE_URL; never read from the config file."
         ),
     )
+    # A server credential, not a hard secret (spec §7.2): required iff
+    # `plex:` is configured, and enforced there by `missing_server_setup`
+    # rather than here.
     plex_token: str = Field(
+        default="",
         description=(
             "The Plex server token every request to Plex authenticates with. Set "
             "from AUTOPOSTER_PLEX_TOKEN; never read from the config file."
+        ),
+    )
+    # Same posture as plex_token above: required iff `jellyfin:` is configured.
+    jellyfin_api_key: str = Field(
+        default="",
+        description=(
+            "The Jellyfin API key every request to Jellyfin authenticates with. "
+            "Set from AUTOPOSTER_JELLYFIN_APIKEY; never read from the config file."
         ),
     )
     tmdb_token: str = Field(
@@ -273,7 +311,7 @@ class Secrets(BaseModel):
         """Every secret: the environment first, the state file second.
 
         The ordering is the load-bearing rule of roadmap row 121. A deployment
-        whose environment carries all six hard names -- every
+        whose environment carries all five hard names -- every
         GitOps/ExternalSecrets deployment -- never takes a value from the file,
         never enters setup mode, and behaves exactly as it did before the file
         existed.
@@ -281,6 +319,11 @@ class Secrets(BaseModel):
         The refusal still names the ENVIRONMENT variable, unchanged, because
         that is what an operator with a broken deployment should set: the state
         file is what the wizard writes, not what an operator is asked to edit.
+
+        The server credentials (``plex_token``, ``jellyfin_api_key``) are read
+        the same way the soft ones are: never required here, because whether
+        either is required at all depends on which server is configured --
+        that is ``missing_server_setup``'s question, not this constructor's.
         """
         resolved = resolve_secret_values()
         values = {}
@@ -289,6 +332,8 @@ class Secrets(BaseModel):
             if not value:
                 raise RuntimeError(f"required environment variable {env_name} is not set")
             values[field] = value
+        for field, env_name in _SERVER_SECRET_ENV.items():
+            values[field] = resolved.get(env_name, "")
         for field, env_name in _SOFT_SECRET_ENV.items():
             values[field] = resolved.get(env_name, "")
         return cls(**values)
@@ -922,6 +967,34 @@ class PlexConfig(BaseModel):
     )
 
 
+class JellyfinConfig(BaseModel):
+    url: str = Field(description="The Jellyfin server's base URL this service manages.")
+    excluded_libraries: list[str] = Field(
+        default_factory=list,
+        description="Jellyfin libraries this service never touches -- skipped by every walk and sync.",
+    )
+    library_map: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Plex library name -> Jellyfin library name, only for libraries the "
+            "two servers name differently. A library not listed is matched by "
+            "its own name."
+        ),
+    )
+    replace_thumb_with_backdrop: bool = Field(
+        default=False,
+        description=(
+            "Also upload the background into Jellyfin's Thumb slot, which some "
+            "views show instead of the backdrop (Posterizarr's "
+            "ReplaceThumbwithBackdrop)."
+        ),
+    )
+    liveness_interval_seconds: int = Field(
+        default=60,
+        description="How often the background health check asks Jellyfin for /System/Info.",
+    )
+
+
 def _validate_field_verbs(value: dict[str, str]) -> dict[str, str]:
     """Refuse an unknown field name or verb at LOAD time.
 
@@ -969,6 +1042,13 @@ class OperationsConfig(BaseModel):
             "Write the gathered metadata to Plex. Off gathers and stores the facts "
             "but leaves Plex untouched -- the safe setting while another tool still "
             "owns these fields."
+        ),
+    )
+    write_to_jellyfin: bool = Field(
+        default=True,
+        description=(
+            "Write the gathered metadata to Jellyfin. Off gathers and stores the "
+            "facts but leaves Jellyfin untouched."
         ),
     )
     imdb_refresh_hours: int = Field(
@@ -1304,6 +1384,14 @@ class BadgesConfig(BaseModel):
         default=False,
         description=(
             "Upload the composed, badged artwork to Plex. Off composes and "
+            "fingerprints but uploads nothing -- the safe setting until the "
+            "operator has inspected the output."
+        ),
+    )
+    upload_to_jellyfin: bool = Field(
+        default=False,
+        description=(
+            "Upload the composed, badged artwork to Jellyfin. Off composes and "
             "fingerprints but uploads nothing -- the safe setting until the "
             "operator has inspected the output."
         ),
@@ -1674,6 +1762,8 @@ class OperationsOverride(BaseModel):
         default=None, description=_per_library("operations", "enabled"))
     write_to_plex: bool | None = Field(
         default=None, description=_per_library("operations", "write_to_plex"))
+    write_to_jellyfin: bool | None = Field(
+        default=None, description=_per_library("operations", "write_to_jellyfin"))
     ignore_ids: list[str] | None = Field(
         default=None, description=_per_library("operations", "ignore_ids"))
     ignore_imdb_ids: list[str] | None = Field(
@@ -1736,6 +1826,8 @@ class BadgesOverride(BaseModel):
         default=None, description=_per_library("badges", "enabled"))
     upload_to_plex: bool | None = Field(
         default=None, description=_per_library("badges", "upload_to_plex"))
+    upload_to_jellyfin: bool | None = Field(
+        default=None, description=_per_library("badges", "upload_to_jellyfin"))
     lock_artwork: bool | None = Field(
         default=None, description=_per_library("badges", "lock_artwork"))
     apply_overlay_label: bool | None = Field(
@@ -4145,11 +4237,17 @@ class Config(BaseModel):
             "registered automatically."
         ),
     )
-    plex: PlexConfig = Field(
+    plex: PlexConfig | None = Field(
+        default=None,
         description=(
             "How this service reaches the Plex server: its address, which libraries "
-            "are left alone, and how often it re-checks the server and its token."
+            "are left alone, and how often it re-checks the server and its token. "
+            "Absent means no Plex."
         ),
+    )
+    jellyfin: JellyfinConfig | None = Field(
+        default=None,
+        description="How this service reaches a Jellyfin server; absent means no Jellyfin.",
     )
     providers: ProvidersConfig = Field(
         description="Which metadata/art providers this service queries, in what order, and how long their answers are cached.",
@@ -4443,3 +4541,21 @@ class Config(BaseModel):
         for override in self.libraries.values():
             _merged_sections(self, override, _merge)
         return self
+
+    @model_validator(mode="after")
+    def _at_least_one_media_server(self) -> "Config":
+        """A document naming neither ``plex:`` nor ``jellyfin:`` manages
+        nothing -- refused at load rather than booting into a service with no
+        server to talk to."""
+        if self.plex is None and self.jellyfin is None:
+            raise ValueError(
+                "at least one media server must be configured: a `plex:` or a "
+                "`jellyfin:` block"
+            )
+        return self
+
+    @property
+    def configured_servers(self) -> list[str]:
+        """Which media servers this document configures, ``plex`` before
+        ``jellyfin``."""
+        return [name for name in ("plex", "jellyfin") if getattr(self, name) is not None]
