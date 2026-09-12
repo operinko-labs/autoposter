@@ -94,10 +94,11 @@ def _seed_backup(backup_root, library, root_folder, name, data):
 
 
 async def _add_item(session, *, rating_key, kind="movie", library="Movies",
-                    root_folder="A (1999)", season=None, episode=None):
+                    root_folder="A (1999)", season=None, episode=None, **extra):
     return await seed_media_item(
         session, rating_key, kind=kind, library=library,
         root_folder=root_folder, season_number=season, episode_number=episode,
+        **extra,
     )
 
 
@@ -311,3 +312,22 @@ async def test_restore_logs_a_missing_item_at_info_not_warning(
     summary = [r.message for r in restore_records if r.message not in per_item]
     assert len(summary) == 1
     assert summary[0].startswith("restore: ") and "1" in summary[0]
+
+
+async def test_a_row_with_no_plex_ref_is_counted_missing_and_never_probed(
+    session, config, backup_root
+):
+    """A row this service has never resolved against Plex has no native id to
+    plan a push from at all -- counted in ``missing`` at the planning stage,
+    the same bucket a row Plex has since lost lands in, and never reaches
+    ``fetch_ref``: there is nothing to probe with."""
+    await _add_item(session, rating_key="rk-ok")
+    await _add_item(session, rating_key="rk-no-ref", plex_ref=False)
+    _seed_backup(backup_root, "Movies", "A (1999)", "poster.jpg", b"poster")
+    ok = FakeItem()
+    plex = FakePlexClient({"rk-ok": ok})
+
+    result = await RestoreMode(config, plex, None, _headers(), apply=True).run(session)
+
+    assert (result.items, result.items_with_backup, result.missing) == (2, 1, 1)
+    assert plex.fetched == ["rk-ok"]

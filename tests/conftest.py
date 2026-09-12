@@ -297,9 +297,10 @@ async def seed_media_item(
     session, native_id: str, *, server: str = "plex", kind: str = "movie",
     library: str = "Movies", title: str = "A", root_folder: str | None = None,
     season_number: int | None = None, episode_number: int | None = None,
-    parent: MediaItem | None = None, **extra,
+    parent: MediaItem | None = None, plex_ref: bool = True, **extra,
 ) -> MediaItem:
-    """Seed one ``media_items`` row plus its ``media_item_server_refs`` row.
+    """Seed one ``media_items`` row, plus its ``media_item_server_refs`` row
+    unless ``plex_ref`` is False.
 
     ``media_items.rating_key`` no longer exists (Task 6): a row is identified
     by ``identity_key``, and its per-server native id lives in a separate
@@ -311,6 +312,15 @@ async def seed_media_item(
     an item by its server id, exactly as ``rating_key`` did, not about the
     identity-key scheme itself (``test_scheduler_prune_job.py``'s ``_add_item``
     precedent).
+
+    ``plex_ref=False`` seeds the row with no server ref at all -- the shape a
+    row this service has never resolved against Plex takes (or one dropped
+    from a re-key/prune), for the code paths that exist specifically to
+    handle it: db/refs.native_ids answering nothing for it, so the caller
+    counts it "missing" rather than probing Plex, and the API's 409 "this
+    item has no Plex id" when a ResolvedItem would otherwise have to be
+    rebuilt from nothing. ``native_id`` still names the row's identity_key
+    in that case -- only the ref row is skipped.
     """
     item = MediaItem(
         identity_key=f"{kind}:legacy:{server}:{native_id}",
@@ -321,9 +331,10 @@ async def seed_media_item(
     )
     session.add(item)
     await session.flush()
-    session.add(MediaItemServerRef(
-        item_id=item.id, server=server, native_id=native_id, library=library,
-    ))
+    if plex_ref:
+        session.add(MediaItemServerRef(
+            item_id=item.id, server=server, native_id=native_id, library=library,
+        ))
     await session.commit()
     return item
 

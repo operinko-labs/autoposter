@@ -170,6 +170,19 @@ async def test_items_render_status_summary_is_included(client, auth_headers, ses
     response = await client.get("/api/items", headers=auth_headers)
     row = response.json()["items"][0]
     assert row["render_status"] == {"poster": "rendered"}
+    assert row["refs"] == {"plex": "rk1"}
+    assert "rating_key" not in row
+
+
+async def test_items_carry_their_own_refs_not_swapped(client, auth_headers, session):
+    """``refs_by_item.get(item.id, {})`` has to key off the right item, not
+    just answer with the page's first (or only) row's refs for every item."""
+    await _item(session, "rk1", "A")
+    await _item(session, "rk2", "B")
+
+    response = await client.get("/api/items", headers=auth_headers)
+    by_title = {row["title"]: row["refs"] for row in response.json()["items"]}
+    assert by_title == {"A": {"plex": "rk1"}, "B": {"plex": "rk2"}}
 
 
 async def test_items_render_status_keys_arrive_in_sorted_art_kind_order(client, auth_headers, session):
@@ -211,6 +224,8 @@ async def test_item_detail_includes_facts_and_renders(client, auth_headers, sess
     assert response.status_code == 200
     body = response.json()
     assert body["title"] == "A"
+    assert body["refs"] == {"plex": "rk1"}
+    assert "rating_key" not in body
     assert body["facts"]["critic_rating"] == 8.5
     assert body["facts"]["studio"] == "Studio X"
     assert len(body["renders"]) == 1

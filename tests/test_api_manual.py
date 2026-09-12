@@ -625,6 +625,23 @@ async def test_an_item_with_no_root_folder_is_409(
     assert (await session.execute(select(Job))).scalars().all() == []
 
 
+async def test_an_item_with_no_plex_ref_is_409(
+    client, auth_headers, session, manual_root, transport
+):
+    """A row this service has never resolved against Plex has no native id a
+    ``ResolvedItem`` could be rebuilt from -- refused before anything is
+    fetched or written, same as the no-root-folder case."""
+    item_id = await _item(session, plex_ref=False)
+
+    response = await _install(client, item_id, "poster", auth_headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "this item has no Plex id"
+    assert transport.urls == []
+    assert list(manual_root.rglob("*")) == []
+    assert (await session.execute(select(Job))).scalars().all() == []
+
+
 # --- the failure table ------------------------------------------------------
 
 

@@ -4,6 +4,8 @@ from autoposter.db import refs
 from autoposter.render import pipeline
 from media_server_doubles import resolved
 
+from conftest import seed_media_item
+
 
 async def test_refs_for_and_item_id_for(session):
     row = await pipeline._upsert_media_item(session, resolved("plex", "42", file_path="/m.mkv"))
@@ -23,3 +25,21 @@ async def test_refs_for_items_batches_over_a_page(session):
         row2.id: {"plex": "43"},
     }
     assert await refs.refs_for_items(session, []) == {}
+
+
+async def test_native_ids_and_refs_for_items_chunk_past_the_bind_limit(session, monkeypatch):
+    """asyncpg caps a statement's bind parameters (32,767); a full-library
+    caller (run_full_pass, the artwork/metadata backup walks) can pass an id
+    list well past that. ``_IN_CHUNK`` set to 2 over 5 seeded items proves
+    every id still comes back from one call, split into three IN(...)
+    statements under the hood rather than dropping the tail."""
+    monkeypatch.setattr(refs, "_IN_CHUNK", 2)
+    items = [await seed_media_item(session, str(n)) for n in range(5)]
+    ids = [item.id for item in items]
+
+    assert await refs.native_ids(session, ids, "plex") == {
+        item.id: str(n) for n, item in enumerate(items)
+    }
+    assert await refs.refs_for_items(session, ids) == {
+        item.id: {"plex": str(n)} for n, item in enumerate(items)
+    }

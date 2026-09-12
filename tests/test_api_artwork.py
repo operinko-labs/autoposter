@@ -535,13 +535,17 @@ async def wire_plex(app):
         await http.aclose()
 
 
-async def _media_item(session, rating_key: str = "rk-live", kind: str = "movie") -> int:
+async def _media_item(
+    session, rating_key: str = "rk-live", kind: str = "movie", **extra
+) -> int:
     """One media item, no render row: the live endpoint reads Plex, not disk.
 
     ``kind`` decides which art kinds the item can have at all (ART_KINDS_FOR),
     so a title card needs an episode and a background needs a movie or show.
     """
-    item = await seed_media_item(session, rating_key, library="Movies", kind=kind, title="A")
+    item = await seed_media_item(
+        session, rating_key, library="Movies", kind=kind, title="A", **extra
+    )
     return item.id
 
 
@@ -762,6 +766,22 @@ async def test_an_item_plex_no_longer_has_is_404(client, auth_headers, session, 
     response = await client.get(f"/api/items/{item_id}/artwork/poster/live", headers=auth_headers)
 
     assert response.status_code == 404
+
+
+async def test_an_item_with_no_plex_ref_is_404_without_asking_plex(
+    client, auth_headers, session, wire_plex
+):
+    """A row this service has never resolved against Plex has no native id to
+    fetch_ref with at all -- the same 404 as an item Plex has since lost, and
+    for the same reason, but reached without a request: there is nothing to
+    ask Plex about."""
+    plex = wire_plex(item=_FakePlexItem(thumb="/thumb/path"), handler=_serves(LIVE_BYTES))
+    item_id = await _media_item(session, plex_ref=False)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster/live", headers=auth_headers)
+
+    assert response.status_code == 404
+    assert plex.fetched == []
 
 
 async def test_an_unknown_item_is_404_without_asking_plex(client, auth_headers, wire_plex):
