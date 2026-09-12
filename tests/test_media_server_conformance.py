@@ -119,11 +119,17 @@ async def test_an_unknown_item_is_item_not_found(impl):
 async def test_upload_without_lock_works_everywhere(impl):
     server, seed = impl
     if isinstance(server, PlexClient):
-        pytest.skip("Plex read-back needs http; covered by tests/test_plex_artwork.py")
+        pytest.skip(
+            "Plex read-back needs http; covered indirectly by "
+            "tests/test_artwork_backup.py (fetch_artwork via BackupMode), "
+            "tests/test_artwork_reset.py (artwork_provenance via ResetMode) "
+            "and tests/test_api_artwork.py"
+        )
     seed(INTENT, "42")
     item = await server.resolve(INTENT)
     await server.upload_artwork(item.ref, b"png", "poster", lock=False)
-    assert await server.fetch_artwork(item.ref, "poster") == b"png"
+    fetched = await server.fetch_artwork(item.ref, "poster")
+    assert fetched is not None and fetched[0] == b"png"
 
 
 async def test_lock_is_a_capability_not_a_surprise(impl):

@@ -799,12 +799,11 @@ class PlexClient:
         item = await self.fetch_item(ref.native_id)
         return await plex_artwork.has_clearlogo(item)
 
-    async def fetch_artwork(self, ref: ServerItemRef, art_kind: str) -> bytes | None:
+    async def fetch_artwork(self, ref: ServerItemRef, art_kind: str) -> tuple[bytes, str] | None:
         item = await self.fetch_item(ref.native_id)
-        fetched = await plex_artwork.fetch_artwork(
+        return await plex_artwork.fetch_artwork(
             self._http, item, self.base_url, self._headers, art_kind,
         )
-        return fetched[0] if fetched is not None else None
 
     async def artwork_provenance(self, ref: ServerItemRef, art_kind: str) -> str | None:
         item = await self.fetch_item(ref.native_id)

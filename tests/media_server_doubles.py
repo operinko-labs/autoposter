@@ -105,10 +105,12 @@ class FakeMediaServer:
     async def has_clearlogo(self, ref) -> bool:
         return any(r == ref for r, _ in self.logo_uploads)
 
-    async def fetch_artwork(self, ref, art_kind) -> bytes | None:
+    async def fetch_artwork(self, ref, art_kind) -> tuple[bytes, str] | None:
         for r, data, kind, _ in reversed(self.uploads):
             if r == ref and kind == art_kind:
-                return data
+                # Content type is fixed rather than tracked per upload: nothing
+                # this double's callers assert on varies it.
+                return data, "image/png"
         return None
 
     async def artwork_provenance(self, ref, art_kind) -> str | None:
