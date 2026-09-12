@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 def create_app(
     config: Config, session_factory, secrets: Secrets, run_background: bool = False,
-    plex_factory: Callable[[Config], PlexClient] | None = None,
+    plex_factory: Callable[[Config, httpx.AsyncClient], PlexClient] | None = None,
     engine=None,
 ) -> FastAPI:
     """The application, built from ``config`` -- the *file* generation.
@@ -79,8 +79,12 @@ def create_app(
     background application does nothing. Configure one the way a deployment
     does, through the file at ``app.state.config_path`` or the overrides row.
 
-    ``plex_factory`` is a callable taking the effective ``Config`` and
-    returning the client to publish as ``app.state.plex``. Only
+    ``plex_factory`` is a callable taking the effective ``Config`` and the
+    lifespan's own ``httpx.AsyncClient`` and returning the client to publish
+    as ``app.state.plex`` -- the ``http`` argument is what lets the built
+    ``PlexClient`` actually read artwork (``fetch_artwork``/
+    ``artwork_provenance`` go over HTTP, not through ``plexapi``), so the
+    factory is called only once ``http`` exists, not before. Only
     ``main.build()`` passes one, exactly as only ``main.build()`` passes
     ``run_background=True``: both are production wiring the lifespan performs
     on its behalf, because both need something ``build()`` cannot have -- a
@@ -155,8 +159,6 @@ def create_app(
             session_factory, app.state.config_holder, app.state.scheduler_intervals,
             started_at=app.state.started_at,
         )
-        if plex_factory is not None:
-            app.state.plex = plex_factory(config)
         # Capture the process's own log stream for /api/logs. Attached here
         # rather than in create_app: the root logger is process-global, so
         # attaching per app instance would leave every test app's handler
@@ -166,6 +168,13 @@ def create_app(
         # Single client for the process: provider clients borrow it rather than
         # each owning one, so there is exactly one AsyncClient to close on shutdown.
         http = httpx.AsyncClient(timeout=30.0)
+        if plex_factory is not None:
+            # After `http` exists, not before: the built PlexClient reads
+            # artwork over this same client (fetch_artwork/artwork_provenance
+            # are HTTP, not plexapi), so a client built without it would 500
+            # on every live-artwork request and silently swallow every
+            # provenance read to None.
+            app.state.plex = plex_factory(config, http)
         # Published so request handlers can borrow it too -- the artwork
         # endpoints proxy Plex on behalf of the SPA. Closed in the `finally`
         # below with everything else that holds it.

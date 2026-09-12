@@ -141,7 +141,7 @@ async def test_backup_writes_the_tree_at_the_right_paths(
     await _add_item(session, rating_key="rk1", kind="movie", root_folder="A (1999)")
     plex = FakePlexClient({"rk1": FakeItem(thumb="/thumb", art="/art")})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     # written is per-(item, kind): a movie has poster + background, both
     # written here, so written == 2 even though items == 1.
@@ -158,7 +158,7 @@ async def test_backup_skips_an_item_plex_serves_nothing_for(session, config, htt
     # No thumb and no art -> fetch_artwork returns None for every kind.
     plex = FakePlexClient({"rk1": FakeItem(thumb=None, art=None)})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     # skipped is per-kind too: a movie's poster and background both skip.
     assert (result.items, result.written, result.skipped, result.failed) == (1, 0, 2, 0)
@@ -168,7 +168,7 @@ async def test_backup_skips_an_item_without_a_root_folder(session, config, http_
     await _add_item(session, rating_key="rk1", root_folder=None)
     plex = FakePlexClient({"rk1": FakeItem(thumb="/thumb")})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     assert (result.items, result.written, result.skipped, result.failed) == (1, 0, 1, 0)
     # An item with nowhere to file assets is never even resolved against Plex.
@@ -181,7 +181,7 @@ async def test_backup_never_uploads_to_plex(session, config, http_serving):
     await _add_item(session, rating_key="rk1")
     plex = FakePlexClient({"rk1": FakeItem(thumb="/thumb", art="/art")})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     assert result.written == 2  # got here without the upload assertions firing
 
@@ -190,7 +190,7 @@ async def test_backup_counts_a_failed_fetch(session, config, http_serving):
     await _add_item(session, rating_key="rk1")
     plex = FakePlexClient(error=RuntimeError("plex unreachable"))
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     assert (result.items, result.written, result.skipped, result.failed) == (1, 0, 0, 1)
 
@@ -198,7 +198,7 @@ async def test_backup_counts_a_failed_fetch(session, config, http_serving):
 async def test_backup_refuses_an_empty_table(session, config, http_serving):
     plex = FakePlexClient({})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     assert result.refused is not None
     assert "media_items" in result.refused
@@ -223,7 +223,7 @@ async def test_backup_refuses_when_the_backup_root_is_not_mounted(
     await _add_item(session, rating_key="rk1")
     plex = FakePlexClient({"rk1": FakeItem(thumb="/thumb")})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     assert result.refused is not None
     assert str(backup_root) in result.refused
@@ -243,7 +243,7 @@ async def test_backup_counts_a_partial_item_in_both_written_and_failed(
     await _add_item(session, rating_key="rk1", kind="movie")
     plex = FakePlexClient({"rk1": FakeItem(thumb="/thumb", art="/broken")})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     assert (result.items, result.written, result.skipped, result.failed) == (1, 1, 0, 1)
     assert result.as_response()["status"] == "backed up"  # partial success is not a failure
@@ -256,7 +256,7 @@ async def test_backup_all_fail_status_is_not_success(session, config, http_servi
     await _add_item(session, rating_key="rk1", kind="movie")
     plex = FakePlexClient({"rk1": FakeItem(thumb="/broken", art="/broken")})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     assert (result.items, result.written, result.skipped, result.failed) == (1, 0, 0, 2)
     response = result.as_response()
@@ -284,7 +284,7 @@ async def test_backup_skips_an_unnumbered_title_card_rather_than_raising(
         "rk-ok": FakeItem(thumb="/thumb"), "rk-bad": FakeItem(thumb="/thumb"),
     })
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     # The walk finished: the numbered episode is on disk and the unnumbered one
     # is counted, not fatal.
@@ -303,7 +303,7 @@ async def test_backup_backs_up_a_title_card_at_the_episode_path(
     )
     plex = FakePlexClient({"rk-ep": FakeItem(thumb="/thumb")})
 
-    result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+    result = await BackupMode(config, plex).run(session)
 
     assert result.written == 1
     assert (backup_root / "TV Shows" / "The Show" / "S01E02.jpg").read_bytes() == POSTER_BYTES
@@ -324,7 +324,7 @@ async def test_backup_logs_a_missing_item_at_info_not_warning(
     )
 
     with caplog.at_level("INFO"):
-        result = await BackupMode(config, plex, http_serving, _headers()).run(session)
+        result = await BackupMode(config, plex).run(session)
 
     assert (result.items, result.written, result.failed, result.missing) == (2, 2, 0, 1)
 

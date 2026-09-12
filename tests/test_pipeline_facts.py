@@ -300,6 +300,12 @@ async def test_metadata_runs_before_the_artifact_loop(session, monkeypatch):
 
     monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
     config = load_config(EXAMPLE)
+    # This test is about metadata-vs-artifact ordering, not badges -- and
+    # unlike the metadata failure above, nothing here rolls the session back
+    # first, so `render_artifact`'s bare `object()` stand-in now reaches the
+    # badge stage's real (fail-fast, see I1) attribute reads instead of being
+    # deflected by an unrelated expired-object error first.
+    config.badges.enabled = False
     intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
 
     await pipeline.process_item(
@@ -310,16 +316,20 @@ async def test_metadata_runs_before_the_artifact_loop(session, monkeypatch):
     assert order == ["metadata", "artifact:poster", "artifact:background"]
 
 
-async def test_a_plex_missing_fetch_item_is_contained_in_the_badge_stage(
-    session, monkeypatch, caplog
-):
-    """Task 4 moved the badge stage's raw-item read behind ``apply_badges``
-    itself (``server.fetch_item(ref.native_id)``, still Plex-only), which now
-    sits INSIDE that call's own frame rather than behind a standalone
-    ``fetch_item = plex.fetch_item`` bound outside process_item's try block
-    (deleted by this task). So a `plex` missing ``fetch_item`` -- a wiring
-    bug -- is now caught by the same containment a runtime Plex hiccup gets,
-    logged rather than propagated. This pins the new shape."""
+async def test_a_plex_without_fetch_item_is_not_swallowed(session, monkeypatch):
+    """A `plex` missing fetch_item is a wiring bug, not the runtime failure
+    the badge stage contains: it must propagate rather than become a WARNING
+    that resurfaces later as an unrelated error.
+
+    Fix round 1 (controller ruling I1): Task 4 moved the raw-item read behind
+    ``apply_badges`` itself (``server.fetch_item(ref.native_id)``, still
+    Plex-only), inside the badge block's own ``try``, which briefly lost this
+    guarantee -- a missing method would have been logged as an ordinary
+    "badge stage failed" WARNING instead of propagating. The badge (and
+    metadata) blocks now re-raise ``AttributeError`` ahead of their generic
+    ``except Exception``, restoring it. A render stub with just enough shape
+    to reach the real ``fetch_item`` access (not fail earlier on ``.art_kind``)
+    is what makes the raised message actually name ``fetch_item``."""
 
     class PlexWithoutFetchItem:
         async def resolve(self, intent):
@@ -337,14 +347,11 @@ async def test_a_plex_missing_fetch_item_is_contained_in_the_badge_stage(
     config = load_config(EXAMPLE)
     assert config.badges.enabled, "the badge stage must be reached for this to mean anything"
 
-    with caplog.at_level("WARNING"):
-        results = await pipeline.process_item(
+    with pytest.raises(AttributeError, match="fetch_item"):
+        await pipeline.process_item(
             session, config, None, PlexWithoutFetchItem(), [],
             RenderIntent(kind="movie", title="X", tmdb_id=1),
         )
-
-    assert len(results) == 2
-    assert any("badge stage failed" in r.message for r in caplog.records)
 
 
 @pytest.mark.imagemagick

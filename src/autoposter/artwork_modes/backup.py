@@ -124,11 +124,9 @@ def _atomic_write(path: Path, data: bytes) -> None:
 class BackupMode:
     """Copy Plex's live artwork into the backup tree. See the module docstring."""
 
-    def __init__(self, config, plex, http, headers: dict) -> None:
+    def __init__(self, config, plex) -> None:
         self._config = config
         self._server = plex
-        self._http = http
-        self._headers = headers
 
     async def run(self, session: AsyncSession) -> BackupResult:
         # The empty-table guard every mode runs first: an empty media_items is

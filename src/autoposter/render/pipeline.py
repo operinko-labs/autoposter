@@ -1761,11 +1761,14 @@ async def apply_badges(
     accumulating on the Plex server, which is what happens when every run
     uploads unconditionally.
 
-    ``probe`` is the optional provenance reader described in
-    ``_already_in_plex`` -- an async callable taking the ``plexapi`` object and
-    returning the fingerprint recorded in its current artwork. Optional so
-    every caller that only cares about composing (including every test
-    predating this) keeps working unchanged.
+    ``probe`` is no longer a callable: since the artwork/metadata protocol
+    change, ``_already_in_plex`` reads provenance straight off ``server``/
+    ``ref`` itself, and this is now only the non-``None`` sentinel that says
+    the caller has that stage wired up at all (``app.py``'s ``artwork_probe``
+    partial, or ``None`` to skip provenance reads entirely). Kept as its own
+    parameter, rather than folded into a capability check, so every caller
+    that only cares about composing keeps working unchanged; Task 11 deletes
+    it once the seam it stood in for is gone.
 
     ``http`` is the client roadmap row 97's operator-defined overlays resolve
     their ``url:`` sources through (``overlays.sources.resolve_image_path``).
@@ -2155,6 +2158,11 @@ async def process_item(
                 session, config, media_item.id, item, plex, tmdb_facts, mdblist, tvdb,
                 imdb_parental,
             )
+        except AttributeError:
+            # A server missing a required method (item_labels/apply_facts) is
+            # a wiring bug, not the runtime failure below is for -- it must
+            # not be silently contained as a per-item warning.
+            raise
         except Exception:
             # Finding 5: if the failure was a database error, the transaction
             # is already aborted; without rolling back here, the artifact
@@ -2257,6 +2265,11 @@ async def process_item(
                     session, config, render, media_item, plex, item.ref, facts,
                     probe=artwork_probe, http=http, mdblist=mdblist,
                 )
+        except AttributeError:
+            # A server missing a required method (fetch_item/upload_artwork)
+            # is a wiring bug, not the runtime failure below is for -- it must
+            # not be silently contained as a per-item warning.
+            raise
         except Exception:
             # Same containment as the metadata-operations block above: the
             # artifact loop already wrote the base image to disk, and a

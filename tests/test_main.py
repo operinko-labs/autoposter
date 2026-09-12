@@ -27,6 +27,7 @@ import autoposter.main as main_module
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.plex.client import PlexClient
+from autoposter.servers.base import ServerItemRef
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 INDEX_MARKER = "<!-- build() test index -->"
@@ -139,6 +140,20 @@ async def test_build_passes_a_plex_factory_that_builds_a_real_plex_client(
     `main.build()`'s) while every real deployment starts with
     `app.state.plex is None`, turning the live-artwork endpoint into a
     permanent 503.
+
+    Fix round 1 (controller ruling C1) extends this rather than adding a
+    second test: the built client being a ``PlexClient`` at all is not
+    enough -- one built with no ``http``/``base_url``/``token`` 500s on every
+    live-artwork request (``api/artwork.py``) and silently swallows every
+    provenance read to ``None`` (``artwork_modes/backup.py``,
+    ``artwork_modes/reset.py``, ``pipeline._already_in_plex``), and the suite
+    stayed green throughout because every double elsewhere was handed that
+    wiring by hand. This drives ``main.build()``'s own factory the way the
+    lifespan does (an ``http`` client supplied) and calls the real
+    ``PlexClient.fetch_artwork`` over an ``httpx.MockTransport`` -- the
+    production construction path, not another double. Only the plexapi-side
+    item lookup is stood in for, since ``_LazyPlexServer`` would otherwise
+    make a real network connection.
     """
     calls = _stub_build_dependencies
     main_module.build()
@@ -147,8 +162,42 @@ async def test_build_passes_a_plex_factory_that_builds_a_real_plex_client(
     plex_factory = calls[0].get("plex_factory")
     assert plex_factory is not None, "build() did not pass plex_factory to create_app"
 
-    client = plex_factory(load_config(EXAMPLE))
-    assert isinstance(client, PlexClient)
+    seen = []
+
+    async def handler(request):
+        seen.append(request)
+        return httpx.Response(
+            200, content=b"poster-bytes", headers={"content-type": "image/jpeg"},
+        )
+
+    config = load_config(EXAMPLE)
+    # The example config's own placeholder ("https://<plex-host>") is not a
+    # valid URL to build a request against; a real deployment overrides it
+    # (config/loader.py's overrides row), so this test does the same.
+    config.plex.url = "http://plex.local"
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = plex_factory(config, http)
+        assert isinstance(client, PlexClient)
+
+        # Only the plexapi item lookup is stubbed -- _LazyPlexServer.fetchItem
+        # would otherwise make a real network connection, which is not what
+        # this test is about. Everything after it (fetch_artwork's own HTTP
+        # read) is the real PlexClient method, over the real http/base_url/
+        # token this factory built the client with.
+        client._server = type("FakeServer", (), {
+            "fetchItem": lambda self, key: type(
+                "Item", (), {"thumb": "/library/metadata/1/thumb/1"},
+            )(),
+        })()
+
+        fetched = await client.fetch_artwork(
+            ServerItemRef("plex", "1", "Movies", "movie"), "poster",
+        )
+
+    assert fetched == (b"poster-bytes", "image/jpeg")
+    assert seen[0].headers["X-Plex-Token"] == "x"
+    assert str(seen[0].url) == "http://plex.local/library/metadata/1/thumb/1"
 
 
 async def test_build_publishes_the_engine_for_the_lifespan_to_dispose(

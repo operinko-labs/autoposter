@@ -137,13 +137,11 @@ class ResetMode:
     """Unlock our artwork and re-select Plex's agent art. See the module docstring."""
 
     def __init__(
-        self, config, plex, http, headers: dict, *, apply: bool,
+        self, config, plex, *, apply: bool,
         kind: str | None = None, library: str | None = None, item_id: int | None = None,
     ) -> None:
         self._config = config
         self._server = plex
-        self._http = http
-        self._headers = headers
         self._apply = apply
         self._kind = kind
         self._library = library
@@ -212,11 +210,13 @@ class ResetMode:
             # so an item whose poster is ours but whose background an operator
             # set by hand has only its poster reset.
             try:
-                kinds = [
-                    art_kind for art_kind in RESET_ART_KINDS[row.kind]
-                    if CAP_ARTWORK_PROVENANCE in self._server.capabilities
-                    and await self._server.artwork_provenance(ref, art_kind) is not None
-                ]
+                if CAP_ARTWORK_PROVENANCE not in self._server.capabilities:
+                    kinds = []
+                else:
+                    kinds = [
+                        art_kind for art_kind in RESET_ART_KINDS[row.kind]
+                        if await self._server.artwork_provenance(ref, art_kind) is not None
+                    ]
             except Exception:  # noqa: BLE001 - one bad item must not abort the probe
                 logger.warning(
                     "reset: could not probe Plex item %s", row.rating_key, exc_info=True
@@ -270,14 +270,14 @@ class ResetMode:
                 logger.info("reset: %s no longer in Plex, skipped", rating_key)
                 missing += 1
                 continue
+            if CAP_RESET_TO_AGENT_DEFAULT not in self._server.capabilities:
+                logger.warning(
+                    "reset: %s does not support resetting artwork to the agent default",
+                    self._server.name,
+                )
+                failed += len(kinds)
+                continue
             for art_kind in kinds:
-                if CAP_RESET_TO_AGENT_DEFAULT not in self._server.capabilities:
-                    logger.warning(
-                        "reset: %s does not support resetting %s to the agent default",
-                        self._server.name, art_kind,
-                    )
-                    failed += 1
-                    continue
                 try:
                     selected = await self._server.reset_artwork_to_agent_default(ref, art_kind)
                 except Exception:  # noqa: BLE001 - see above

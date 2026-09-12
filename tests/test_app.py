@@ -387,7 +387,7 @@ async def test_the_lifespan_builds_the_plex_client_from_the_effective_config(
 
     seen = []
 
-    def plex_factory(config):
+    def plex_factory(config, http):
         seen.append(config)
         return "the-plex-client"
 

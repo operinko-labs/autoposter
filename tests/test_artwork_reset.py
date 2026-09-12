@@ -217,9 +217,9 @@ async def test_dry_run_changes_nothing(session, config, serving):
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb="/ours")
     plex = FakePlexClient({"rk1": item})
-    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+    serving({"/ours": _stamped_jpeg("fp-abc")})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=False).run(session)
+    result = await ResetMode(config, plex, apply=False).run(session)
 
     assert result.dry_run is True
     assert (result.items, result.items_with_our_art, result.fields) == (1, 1, 1)
@@ -239,9 +239,9 @@ async def test_apply_unlocks_and_selects_the_agent_default(session, config, serv
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb="/ours", posters=(UPLOAD_KEY, AGENT_KEY))
     plex = FakePlexClient({"rk1": item})
-    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+    serving({"/ours": _stamped_jpeg("fp-abc")})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert result.dry_run is False
     assert (result.reset, result.failed) == (1, 0)
@@ -260,9 +260,9 @@ async def test_reset_leaves_a_hand_set_poster_alone(session, config, serving):
     await _add_item(session, rating_key="rk-theirs")
     ours, theirs = FakeItem(thumb="/ours"), FakeItem(thumb="/theirs")
     plex = FakePlexClient({"rk-ours": ours, "rk-theirs": theirs})
-    http = serving({"/ours": _stamped_jpeg("fp-abc"), "/theirs": _plain_jpeg()})
+    serving({"/ours": _stamped_jpeg("fp-abc"), "/theirs": _plain_jpeg()})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.items, result.items_with_our_art) == (2, 1)
     assert ours.unlocked == ["poster"] and ours.selected == [AGENT_KEY]
@@ -274,9 +274,9 @@ async def test_reset_leaves_an_item_with_no_artwork_alone(session, config, servi
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb=None)
     plex = FakePlexClient({"rk1": item})
-    http = serving({})
+    serving({})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.items, result.items_with_our_art) == (1, 0)
     assert item.unlocked == []
@@ -289,9 +289,9 @@ async def test_reset_counts_an_item_with_no_agent_art_as_failed(session, config,
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb="/ours", posters=(UPLOAD_KEY,))
     plex = FakePlexClient({"rk1": item})
-    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+    serving({"/ours": _stamped_jpeg("fp-abc")})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.reset, result.failed) == (0, 1)
     assert item.unlocked == ["poster"]
@@ -307,9 +307,9 @@ async def test_reset_counts_a_listing_without_rating_keys_as_failed(session, con
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb="/ours", posters=(None, None))
     plex = FakePlexClient({"rk1": item})
-    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+    serving({"/ours": _stamped_jpeg("fp-abc")})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     # Same accounting as "Plex holds no agent art": unlocked, nothing selected.
     assert (result.reset, result.failed) == (0, 1)
@@ -324,12 +324,12 @@ async def test_apply_resets_the_background_as_well_as_the_poster(session, config
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb="/ours-poster", art="/ours-art")
     plex = FakePlexClient({"rk1": item})
-    http = serving({
+    serving({
         "/ours-poster": _stamped_jpeg("fp-poster"),
         "/ours-art": _stamped_jpeg("fp-art"),
     })
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     # One item, two fields: the cap still counts items, the tally counts fields.
     assert (result.items, result.items_with_our_art, result.fields) == (1, 1, 2)
@@ -344,9 +344,9 @@ async def test_reset_leaves_a_hand_set_background_alone(session, config, serving
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb="/ours", art="/theirs")
     plex = FakePlexClient({"rk1": item})
-    http = serving({"/ours": _stamped_jpeg("fp-abc"), "/theirs": _plain_jpeg()})
+    serving({"/ours": _stamped_jpeg("fp-abc"), "/theirs": _plain_jpeg()})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.items_with_our_art, result.fields) == (1, 1)
     assert (result.reset, result.failed) == (1, 0)
@@ -359,9 +359,9 @@ async def test_reset_counts_an_item_with_no_agent_background_as_failed(session, 
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb=None, art="/ours-art", arts=(UPLOAD_ART_KEY,))
     plex = FakePlexClient({"rk1": item})
-    http = serving({"/ours-art": _stamped_jpeg("fp-art")})
+    serving({"/ours-art": _stamped_jpeg("fp-art")})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.reset, result.failed) == (0, 1)
     assert item.unlocked == ["art"]
@@ -381,9 +381,9 @@ async def test_reset_never_touches_a_background_below_a_show(session, config, se
     # stamped by us when the show's background was uploaded.
     item = FakeItem(thumb=None, art="/show-backdrop")
     plex = FakePlexClient({"rk1": item})
-    http = serving({"/show-backdrop": _stamped_jpeg("fp-show")})
+    serving({"/show-backdrop": _stamped_jpeg("fp-show")})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.items, result.items_with_our_art, result.fields) == (1, 0, 0)
     assert (result.reset, result.failed) == (0, 0)
@@ -396,12 +396,12 @@ async def test_reset_still_covers_an_episodes_own_poster(session, config, servin
     await _add_item(session, rating_key="rk1", kind="episode")
     item = FakeItem(thumb="/ours", art="/show-backdrop")
     plex = FakePlexClient({"rk1": item})
-    http = serving({
+    serving({
         "/ours": _stamped_jpeg("fp-abc"),
         "/show-backdrop": _stamped_jpeg("fp-show"),
     })
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.items_with_our_art, result.fields) == (1, 1)
     assert item.unlocked == ["poster"]
@@ -415,10 +415,10 @@ async def test_apply_resets_exactly_the_filtered_set(session, config, serving):
     await _add_item(session, rating_key="rk-t", kind="show", library="TV Shows")
     movie, tv = FakeItem(thumb="/m"), FakeItem(thumb="/t")
     plex = FakePlexClient({"rk-m": movie, "rk-t": tv})
-    http = serving({"/m": _stamped_jpeg("fp-m"), "/t": _stamped_jpeg("fp-t")})
+    serving({"/m": _stamped_jpeg("fp-m"), "/t": _stamped_jpeg("fp-t")})
 
     result = await ResetMode(
-        config, plex, http, _headers(), apply=True, library="Movies"
+        config, plex, apply=True, library="Movies"
     ).run(session)
 
     assert result.items == 1
@@ -431,10 +431,10 @@ async def test_apply_filters_by_type_and_item(session, config, serving):
     show = await _add_item(session, rating_key="rk-t", kind="show", library="TV Shows")
     movie, tv = FakeItem(thumb="/m"), FakeItem(thumb="/t")
     plex = FakePlexClient({"rk-m": movie, "rk-t": tv})
-    http = serving({"/m": _stamped_jpeg("fp-m"), "/t": _stamped_jpeg("fp-t")})
+    serving({"/m": _stamped_jpeg("fp-m"), "/t": _stamped_jpeg("fp-t")})
 
     result = await ResetMode(
-        config, plex, http, _headers(), apply=True, kind="show", item_id=show.id
+        config, plex, apply=True, kind="show", item_id=show.id
     ).run(session)
 
     assert result.items == 1
@@ -451,9 +451,9 @@ async def test_reset_respects_the_cap(session, config, serving):
     await _add_item(session, rating_key="rk2")
     first, second = FakeItem(thumb="/one"), FakeItem(thumb="/two")
     plex = FakePlexClient({"rk1": first, "rk2": second})
-    http = serving({"/one": _stamped_jpeg("fp-1"), "/two": _stamped_jpeg("fp-2")})
+    serving({"/one": _stamped_jpeg("fp-1"), "/two": _stamped_jpeg("fp-2")})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert result.refused is not None
     assert "2 of 2" in result.refused
@@ -471,11 +471,11 @@ async def test_reset_never_refreshes_the_plex_object(session, config, serving):
     await _add_item(session, rating_key="rk1")
     item = FakeItem(thumb="/ours", art="/ours-art")
     plex = FakePlexClient({"rk1": item})
-    http = serving({
+    serving({
         "/ours": _stamped_jpeg("fp-abc"), "/ours-art": _stamped_jpeg("fp-art"),
     })
 
-    await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    await ResetMode(config, plex, apply=True).run(session)
 
     assert item.unlocked == ["poster", "art"]  # both halves actually ran
     assert item.refreshed is False
@@ -483,7 +483,7 @@ async def test_reset_never_refreshes_the_plex_object(session, config, serving):
 
 async def test_reset_refuses_an_empty_table(session, config, serving):
     plex = FakePlexClient({})
-    result = await ResetMode(config, plex, serving({}), _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert result.refused is not None
     assert "media_items" in result.refused
@@ -521,9 +521,9 @@ async def test_reset_counts_a_failed_reset(session, config, serving):
     await _add_item(session, rating_key="rk-bad")
     good, bad = FakeItem(thumb="/good"), FakeItem(thumb="/bad")
     plex = OneShotPlex({"rk-good": good, "rk-bad": bad})
-    http = serving({"/good": _stamped_jpeg("fp-g"), "/bad": _stamped_jpeg("fp-b")})
+    serving({"/good": _stamped_jpeg("fp-g"), "/bad": _stamped_jpeg("fp-b")})
 
-    result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+    result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.reset, result.failed) == (1, 1)
     assert good.selected == [AGENT_KEY]
@@ -548,10 +548,10 @@ async def test_reset_logs_a_missing_item_at_probe_at_info_not_warning(
             return self._items[rating_key]
 
     plex = GoneClient({"rk-ok": ok})
-    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+    serving({"/ours": _stamped_jpeg("fp-abc")})
 
     with caplog.at_level("INFO"):
-        result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+        result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.items, result.items_with_our_art, result.missing) == (2, 1, 1)
 
@@ -596,10 +596,10 @@ async def test_reset_logs_a_missing_item_at_apply_at_info_not_warning(
             return await super().fetch_ref(rating_key)
 
     plex = SecondFetchGoneClient({"rk1": item})
-    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+    serving({"/ours": _stamped_jpeg("fp-abc")})
 
     with caplog.at_level("INFO"):
-        result = await ResetMode(config, plex, http, _headers(), apply=True).run(session)
+        result = await ResetMode(config, plex, apply=True).run(session)
 
     assert (result.items_with_our_art, result.reset, result.failed, result.missing) == (1, 0, 0, 1)
 
@@ -626,10 +626,10 @@ async def test_reset_counts_a_probe_failure_in_the_dry_run_body(
     await _add_item(session, rating_key="rk-good")
     await _add_item(session, rating_key="rk-bad")
     plex = HalfBrokenClient({"rk-good": FakeItem(thumb="/ours")})
-    http = serving({"/ours": _stamped_jpeg("fp-abc")})
+    serving({"/ours": _stamped_jpeg("fp-abc")})
 
     with caplog.at_level("INFO"):
-        result = await ResetMode(config, plex, http, _headers(), apply=False).run(session)
+        result = await ResetMode(config, plex, apply=False).run(session)
 
     assert (result.items, result.items_with_our_art, result.fields) == (2, 1, 1)
     assert (result.probe_failed, result.missing) == (1, 0)

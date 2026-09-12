@@ -559,7 +559,7 @@ class LogoRevertMode:
                 ref = await self._server.fetch_ref(row.rating_key)
             except Exception:  # noqa: BLE001 - see above
                 logger.warning(
-                    "logo revert: could not clear the clearlogo for %s",
+                    "logo revert: could not fetch Plex item %s",
                     row.rating_key, exc_info=True,
                 )
                 failed += 1
