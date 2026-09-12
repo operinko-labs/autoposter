@@ -25,14 +25,13 @@ from pathlib import Path
 import httpx
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from plexapi.exceptions import NotFound as PlexNotFound
 from plexapi.exceptions import PlexApiException
 from sqlalchemy import select
 
 from autoposter.api.auth import require_session
 from autoposter.db.models import MediaItem, Render
 from autoposter.db.models import Session as SessionModel
-from autoposter.plex.artwork import PLEX_ART_FIELDS, fetch_artwork
+from autoposter.plex.artwork import PLEX_ART_FIELDS
 from autoposter.render.pipeline import ART_KINDS_FOR
 
 logger = logging.getLogger(__name__)
@@ -271,22 +270,20 @@ async def live_artwork(
         raise HTTPException(status_code=503, detail="this instance is not connected to Plex")
 
     try:
-        # A plain GET for the item (see PlexClient.fetch_item); never
-        # .refresh(), which would have Plex re-pull from its agents and can
-        # overwrite the artwork this service uploaded.
-        plex_item = await plex.fetch_item(rating_key)
-    except PlexNotFound:
-        raise HTTPException(status_code=404, detail="Plex no longer has this item") from None
+        # A plain GET for the item (see PlexClient.fetch_item, behind
+        # fetch_ref); never .refresh(), which would have Plex re-pull from its
+        # agents and can overwrite the artwork this service uploaded.
+        ref = await plex.fetch_ref(rating_key)
     except (requests.RequestException, PlexApiException) as exc:
         logger.warning("could not reach Plex for item %d: %s", item_id, exc)
         raise HTTPException(
             status_code=503, detail=f"Plex could not be reached ({type(exc).__name__})"
         ) from None
+    if ref is None:
+        raise HTTPException(status_code=404, detail="Plex no longer has this item")
 
-    config = request.app.state.config
-    headers = {"X-Plex-Token": request.app.state.secrets.plex_token}
     try:
-        fetched = await fetch_artwork(http, plex_item, config.plex.url, headers, art_kind)
+        fetched = await plex.fetch_artwork(ref, art_kind)
     except httpx.HTTPStatusError as exc:
         logger.warning("Plex refused the artwork request for item %d: %s", item_id, exc)
         raise HTTPException(

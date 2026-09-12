@@ -27,13 +27,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from plexapi.exceptions import NotFound as PlexNotFound
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty, refuse_if_implausible
 from autoposter.db.models import MediaItem
-from autoposter.plex.artwork import upload_artwork
 from autoposter.render import naming
 from autoposter.render.pipeline import ART_KINDS_FOR
 
@@ -98,7 +96,7 @@ class RestoreMode:
         kind: str | None = None, library: str | None = None, item_id: int | None = None,
     ) -> None:
         self._config = config
-        self._plex = plex
+        self._server = plex
         self._http = http
         self._headers = headers
         self._apply = apply
@@ -204,8 +202,14 @@ class RestoreMode:
         pushed = failed = missing = 0
         for rating_key, entries in planned.items():
             try:
-                plex_item = await self._plex.fetch_item(rating_key)
-            except PlexNotFound:
+                ref = await self._server.fetch_ref(rating_key)
+            except Exception:  # noqa: BLE001 - one bad item must not abort the run
+                logger.warning(
+                    "restore: could not fetch Plex item %s", rating_key, exc_info=True
+                )
+                failed += len(entries)
+                continue
+            if ref is None:
                 # Expected, not a crash: the item was deleted from Plex since
                 # its DB row was written. One concise line, no traceback --
                 # counted separately from real failures below (backup.py's
@@ -213,16 +217,10 @@ class RestoreMode:
                 logger.info("restore: %s no longer in Plex, skipped", rating_key)
                 missing += 1
                 continue
-            except Exception:  # noqa: BLE001 - one bad item must not abort the run
-                logger.warning(
-                    "restore: could not fetch Plex item %s", rating_key, exc_info=True
-                )
-                failed += len(entries)
-                continue
             for art_kind, path in entries:
                 try:
                     data = await asyncio.to_thread(path.read_bytes)
-                    await asyncio.to_thread(upload_artwork, plex_item, data, art_kind)
+                    await self._server.upload_artwork(ref, data, art_kind, lock=True)
                     pushed += 1
                 except Exception:  # noqa: BLE001 - see above
                     logger.warning(

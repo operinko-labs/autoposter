@@ -16,10 +16,10 @@ EXAMPLE = Path("config/autoposter.example.yaml")
 
 def movie(title="Heat", original_title=None):
     return ResolvedItem(
-        rating_key="m1", library="Movies", kind="movie", title=title,
+        server="plex", native_id="m1", library="Movies", kind="movie", title=title,
         year=1995, season_number=None, episode_number=None, root_folder="Heat",
         file_path=None, art_url=None, tmdb_id=1, tvdb_id=None, imdb_id="tt1",
-        parent_rating_key=None, original_title=original_title,
+        parent_native_id=None, original_title=original_title,
     )
 
 

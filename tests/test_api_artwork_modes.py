@@ -27,10 +27,23 @@ from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.models import MediaItem, Render
+from autoposter.plex.artwork import artwork_provenance as _plex_artwork_provenance
+from autoposter.plex.artwork import clear_logo as _plex_clear_logo
+from autoposter.plex.artwork import fetch_artwork as _plex_fetch_artwork
+from autoposter.plex.artwork import has_clearlogo as _plex_has_clearlogo
+from autoposter.plex.artwork import (
+    reset_artwork_to_agent_default as _plex_reset_artwork_to_agent_default,
+)
+from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
+from autoposter.plex.artwork import upload_logo as _plex_upload_logo
 from autoposter.plex.exif import PROVENANCE_TAG, format_provenance
 from autoposter.providers.base import LOGO, ArtCandidate
 from autoposter.queue.jobs import enqueue
 from autoposter.queue.worker import run_worker
+from autoposter.servers.base import (
+    CAP_ARTWORK_PROVENANCE, CAP_FIELD_LOCKS, CAP_LOCK_ARTWORK, CAP_LOGO_UPLOAD,
+    CAP_LOGO_UPLOAD_KEY, CAP_RESET_TO_AGENT_DEFAULT, CAP_TITLE_CARD_URL, ServerItemRef,
+)
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -169,13 +182,60 @@ class FakeLogoProvider:
 
 
 class FakePlexClient:
-    def __init__(self, items):
+    capabilities = frozenset({
+        CAP_LOCK_ARTWORK, CAP_LOGO_UPLOAD, CAP_LOGO_UPLOAD_KEY, CAP_FIELD_LOCKS,
+        CAP_ARTWORK_PROVENANCE, CAP_TITLE_CARD_URL, CAP_RESET_TO_AGENT_DEFAULT,
+    })
+    name = "plex"
+
+    def __init__(self, items, http=None):
         self._items = items
         self.fetched = []
+        self._http = http
+        self._base_url = PLEX_URL
+        self._headers = {"X-Plex-Token": PLEX_TOKEN}
 
     async def fetch_item(self, rating_key):
         self.fetched.append(rating_key)
         return self._items[rating_key]
+
+    async def fetch_ref(self, rating_key):
+        if rating_key not in self._items:
+            return None
+        self.fetched.append(rating_key)
+        return ServerItemRef("plex", rating_key, "", "")
+
+    async def upload_artwork(self, ref, data, art_kind, lock):
+        item = self._items[ref.native_id]
+        await asyncio.to_thread(_plex_upload_artwork, item, data, art_kind, lock)
+
+    async def fetch_artwork(self, ref, art_kind):
+        item = self._items[ref.native_id]
+        return await _plex_fetch_artwork(
+            self._http, item, self._base_url, self._headers, art_kind
+        )
+
+    async def artwork_provenance(self, ref, art_kind):
+        item = self._items[ref.native_id]
+        return await _plex_artwork_provenance(
+            self._http, item, self._base_url, self._headers, art_kind
+        )
+
+    async def reset_artwork_to_agent_default(self, ref, art_kind):
+        item = self._items[ref.native_id]
+        return await asyncio.to_thread(_plex_reset_artwork_to_agent_default, item, art_kind)
+
+    async def has_clearlogo(self, ref):
+        item = self._items[ref.native_id]
+        return await _plex_has_clearlogo(item)
+
+    async def upload_logo(self, ref, data, suffix=".png"):
+        item = self._items[ref.native_id]
+        return await asyncio.to_thread(_plex_upload_logo, item, data, suffix)
+
+    async def clear_logo(self, ref):
+        item = self._items[ref.native_id]
+        await asyncio.to_thread(_plex_clear_logo, item)
 
 
 def _secrets() -> Secrets:
@@ -245,7 +305,7 @@ async def wire(app):
 
         http = AsyncClient(transport=httpx.MockTransport(handler or refuse))
         clients.append(http)
-        app.state.plex = FakePlexClient(items)
+        app.state.plex = FakePlexClient(items, http=http)
         app.state.http = http
         # create_app leaves the ladder empty; the lifespan builds it. Only the
         # logo updater reads it.

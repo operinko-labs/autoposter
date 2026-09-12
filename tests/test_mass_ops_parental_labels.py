@@ -26,7 +26,7 @@ from autoposter.plex.writer import apply_facts, parental_label_edits, plan_edits
 from autoposter.render.pipeline import _fetch_parental_categories, apply_metadata
 
 from test_mass_ops_fields import FakeItem, FakeTMDB, _item
-from test_mass_ops_verbs import RecordingPlexItem
+from test_mass_ops_verbs import RecordingPlexItem, RecordingServer
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -220,7 +220,7 @@ async def test_entry_point_gate_off_is_byte_identical(session, media_item_id, co
     imdb_parental = FakeImdbParental(CATEGORIES)
 
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts()), NullMDBListClient(), imdb_parental=imdb_parental,
     )
     assert plex_item.edits == []
@@ -238,7 +238,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     imdb_parental = FakeImdbParental(CATEGORIES)
 
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts()), NullMDBListClient(), imdb_parental=imdb_parental,
     )
     assert plex_item.edits[-1] == {
@@ -253,7 +253,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     plex_item.labels = [_Tag("Sex & Nudity: Mild"), _Tag("Violence & Gore: Severe")]
     edits_before = len(plex_item.edits)
     await apply_metadata(
-        session, config, media_item_id, _item(), plex_item,
+        session, config, media_item_id, _item(), RecordingServer(plex_item),
         FakeTMDB(GatheredFacts()), NullMDBListClient(), imdb_parental=imdb_parental,
     )
     assert len(plex_item.edits) == edits_before

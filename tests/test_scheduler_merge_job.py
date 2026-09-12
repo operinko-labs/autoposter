@@ -525,7 +525,7 @@ async def test_a_row_re_upserted_under_the_pass_is_skipped_and_nothing_is_lost(
     scan = await find_mergeable(session)
 
     resolved = ResolvedItem(
-        rating_key="1", library="Movies", kind="movie", title="New Title",
+        server="plex", native_id="1", library="Movies", kind="movie", title="New Title",
         year=2024, season_number=None, episode_number=None,
         root_folder="Dune Part Two (2024)", file_path="/mnt/Media/Movies/x.mkv",
         art_url=None, tmdb_id=693134, tvdb_id=None, imdb_id=None,
@@ -562,7 +562,8 @@ async def test_a_survivor_re_upserted_under_the_pass_is_skipped_and_nothing_is_l
     scan = await find_mergeable(session)
 
     resolved = ResolvedItem(
-        rating_key="2", library="Movies", kind="movie", title="Dune: Part Two",
+        server="plex", native_id="2", library="Movies", kind="movie",
+        title="Dune: Part Two",
         year=2024, season_number=None, episode_number=None,
         root_folder="Dune Part Two (2024)", file_path="/mnt/Media/Movies/x.mkv",
         art_url=None, tmdb_id=693134, tvdb_id=None, imdb_id=None,

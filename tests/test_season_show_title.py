@@ -214,11 +214,11 @@ def test_the_wholesale_render_version_moves_and_that_is_expected(config):
 
 def _season(show_title="Severance", season_number=2, title="Season 2"):
     return ResolvedItem(
-        rating_key="556", library="TV Shows", kind="season", title=title,
+        server="plex", native_id="556", library="TV Shows", kind="season", title=title,
         year=None, season_number=season_number, episode_number=None,
         root_folder="Severance (2022)", file_path=None, art_url=None,
         tmdb_id=None, tvdb_id=371980, imdb_id=None,
-        parent_rating_key="555", show_title=show_title,
+        parent_native_id="555", show_title=show_title,
     )
 
 
@@ -590,7 +590,8 @@ def test_the_title_cards_second_line_is_unchanged(config):
     season half of the card's second line, label and number both."""
     config.artwork.title_card.season_name_overrides = {"0": "Specials"}
     episode = ResolvedItem(
-        rating_key="557", library="TV Shows", kind="episode", title="Who Is Alive?",
+        server="plex", native_id="557", library="TV Shows", kind="episode",
+        title="Who Is Alive?",
         year=None, season_number=0, episode_number=3, root_folder="Severance (2022)",
         file_path=None, art_url=None, tmdb_id=None, tvdb_id=371980, imdb_id=None,
     )

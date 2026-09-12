@@ -5,14 +5,16 @@ Fake Plex throughout: a ``FakeItem`` with ``uploadPoster``/``uploadArt``/
 writes, and a tmp ``plex_backup_root`` seeded with backup files. The mode reads
 disk and pushes to Plex; nothing here touches the network.
 """
+import asyncio
 from pathlib import Path
 
-from plexapi.exceptions import NotFound as PlexNotFound
 import pytest
 
 from autoposter.artwork_modes.restore import RestoreMode
 from autoposter.config.loader import load_config
 from autoposter.db.models import MediaItem
+from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
+from autoposter.servers.base import ServerItemRef
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PLEX_URL = "http://plex.local"
@@ -55,6 +57,16 @@ class FakePlexClient:
     async def fetch_item(self, rating_key):
         self.fetched.append(rating_key)
         return self._items[rating_key]
+
+    async def fetch_ref(self, rating_key):
+        self.fetched.append(rating_key)
+        if rating_key not in self._items:
+            return None
+        return ServerItemRef("plex", rating_key, "", "")
+
+    async def upload_artwork(self, ref, data, art_kind, lock=True):
+        item = self._items[ref.native_id]
+        await asyncio.to_thread(_plex_upload_artwork, item, data, art_kind, lock)
 
 
 @pytest.fixture
@@ -275,11 +287,11 @@ async def test_restore_logs_a_missing_item_at_info_not_warning(
     ok = FakeItem()
 
     class GoneClient(FakePlexClient):
-        async def fetch_item(self, rating_key):
+        async def fetch_ref(self, rating_key):
             self.fetched.append(rating_key)
             if rating_key == "rk-gone":
-                raise PlexNotFound(f"(404) not_found ({rating_key})")
-            return self._items[rating_key]
+                return None
+            return ServerItemRef("plex", rating_key, "", "")
 
     plex = GoneClient({"rk-ok": ok})
 

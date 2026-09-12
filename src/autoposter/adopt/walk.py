@@ -114,7 +114,7 @@ def _resolved_movie(library: str, section_locations: list[str], movie) -> Resolv
         return None
     guids = _guids(movie)
     return ResolvedItem(
-        rating_key=str(movie.ratingKey), library=library, kind="movie",
+        server="plex", native_id=str(movie.ratingKey), library=library, kind="movie",
         title=movie.title, year=getattr(movie, "year", None),
         season_number=None, episode_number=None,
         root_folder=root_folder, file_path=locations[0], art_url=None,
@@ -132,7 +132,7 @@ def _resolved_show(library: str, section_locations: list[str], show) -> Resolved
         return None
     guids = _guids(show)
     return ResolvedItem(
-        rating_key=str(show.ratingKey), library=library, kind="show",
+        server="plex", native_id=str(show.ratingKey), library=library, kind="show",
         title=show.title, year=getattr(show, "year", None),
         season_number=None, episode_number=None,
         root_folder=root_folder, file_path=None, art_url=None,
@@ -147,12 +147,12 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
     # derived again.
     guids = _guids(season)
     return ResolvedItem(
-        rating_key=str(season.ratingKey), library=library, kind="season",
+        server="plex", native_id=str(season.ratingKey), library=library, kind="season",
         title=season.title, year=getattr(season, "year", None),
         season_number=season.index, episode_number=None,
         root_folder=root_folder, file_path=None, art_url=None,
         tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
-        imdb_id=guids.get("imdb"), parent_rating_key=str(show.ratingKey),
+        imdb_id=guids.get("imdb"), parent_native_id=str(show.ratingKey),
         # Roadmap row 78. `show` is already a parameter -- the walk holds it
         # for the root folder and the parent key -- so the show's title costs
         # nothing here and must agree with what PlexClient.resolve produces,
@@ -165,12 +165,12 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
 def _resolved_episode(library: str, season, episode, root_folder: str) -> ResolvedItem:
     guids = _guids(episode)
     return ResolvedItem(
-        rating_key=str(episode.ratingKey), library=library, kind="episode",
+        server="plex", native_id=str(episode.ratingKey), library=library, kind="episode",
         title=episode.title, year=getattr(episode, "year", None),
         season_number=episode.parentIndex, episode_number=episode.index,
         root_folder=root_folder, file_path=None, art_url=None,
         tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
-        imdb_id=guids.get("imdb"), parent_rating_key=str(season.ratingKey),
+        imdb_id=guids.get("imdb"), parent_native_id=str(season.ratingKey),
     )
 
 
@@ -221,12 +221,12 @@ def _hash_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-async def _existing_render(session: AsyncSession, rating_key: str, art_kind: str) -> Render | None:
+async def _existing_render(session: AsyncSession, native_id: str, art_kind: str) -> Render | None:
     return (
         await session.execute(
             select(Render)
             .join(MediaItem, Render.item_id == MediaItem.id)
-            .where(MediaItem.rating_key == rating_key, Render.art_kind == art_kind)
+            .where(MediaItem.rating_key == native_id, Render.art_kind == art_kind)
         )
     ).scalar_one_or_none()
 
@@ -264,7 +264,7 @@ async def _adopt_item(
             counters.unnumbered += 1
             logger.warning(
                 "adoption: %s %r (rating_key %s) has no %s -- skipping its %s",
-                resolved.kind, resolved.title, resolved.rating_key,
+                resolved.kind, resolved.title, resolved.native_id,
                 missing_number, art_kind,
             )
             continue
@@ -278,7 +278,7 @@ async def _adopt_item(
             counters.missing_assets += 1
             continue
 
-        existing = await _existing_render(session, resolved.rating_key, art_kind)
+        existing = await _existing_render(session, resolved.native_id, art_kind)
         if existing is not None and not existing.adopted:
             # A real fingerprint means this item was already processed
             # properly -- adoption must not clobber it.

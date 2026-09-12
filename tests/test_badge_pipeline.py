@@ -1,13 +1,18 @@
 """The badge stage inside the per-item pipeline."""
+import asyncio
 import threading
 from pathlib import Path
 
 from sqlalchemy import select
 
 from autoposter.db.models import MediaItem, Render
+from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
 from autoposter.render.pipeline import apply_badges
+from autoposter.servers.base import CAP_ARTWORK_PROVENANCE, CAP_LOCK_ARTWORK, ServerItemRef
 
 ORACLE = Path("tests/fixtures/oracle")
+
+REF = ServerItemRef("plex", "1", "Movies", "movie")
 
 
 class FakePart:
@@ -38,6 +43,35 @@ class Facts:
     content_rating = "17"
 
 
+class FakeServer:
+    """The MediaServer surface ``apply_badges`` now goes through, wrapping a
+    ``FakePlexItem`` so the real ``plex.artwork.upload_artwork`` still runs
+    against it, and answering ``artwork_provenance`` with whatever this test
+    configured -- the stand-in for the ``probe`` callable this suite used to
+    inject directly."""
+
+    name = "plex"
+    capabilities = frozenset({CAP_LOCK_ARTWORK, CAP_ARTWORK_PROVENANCE})
+
+    def __init__(self, item, provenance=None, provenance_error=None):
+        self._item = item
+        self._provenance = provenance
+        self._provenance_error = provenance_error
+        self.provenance_calls = []
+
+    async def fetch_item(self, native_id):
+        return self._item
+
+    async def upload_artwork(self, ref, data, art_kind, lock):
+        await asyncio.to_thread(_plex_upload_artwork, self._item, data, art_kind, lock)
+
+    async def artwork_provenance(self, ref, art_kind):
+        self.provenance_calls.append(self._item)
+        if self._provenance_error is not None:
+            raise self._provenance_error
+        return self._provenance
+
+
 async def _render(session, **kw):
     item = MediaItem(kind="movie", rating_key="1", library="Movies", title="X")
     session.add(item)
@@ -53,7 +87,7 @@ async def _render(session, **kw):
 async def test_badging_records_a_fingerprint_and_uploads(session, config_with_badges):
     item, render = await _render(session)
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     assert render.badge_fingerprint is not None
     assert render.upload_status == "uploaded"
     assert plex_item.uploads == 1
@@ -66,9 +100,9 @@ async def test_an_unchanged_fingerprint_skips_the_upload_entirely(
     runs left five accumulated uploads on every item."""
     item, render = await _render(session)
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     first = render.badge_fingerprint
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     assert render.badge_fingerprint == first
     assert plex_item.uploads == 1
 
@@ -76,12 +110,12 @@ async def test_an_unchanged_fingerprint_skips_the_upload_entirely(
 async def test_a_changed_rating_re_badges_and_re_uploads(session, config_with_badges):
     item, render = await _render(session)
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
 
     class Changed(Facts):
         critic_rating = 5.4
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, Changed())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Changed())
     assert plex_item.uploads == 2
 
 
@@ -90,7 +124,7 @@ async def test_dry_run_composes_and_fingerprints_but_uploads_nothing(
 ):
     item, render = await _render(session)
     plex_item = FakePlexItem()
-    await apply_badges(session, config_badges_dry_run, render, item, plex_item, Facts())
+    await apply_badges(session, config_badges_dry_run, render, item, FakeServer(plex_item), REF, Facts())
     assert render.badge_fingerprint is not None
     assert render.upload_status == "skipped"
     assert plex_item.uploads == 0
@@ -99,7 +133,7 @@ async def test_dry_run_composes_and_fingerprints_but_uploads_nothing(
 async def test_disabled_badges_do_nothing_at_all(session, config_badges_disabled):
     item, render = await _render(session)
     plex_item = FakePlexItem()
-    await apply_badges(session, config_badges_disabled, render, item, plex_item, Facts())
+    await apply_badges(session, config_badges_disabled, render, item, FakeServer(plex_item), REF, Facts())
     assert render.badge_fingerprint is None
     assert plex_item.uploads == 0
 
@@ -117,11 +151,11 @@ async def test_a_re_rendered_base_re_badges_even_though_the_source_bytes_match(
     """
     item, render = await _render(session, fingerprint="f" * 64)
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     assert plex_item.uploads == 1
 
     render.fingerprint = "e" * 64  # base re-rendered; render.base_sha256 untouched
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     assert plex_item.uploads == 2
 
 
@@ -132,12 +166,12 @@ async def test_a_changed_rating_still_re_badges_without_touching_the_base(
     the badge values differ, and that must still re-badge and re-upload."""
     item, render = await _render(session, fingerprint="f" * 64)
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
 
     class Changed(Facts):
         critic_rating = 5.4
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, Changed())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Changed())
     assert plex_item.uploads == 2
     assert render.fingerprint == "f" * 64
 
@@ -161,7 +195,7 @@ async def test_reading_media_off_plex_is_offloaded_from_the_event_loop(
             self.media = self._loaded
 
     plex_item = Reloading()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     assert plex_item.reload_thread is not None, "reload() never ran"
     assert plex_item.reload_thread != threading.get_ident()
 
@@ -174,7 +208,7 @@ async def test_a_render_that_produced_no_file_is_not_badged(session, config_with
         session, status="no_art", asset_path="/nonexistent/never-written.jpg"
     )
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     assert render.badge_fingerprint is None
     assert plex_item.uploads == 0
 
@@ -195,7 +229,7 @@ async def test_the_video_format_badge_is_derived_from_the_media_file_path(
 
     item, render = await _render(session)
     plex_item = FakePlexItem(file="/media/Movies/Dune (2021)/Dune.2021.REMUX-2160p.mkv")
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     assert [i.video_format for i in seen] == ["REMUX"]
     assert seen[0].media.file_paths == ("/media/Movies/Dune (2021)/Dune.2021.REMUX-2160p.mkv",)
 
@@ -211,7 +245,7 @@ async def test_a_successful_upload_survives_a_later_rollback(
     render_id = render.id  # rollback expires the instance; the row is the subject
 
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     await session.rollback()
 
     stored = (
@@ -238,7 +272,7 @@ async def test_backgrounds_are_never_badged(session, config_with_badges):
     await session.flush()
 
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     assert render.badge_fingerprint is None
     assert plex_item.uploads == 0
 
@@ -251,18 +285,10 @@ async def test_backgrounds_are_never_badged(session, config_with_badges):
 # library re-composes and re-uploads bytes that are already there.
 
 
-def _probe_returning(value, calls):
-    async def probe(plex_item):
-        calls.append(plex_item)
-        return value
-
-    return probe
-
-
 async def _fingerprint_of(session, config, item, render, plex_item):
     """Badge once normally to learn the fingerprint, then reset the row to the
     state adoption (or a database restore) leaves it in."""
-    await apply_badges(session, config, render, item, plex_item, Facts())
+    await apply_badges(session, config, render, item, FakeServer(plex_item), REF, Facts())
     fingerprint = render.badge_fingerprint
     render.badge_fingerprint = None
     render.upload_status = "generate"  # the column default; NOT NULL
@@ -277,17 +303,17 @@ async def test_matching_provenance_records_the_fingerprint_and_skips_the_upload(
     item, render = await _render(session)
     plex_item = FakePlexItem()
     fingerprint = await _fingerprint_of(session, config_with_badges, item, render, plex_item)
-    calls = []
 
+    server = FakeServer(plex_item, provenance=fingerprint)
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, Facts(),
-        probe=_probe_returning(fingerprint, calls),
+        session, config_with_badges, render, item, server, REF, Facts(),
+        probe=True,
     )
 
     assert plex_item.uploads == 0
     assert render.badge_fingerprint == fingerprint
     assert render.upload_status == "uploaded"
-    assert calls == [plex_item]
+    assert server.provenance_calls == [plex_item]
     await session.refresh(render)
     assert render.uploaded_at is not None
 
@@ -297,9 +323,10 @@ async def test_a_stale_fingerprint_in_plex_still_uploads(session, config_with_ba
     plex_item = FakePlexItem()
     await _fingerprint_of(session, config_with_badges, item, render, plex_item)
 
+    server = FakeServer(plex_item, provenance="an-older-fingerprint")
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, Facts(),
-        probe=_probe_returning("an-older-fingerprint", []),
+        session, config_with_badges, render, item, server, REF, Facts(),
+        probe=True,
     )
 
     assert plex_item.uploads == 1
@@ -311,9 +338,10 @@ async def test_artwork_nobody_stamped_still_uploads(session, config_with_badges)
     plex_item = FakePlexItem()
     await _fingerprint_of(session, config_with_badges, item, render, plex_item)
 
+    server = FakeServer(plex_item, provenance=None)
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, Facts(),
-        probe=_probe_returning(None, []),
+        session, config_with_badges, render, item, server, REF, Facts(),
+        probe=True,
     )
 
     assert plex_item.uploads == 1
@@ -327,11 +355,11 @@ async def test_a_failing_probe_falls_through_to_the_normal_upload(
     plex_item = FakePlexItem()
     await _fingerprint_of(session, config_with_badges, item, render, plex_item)
 
-    async def exploding(_plex_item):
-        raise RuntimeError("plex is having a moment")
-
+    server = FakeServer(
+        plex_item, provenance_error=RuntimeError("plex is having a moment"),
+    )
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, Facts(), probe=exploding
+        session, config_with_badges, render, item, server, REF, Facts(), probe=True,
     )
 
     assert plex_item.uploads == 1
@@ -345,20 +373,20 @@ async def test_a_render_we_already_have_a_fingerprint_for_is_never_probed(
     Plex anyway would be one range request per item, every pass."""
     item, render = await _render(session)
     plex_item = FakePlexItem()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
-    calls = []
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
 
     # A changed rating: the fingerprint moves, so this must re-upload without
     # consulting Plex -- render.badge_fingerprint is not NULL.
     class Changed(Facts):
         critic_rating = 7.7
 
+    server = FakeServer(plex_item, provenance="whatever")
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, Changed(),
-        probe=_probe_returning("whatever", calls),
+        session, config_with_badges, render, item, server, REF, Changed(),
+        probe=True,
     )
 
-    assert calls == []
+    assert server.provenance_calls == []
     assert plex_item.uploads == 2
 
 
@@ -369,14 +397,14 @@ async def test_the_probe_is_not_consulted_when_the_config_disables_it(
     item, render = await _render(session)
     plex_item = FakePlexItem()
     fingerprint = await _fingerprint_of(session, config_with_badges, item, render, plex_item)
-    calls = []
 
+    server = FakeServer(plex_item, provenance=fingerprint)
     await apply_badges(
-        session, config_with_badges, render, item, plex_item, Facts(),
-        probe=_probe_returning(fingerprint, calls),
+        session, config_with_badges, render, item, server, REF, Facts(),
+        probe=True,
     )
 
-    assert calls == []
+    assert server.provenance_calls == []
     assert plex_item.uploads == 1
 
 
@@ -385,14 +413,14 @@ async def test_a_dry_run_never_probes_plex(session, config_badges_dry_run):
     range requests to learn that would be pure waste."""
     item, render = await _render(session)
     plex_item = FakePlexItem()
-    calls = []
+    server = FakeServer(plex_item, provenance="anything")
 
     await apply_badges(
-        session, config_badges_dry_run, render, item, plex_item, Facts(),
-        probe=_probe_returning("anything", calls),
+        session, config_badges_dry_run, render, item, server, REF, Facts(),
+        probe=True,
     )
 
-    assert calls == []
+    assert server.provenance_calls == []
     assert render.upload_status == "skipped"
 
 
@@ -426,12 +454,12 @@ async def test_the_badge_ignores_an_override_while_the_gate_is_off(
     config_with_badges.operations.item_overrides_enabled = False
     plex_item = FakePlexItem()
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     with_row = render.badge_fingerprint
 
     await session.execute(_delete(ItemMetadataOverride))
     await session.commit()
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
 
     assert render.badge_fingerprint == with_row
     assert plex_item.uploads == 1
@@ -465,11 +493,11 @@ async def test_an_overridden_rating_moves_this_item_s_badge(
     config_with_badges.operations.item_overrides_enabled = False
     plex_item = FakePlexItem()
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     ungated = render.badge_fingerprint
 
     config_with_badges.operations.item_overrides_enabled = True
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
 
     assert render.badge_fingerprint != ungated
     assert plex_item.uploads == 2
@@ -491,9 +519,9 @@ async def test_a_second_pass_over_an_overridden_item_re_badges_nothing(
     config_with_badges.operations.item_overrides_enabled = True
     plex_item = FakePlexItem()
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     first = render.badge_fingerprint
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
 
     assert render.badge_fingerprint == first
     assert plex_item.uploads == 1
@@ -526,13 +554,13 @@ async def test_an_exempt_item_s_badge_ignores_the_override_too(
     config_with_badges.operations.ignore_ids = [item.rating_key]
     plex_item = FakePlexItem()
 
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
     exempt = render.badge_fingerprint
 
     await session.execute(_delete(ItemMetadataOverride))
     await session.commit()
     config_with_badges.operations.ignore_ids = []
-    await apply_badges(session, config_with_badges, render, item, plex_item, Facts())
+    await apply_badges(session, config_with_badges, render, item, FakeServer(plex_item), REF, Facts())
 
     assert render.badge_fingerprint == exempt
     assert plex_item.uploads == 1
@@ -565,7 +593,7 @@ async def test_the_overlay_never_writes_the_operator_s_value_into_item_facts(
     facts = (
         await session.execute(_select(ItemFacts).where(ItemFacts.item_id == item_id))
     ).scalar_one()
-    await apply_badges(session, config_with_badges, render, item, FakePlexItem(), facts)
+    await apply_badges(session, config_with_badges, render, item, FakeServer(FakePlexItem()), REF, facts)
     await session.commit()
     session.expire_all()
 

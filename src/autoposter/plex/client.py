@@ -7,7 +7,13 @@ import requests
 from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.intake.arr import RenderIntent
+from autoposter.plex import artwork as plex_artwork
 from autoposter.render.naming import derive_root_folder
+from autoposter.servers.base import (
+    CAP_ARTWORK_PROVENANCE, CAP_FIELD_LOCKS, CAP_LOCK_ARTWORK, CAP_LOGO_UPLOAD,
+    CAP_LOGO_UPLOAD_KEY, CAP_RESET_TO_AGENT_DEFAULT, CAP_TITLE_CARD_URL,
+    ItemNotFound, PathMismatch, ResolvedItem, SectionItem, ServerItemRef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,86 +36,8 @@ FETCH_ITEM_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
 _sleep = asyncio.sleep
 
 
-class ItemNotFound(Exception):
-    """Plex has no matching item — usually it has not scanned the file yet."""
-
-    # Reviewed safe for a served surface (roadmap row 213). The scheduler's
-    # marker (scheduler/core.py) originally meant "this message was BUILT for
-    # a served surface" (CollectionsPassFailed, PruneRefused); here the
-    # contract is the wider "reviewed safe to serve", and the divergence is
-    # deliberate: both raise sites below interpolate only the job's own item
-    # fields (title, ids, rating key -- resolve()'s two raises), which the
-    # jobs endpoint already serves verbatim in the same row. The subclass
-    # inherits this, and for it the review is a disclosure DECISION: its
-    # message carries the operator's own filesystem paths, and those paths
-    # ARE the answer to "why did this job park" -- redacting them would buy
-    # nothing and cost the diagnosis (the same trade rows 136/188 and 209
-    # site (2a) decided the same way).
-    served_detail = True
-
-
-class PlexPathMismatch(ItemNotFound):
-    """The item resolved in Plex, but its file path maps into none of the
-    library's roots.
-
-    Unlike the class it subclasses, this is not a scan-in-progress wait -- it
-    is a path-mapping mismatch between this container's view of the
-    filesystem and Plex's, which no amount of retrying fixes. Raised only at
-    the third ``resolve()`` raise site; see ``queue/worker.py``'s ordered
-    except clause for how this is kept off the unbounded defer path.
-    """
-
-
-@dataclass(frozen=True)
-class ResolvedItem:
-    rating_key: str
-    library: str
-    kind: str
-    title: str
-    year: int | None
-    season_number: int | None
-    episode_number: int | None
-    root_folder: str
-    file_path: str | None
-    art_url: str | None
-    tmdb_id: int | None
-    tvdb_id: int | None
-    imdb_id: str | None
-    parent_rating_key: str | None = None
-    # Roadmap row 44. Plex carries originalTitle for movies and not for shows
-    # or episodes, so None is the ordinary case rather than the corner one.
-    original_title: str | None = None
-    # Roadmap row 78. The SHOW's own title, filled for a SEASON only: a
-    # season's `title` is the season's own Plex title ("Season 2",
-    # "Specials", or a bare year), so a season poster had no way to draw the
-    # show's name. Sourced off the container the producers already hold,
-    # exactly as `year` is -- no extra Plex request. None everywhere else,
-    # including on an episode: only the season poster draws it, and
-    # `adopt/walk._resolved_episode` is handed the season rather than the
-    # show, so filling it there would mean threading a fourth argument
-    # through that walk to feed a field nothing reads.
-    show_title: str | None = None
-
-
-@dataclass(frozen=True)
-class SectionItem:
-    """One movie or show in a library section, as plain data.
-
-    What ``list_items`` returns: nothing here is a ``plexapi`` object, for the
-    same reason ``_RawMatch`` is not one -- reading an attribute back on the
-    event loop can trigger a synchronous HTTP reload.
-
-    ``locations`` is the item's own, not the section's: a movie's is its file
-    and a show's is its directory, which is exactly what ``arr.sync``'s
-    ``source_path`` expects to be handed.
-    """
-
-    rating_key: str
-    library: str
-    title: str
-    year: int | None
-    locations: list[str]
-    guids: dict[str, str]
+class PlexPathMismatch(PathMismatch):
+    """Plex's spelling of PathMismatch; queue/worker.py's except ladder names it."""
 
 
 def parse_guids(guids: list[str]) -> dict[str, str]:
@@ -335,18 +263,42 @@ class _RawMatch:
     show_title: str | None = None
 
 
+#: The Plex arm of ``MediaServer.capabilities`` (spec §3.4) -- every operation
+#: ``plex/artwork.py`` and ``plex/writer.py`` back, wired up below.
+PLEX_CAPABILITIES = frozenset({
+    CAP_LOCK_ARTWORK, CAP_LOGO_UPLOAD, CAP_LOGO_UPLOAD_KEY, CAP_FIELD_LOCKS,
+    CAP_ARTWORK_PROVENANCE, CAP_TITLE_CARD_URL, CAP_RESET_TO_AGENT_DEFAULT,
+})
+
+
 class PlexClient:
-    """Resolves render intents to Plex items.
+    """Resolves render intents to Plex items, and conforms to ``MediaServer``.
 
     ``plexapi`` is synchronous, so calls run in a thread to keep the event loop free.
     All ``plexapi`` attribute access happens inside that thread — attributes on
     partial objects can trigger a synchronous HTTP reload, so nothing touched back
     on the event loop may be a ``plexapi`` object.
+
+    ``http``/``base_url``/``token`` back the artwork read-back methods
+    (``fetch_artwork``/``artwork_provenance``/``check_liveness``), which need an
+    HTTP client of their own rather than ``plexapi``'s -- see those functions in
+    ``plex/artwork.py``. They default to unset because most callers (``resolve``,
+    ``list_items``, the write paths) never touch them; ``app.py``'s construction
+    site is the one that supplies real values.
     """
 
-    def __init__(self, server, excluded_libraries: list[str]):
+    name = "plex"
+    capabilities = PLEX_CAPABILITIES
+
+    def __init__(
+        self, server, excluded_libraries: list[str],
+        http=None, base_url: str = "", token: str = "",
+    ):
         self._server = server
         self._excluded = set(excluded_libraries)
+        self._http = http
+        self.base_url = base_url
+        self._headers = {"X-Plex-Token": token} if token else {}
 
     def _sections(self, wanted_type: str):
         """The non-excluded library sections of one Plex type ("movie"/"show").
@@ -666,7 +618,8 @@ class PlexClient:
             for item in section.all(includeGuids=True):
                 items.append(
                     SectionItem(
-                        rating_key=str(item.ratingKey),
+                        server="plex",
+                        native_id=str(item.ratingKey),
                         library=section.title,
                         title=item.title,
                         year=getattr(item, "year", None),
@@ -795,7 +748,8 @@ class PlexClient:
             )
 
         return ResolvedItem(
-            rating_key=match.rating_key,
+            server="plex",
+            native_id=match.rating_key,
             library=match.library,
             kind=intent.kind,
             title=match.title,
@@ -808,7 +762,86 @@ class PlexClient:
             tmdb_id=as_int(guids.get("tmdb")) or intent.tmdb_id,
             tvdb_id=as_int(guids.get("tvdb")) or intent.tvdb_id,
             imdb_id=guids.get("imdb") or intent.imdb_id,
-            parent_rating_key=match.parent_rating_key,
+            parent_native_id=match.parent_rating_key,
             original_title=match.original_title,
             show_title=match.show_title,
         )
+
+    async def fetch_ref(self, native_id: str) -> ServerItemRef | None:
+        """The ``ServerItemRef`` for a rating key, or ``None`` if Plex no longer has it.
+
+        Built off ``fetch_item`` -- the same plain GET ``resolve()``'s writer
+        callers use -- rather than a fresh search, since a native id is already
+        as precise an address as Plex offers.
+        """
+        try:
+            item = await self.fetch_item(native_id)
+        except PlexNotFound:
+            return None
+        return ServerItemRef(
+            "plex", str(item.ratingKey),
+            getattr(item, "librarySectionTitle", ""), getattr(item, "type", ""),
+        )
+
+    async def upload_artwork(self, ref: ServerItemRef, data: bytes, art_kind: str, lock: bool) -> None:
+        item = await self.fetch_item(ref.native_id)
+        await asyncio.to_thread(plex_artwork.upload_artwork, item, data, art_kind, lock)
+
+    async def upload_logo(self, ref: ServerItemRef, data: bytes, suffix: str = ".png") -> str | None:
+        item = await self.fetch_item(ref.native_id)
+        return await asyncio.to_thread(plex_artwork.upload_logo, item, data, suffix)
+
+    async def clear_logo(self, ref: ServerItemRef) -> None:
+        item = await self.fetch_item(ref.native_id)
+        await asyncio.to_thread(plex_artwork.clear_logo, item)
+
+    async def has_clearlogo(self, ref: ServerItemRef) -> bool:
+        item = await self.fetch_item(ref.native_id)
+        return await plex_artwork.has_clearlogo(item)
+
+    async def fetch_artwork(self, ref: ServerItemRef, art_kind: str) -> tuple[bytes, str] | None:
+        item = await self.fetch_item(ref.native_id)
+        return await plex_artwork.fetch_artwork(
+            self._http, item, self.base_url, self._headers, art_kind,
+        )
+
+    async def artwork_provenance(self, ref: ServerItemRef, art_kind: str) -> str | None:
+        item = await self.fetch_item(ref.native_id)
+        return await plex_artwork.artwork_provenance(
+            self._http, item, base_url=self.base_url, headers=self._headers, art_kind=art_kind,
+        )
+
+    async def reset_artwork_to_agent_default(self, ref: ServerItemRef, art_kind: str) -> bool:
+        item = await self.fetch_item(ref.native_id)
+        return await asyncio.to_thread(plex_artwork.reset_artwork_to_agent_default, item, art_kind)
+
+    async def item_labels(self, ref: ServerItemRef) -> list[str]:
+        item = await self.fetch_item(ref.native_id)
+        return [t.tag for t in getattr(item, "labels", None) or []]
+
+    async def apply_facts(
+        self, ref: ServerItemRef, facts, operations=None,
+        parental_categories=None, overrides=None,
+    ) -> dict:
+        # Imported here, not at module scope: plex/writer.py pulls in
+        # facts/gather.py, which imports ResolvedItem back off this module --
+        # a module-level import here would deadlock that cycle on load.
+        from autoposter.plex.writer import apply_facts as plex_apply_facts
+
+        item = await self.fetch_item(ref.native_id)
+        return await plex_apply_facts(item, facts, operations, parental_categories, overrides)
+
+    async def check_liveness(self) -> bool:
+        """Whether the configured Plex server answers at all.
+
+        ``True`` with no ``http`` client configured: a caller in that shape
+        (the conformance suite's Plex arm, today) has no way to probe over
+        HTTP and no business asserting the server is down.
+        """
+        if self._http is None:
+            return True
+        try:
+            response = await self._http.get(f"{self.base_url}/identity")
+            return response.is_success
+        except Exception:
+            return False

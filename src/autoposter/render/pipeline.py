@@ -34,10 +34,10 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.overlays.selection import OverlayItemView
 from autoposter.overlays.selection import select as select_overlay_definitions
 from autoposter.overlays.sources import OverlaySourceError, resolve_image_path
-from autoposter.plex.artwork import generated_title_card_url, upload_artwork
+from autoposter.plex.artwork import generated_title_card_url
 from autoposter.plex.client import ResolvedItem
 from autoposter.plex.item_overrides import load_overrides, overlaid_badge_facts
-from autoposter.plex.writer import apply_facts, exemption_reason
+from autoposter.plex.writer import exemption_reason
 from autoposter.providers import base as art
 from autoposter.providers.ladder import language_rank, normalise_language, select_artwork
 from autoposter.render import compositor, naming
@@ -54,6 +54,9 @@ from autoposter.render.artwork_fetch import (
     pick_guarded_logo,
 )
 from autoposter.render.textfit import fit_point_size, prepare_text
+from autoposter.servers.base import (
+    CAP_ARTWORK_PROVENANCE, CAP_LOCK_ARTWORK, CAP_TITLE_CARD_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -624,6 +627,8 @@ async def fetch_plex_generated_base(
     URL, which carries no token itself but is still not worth logging -- so
     the caller falls through to the existing ``no_art`` outcome.
     """
+    if CAP_TITLE_CARD_URL not in plex.capabilities:
+        return None
     plex_item = await plex.fetch_item(rating_key)
     url = await generated_title_card_url(plex_item, base_url)
     if url is None:
@@ -718,7 +723,7 @@ async def _identity_candidates(
             .where(MediaItem.season_number.is_not_distinct_from(item.season_number))
             .where(MediaItem.episode_number.is_not_distinct_from(item.episode_number))
             .where(or_(*clauses))
-            .where(MediaItem.rating_key != item.rating_key)
+            .where(MediaItem.rating_key != item.native_id)
             .order_by(MediaItem.id)
             .limit(2)
             .with_for_update()
@@ -741,7 +746,7 @@ async def _rekey_by_identity(
 
     The precondition is proved from the DATABASE, not from a key comparison,
     and that is the whole design. Comparing ``intent.rating_key`` to
-    ``item.rating_key`` covers only the paths that CARRY a key; the ratings
+    ``item.native_id`` covers only the paths that CARRY a key; the ratings
     drift sweep and the Sonarr/Radarr webhooks carry none by construction, and
     both minted twins with no warning at all. Two facts, in this order:
 
@@ -769,7 +774,7 @@ async def _rekey_by_identity(
     """
     taken = (
         await session.execute(
-            select(MediaItem.id).where(MediaItem.rating_key == item.rating_key)
+            select(MediaItem.id).where(MediaItem.rating_key == item.native_id)
         )
     ).scalar_one_or_none()
     if taken is not None:
@@ -781,7 +786,7 @@ async def _rekey_by_identity(
             logger.warning(
                 "not re-keying to %s: %d rows carry that identity "
                 "(%s in %r); the twin merge owns this pair",
-                item.rating_key, len(candidates), item.kind, item.library,
+                item.native_id, len(candidates), item.kind, item.library,
             )
         # The candidate query above takes FOR UPDATE. Left open, this
         # transaction would hold that lock across the rest of process_item's
@@ -803,7 +808,7 @@ async def _rekey_by_identity(
         # UPDATE with synchronize_session=False would leave the in-memory
         # object still reporting the OLD key -- which is exactly what
         # _upsert_media_item's re-SELECT would then hand back.
-        stale.rating_key = item.rating_key
+        stale.rating_key = item.native_id
         await session.flush()
         session.add(EventLog(
             source=REKEY_SOURCE,
@@ -811,7 +816,7 @@ async def _rekey_by_identity(
             payload={
                 "media_item_id": stale_id,
                 "old_rating_key": old_key,
-                "new_rating_key": item.rating_key,
+                "new_rating_key": item.native_id,
                 "kind": item.kind,
                 "library": item.library,
                 "title": item.title,
@@ -821,7 +826,7 @@ async def _rekey_by_identity(
                 "tvdb_id": item.tvdb_id,
                 "imdb_id": item.imdb_id,
             },
-            outcome=f"re-keyed {old_key} -> {item.rating_key} on an identity match",
+            outcome=f"re-keyed {old_key} -> {item.native_id} on an identity match",
         ))
         await session.commit()
     except (IntegrityError, DBAPIError) as exc:
@@ -840,7 +845,7 @@ async def _rekey_by_identity(
             logger.warning(
                 "re-key of %s to %s lost a race; the winner's row holds the "
                 "key, so this pass stops rather than upsert onto it",
-                old_key, item.rating_key, exc_info=True,
+                old_key, item.native_id, exc_info=True,
             )
         else:
             logger.warning(
@@ -848,13 +853,13 @@ async def _rekey_by_identity(
                 "the key in THIS transaction -- the rollback says no more "
                 "than that -- so this pass falls through and mints a fresh "
                 "twin unless another worker landed the key first",
-                old_key, item.rating_key, exc_info=True,
+                old_key, item.native_id, exc_info=True,
             )
         return None
 
     logger.info(
         "re-keyed media_items row %d from %s to %s (%s %r)",
-        stale_id, old_key, item.rating_key, item.kind, item.title,
+        stale_id, old_key, item.native_id, item.kind, item.title,
     )
     return old_key
 
@@ -875,10 +880,10 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
     parent exists.
     """
     parent_id = None
-    if item.parent_rating_key is not None:
+    if item.parent_native_id is not None:
         parent_id = (
             await session.execute(
-                select(MediaItem.id).where(MediaItem.rating_key == item.parent_rating_key)
+                select(MediaItem.id).where(MediaItem.rating_key == item.parent_native_id)
             )
         ).scalar_one_or_none()
 
@@ -896,7 +901,7 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
         tvdb_id=item.tvdb_id,
         imdb_id=item.imdb_id,
     )
-    stmt = insert(MediaItem).values(rating_key=item.rating_key, **mutable)
+    stmt = insert(MediaItem).values(rating_key=item.native_id, **mutable)
     stmt = stmt.on_conflict_do_update(
         index_elements=["rating_key"], set_={**mutable, "updated_at": func.now()}
     )
@@ -904,7 +909,7 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
     await session.flush()
     return (
         await session.execute(
-            select(MediaItem).where(MediaItem.rating_key == item.rating_key)
+            select(MediaItem).where(MediaItem.rating_key == item.native_id)
         )
     ).scalar_one()
 
@@ -1132,7 +1137,7 @@ async def _pick_logo(
             prefer_clearart=config.artwork.use_clearart,
         ),
         tmpdir,
-        rating_key=item.rating_key,
+        native_id=item.native_id,
     )
 
 
@@ -1325,7 +1330,7 @@ async def render_artifact(
                 and plex_generated_base is not None
             ):
                 plex_base_sha = await plex_generated_base(
-                    item.rating_key, working, stage="the title_card source",
+                    item.native_id, working, stage="the title_card source",
                 )
                 plex_generated = plex_base_sha is not None
             if selection.candidate is None and not plex_generated:
@@ -1350,7 +1355,7 @@ async def render_artifact(
                 # config/impact.py's recompute honest, since it reads this
                 # same stored column back.
                 base_sha = plex_base_sha
-                source_url = f"plex://{item.rating_key}/title_card"
+                source_url = f"{item.server}://{item.native_id}/title_card"
                 provider_name = "plex"
                 textless = None
             else:
@@ -1405,7 +1410,7 @@ async def render_artifact(
                             "no usable clearlogo for %s %r: skipped %d candidate(s) "
                             "over the %dpx ceiling or refused after download; "
                             "rendering the poster without one",
-                            item.rating_key, item.title, skipped_logos,
+                            item.native_id, item.title, skipped_logos,
                             _ARTWORK_MAX_PIXELS,
                         )
                     if not config.artwork.logo_text_fallback:
@@ -1621,7 +1626,7 @@ async def apply_metadata(
     config: Config,
     media_item_id: int,
     item: ResolvedItem,
-    plex_item,
+    server,
     tmdb_facts,
     mdblist,
     tvdb=None,
@@ -1689,7 +1694,7 @@ async def apply_metadata(
     has_overrides = bool(overrides)
     if (
         config.operations.write_to_plex
-        and plex_item is not None
+        and server is not None
         and (not facts.is_empty() or has_verbs or has_parental or has_overrides)
     ):
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
@@ -1697,19 +1702,16 @@ async def apply_metadata(
         # because the badge stage reads the persisted row rather than this
         # write.
         exempt = exemption_reason(
-            config.operations, item.rating_key, item.imdb_id,
-            getattr(plex_item, "labels", None),
+            config.operations, item.native_id, item.imdb_id, await server.item_labels(item.ref),
         )
         if exempt is not None:
-            logger.info("plex: skipped writing %s: %s", item.rating_key, exempt)
+            logger.info("%s: skipped writing %s: %s", server.name, item.native_id, exempt)
         else:
-            await apply_facts(
-                plex_item, facts, config.operations, parental_categories, overrides,
-            )
+            await server.apply_facts(item.ref, facts, config.operations, parental_categories, overrides)
     return facts
 
 
-async def _already_in_plex(config, probe, plex_item, render, fingerprint) -> bool:
+async def _already_in_plex(config, probe, server, ref, render, fingerprint) -> bool:
     """Whether Plex is already serving exactly the badged image we would upload.
 
     Only asked when the database has no ``badge_fingerprint`` for this render:
@@ -1736,10 +1738,12 @@ async def _already_in_plex(config, probe, plex_item, render, fingerprint) -> boo
     """
     if not (config.badges.adopt_from_plex and config.badges.upload_to_plex):
         return False
-    if probe is None or plex_item is None or render.badge_fingerprint is not None:
+    if probe is None or ref is None or render.badge_fingerprint is not None:
+        return False
+    if CAP_ARTWORK_PROVENANCE not in server.capabilities:
         return False
     try:
-        recorded = await probe(plex_item)
+        recorded = await server.artwork_provenance(ref, render.art_kind)
     except Exception:
         logger.debug("could not read artwork provenance from Plex", exc_info=True)
         return False
@@ -1747,7 +1751,8 @@ async def _already_in_plex(config, probe, plex_item, render, fingerprint) -> boo
 
 
 async def apply_badges(
-    session, config, render, item, plex_item, facts, probe=None, *, http=None, mdblist=None
+    session, config, render, media_item, server, ref, facts, probe=None,
+    *, http=None, mdblist=None,
 ) -> None:
     """Badge one rendered artifact and upload it, if anything changed.
 
@@ -1756,11 +1761,14 @@ async def apply_badges(
     accumulating on the Plex server, which is what happens when every run
     uploads unconditionally.
 
-    ``probe`` is the optional provenance reader described in
-    ``_already_in_plex`` -- an async callable taking the ``plexapi`` object and
-    returning the fingerprint recorded in its current artwork. Optional so
-    every caller that only cares about composing (including every test
-    predating this) keeps working unchanged.
+    ``probe`` is no longer a callable: since the artwork/metadata protocol
+    change, ``_already_in_plex`` reads provenance straight off ``server``/
+    ``ref`` itself, and this is now only the non-``None`` sentinel that says
+    the caller has that stage wired up at all (``app.py``'s ``artwork_probe``
+    partial, or ``None`` to skip provenance reads entirely). Kept as its own
+    parameter, rather than folded into a capability check, so every caller
+    that only cares about composing keeps working unchanged; Task 11 deletes
+    it once the seam it stood in for is gone.
 
     ``http`` is the client roadmap row 97's operator-defined overlays resolve
     their ``url:`` sources through (``overlays.sources.resolve_image_path``).
@@ -1783,10 +1791,10 @@ async def apply_badges(
     # all. `_already_in_plex` below reads `config.badges` too and is called
     # with this rebound object, so the whole stage is one library's.
     #
-    # `item` here is the `media_items` ROW, not the resolved item -- the
+    # `media_item` here is the `media_items` ROW, not the resolved item -- the
     # badge block re-reads the row before calling this -- and it carries
     # `.library` for the same reason every other consumer does.
-    config = config_for_library(config, item.library)
+    config = config_for_library(config, media_item.library)
     if not config.badges.enabled:
         return
     # Backgrounds are never badged. The tool being replaced overlays posters,
@@ -1800,6 +1808,11 @@ async def apply_badges(
     # failed -- would send Image.open() at a path that is not there.
     if render.status != "rendered":
         return
+
+    # Still Plex-only below this point (media_info_from_plex, the ratings and
+    # the overlay view read plexapi attributes no MediaServer method exposes
+    # yet), so the raw item is fetched here rather than passed in.
+    plex_item = await server.fetch_item(ref.native_id)
 
     # media_info_from_plex() calls item.reload() when `.media` is absent, which
     # is a blocking `requests` GET -- and plexapi Show and Season objects never
@@ -1836,12 +1849,12 @@ async def apply_badges(
     # for an exempt item with no override at all.
     if config.operations.item_overrides_enabled:
         exempt = exemption_reason(
-            config.operations, item.rating_key, item.imdb_id,
+            config.operations, media_item.rating_key, media_item.imdb_id,
             getattr(plex_item, "labels", None),
         )
         if exempt is None:
             facts = overlaid_badge_facts(
-                facts, await load_overrides(session, item.id)
+                facts, await load_overrides(session, media_item.id)
             )
 
     critic_rating = getattr(facts, "critic_rating", None)
@@ -1863,11 +1876,11 @@ async def apply_badges(
     # transient MDBList failure must degrade this one set of values, not the
     # whole badge stage: same two `except` clauses `gather_facts` already
     # uses for the same client.
-    if mdblist is not None and item.kind in ("movie", "show"):
+    if mdblist is not None and media_item.kind in ("movie", "show"):
         try:
             ratings.update(await mdblist.ratings(
-                tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id,
-                is_movie=item.kind == "movie",
+                tmdb_id=media_item.tmdb_id, tvdb_id=media_item.tvdb_id,
+                is_movie=media_item.kind == "movie",
             ))
         except MDBListLimitReached:
             logger.warning("mdblist daily limit reached; skipping mdb_* overlay ratings")
@@ -1918,7 +1931,7 @@ async def apply_badges(
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
         return
 
-    if await _already_in_plex(config, probe, plex_item, render, fingerprint):
+    if await _already_in_plex(config, probe, server, ref, render, fingerprint):
         # The image Plex is serving stamped this exact fingerprint, so it is
         # byte-for-byte what compose() would produce. Record what is already
         # true and skip both the composite and the upload.
@@ -1965,13 +1978,14 @@ async def apply_badges(
         return
 
     try:
-        await asyncio.to_thread(
-            upload_artwork, plex_item, data, render.art_kind, config.badges.lock_artwork
+        await server.upload_artwork(
+            ref, data, render.art_kind,
+            config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities,
         )
     except Exception:
         render.upload_status = "failed"
         await session.flush()
-        logger.warning("badge upload failed for %s", item.rating_key, exc_info=True)
+        logger.warning("badge upload failed for %s", media_item.rating_key, exc_info=True)
         return
 
     render.upload_status = "uploaded"
@@ -2040,12 +2054,12 @@ async def process_item(
     # everywhere else in this queue; the pod log is the trusted sink, so this
     # is a WARNING there and nowhere else -- but it turns a silent hole into a
     # grep.
-    forked = intent.rating_key is not None and item.rating_key != intent.rating_key
+    forked = intent.rating_key is not None and item.native_id != intent.rating_key
     if forked:
         logger.warning(
             "resolved rating key %s for %r differs from the intent's %s; "
             "the intent's row will not be scored by this job",
-            item.rating_key, item.title, intent.rating_key,
+            item.native_id, item.title, intent.rating_key,
         )
 
     # The re-key. The WARNING above only fires when the intent CARRIED a key,
@@ -2074,7 +2088,7 @@ async def process_item(
     #    for: the row under that key is ours, and the job goes on. Checking it
     #    first also means the hot path -- an unforked item, or a successful
     #    re-key -- never issues the query below at all.
-    # 2. A row exists under `item.rating_key`. This is the part that cannot be
+    # 2. A row exists under `item.native_id`. This is the part that cannot be
     #    inferred from the re-key's return value, because _rekey_by_identity
     #    answers None on FIVE different refusals and only two of them mean a
     #    row is there (the key was already taken; an IntegrityError race the
@@ -2101,7 +2115,7 @@ async def process_item(
     if forked and rekeyed_from != intent.rating_key:
         resolved_row_id = (
             await session.execute(
-                select(MediaItem.id).where(MediaItem.rating_key == item.rating_key)
+                select(MediaItem.id).where(MediaItem.rating_key == item.native_id)
             )
         ).scalar_one_or_none()
         if resolved_row_id is not None:
@@ -2110,7 +2124,7 @@ async def process_item(
                 event_type=FORK_EVENT,
                 payload={
                     "intent_rating_key": intent.rating_key,
-                    "resolved_rating_key": item.rating_key,
+                    "resolved_rating_key": item.native_id,
                     "kind": item.kind,
                     "library": item.library,
                     "title": item.title,
@@ -2124,7 +2138,6 @@ async def process_item(
             return []
 
     media_item = None
-    plex_item = None
     # Roadmap row 92. A separately-named object, and NOT a rebinding of
     # `config`: `render_artifact` below must keep the global one. Today that
     # is a distinction without a difference -- `config_for_library` carries
@@ -2135,23 +2148,21 @@ async def process_item(
     library_config = config_for_library(config, item.library)
 
     if library_config.operations.enabled and tmdb_facts is not None:
-        # Bound outside the try on purpose: a `plex` that has no fetch_item at
-        # all is a wiring bug, not the runtime failure this block contains, and
-        # the except below would demote it to a WARNING and carry on. That is
-        # exactly how a test double missing the method stayed hidden until it
-        # resurfaced as an unrelated error much later.
-        fetch_item = plex.fetch_item
         try:
             media_item = await _upsert_media_item(session, item)
-            plex_item = await fetch_item(item.rating_key)
             # Row 84's tvdb client, if the deployment's provider order builds
             # one -- the same object `providers` already holds, never a new
             # one, so it shares that client's cached token and cache.
             tvdb = next((p for p in providers if getattr(p, "name", None) == "TVDB"), None)
             await apply_metadata(
-                session, config, media_item.id, item, plex_item, tmdb_facts, mdblist, tvdb,
+                session, config, media_item.id, item, plex, tmdb_facts, mdblist, tvdb,
                 imdb_parental,
             )
+        except AttributeError:
+            # A server missing a required method (item_labels/apply_facts) is
+            # a wiring bug, not the runtime failure below is for -- it must
+            # not be silently contained as a per-item warning.
+            raise
         except Exception:
             # Finding 5: if the failure was a database error, the transaction
             # is already aborted; without rolling back here, the artifact
@@ -2162,7 +2173,7 @@ async def process_item(
             await session.rollback()
             logger.warning(
                 "metadata operations failed for %s; continuing to artwork",
-                item.rating_key, exc_info=True,
+                item.native_id, exc_info=True,
             )
 
     results = []
@@ -2198,7 +2209,7 @@ async def process_item(
             # metadata block above uses, and for the same reason.
             await session.rollback()
             logger.warning(
-                "%s refused for %s: %s", art_kind, item.rating_key, exc, exc_info=True,
+                "%s refused for %s: %s", art_kind, item.native_id, exc, exc_info=True,
             )
             media_item_for_kind = await _upsert_media_item(session, item)
             missing = naming.missing_number(art_kind, item.season_number, item.episode_number)
@@ -2219,12 +2230,11 @@ async def process_item(
     # must not go all the way.
     if refused and len(refused) == len(results):
         raise SourceRefused(
-            f"every art kind refused for {item.rating_key!r}: "
+            f"every art kind refused for {item.native_id!r}: "
             + "; ".join(f"{kind}: {detail}" for kind, detail in refused)
         )
 
     if library_config.badges.enabled:
-        fetch_item = plex.fetch_item  # outside the try; see the block above
         try:
             if refused:
                 # A refusal's rollback() above (see the comment on `results`)
@@ -2240,8 +2250,6 @@ async def process_item(
                     await session.refresh(render)
             if media_item is None:
                 media_item = await _upsert_media_item(session, item)
-            if plex_item is None:
-                plex_item = await fetch_item(item.rating_key)
             # The persisted row, not the in-memory GatheredFacts from the
             # metadata-operations block above: a partial gather this pass
             # (e.g. only a new critic rating) must not blank out fields a
@@ -2254,9 +2262,14 @@ async def process_item(
             ).scalar_one_or_none() or GatheredFacts()
             for render in results:
                 await apply_badges(
-                    session, config, render, media_item, plex_item, facts,
+                    session, config, render, media_item, plex, item.ref, facts,
                     probe=artwork_probe, http=http, mdblist=mdblist,
                 )
+        except AttributeError:
+            # A server missing a required method (fetch_item/upload_artwork)
+            # is a wiring bug, not the runtime failure below is for -- it must
+            # not be silently contained as a per-item warning.
+            raise
         except Exception:
             # Same containment as the metadata-operations block above: the
             # artifact loop already wrote the base image to disk, and a
@@ -2264,7 +2277,7 @@ async def process_item(
             await session.rollback()
             logger.warning(
                 "badge stage failed for %s; base artwork already on disk",
-                item.rating_key, exc_info=True,
+                item.native_id, exc_info=True,
             )
 
     return results

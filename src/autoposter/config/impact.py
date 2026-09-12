@@ -287,7 +287,8 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
         if not settings.enabled:
             continue
         item = ResolvedItem(
-            rating_key="",
+            server="plex",
+            native_id="",
             library=row.library,
             kind=row.kind,
             title=row.title,

@@ -28,10 +28,10 @@ FIXTURES = Path(__file__).parent / "fixtures" / "facts"
 
 def item(kind="movie", season=None, episode=None):
     return ResolvedItem(
-        rating_key="1", library="Movies", kind=kind, title="X", year=2023,
+        server="plex", native_id="1", library="Movies", kind=kind, title="X", year=2023,
         season_number=season, episode_number=episode, root_folder="X",
         file_path=None, art_url=None, tmdb_id=940143, tvdb_id=371980,
-        imdb_id="tt14316486", parent_rating_key=None,
+        imdb_id="tt14316486", parent_native_id=None,
     )
 
 

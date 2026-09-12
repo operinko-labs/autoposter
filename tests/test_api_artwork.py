@@ -33,6 +33,8 @@ from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
 from autoposter.db.models import MediaItem, Render
 from autoposter.plex.artwork import ARTWORK_FETCH_TIMEOUT
+from autoposter.plex.artwork import fetch_artwork as _plex_fetch_artwork
+from autoposter.servers.base import ServerItemRef
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -473,19 +475,36 @@ class _ThreadRecordingPlexItem:
 
 
 class _FakePlexClient:
-    """Stands in for PlexClient. ``fetch_item`` is async and, in the real one,
-    a plain GET run in a thread."""
+    """Stands in for PlexClient. ``fetch_item``/``fetch_ref`` are async and, in
+    the real one, a plain GET run in a thread; ``fetch_artwork`` delegates to
+    the real ``plex.artwork.fetch_artwork`` against the wired MockTransport,
+    exactly as ``PlexClient.fetch_artwork`` does."""
 
-    def __init__(self, item=None, error=None):
+    def __init__(self, item=None, error=None, http=None, base_url="", headers=None):
         self.item = item
         self.error = error
         self.fetched = []
+        self._http = http
+        self._base_url = base_url
+        self._headers = headers or {}
 
     async def fetch_item(self, rating_key):
         self.fetched.append(rating_key)
         if self.error is not None:
             raise self.error
         return self.item
+
+    async def fetch_ref(self, rating_key):
+        try:
+            await self.fetch_item(rating_key)
+        except PlexNotFound:
+            return None
+        return ServerItemRef("plex", rating_key, "", "")
+
+    async def fetch_artwork(self, ref, art_kind):
+        return await _plex_fetch_artwork(
+            self._http, self.item, self._base_url, self._headers, art_kind
+        )
 
 
 @pytest_asyncio.fixture
@@ -504,7 +523,10 @@ async def wire_plex(app):
 
         http = AsyncClient(transport=httpx.MockTransport(handler or refuse))
         clients.append(http)
-        app.state.plex = _FakePlexClient(item=item, error=error)
+        app.state.plex = _FakePlexClient(
+            item=item, error=error, http=http, base_url=PLEX_URL,
+            headers={"X-Plex-Token": PLEX_TOKEN},
+        )
         app.state.http = http
         return app.state.plex
 

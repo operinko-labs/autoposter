@@ -89,7 +89,8 @@ def variant(base_document):
 
 def _item(kind: str, title: str, tmdb_id: int, season=None, episode=None) -> ResolvedItem:
     return ResolvedItem(
-        rating_key=f"rk{tmdb_id}-{season}-{episode}",
+        server="plex",
+        native_id=f"rk{tmdb_id}-{season}-{episode}",
         library="Movies" if kind == "movie" else "TV Shows",
         kind=kind,
         title=title,
@@ -130,20 +131,20 @@ async def _stored_fingerprint(config, item: ResolvedItem, art_kind: str, base_sh
 async def _seed(session, config, rows=FIXTURE_ROWS) -> None:
     by_rating_key: dict[str, int] = {}
     for item, art_kind in rows:
-        if item.rating_key not in by_rating_key:
+        if item.native_id not in by_rating_key:
             row = MediaItem(
-                rating_key=item.rating_key, library=item.library, kind=item.kind,
+                rating_key=item.native_id, library=item.library, kind=item.kind,
                 title=item.title, year=item.year, tmdb_id=item.tmdb_id,
                 season_number=item.season_number, episode_number=item.episode_number,
                 root_folder=item.root_folder,
             )
             session.add(row)
             await session.flush()
-            by_rating_key[item.rating_key] = row.id
+            by_rating_key[item.native_id] = row.id
         base_sha = "a" * 64
         session.add(
             Render(
-                item_id=by_rating_key[item.rating_key], art_kind=art_kind,
+                item_id=by_rating_key[item.native_id], art_kind=art_kind,
                 asset_path=f"/assets/{item.title}/{art_kind}.jpg", status="rendered",
                 source_url=f"https://example/{art_kind}", base_sha256=base_sha,
                 fingerprint=await _stored_fingerprint(config, item, art_kind, base_sha),
@@ -333,7 +334,7 @@ async def test_a_render_that_used_a_logo_reads_as_affected(session, config):
     """
     item, art_kind = FIXTURE_ROWS[0]
     row = MediaItem(
-        rating_key=item.rating_key, library=item.library, kind=item.kind,
+        rating_key=item.native_id, library=item.library, kind=item.kind,
         title=item.title, year=item.year, tmdb_id=item.tmdb_id, root_folder=item.root_folder,
     )
     session.add(row)
@@ -375,7 +376,7 @@ async def test_a_logo_poster_is_counted_by_an_edit_that_never_touches_poster(
     """
     movie, poster_kind = FIXTURE_ROWS[0]
     poster_row = MediaItem(
-        rating_key=movie.rating_key, library=movie.library, kind=movie.kind,
+        rating_key=movie.native_id, library=movie.library, kind=movie.kind,
         title=movie.title, year=movie.year, tmdb_id=movie.tmdb_id, root_folder=movie.root_folder,
     )
     session.add(poster_row)
@@ -396,7 +397,7 @@ async def test_a_logo_poster_is_counted_by_an_edit_that_never_touches_poster(
 
     episode, title_card_kind = FIXTURE_ROWS[4]
     episode_row = MediaItem(
-        rating_key=episode.rating_key, library=episode.library, kind=episode.kind,
+        rating_key=episode.native_id, library=episode.library, kind=episode.kind,
         title=episode.title, year=episode.year, tmdb_id=episode.tmdb_id,
         season_number=episode.season_number, episode_number=episode.episode_number,
         root_folder=episode.root_folder,
@@ -555,11 +556,12 @@ async def test_the_impact_walk_reads_the_shows_title_through_the_parent_join(
     session.add(show)
     await session.flush()
     season_item = ResolvedItem(
-        rating_key="rk-season", library="TV Shows", kind="season", title="Season 1",
+        server="plex", native_id="rk-season", library="TV Shows", kind="season",
+        title="Season 1",
         year=1999, season_number=1, episode_number=None,
         root_folder="A Show (1999)", file_path=None, art_url=None,
         tmdb_id=1399, tvdb_id=None, imdb_id=None,
-        parent_rating_key="rk-show", show_title="A Show",
+        parent_native_id="rk-show", show_title="A Show",
     )
     season = MediaItem(
         rating_key="rk-season", library="TV Shows", kind="season", title="Season 1",
@@ -611,11 +613,11 @@ def test_show_title_for_row_is_the_parent_title_only_for_a_season():
         (
             "season_poster",
             ResolvedItem(
-                rating_key="rk-season", library="TV Shows", kind="season",
+                server="plex", native_id="rk-season", library="TV Shows", kind="season",
                 title="Season 1", year=1999, season_number=1, episode_number=None,
                 root_folder="A Show (1999)", file_path=None, art_url=None,
                 tmdb_id=1399, tvdb_id=None, imdb_id=None,
-                parent_rating_key="rk-show", show_title="A Show",
+                parent_native_id="rk-show", show_title="A Show",
             ),
         ),
     ],

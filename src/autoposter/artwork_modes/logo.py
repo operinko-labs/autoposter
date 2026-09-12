@@ -53,11 +53,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty, refuse_if_implausible
 from autoposter.db.models import MediaItem
-from autoposter.plex.artwork import (
-    clear_logo, has_clearlogo, selected_uploaded_logo_key, upload_logo,
-)
+from autoposter.plex.artwork import selected_uploaded_logo_key
 from autoposter.providers import base as art
 from autoposter.render.artwork_fetch import pick_guarded_logo
+from autoposter.servers.base import CAP_LOGO_UPLOAD_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +215,7 @@ class LogoMode:
         kind: str | None = None, library: str | None = None, item_id: int | None = None,
     ) -> None:
         self._config = config
-        self._plex = plex
+        self._server = plex
         self._http = http
         self._headers = headers
         self._providers = providers
@@ -261,22 +260,23 @@ class LogoMode:
         probe_failed = 0
         for row in rows:
             try:
-                plex_item = await self._plex.fetch_item(row.rating_key)
-                if not await has_clearlogo(plex_item):
-                    missing.append(row)
-            except PlexNotFound:
-                # A stale rating_key (item deleted/moved in Plex) is expected,
-                # not a crash -- one concise INFO line, no traceback, tallied
-                # separately from a probe failure (backup.py's PR #112 hotfix
-                # shape). NotFound's message embeds the server URL, so never
-                # str(exc).
-                logger.info("logo: %s no longer in Plex, skipped", row.rating_key)
-                missing_from_plex += 1
+                ref = await self._server.fetch_ref(row.rating_key)
             except Exception:  # noqa: BLE001 - one bad item must not abort the probe
                 logger.warning(
                     "logo: could not probe Plex item %s", row.rating_key, exc_info=True
                 )
                 probe_failed += 1
+                continue
+            if ref is None:
+                # A stale rating_key (item deleted/moved in Plex) is expected,
+                # not a crash -- one concise INFO line, no traceback, tallied
+                # separately from a probe failure (backup.py's PR #112 hotfix
+                # shape).
+                logger.info("logo: %s no longer in Plex, skipped", row.rating_key)
+                missing_from_plex += 1
+                continue
+            if not await self._server.has_clearlogo(ref):
+                missing.append((row, ref))
 
         items_missing_logo = len(missing)
         refusal = refuse_if_implausible(
@@ -305,11 +305,11 @@ class LogoMode:
             )
 
         uploaded = unmarked = no_logo_available = upload_failed = 0
-        for row in missing:
+        for row, ref in missing:
             # An outcome name rather than a bool, because "it did not work" is
             # two different operator problems here: nothing usable was on the
             # ladder, and the upload did not go through.
-            outcome, marker = await self._upload_one(row)
+            outcome, marker = await self._upload_one(row, ref)
             if outcome == "no_logo_available":
                 no_logo_available += 1
                 continue
@@ -376,7 +376,7 @@ class LogoMode:
         # stale key an earlier run left on an item whose logo has since gone.
         return marker is not None
 
-    async def _upload_one(self, row) -> tuple[str, str | None]:
+    async def _upload_one(self, row, ref) -> tuple[str, str | None]:
         """Fetch and push one item's logo: ``(outcome, marker to record)``.
 
         The outcome is ``"uploaded"``, ``"no_logo_available"`` (the ladder
@@ -423,7 +423,7 @@ class LogoMode:
                         imdb_id=row.imdb_id,
                     ),
                     Path(tmp),
-                    rating_key=row.rating_key,
+                    native_id=row.rating_key,
                     raster_only=True,
                 )
                 if logo_path is None:
@@ -439,10 +439,7 @@ class LogoMode:
                 # Read inside the temporary directory's scope: it is removed on
                 # the way out of this `with`, and `upload_logo` wants bytes.
                 data = logo_path.read_bytes()
-                plex_item = await self._plex.fetch_item(row.rating_key)
-                marker = await asyncio.to_thread(
-                    upload_logo, plex_item, data, logo_path.suffix
-                )
+                marker = await self._server.upload_logo(ref, data, logo_path.suffix)
         except Exception:  # noqa: BLE001 - see the docstring
             logger.warning(
                 "logo: could not upload a clearlogo for %s", row.rating_key, exc_info=True
@@ -459,7 +456,7 @@ class LogoRevertMode:
         kind: str | None = None, library: str | None = None, item_id: int | None = None,
     ) -> None:
         self._config = config
-        self._plex = plex
+        self._server = plex
         self._http = http
         self._headers = headers
         self._apply = apply
@@ -503,27 +500,32 @@ class LogoRevertMode:
         ours = []
         missing = 0
         probe_failed = 0
-        for row in marked:
-            try:
-                plex_item = await self._plex.fetch_item(row.rating_key)
-                selected = await asyncio.to_thread(selected_uploaded_logo_key, plex_item)
-            except PlexNotFound:
-                # Expected, not a crash: the item was deleted/moved in Plex
-                # since it was marked. One concise line, no traceback --
-                # counted separately from a real probe failure below
-                # (backup.py's PR #112 hotfix shape).
-                logger.info("logo revert: %s no longer in Plex, skipped", row.rating_key)
-                missing += 1
-                continue
-            except Exception:  # noqa: BLE001 - one bad item must not abort the probe
-                logger.warning(
-                    "logo revert: could not probe Plex item %s",
-                    row.rating_key, exc_info=True,
-                )
-                probe_failed += 1
-                continue
-            if selected == row.logo_upload_key:
-                ours.append(row)
+        # selected_uploaded_logo_key stays Plex-only -- Jellyfin (or any server
+        # without CAP_LOGO_UPLOAD_KEY) never wrote a marker, so `marked` is
+        # empty for it in practice; this guard is the explicit statement of
+        # that rather than a reliance on the data happening to be empty.
+        if CAP_LOGO_UPLOAD_KEY in self._server.capabilities:
+            for row in marked:
+                try:
+                    plex_item = await self._server.fetch_item(row.rating_key)
+                    selected = await asyncio.to_thread(selected_uploaded_logo_key, plex_item)
+                except PlexNotFound:
+                    # Expected, not a crash: the item was deleted/moved in Plex
+                    # since it was marked. One concise line, no traceback --
+                    # counted separately from a real probe failure below
+                    # (backup.py's PR #112 hotfix shape).
+                    logger.info("logo revert: %s no longer in Plex, skipped", row.rating_key)
+                    missing += 1
+                    continue
+                except Exception:  # noqa: BLE001 - one bad item must not abort the probe
+                    logger.warning(
+                        "logo revert: could not probe Plex item %s",
+                        row.rating_key, exc_info=True,
+                    )
+                    probe_failed += 1
+                    continue
+                if selected == row.logo_upload_key:
+                    ours.append(row)
 
         items_with_our_logo = len(ours)
         refusal = refuse_if_implausible(
@@ -554,12 +556,20 @@ class LogoRevertMode:
         cleared = failed = 0
         for row in ours:
             try:
-                plex_item = await self._plex.fetch_item(row.rating_key)
-                await asyncio.to_thread(clear_logo, plex_item)
-            except PlexNotFound:
+                ref = await self._server.fetch_ref(row.rating_key)
+            except Exception:  # noqa: BLE001 - see above
+                logger.warning(
+                    "logo revert: could not fetch Plex item %s",
+                    row.rating_key, exc_info=True,
+                )
+                failed += 1
+                continue
+            if ref is None:
                 logger.info("logo revert: %s no longer in Plex, skipped", row.rating_key)
                 missing += 1
                 continue
+            try:
+                await self._server.clear_logo(ref)
             except Exception:  # noqa: BLE001 - see above
                 logger.warning(
                     "logo revert: could not clear the clearlogo for %s",
