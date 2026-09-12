@@ -168,11 +168,12 @@ subtracts overridden and verbed fields from (row 268's branch is the writer).
 
 ## 7. The pipeline
 
-`facts/gather.py`, in the row 268 block, one branch along: when
+`render/pipeline.py::apply_metadata`, after `persist_facts`: when
 `operations.sort_title_source == "collections"` and the item is a movie or a
 show (a list may hold either, and `titleSort` is writable on both), read the
-item's `item_sort_positions` row by joining
-`MediaItem.rating_key` and derive `f"{base} {position:0{width}d}"` with
+item's `item_sort_positions` row **by media item id** in `apply_metadata`,
+which holds it (never by the server's key, which the Jellyfin identity
+migration replaces), and derive `f"{base} {position:0{width}d}"` with
 `width = max(2, len(str(total)))`. No row means no value and no write, exactly
 as a movie in no franchise today. `sources["sort_title"] = "collections"`.
 

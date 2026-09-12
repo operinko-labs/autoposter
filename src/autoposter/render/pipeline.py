@@ -30,7 +30,11 @@ from autoposter.db.models import EventLog, ItemFacts, MediaItem, Render
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
-from autoposter.facts.sort_positions import delete_sort_position
+from autoposter.facts.sort_positions import (
+    delete_sort_position,
+    load_sort_position,
+    with_sort_position,
+)
 from autoposter.intake.arr import RenderIntent
 from autoposter.overlays.selection import OverlayItemView
 from autoposter.overlays.selection import select as select_overlay_definitions
@@ -1662,6 +1666,20 @@ async def apply_metadata(
         session, item, tmdb_facts, mdblist, operations=config.operations, tvdb=tvdb
     )
     await persist_facts(session, media_item_id, facts)
+
+    # Row 269. AFTER persist_facts for row 99's reason below: the position is
+    # an operator-declared ordering, not a provider fact, and must never
+    # reach ``item_facts``. Keyed on the id this function already holds --
+    # never on the server's key, which the Jellyfin identity migration
+    # replaces. Movies and shows only: lists never hold seasons or
+    # episodes, so silence is the truthful report for those.
+    if (
+        config.operations.sort_title_source == "collections"
+        and item.kind in ("movie", "show")
+    ):
+        facts = with_sort_position(
+            facts, await load_sort_position(session, media_item_id)
+        )
 
     # Row 99. Loaded AFTER persist_facts and never before it: ``item_facts``
     # is the PROVIDER's record -- never-overwrite-with-absent, per-field

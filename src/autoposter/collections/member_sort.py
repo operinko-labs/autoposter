@@ -88,6 +88,30 @@ def hold_releases(run_cache: dict, library: str, reason: str) -> None:
     units cannot be named this pass could own any of the rows."""
     _assignment(run_cache, library).hold_reason = reason
 
+async def _media_by_native_id(
+    session: AsyncSession, library: str, native_ids: list[str]
+) -> dict[str, MediaItem]:
+    """``{plex rating key: MediaItem}`` for the members the pass resolved.
+
+    The ONE place this module maps a server's key to a media item, kept
+    separate so the Jellyfin identity migration
+    (``docs/design/2026-09-12-jellyfin-media-server-design.md`` §4.1, §4.7)
+    swaps a single function: today the key is ``media_items.rating_key``;
+    after it, a ``media_item_server_refs`` row with ``server='plex'``. The
+    collections engine resolves against plexapi objects, so the key it
+    holds is Plex's by construction.
+    """
+    if not native_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(MediaItem).where(
+                MediaItem.library == library, MediaItem.rating_key.in_(native_ids)
+            )
+        )
+    ).scalars().all()
+    return {row.rating_key: row for row in rows}
+
 
 async def commit_assignment(
     session: AsyncSession, run_cache: dict, library: str, dry_run: bool,
@@ -106,17 +130,7 @@ async def commit_assignment(
             library, title, lost, owner,
         )
 
-    media: dict[str, MediaItem] = {}
-    if assignment.held:
-        rows = (
-            await session.execute(
-                select(MediaItem).where(
-                    MediaItem.library == library,
-                    MediaItem.rating_key.in_(list(assignment.held)),
-                )
-            )
-        ).scalars().all()
-        media = {row.rating_key: row for row in rows}
+    media = await _media_by_native_id(session, library, list(assignment.held))
     missing = [key for key in assignment.held if key not in media]
     if missing:
         logger.info(
