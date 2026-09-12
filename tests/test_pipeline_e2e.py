@@ -95,7 +95,7 @@ async def test_movie_intent_writes_poster_and_background(config, session, tmp_pa
         return httpx.Response(200, content=source.read_bytes())
 
     item = ResolvedItem(
-        rating_key="12345", library="Movies", kind="movie", title="Dune: Part Two",
+        server="plex", native_id="12345", library="Movies", kind="movie", title="Dune: Part Two",
         year=2024, season_number=None, episode_number=None,
         root_folder="Dune Part Two (2024)",
         file_path="/mnt/Media/Movies/Dune Part Two (2024)/x.mkv",
@@ -130,7 +130,7 @@ async def test_second_run_is_a_no_op(config, session):
         return httpx.Response(200, content=source.read_bytes())
 
     item = ResolvedItem(
-        rating_key="12345", library="Movies", kind="movie", title="Dune: Part Two",
+        server="plex", native_id="12345", library="Movies", kind="movie", title="Dune: Part Two",
         year=2024, season_number=None, episode_number=None,
         root_folder="Dune Part Two (2024)",
         file_path="/mnt/Media/Movies/Dune Part Two (2024)/x.mkv",
@@ -157,7 +157,7 @@ async def test_no_art_records_the_reason_without_writing(config, session):
             return []
 
     item = ResolvedItem(
-        rating_key="99", library="Movies", kind="movie", title="Obscure Film",
+        server="plex", native_id="99", library="Movies", kind="movie", title="Obscure Film",
         year=1970, season_number=None, episode_number=None, root_folder="Obscure (1970)",
         file_path="/mnt/Media/Movies/Obscure (1970)/x.mkv", art_url=None,
         tmdb_id=1, tvdb_id=None, imdb_id=None,
@@ -175,7 +175,7 @@ async def test_no_art_records_the_reason_without_writing(config, session):
 
 def _movie_item(rating_key, title="Identity Fork Movie", tmdb_id=1):
     return ResolvedItem(
-        rating_key=rating_key, library="Movies", kind="movie", title=title,
+        server="plex", native_id=rating_key, library="Movies", kind="movie", title=title,
         year=2024, season_number=None, episode_number=None,
         root_folder=f"{title} (2024)",
         file_path=f"/mnt/Media/Movies/{title} (2024)/x.mkv",
