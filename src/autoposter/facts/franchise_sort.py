@@ -24,6 +24,33 @@ _SUFFIX = " collection"
 _ARTICLES = ("the ", "a ", "an ")
 
 
+def sort_base(name: str) -> str:
+    """The franchise or list name as a sort-title base.
+
+    Trailing " Collection" and a leading English article dropped, the way
+    Plex drops the article itself. A name that is ONLY the suffix, or only
+    an article, is kept rather than blanked. Shared by row 268's TMDb path
+    and row 269's definition path (``collections/member_sort.py``), so both
+    write one shape.
+    """
+    name = name.strip()
+    if name.lower().endswith(_SUFFIX) and len(name) > len(_SUFFIX):
+        name = name[: -len(_SUFFIX)].rstrip()
+    lowered = name.lower()
+    for article in _ARTICLES:
+        if lowered.startswith(article) and len(name) > len(article):
+            name = name[len(article):].lstrip()
+            break
+    return name
+
+
+def format_position(base: str, position: int, total: int) -> str:
+    """``"Alien 02"``: a one-based position, zero-padded to the total's width
+    and never narrower than two digits, so "10" sorts after "9"."""
+    width = max(2, len(str(total)))
+    return f"{base} {position:0{width}d}"
+
+
 def franchise_sort_title(order: CollectionOrder | None, tmdb_id: int | None) -> str | None:
     """``"Alien 02"`` for the second film of the Alien franchise, or ``None``.
 
@@ -34,15 +61,7 @@ def franchise_sort_title(order: CollectionOrder | None, tmdb_id: int | None) -> 
     """
     if order is None or tmdb_id is None or tmdb_id not in order.parts:
         return None
-    name = order.name.strip()
-    if name.lower().endswith(_SUFFIX) and len(name) > len(_SUFFIX):
-        name = name[: -len(_SUFFIX)].rstrip()
-    lowered = name.lower()
-    for article in _ARTICLES:
-        if lowered.startswith(article) and len(name) > len(article):
-            name = name[len(article):].lstrip()
-            break
-    if not name:
+    base = sort_base(order.name)
+    if not base:
         return None
-    width = max(2, len(str(len(order.parts))))
-    return f"{name} {order.parts.index(tmdb_id) + 1:0{width}d}"
+    return format_position(base, order.parts.index(tmdb_id) + 1, len(order.parts))

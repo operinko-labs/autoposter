@@ -122,6 +122,18 @@ RUN apk add --no-cache \
 # stages -- putting it any lower would rebuild it whenever pyproject.toml or
 # src/ changed, which is the layer ordering the dev stage was reshaped to
 # avoid.
+#
+# 2026-09-12 -- keyed on the DAY as well. Both workflows build with
+# `cache-from: type=gha`, so "keyed on this file alone" meant a runner kept
+# serving whatever base it had cached until this file changed: forgejo-runner1
+# handed a PR a pre-2026-09-11 base still on util-linux 2.42.1-r0 and the Trivy
+# gate went red on a change that touched nothing here, while the same parent
+# commit passed on forgejo-runner2. An ARG declared directly above a RUN is
+# part of that layer's cache key even when the RUN never reads it, so the
+# workflows pass today's UTC date here and no runner can serve a base more
+# than a day stale. Unset -- a plain local `docker build` -- keeps the old
+# file-keyed behaviour. tests/test_apk_refresh_build_arg.py pins both halves.
+ARG APK_REFRESH=""
 RUN apk upgrade --no-cache
 
 WORKDIR /app

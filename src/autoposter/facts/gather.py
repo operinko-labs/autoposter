@@ -259,7 +259,12 @@ async def gather_facts(
     # movie in no franchise -- most of them -- costs no request at all.
     sort_title = None
     sort_title_source = getattr(operations, "sort_title_source", None)
-    if sort_title_source and item.kind != "movie":
+    # Row 269's ``collections`` source is read in ``render/pipeline.py``'s
+    # ``apply_metadata`` -- which holds the media item id -- and laid onto
+    # these facts there (``facts/sort_positions.py::with_sort_position``).
+    # Not here: this function has only the item's server key, and a read
+    # keyed on that would move with the Jellyfin identity migration.
+    if sort_title_source == "tmdb_collection" and item.kind != "movie":
         global _sort_title_non_movie_warned
         if not _sort_title_non_movie_warned:
             logger.warning(
@@ -268,7 +273,7 @@ async def gather_facts(
                 "item"
             )
             _sort_title_non_movie_warned = True
-    elif sort_title_source and facts.tmdb_collection_id is not None:
+    elif sort_title_source == "tmdb_collection" and facts.tmdb_collection_id is not None:
         try:
             order = await tmdb.collection_order(facts.tmdb_collection_id)
         except TmdbRateLimited as exc:

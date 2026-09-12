@@ -1120,15 +1120,17 @@ class OperationsConfig(BaseModel):
     # than a second key. The apply flag is off by default for row 227's reason:
     # the write touches every franchise movie in a library, and turning the
     # flag back off leaves the sort titles it wrote (locked) in place.
-    sort_title_source: Literal["tmdb_collection"] | None = Field(
+    sort_title_source: Literal["tmdb_collection", "collections"] | None = Field(
         default=None,
         description=(
-            "Where a movie's sort title comes from, library-wide. "
+            "Where an item's sort title comes from, library-wide. "
             "'tmdb_collection' writes '<franchise> <NN>' -- the TMDb franchise "
             "collection's name and the film's position in it, in the order TMDb "
             "lists the parts -- so the library's title sort lists a franchise "
-            "in that order. Movie "
-            "libraries only. Unset writes no sort title at all."
+            "in that order; movie libraries only. 'collections' reads the "
+            "positions your own collection definitions with member_sort: true "
+            "recorded, in each list's own order (roadmap row 269). Unset writes "
+            "no sort title at all."
         ),
     )
     sort_title_apply: bool = Field(
@@ -1707,7 +1709,7 @@ class OperationsOverride(BaseModel):
         default=None, description=_per_library("operations", "added_at_source"))
     added_at_apply: bool | None = Field(
         default=None, description=_per_library("operations", "added_at_apply"))
-    sort_title_source: Literal["tmdb_collection"] | None = Field(
+    sort_title_source: Literal["tmdb_collection", "collections"] | None = Field(
         default=None, description=_per_library("operations", "sort_title_source"))
     sort_title_apply: bool | None = Field(
         default=None, description=_per_library("operations", "sort_title_apply"))
@@ -2021,6 +2023,37 @@ class CollectionDefinition(BaseModel):
     item_label: list[str] = Field(
         default_factory=list,
         description="Plex labels applied to every resolved member of the collection. Only ever added, never removed.",
+    )
+    # Roadmap row 269. Record every resolved member's position in THIS
+    # definition's order -- the builder's output after filters and limit,
+    # never re-sorted -- for the render pipeline to write as the member's
+    # sort title ("<base> <NN>", base = this title through
+    # ``facts/franchise_sort.sort_base``). A member that leaves the list is
+    # RELEASED: its sort title is blanked and unlocked so Plex derives it
+    # again. Read by the pipeline only under ``operations.sort_title_source:
+    # collections``, written only under ``operations.sort_title_apply``.
+    member_sort: bool = Field(
+        default=False,
+        description=(
+            "Write each member's Plex sort title as '<this title> <NN>' in the "
+            "order this definition lists them, so the library's title sort keeps "
+            "them together and in order. Needs operations.sort_title_source: "
+            "collections and operations.sort_title_apply to reach Plex."
+        ),
+    )
+    # Row 269's sort-only mode: the definition runs for its member effects and
+    # creates no Plex collection. NOT Kometa's ``build_collection: false``
+    # feeder (that family is a non-goal); it shares only the idea of a
+    # definition that creates nothing. Refused without ``member_sort`` by
+    # ``_member_sort_needs_an_ordered_builder``: such a definition would do
+    # nothing and read as configured.
+    create_collection: bool = Field(
+        default=True,
+        description=(
+            "Create and reconcile the Plex collection. False runs the definition "
+            "for member_sort only; a collection that already exists under this "
+            "title is left alone."
+        ),
     )
     # The collection's Plex sort title, applied verbatim on create and kept in
     # sync afterwards. This is the whole string, not a prefix -- Kometa's
@@ -2426,6 +2459,39 @@ class CollectionDefinition(BaseModel):
                 "'hub_priority' requires at least one of 'visible_library', "
                 "'visible_home' or 'visible_shared' to promote the collection "
                 "to a managed hub first"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _member_sort_needs_an_ordered_builder(self) -> "CollectionDefinition":
+        """Roadmap row 269. A smart builder hands Plex a filter and never holds
+        an ordered member list, so there is no order to record: structural for
+        every smart builder, which is why this is one validator rather than an
+        entry in each builder's ``refused_definition_fields`` table (that
+        table is for fields a smart builder COULD apply and chooses not to).
+        ``create_collection: false`` on a smart builder is refused for the
+        same reason: the smart collection is the definition's only effect.
+        And ``create_collection: false`` without ``member_sort`` is a
+        definition with no effect at all, refused so it cannot read as
+        configured.
+        """
+        from autoposter.collections.builders import REGISTRY
+
+        if getattr(REGISTRY.get(self.builder), "smart", False):
+            if self.member_sort:
+                raise ValueError(
+                    f"'member_sort' does not apply to {self.builder!r}: a smart "
+                    "builder holds no ordered member list to record positions from"
+                )
+            if not self.create_collection:
+                raise ValueError(
+                    f"'create_collection: false' does not apply to {self.builder!r}: "
+                    "the smart collection is the definition's only effect"
+                )
+        if not self.create_collection and not self.member_sort:
+            raise ValueError(
+                "'create_collection: false' needs 'member_sort: true'; a definition "
+                "that creates no collection and sorts nothing would do nothing"
             )
         return self
 
@@ -3046,6 +3112,11 @@ _REFUSED_PLAYLIST_FIELDS: dict[str, str] = {
         "member labelling belongs to collections (roadmap row 69); a playlist's "
         "members are not owned by it"
     ),
+    "member_sort": (
+        "a playlist's order is already Plex's own custom order; member sort "
+        "titles (roadmap row 269) are a collection feature"
+    ),
+    "create_collection": "a playlist has no collection to not create (roadmap row 269)",
     "visible_library": "hub visibility is a collection setting; playlists are never promoted to hubs",
     "visible_home": "hub visibility is a collection setting; playlists are never promoted to hubs",
     "visible_shared": "hub visibility is a collection setting; playlists are never promoted to hubs",

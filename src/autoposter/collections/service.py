@@ -45,6 +45,7 @@ from autoposter.providers.cache import ProviderCache
 from autoposter.providers.tmdb_lists import TmdbListClient
 from autoposter.providers.tracearr import TracearrClient
 from autoposter.providers.tvdb import TVDBClient
+from autoposter.queue.jobs import enqueue_batch
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +460,17 @@ async def reconcile_libraries(
                 )
 
             await session.commit()
+
+            if run.reprocess:
+                # Row 269: BELOW the commit, so a job never describes a row
+                # the database does not yet show (``enqueue_batch`` commits
+                # its own transaction). Inside this try on purpose: a queue
+                # failure is this library's failure, logged and recorded, and
+                # the next pass re-enqueues whatever it finds changed.
+                queued = await enqueue_batch(session, "process_item", run.reprocess)
+                logger.info(
+                    "%s: queued %d member(s) for a sort-title write", name, queued
+                )
         except Exception as error:
             await session.rollback()
             logger.exception("failed reconciling %r", name)

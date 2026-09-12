@@ -167,6 +167,29 @@ def test_a_name_that_is_only_the_suffix_is_kept_rather_than_blanked():
     assert franchise_sort_title(CollectionOrder("", [1]), 1) is None
 
 
+from autoposter.facts.franchise_sort import format_position, sort_base  # noqa: E402
+
+
+def test_sort_base_strips_the_suffix_and_the_article():
+    """Row 269 shares this with the definition path, so one shape is written
+    whichever source names the base."""
+    assert sort_base("The Lord of the Rings Collection") == "Lord of the Rings"
+    assert sort_base("Alien Collection") == "Alien"
+    assert sort_base("Best Bond Films") == "Best Bond Films"
+    assert sort_base("Collection") == "Collection"
+    assert sort_base("") == ""
+
+
+def test_format_position_pads_to_the_total():
+    assert format_position("Alien", 2, 3) == "Alien 02"
+    assert format_position("Big", 7, 100) == "Big 007"
+
+
+def test_franchise_sort_title_is_the_two_helpers_composed():
+    order = CollectionOrder(name="Alien Collection", parts=[348, 679, 8077])
+    assert franchise_sort_title(order, 679) == format_position(sort_base(order.name), 2, 3)
+
+
 # --- the explicit-source model at the gather seam ---------------------------
 
 import pytest_asyncio  # noqa: E402,F401  (imported for the plugin's fixtures)
@@ -374,13 +397,16 @@ def test_a_field_verb_on_sort_title_wins():
     assert edits == {"titleSort.locked": 1}
 
 
-def test_a_show_is_never_written_even_with_both_gates_on():
-    """Belt and braces below the gather's own guard: a show carries no
-    franchise, but a hand-built facts object must not reach Plex either."""
+def test_an_episode_is_never_written_even_with_both_gates_on():
+    """Belt and braces below the gather's own guard: ``sort_title`` sits in
+    the episode kind's ``WRITABLE_BY_KIND`` set for the override path, so the
+    writer's own guard is what keeps a hand-built facts object off an
+    episode. (Shows are allowed since row 269 -- a list may hold them -- and
+    the show refusal for THIS source is the gather's, pinned above.)"""
     from autoposter.plex.writer import WRITABLE_BY_KIND
 
-    assert "sort_title" in WRITABLE_BY_KIND["show"], "the override path keeps it writable"
-    item = FakeItem(kind="show", titleSort="Dark")
+    assert "sort_title" in WRITABLE_BY_KIND["episode"], "the override path keeps it writable"
+    item = FakeItem(kind="episode", titleSort="Pilot")
     edits = plan_edits(
         item, GatheredFacts(sort_title="Dark 01"),
         OperationsConfig(sort_title_source="tmdb_collection", sort_title_apply=True),

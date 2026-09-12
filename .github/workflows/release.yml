@@ -105,6 +105,9 @@ jobs:
             echo "tag=${TAG}"
             echo "version=${VERSION}"
             echo "short_sha=${SHORT_SHA}"
+            # Today's date, handed to the build as APK_REFRESH -- see the
+            # Dockerfile's ARG APK_REFRESH and ci.yml's gen_tag step.
+            echo "apk_refresh=$(date -u +%Y-%m-%d)"
           } >> "$GITHUB_OUTPUT"
           echo "releasing ${TAG} from ${SHORT_SHA}"
 
@@ -135,6 +138,7 @@ jobs:
           build-args: |
             GIT_SHA=${{ steps.version.outputs.short_sha }}
             RELEASE_VERSION=${{ steps.version.outputs.tag }}
+            APK_REFRESH=${{ steps.version.outputs.apk_refresh }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

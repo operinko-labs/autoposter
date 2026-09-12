@@ -578,6 +578,12 @@ jobs:
           # this one line so the tag the image is pushed under and the version
           # it reports over /api/version cannot drift apart.
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          # Today's date, handed to the build as APK_REFRESH so the base
+          # stage's `apk upgrade` layer is re-run at most once a day per
+          # runner instead of being served from the gha cache indefinitely
+          # -- see the Dockerfile's ARG APK_REFRESH for the run that made
+          # this necessary.
+          echo "apk_refresh=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -592,8 +598,11 @@ jobs:
           # Stamps the image with its own registry tag -- see the Dockerfile's
           # ARG GIT_SHA. It is the last layer, so a new sha rebuilds nothing
           # but that ENV; the cache below still covers everything above it.
+          # APK_REFRESH sits ABOVE the base stage's `apk upgrade`, so a new
+          # day rebuilds that layer and everything after it, once per runner.
           build-args: |
             GIT_SHA=${{ steps.gen_tag.outputs.short_sha }}
+            APK_REFRESH=${{ steps.gen_tag.outputs.apk_refresh }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
