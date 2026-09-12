@@ -30,6 +30,7 @@ from autoposter.config.loader import build_config, render_version_for
 from autoposter.config.overrides import merge_overrides
 from autoposter.db.models import Job, ManagedCollection, MediaItem, Render
 from autoposter.plex.client import ResolvedItem
+from autoposter.servers.identity import identity_key, identity_key_for
 from autoposter.render.pipeline import (
     adopted_fingerprint,
     compute_fingerprint,
@@ -129,22 +130,22 @@ async def _stored_fingerprint(config, item: ResolvedItem, art_kind: str, base_sh
 
 
 async def _seed(session, config, rows=FIXTURE_ROWS) -> None:
-    by_rating_key: dict[str, int] = {}
+    by_native_id: dict[str, int] = {}
     for item, art_kind in rows:
-        if item.native_id not in by_rating_key:
+        if item.native_id not in by_native_id:
             row = MediaItem(
-                rating_key=item.native_id, library=item.library, kind=item.kind,
+                identity_key=identity_key_for(item), library=item.library, kind=item.kind,
                 title=item.title, year=item.year, tmdb_id=item.tmdb_id,
                 season_number=item.season_number, episode_number=item.episode_number,
                 root_folder=item.root_folder,
             )
             session.add(row)
             await session.flush()
-            by_rating_key[item.native_id] = row.id
+            by_native_id[item.native_id] = row.id
         base_sha = "a" * 64
         session.add(
             Render(
-                item_id=by_rating_key[item.native_id], art_kind=art_kind,
+                item_id=by_native_id[item.native_id], art_kind=art_kind,
                 asset_path=f"/assets/{item.title}/{art_kind}.jpg", status="rendered",
                 source_url=f"https://example/{art_kind}", base_sha256=base_sha,
                 fingerprint=await _stored_fingerprint(config, item, art_kind, base_sha),
@@ -334,7 +335,7 @@ async def test_a_render_that_used_a_logo_reads_as_affected(session, config):
     """
     item, art_kind = FIXTURE_ROWS[0]
     row = MediaItem(
-        rating_key=item.native_id, library=item.library, kind=item.kind,
+        identity_key=identity_key_for(item), library=item.library, kind=item.kind,
         title=item.title, year=item.year, tmdb_id=item.tmdb_id, root_folder=item.root_folder,
     )
     session.add(row)
@@ -376,7 +377,7 @@ async def test_a_logo_poster_is_counted_by_an_edit_that_never_touches_poster(
     """
     movie, poster_kind = FIXTURE_ROWS[0]
     poster_row = MediaItem(
-        rating_key=movie.native_id, library=movie.library, kind=movie.kind,
+        identity_key=identity_key_for(movie), library=movie.library, kind=movie.kind,
         title=movie.title, year=movie.year, tmdb_id=movie.tmdb_id, root_folder=movie.root_folder,
     )
     session.add(poster_row)
@@ -397,7 +398,7 @@ async def test_a_logo_poster_is_counted_by_an_edit_that_never_touches_poster(
 
     episode, title_card_kind = FIXTURE_ROWS[4]
     episode_row = MediaItem(
-        rating_key=episode.native_id, library=episode.library, kind=episode.kind,
+        identity_key=identity_key_for(episode), library=episode.library, kind=episode.kind,
         title=episode.title, year=episode.year, tmdb_id=episode.tmdb_id,
         season_number=episode.season_number, episode_number=episode.episode_number,
         root_folder=episode.root_folder,
@@ -550,7 +551,11 @@ async def test_the_impact_walk_reads_the_shows_title_through_the_parent_join(
     """
     config.artwork.season_poster.show_title.add_text = True
     show = MediaItem(
-        rating_key="rk-show", library="TV Shows", kind="show", title="A Show",
+        identity_key=identity_key(
+            "show", tmdb_id=1399, tvdb_id=None, imdb_id=None,
+            season_number=None, episode_number=None, file_path=None,
+        ),
+        library="TV Shows", kind="show", title="A Show",
         year=1999, tmdb_id=1399, root_folder="A Show (1999)",
     )
     session.add(show)
@@ -564,7 +569,11 @@ async def test_the_impact_walk_reads_the_shows_title_through_the_parent_join(
         parent_native_id="rk-show", show_title="A Show",
     )
     season = MediaItem(
-        rating_key="rk-season", library="TV Shows", kind="season", title="Season 1",
+        identity_key=identity_key(
+            "season", tmdb_id=1399, tvdb_id=None, imdb_id=None,
+            season_number=1, episode_number=None, file_path=None,
+        ),
+        library="TV Shows", kind="season", title="Season 1",
         year=1999, tmdb_id=1399, season_number=1, root_folder="A Show (1999)",
         parent_id=show.id,
     )

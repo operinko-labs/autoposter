@@ -18,13 +18,15 @@ from PIL import Image
 
 from autoposter.badges.compose import badge_fingerprint, compose
 from autoposter.config.schema import BadgesConfig
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
 from autoposter.overlays.assets import FONTS
 from autoposter.overlays.families import FAMILIES
 from autoposter.overlays.schema import OverlayDefinition
 from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
 from autoposter.render.pipeline import apply_badges
 from autoposter.servers.base import CAP_LOCK_ARTWORK, ServerItemRef
+
+from conftest import seed_media_item
 # Bare module import, not `tests.test_overlay_engine_golden`: this repo has no
 # tests/__init__.py, so `tests` is not an importable package -- the precedent
 # is test_config_safety.py's `from test_api_config_editor import (...)`.
@@ -584,9 +586,7 @@ REF = ServerItemRef("plex", "1", "Movies", "movie")
 
 
 async def _render(session, rating_key="overlay-entrypoint-item"):
-    item = MediaItem(kind="movie", rating_key=rating_key, library="Movies", title="X")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, rating_key, kind="movie", library="Movies", title="X")
     render = Render(
         item_id=item.id, art_kind="poster", base_sha256="abc",
         status="rendered", asset_path=str(BASE),

@@ -4,13 +4,14 @@ from pathlib import Path
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ItemFacts, ManagedCollection, MediaItem, Render
+from autoposter.db.models import ItemFacts, ManagedCollection, Render
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -41,8 +42,10 @@ async def auth_headers(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def _item(rating_key, title, library="Movies", kind="movie"):
-    return MediaItem(rating_key=rating_key, library=library, kind=kind, title=title)
+async def _item(session, rating_key, title, library="Movies", kind="movie", **extra):
+    return await seed_media_item(
+        session, rating_key, library=library, kind=kind, title=title, **extra
+    )
 
 
 # --- /api/items ---
@@ -54,8 +57,8 @@ async def test_items_requires_a_session(client):
 
 
 async def test_items_pagination_returns_the_right_slice_and_total(client, auth_headers, session):
-    session.add_all([_item(f"rk{i}", f"Movie {i}") for i in range(5)])
-    await session.commit()
+    for i in range(5):
+        await _item(session, f"rk{i}", f"Movie {i}")
 
     response = await client.get("/api/items", headers=auth_headers, params={"limit": 2, "offset": 1})
     body = response.json()
@@ -64,19 +67,16 @@ async def test_items_pagination_returns_the_right_slice_and_total(client, auth_h
 
 
 async def test_items_limit_is_capped_above_its_maximum(client, auth_headers, session):
-    session.add_all([_item(f"rk{i}", f"Movie {i}") for i in range(250)])
-    await session.commit()
+    for i in range(250):
+        await _item(session, f"rk{i}", f"Movie {i}")
 
     response = await client.get("/api/items", headers=auth_headers, params={"limit": 10000})
     assert len(response.json()["items"]) == 200
 
 
 async def test_items_filter_by_library(client, auth_headers, session):
-    session.add_all([
-        _item("rk1", "A", library="Movies"),
-        _item("rk2", "B", library="TV Shows"),
-    ])
-    await session.commit()
+    await _item(session, "rk1", "A", library="Movies")
+    await _item(session, "rk2", "B", library="TV Shows")
 
     response = await client.get("/api/items", headers=auth_headers, params={"library": "TV Shows"})
     body = response.json()
@@ -85,11 +85,8 @@ async def test_items_filter_by_library(client, auth_headers, session):
 
 
 async def test_items_filter_by_kind(client, auth_headers, session):
-    session.add_all([
-        _item("rk1", "A", kind="movie"),
-        _item("rk2", "B", kind="show"),
-    ])
-    await session.commit()
+    await _item(session, "rk1", "A", kind="movie")
+    await _item(session, "rk2", "B", kind="show")
 
     response = await client.get("/api/items", headers=auth_headers, params={"kind": "show"})
     body = response.json()
@@ -98,10 +95,9 @@ async def test_items_filter_by_kind(client, auth_headers, session):
 
 
 async def test_items_filter_by_render_status(client, auth_headers, session):
-    session.add_all([_item("rk1", "A"), _item("rk2", "B")])
-    await session.flush()
-    items = (await session.execute(select(MediaItem))).scalars().all()
-    ids = {row.rating_key: row.id for row in items}
+    item1 = await _item(session, "rk1", "A")
+    item2 = await _item(session, "rk2", "B")
+    ids = {"rk1": item1.id, "rk2": item2.id}
     session.add_all([
         Render(item_id=ids["rk1"], art_kind="poster", status="rendered", asset_path="/x/a.jpg"),
         Render(item_id=ids["rk2"], art_kind="poster", status="failed", asset_path="/x/b.jpg"),
@@ -115,12 +111,9 @@ async def test_items_filter_by_render_status(client, auth_headers, session):
 
 
 async def test_items_filters_combine(client, auth_headers, session):
-    session.add_all([
-        _item("rk1", "A", library="Movies", kind="movie"),
-        _item("rk2", "B", library="Movies", kind="show"),
-        _item("rk3", "C", library="TV Shows", kind="movie"),
-    ])
-    await session.commit()
+    await _item(session, "rk1", "A", library="Movies", kind="movie")
+    await _item(session, "rk2", "B", library="Movies", kind="show")
+    await _item(session, "rk3", "C", library="TV Shows", kind="movie")
 
     response = await client.get(
         "/api/items", headers=auth_headers, params={"library": "Movies", "kind": "movie"}
@@ -131,8 +124,8 @@ async def test_items_filters_combine(client, auth_headers, session):
 
 
 async def test_items_search_matches_a_substring_case_insensitively(client, auth_headers, session):
-    session.add_all([_item("rk1", "The Matrix"), _item("rk2", "Inception")])
-    await session.commit()
+    await _item(session, "rk1", "The Matrix")
+    await _item(session, "rk2", "Inception")
 
     response = await client.get("/api/items", headers=auth_headers, params={"search": "matr"})
     body = response.json()
@@ -144,10 +137,9 @@ async def test_items_search_treats_percent_as_a_literal_character(client, auth_h
     # "The 1000 Club" is the discriminating row: an unescaped "100%" becomes
     # ILIKE '%100%%', whose trailing wildcard matches it too. Without it the
     # test passes with or without the escaping.
-    session.add_all([
-        _item("rk1", "100% Wolf"), _item("rk2", "Inception"), _item("rk3", "The 1000 Club"),
-    ])
-    await session.commit()
+    await _item(session, "rk1", "100% Wolf")
+    await _item(session, "rk2", "Inception")
+    await _item(session, "rk3", "The 1000 Club")
 
     response = await client.get("/api/items", headers=auth_headers, params={"search": "100%"})
     body = response.json()
@@ -156,8 +148,8 @@ async def test_items_search_treats_percent_as_a_literal_character(client, auth_h
 
 
 async def test_items_search_treats_underscore_as_a_literal_character(client, auth_headers, session):
-    session.add_all([_item("rk1", "Se7en_Special"), _item("rk2", "Inception")])
-    await session.commit()
+    await _item(session, "rk1", "Se7en_Special")
+    await _item(session, "rk2", "Inception")
 
     # An underscore is a single-character wildcard in LIKE/ILIKE; "Se7enX"
     # must NOT match "Se7en_Special" if the escaping is genuine.
@@ -171,25 +163,34 @@ async def test_items_search_treats_underscore_as_a_literal_character(client, aut
 
 
 async def test_items_render_status_summary_is_included(client, auth_headers, session):
-    session.add(_item("rk1", "A"))
-    await session.flush()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
-    session.add(Render(item_id=item_id, art_kind="poster", status="rendered", asset_path="/x/a.jpg"))
+    item = await _item(session, "rk1", "A")
+    session.add(Render(item_id=item.id, art_kind="poster", status="rendered", asset_path="/x/a.jpg"))
     await session.commit()
 
     response = await client.get("/api/items", headers=auth_headers)
     row = response.json()["items"][0]
     assert row["render_status"] == {"poster": "rendered"}
+    assert row["refs"] == {"plex": "rk1"}
+    assert "rating_key" not in row
+
+
+async def test_items_carry_their_own_refs_not_swapped(client, auth_headers, session):
+    """``refs_by_item.get(item.id, {})`` has to key off the right item, not
+    just answer with the page's first (or only) row's refs for every item."""
+    await _item(session, "rk1", "A")
+    await _item(session, "rk2", "B")
+
+    response = await client.get("/api/items", headers=auth_headers)
+    by_title = {row["title"]: row["refs"] for row in response.json()["items"]}
+    assert by_title == {"A": {"plex": "rk1"}, "B": {"plex": "rk2"}}
 
 
 async def test_items_render_status_keys_arrive_in_sorted_art_kind_order(client, auth_headers, session):
     # Insert in the opposite of sorted order ("poster" before "background")
     # so a query without an ORDER BY has no reason to return them sorted.
-    session.add(_item("rk1", "A"))
-    await session.flush()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
-    session.add(Render(item_id=item_id, art_kind="poster", status="rendered", asset_path="/x/a.jpg"))
-    session.add(Render(item_id=item_id, art_kind="background", status="rendered", asset_path="/x/b.jpg"))
+    item = await _item(session, "rk1", "A")
+    session.add(Render(item_id=item.id, art_kind="poster", status="rendered", asset_path="/x/a.jpg"))
+    session.add(Render(item_id=item.id, art_kind="background", status="rendered", asset_path="/x/b.jpg"))
     await session.commit()
 
     response = await client.get("/api/items", headers=auth_headers)
@@ -201,16 +202,14 @@ async def test_items_render_status_keys_arrive_in_sorted_art_kind_order(client, 
 
 
 async def test_item_detail_requires_a_session(client, session):
-    session.add(_item("rk1", "A"))
-    await session.commit()
+    await _item(session, "rk1", "A")
     response = await client.get("/api/items/1")
     assert response.status_code == 401
 
 
 async def test_item_detail_includes_facts_and_renders(client, auth_headers, session):
-    session.add(_item("rk1", "A"))
-    await session.flush()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    item = await _item(session, "rk1", "A")
+    item_id = item.id
     session.add(ItemFacts(item_id=item_id, critic_rating=8.5, studio="Studio X"))
     session.add(
         Render(
@@ -225,6 +224,8 @@ async def test_item_detail_includes_facts_and_renders(client, auth_headers, sess
     assert response.status_code == 200
     body = response.json()
     assert body["title"] == "A"
+    assert body["refs"] == {"plex": "rk1"}
+    assert "rating_key" not in body
     assert body["facts"]["critic_rating"] == 8.5
     assert body["facts"]["studio"] == "Studio X"
     assert len(body["renders"]) == 1
@@ -241,9 +242,8 @@ async def test_item_detail_echoes_the_render_provider(client, auth_headers, sess
     """``provider`` is the only trace a manual override leaves in the database
     (render/pipeline.py stamps ``provider="manual"``), so the detail page needs
     it to know whether there is an override to offer clearing."""
-    session.add(_item("rk1", "A"))
-    await session.flush()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    item = await _item(session, "rk1", "A")
+    item_id = item.id
     session.add_all([
         Render(
             item_id=item_id, art_kind="poster", status="rendered",
@@ -268,9 +268,8 @@ async def test_item_detail_exposes_the_source_url_and_textlessness(
     """Both are on the model and neither was served. The candidate picker needs
     them to mark which of a provider's images is the one currently in use --
     ``provider`` alone cannot, since a provider offers many."""
-    session.add(_item("rk1", "A"))
-    await session.flush()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    item = await _item(session, "rk1", "A")
+    item_id = item.id
     session.add(
         Render(
             item_id=item_id, art_kind="poster", status="rendered", asset_path="/x/a.jpg",
@@ -298,53 +297,34 @@ async def test_item_detail_names_the_show_for_an_episode(client, auth_headers, s
     _resolved_episode) -- the endpoint has to climb two levels to reach the
     show. Without the show's name the page has nothing to tell apart the
     dozens of "Episode 26"s a real library holds."""
-    session.add(_item("rk-show", "Firefly", library="TV Shows", kind="show"))
-    await session.flush()
-    show_id = (await session.execute(select(MediaItem))).scalars().one().id
-    season = MediaItem(
-        rating_key="rk-season", library="TV Shows", kind="season",
-        title="Season 1", parent_id=show_id, season_number=1,
+    show = await _item(session, "rk-show", "Firefly", library="TV Shows", kind="show")
+    season = await _item(
+        session, "rk-season", "Season 1", library="TV Shows", kind="season",
+        parent=show, season_number=1,
     )
-    session.add(season)
-    await session.flush()
-    season_id = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "rk-season"))
-    ).scalar_one().id
-    episode = MediaItem(
-        rating_key="rk-episode", library="TV Shows", kind="episode",
-        title="Episode 26", parent_id=season_id, season_number=1, episode_number=26,
+    episode = await _item(
+        session, "rk-episode", "Episode 26", library="TV Shows", kind="episode",
+        parent=season, season_number=1, episode_number=26,
     )
-    session.add(episode)
-    await session.commit()
-    episode_id = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "rk-episode"))
-    ).scalar_one().id
 
-    response = await client.get(f"/api/items/{episode_id}", headers=auth_headers)
+    response = await client.get(f"/api/items/{episode.id}", headers=auth_headers)
     body = response.json()
     assert body["season_number"] == 1
     assert body["episode_number"] == 26
-    assert body["parent"] == {"id": show_id, "title": "Firefly"}
+    assert body["parent"] == {"id": show.id, "title": "Firefly"}
 
 
 async def test_item_detail_names_the_show_for_a_season(client, auth_headers, session):
     """A season's parent_id points directly at the show."""
-    session.add(_item("rk-show", "Firefly", library="TV Shows", kind="show"))
-    await session.flush()
-    show_id = (await session.execute(select(MediaItem))).scalars().one().id
-    season = MediaItem(
-        rating_key="rk-season", library="TV Shows", kind="season",
-        title="Season 1", parent_id=show_id, season_number=1,
+    show = await _item(session, "rk-show", "Firefly", library="TV Shows", kind="show")
+    season = await _item(
+        session, "rk-season", "Season 1", library="TV Shows", kind="season",
+        parent=show, season_number=1,
     )
-    session.add(season)
-    await session.commit()
-    season_id = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "rk-season"))
-    ).scalar_one().id
 
-    response = await client.get(f"/api/items/{season_id}", headers=auth_headers)
+    response = await client.get(f"/api/items/{season.id}", headers=auth_headers)
     body = response.json()
-    assert body["parent"] == {"id": show_id, "title": "Firefly"}
+    assert body["parent"] == {"id": show.id, "title": "Firefly"}
 
 
 async def test_item_detail_degrades_honestly_when_the_parent_is_unresolved(
@@ -354,16 +334,12 @@ async def test_item_detail_degrades_honestly_when_the_parent_is_unresolved(
     yet (render/pipeline.py's _upsert_media_item). The endpoint must not
     invent a show name for that case -- it reports no parent, same as an item
     that has none."""
-    session.add(
-        MediaItem(
-            rating_key="rk-episode", library="TV Shows", kind="episode",
-            title="Episode 26", parent_id=None, season_number=1, episode_number=26,
-        )
+    episode = await _item(
+        session, "rk-episode", "Episode 26", library="TV Shows", kind="episode",
+        season_number=1, episode_number=26,
     )
-    await session.commit()
-    episode_id = (await session.execute(select(MediaItem))).scalars().one().id
 
-    response = await client.get(f"/api/items/{episode_id}", headers=auth_headers)
+    response = await client.get(f"/api/items/{episode.id}", headers=auth_headers)
     body = response.json()
     assert body["parent"] is None
     assert body["season_number"] == 1
@@ -371,11 +347,9 @@ async def test_item_detail_degrades_honestly_when_the_parent_is_unresolved(
 
 
 async def test_item_detail_movie_has_no_parent(client, auth_headers, session):
-    session.add(_item("rk1", "A"))
-    await session.commit()
-    item_id = (await session.execute(select(MediaItem))).scalars().one().id
+    item = await _item(session, "rk1", "A")
 
-    response = await client.get(f"/api/items/{item_id}", headers=auth_headers)
+    response = await client.get(f"/api/items/{item.id}", headers=auth_headers)
     body = response.json()
     assert body["parent"] is None
     assert body["season_number"] is None

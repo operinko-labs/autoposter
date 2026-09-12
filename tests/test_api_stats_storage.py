@@ -24,7 +24,9 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -65,9 +67,7 @@ async def session_headers(client):
 
 
 async def _seed(session):
-    item = MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, "1", library="Movies", kind="movie", title="Dune")
     session.add_all([
         Render(item_id=item.id, art_kind="poster", asset_path=FAKE_ASSET,
                status="rendered", size_bytes=100),

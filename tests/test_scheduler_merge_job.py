@@ -22,15 +22,13 @@ The three things worth knowing before changing anything here:
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from autoposter.config.holder import ConfigHolder
 from autoposter.db.models import (
     ActionDismissal, EventLog, ItemCredit, ItemFacts, ItemMetadataOverride,
-    Job, MediaItem, Render,
+    Job, MediaItem, MediaItemServerRef, Render,
 )
-from autoposter.plex.client import ResolvedItem
-from autoposter.render.pipeline import _upsert_media_item
 from autoposter.scheduler import merge as merge_module
 from autoposter.scheduler.merge import (
     MERGE_EVENT,
@@ -64,20 +62,36 @@ class FakePlex:
         if self._error is not None:
             raise self._error
         self.asked.extend(intents)
-        return [intent.rating_key in self._live for intent in intents]
+        return [intent.native_id_on("plex") in self._live for intent in intents]
 
 
 async def _item(session, rating_key, **columns):
-    """One committed ``media_items`` row. Committed so ``updated_at`` is a
-    settled value from its own transaction -- half the delete's key."""
+    """One committed ``media_items`` row, with its own Plex ref.
+
+    Committed so ``updated_at`` is a settled value from its own transaction
+    -- half the delete's key. ``identity_key`` is synthesized from the
+    rating key rather than computed from the shared ``tmdb_id`` every twin
+    pair below carries: since Task 6 ``identity_key`` is UNIQUE and the real
+    upsert path would refuse to mint a second row for one identity at all --
+    which is the whole reason this job's population can no longer grow.
+    These rows simulate the twins that reading is about: ones a migration or
+    a restore left behind, each still carrying its OWN native id.
+    """
     fields = dict(
         library="Movies", kind="movie", title="Dune: Part Two", year=2024,
         tmdb_id=693134,
     )
     fields.update(columns)
-    item = MediaItem(rating_key=rating_key, **fields)
+    item = MediaItem(identity_key=f"{fields['kind']}:legacy:plex:{rating_key}", **fields)
     session.add(item)
+    await session.flush()
+    session.add(MediaItemServerRef(
+        item_id=item.id, server="plex", native_id=rating_key, library=fields["library"],
+    ))
     await session.commit()
+    # Test bookkeeping only -- not a mapped column, so it survives
+    # session.expire_all() untouched and needs no extra query to read back.
+    item.native_id = rating_key
     return item
 
 
@@ -134,8 +148,8 @@ async def test_two_rows_with_one_identity_are_a_pair_and_the_newer_key_survives(
 
     assert len(scan.plans) == 1
     pair = scan.plans[0].pair
-    assert pair.stale.rating_key == "16201"
-    assert pair.survivor.rating_key == "165269"
+    assert pair.stale.native_id == "16201"
+    assert pair.survivor.native_id == "165269"
     assert scan.total == 2
 
 
@@ -159,15 +173,21 @@ async def test_three_rows_for_one_identity_are_ambiguous_and_left_alone(session)
     assert scan.ambiguous == 1
 
 
-async def test_a_non_numeric_rating_key_makes_the_pair_unelectable(session):
-    """The election compares keys as integers. A key that is not a number
-    cannot be ordered, and guessing an order would guess which row dies."""
-    await _pair(session, stale_key="1", survivor_key="not-a-number")
+async def test_the_survivor_is_elected_by_updated_at_not_by_parsing_the_native_id(session):
+    """The isdigit()/int-cast election is gone: survivor election orders by
+    ``(updated_at, id)``, so a non-numeric native id no longer makes a pair
+    unelectable -- it is simply not part of the ordering key at all. The row
+    committed SECOND (``survivor_key``) has the later ``updated_at`` and
+    survives, exactly as it would with a numeric key."""
+    stale, survivor = await _pair(session, stale_key="1", survivor_key="not-a-number")
 
     scan = await find_mergeable(session)
 
-    assert scan.plans == []
-    assert scan.unelectable == 1
+    assert len(scan.plans) == 1
+    pair = scan.plans[0].pair
+    assert pair.survivor.id == survivor.id
+    assert pair.stale.id == stale.id
+    assert scan.unelectable == 0
 
 
 async def test_rows_in_different_libraries_are_not_a_pair(session):
@@ -315,7 +335,7 @@ async def test_children_are_repointed_before_the_delete_and_no_cascade_loss(sess
                           season_number=1, episode_number=3, parent_id=season.id)
     survivor_id, season_id, episode_id = survivor.id, season.id, episode.id
     scan = await find_mergeable(session)
-    assert [p.pair.stale.rating_key for p in scan.plans] == ["100"]
+    assert [p.pair.stale.native_id for p in scan.plans] == ["100"]
 
     outcome = await merge(session, scan.plans)
     await session.commit()
@@ -434,9 +454,17 @@ async def test_a_dismissal_inserted_between_scan_and_lock_is_repointed(session):
 async def test_facts_credits_and_the_logo_marker_are_carried(session):
     """``logo_upload_key`` is the marker that makes a logo revert safe. Losing
     it means the revert can never run again for that item -- which is why
-    ``prune.retire`` writes it into its audit rather than letting it vanish."""
-    stale, survivor = await _pair(session)
-    stale.logo_upload_key = "upload://abc"
+    ``prune.retire`` writes it into its audit rather than letting it vanish.
+
+    ``logo_upload_key`` is set at ROW CREATION, not by mutating ``stale``
+    afterward: a mutation is its own committed UPDATE to ``media_items``,
+    which ``onupdate=func.now()`` would stamp -- and since the election now
+    orders by ``updated_at``, that would elect the row just mutated as the
+    SURVIVOR instead of leaving the creation order (and this test's
+    election) alone.
+    """
+    stale = await _item(session, "1", logo_upload_key="upload://abc")
+    survivor = await _item(session, "2")
     session.add(ItemFacts(item_id=stale.id, critic_rating=7.5))
     session.add(ItemCredit(item_id=stale.id, kind="actor", person="Someone"))
     session.add(ItemCredit(item_id=survivor.id, kind="actor", person="Someone"))
@@ -509,13 +537,48 @@ async def test_the_merge_writes_one_audit_row_carrying_both_identities(session):
     assert audit.payload["renders_repointed"] == ["poster"]
 
 
+async def test_the_audit_row_carries_both_rows_full_refs(session):
+    """Spec §4.5: every EventLog/webhook payload keeps the legacy scalar
+    key AND adds the full refs dict. The stale row's second-server ref must
+    be read BEFORE the delete that cascades media_item_server_refs away --
+    seeded here so a refs_for call placed after that delete would find it
+    already gone and this test would catch it."""
+    stale, survivor = await _pair(session)
+    session.add(MediaItemServerRef(
+        item_id=stale.id, server="jellyfin", native_id="0a", library="Movies",
+    ))
+    await session.commit()
+    scan = await find_mergeable(session)
+
+    await merge(session, scan.plans)
+    await session.commit()
+
+    session.expire_all()
+    audit = (
+        await session.execute(select(EventLog).where(EventLog.source == MERGE_SOURCE))
+    ).scalar_one()
+    assert audit.payload["stale_refs"] == {"plex": "1", "jellyfin": "0a"}
+    assert audit.payload["survivor_refs"] == {"plex": "2"}
+
+
 async def test_a_row_re_upserted_under_the_pass_is_skipped_and_nothing_is_lost(
     session,
 ):
-    """The concurrency guard, exercised through the actual writer. The delete
-    is keyed on ``(id, updated_at)`` like ``prune.retire``'s, and the check
-    runs under the row lock BEFORE anything is repointed -- so a skipped pair
-    leaves the graph exactly as it found it, not half-moved."""
+    """The concurrency guard, exercised against the row a worker touched. The
+    delete is keyed on ``(id, updated_at)`` like ``prune.retire``'s, and the
+    check runs under the row lock BEFORE anything is repointed -- so a
+    skipped pair leaves the graph exactly as it found it, not half-moved.
+
+    Adapted for identity-keyed upserts (Task 6): the stale and survivor rows
+    here deliberately share one ``tmdb_id`` under two different
+    ``identity_key`` values -- the pre-Task-6 twin state this job still has
+    to reconcile -- so a real ``_upsert_media_item(session, resolved)`` call
+    for that ``tmdb_id`` would no longer land on either of them (it would
+    mint a THIRD row for the one identity_key that tmdb_id now resolves to).
+    The race this guard exists for -- some other write bumping the stale
+    row's ``updated_at`` between the scan and the lock -- is simulated
+    directly instead, which is what the guard actually reads.
+    """
     stale, survivor = await _pair(session)
     # Captured before any ``expire_all`` below: reading ``.id`` off an expired
     # instance is a lazy load, which under asyncio is a MissingGreenlet rather
@@ -524,13 +587,10 @@ async def test_a_row_re_upserted_under_the_pass_is_skipped_and_nothing_is_lost(
     await _render(session, stale.id, "poster")
     scan = await find_mergeable(session)
 
-    resolved = ResolvedItem(
-        server="plex", native_id="1", library="Movies", kind="movie", title="New Title",
-        year=2024, season_number=None, episode_number=None,
-        root_folder="Dune Part Two (2024)", file_path="/mnt/Media/Movies/x.mkv",
-        art_url=None, tmdb_id=693134, tvdb_id=None, imdb_id=None,
+    await session.execute(
+        text("UPDATE media_items SET title = 'New Title', updated_at = now() WHERE id = :id"),
+        {"id": stale_id},
     )
-    await _upsert_media_item(session, resolved)
     await session.commit()
 
     outcome = await merge(session, scan.plans)
@@ -551,24 +611,27 @@ async def test_a_row_re_upserted_under_the_pass_is_skipped_and_nothing_is_lost(
 async def test_a_survivor_re_upserted_under_the_pass_is_skipped_and_nothing_is_lost(
     session,
 ):
-    """The guard is symmetric. A worker landing on the SURVIVOR's live key
-    during ``verify_survivors``'s probe walk re-upserts ``media_items`` before
-    it can go on to write a render -- if this pass did not notice, the
-    repoint below would collide with that render (``uq_render_item_kind``) as
-    an uncaught IntegrityError, not a clean skip."""
+    """The guard is symmetric. A worker landing on the SURVIVOR's row during
+    ``verify_survivors``'s probe walk (a re-resolve that bumps its
+    ``updated_at`` before it can go on to write a render) must be noticed
+    too -- if this pass did not notice, the repoint below would collide with
+    that render (``uq_render_item_kind``) as an uncaught IntegrityError, not
+    a clean skip.
+
+    Adapted for identity-keyed upserts (Task 6) the same way the stale-side
+    test above is: a real ``_upsert_media_item`` for the shared ``tmdb_id``
+    would no longer land on either twin row, so the race is simulated
+    directly against the survivor's own ``updated_at``.
+    """
     stale, survivor = await _pair(session)
     stale_id, survivor_id = stale.id, survivor.id
     await _render(session, stale.id, "poster")
     scan = await find_mergeable(session)
 
-    resolved = ResolvedItem(
-        server="plex", native_id="2", library="Movies", kind="movie",
-        title="Dune: Part Two",
-        year=2024, season_number=None, episode_number=None,
-        root_folder="Dune Part Two (2024)", file_path="/mnt/Media/Movies/x.mkv",
-        art_url=None, tmdb_id=693134, tvdb_id=None, imdb_id=None,
+    await session.execute(
+        text("UPDATE media_items SET updated_at = now() WHERE id = :id"),
+        {"id": survivor_id},
     )
-    await _upsert_media_item(session, resolved)
     await session.commit()
 
     outcome = await merge(session, scan.plans)
@@ -673,11 +736,15 @@ async def test_the_dry_run_needs_no_plex_and_writes_nothing(session):
     operator can size the population before deciding anything. L2: the dry
     run is the surface the runbook tells the operator to read before flipping
     ``apply``, so it must preview the same categories -- facts, logo marker,
-    survivor parent link -- the applied summary later reports."""
+    survivor parent link -- the applied summary later reports.
+
+    ``parent_id``/``logo_upload_key`` are set at ROW CREATION rather than by
+    mutating ``stale`` afterward -- see the sibling logo test's docstring for
+    why a post-hoc mutation would flip the election.
+    """
     parent = await _item(session, "9", tmdb_id=999999)
-    stale, survivor = await _pair(session)
-    stale.parent_id = parent.id
-    stale.logo_upload_key = "upload://abc"
+    stale = await _item(session, "1", parent_id=parent.id, logo_upload_key="upload://abc")
+    await _item(session, "2")
     session.add(ItemFacts(item_id=stale.id))
     await session.commit()
     await _render(session, stale.id, "poster")
@@ -867,7 +934,7 @@ async def test_intent_for_row_carries_the_rows_stored_key_and_ids(session):
 
     intent = intent_for_row(scan.plans[0].pair.stale)
 
-    assert intent.rating_key == stale.rating_key
+    assert intent.native_id_on("plex") == stale.native_id
     assert intent.kind == "movie"
     assert intent.tmdb_id == 693134
     assert intent.title == "Dune: Part Two"

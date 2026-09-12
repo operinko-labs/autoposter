@@ -15,9 +15,10 @@ import pytest
 
 from autoposter.artwork_modes.revert import RevertMode
 from autoposter.config.loader import load_config
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
 from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
 from autoposter.servers.base import ServerItemRef
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PLEX_URL = "http://plex.local"
@@ -94,13 +95,9 @@ def _headers():
 
 async def _add_item(session, *, rating_key, kind="movie", library="Movies",
                     root_folder="A (1999)"):
-    item = MediaItem(
-        rating_key=rating_key, library=library, kind=kind, title="A",
-        root_folder=root_folder,
+    return await seed_media_item(
+        session, rating_key, kind=kind, library=library, root_folder=root_folder,
     )
-    session.add(item)
-    await session.commit()
-    return item
 
 
 async def _add_render(session, item, art_kind, path, *, base_sha256="digest"):

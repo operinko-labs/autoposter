@@ -194,7 +194,7 @@ async def test_a_matched_pair_whose_ids_disagree_is_reported_with_both_sides(
     assert row["plex_ids"]["imdb"] == "tt1160419"
     assert row["plex_title"] == "Dune"
     assert row["arr_title"] == "Dune (1984)"
-    assert row["rating_key"] == "1"
+    assert row["refs"] == {"plex": "1"}
     assert row["library"] == "Movies"
     assert row["path"] == "/mnt/media/Movies/Dune (2021)"
     assert row["service"] == "radarr"
@@ -326,7 +326,7 @@ async def test_an_arr_entry_with_no_plex_item_is_arr_only(client, auth_headers, 
     assert row["arr_title"] == "Andor"
     assert row["arr_ids"]["tvdb"] == "393199"
     assert row["path"] == "/mnt/media/TV/Andor"
-    assert row["rating_key"] is None
+    assert row["refs"] == {}
     assert row["plex_ids"] == {}
 
 
@@ -427,7 +427,7 @@ async def test_a_plex_item_with_no_arr_entry_is_plex_only(client, auth_headers, 
     assert body["counts"]["plex_only"] == 1
     row = body["plex_only"][0]
     assert row["plex_title"] == "Sinners"
-    assert row["rating_key"] == "2"
+    assert row["refs"] == {"plex": "2"}
     assert row["path"] == "/mnt/media/Movies/Sinners (2025)"
     assert row["plex_ids"]["tmdb"] == "1233413"
     assert row["arr_ids"] == {}

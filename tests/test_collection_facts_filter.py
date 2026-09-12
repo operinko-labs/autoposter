@@ -29,7 +29,10 @@ from autoposter.collections.facts_read import (
     ensure_facts,
 )
 from autoposter.config.schema import CollectionDefinition
-from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.db import refs
+from autoposter.db.models import ItemFacts
+
+from conftest import seed_media_item
 
 LABEL = "autoposter"
 
@@ -139,15 +142,13 @@ async def _seed(session, rating_key, *, library="Movies", facts=None):
     is NULL (`facts={"content_rating": None}`), and an item with no facts row
     at all (`facts=None`).
     """
-    item = MediaItem(
-        rating_key=str(rating_key), library=library, kind="movie",
+    item = await seed_media_item(
+        session, str(rating_key), library=library, kind="movie",
         title="m%s" % rating_key,
     )
-    session.add(item)
-    await session.flush()
     if facts is not None:
         session.add(ItemFacts(item_id=item.id, **facts))
-    await session.commit()
+        await session.commit()
     return item
 
 
@@ -410,7 +411,7 @@ async def test_the_membership_moves_when_the_facts_arrive_between_passes(session
 
     assert second.definitions[0].failed is False
     assert [i.ratingKey for i in section._existing["Gentle"]._live] == ["303"]
-    assert item.rating_key == "303"
+    assert (await refs.native_ids(session, [item.id], "plex")) == {item.id: "303"}
 
 
 async def test_a_failed_facts_read_refuses_the_definition_class_name_only(session):

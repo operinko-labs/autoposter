@@ -421,9 +421,9 @@ from pathlib import Path  # noqa: E402
 import pytest_asyncio as _pytest_asyncio  # noqa: E402,F401
 
 from autoposter.config.loader import load_config  # noqa: E402
-from autoposter.db.models import MediaItem  # noqa: E402
 from autoposter.render.pipeline import apply_metadata  # noqa: E402
 
+from conftest import seed_media_item  # noqa: E402
 from test_mass_ops_verbs import FakeField, RecordingPlexItem, RecordingServer  # noqa: E402
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -436,9 +436,7 @@ def config():
 
 @_pytest_asyncio.fixture
 async def media_item_id(session):
-    media = MediaItem(rating_key="1", library="Movies", kind="movie", title="Aliens")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "1", library="Movies", kind="movie", title="Aliens")
     return media.id
 
 

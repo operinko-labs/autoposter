@@ -18,6 +18,8 @@ from autoposter.actions import flags
 from autoposter.config.loader import load_config
 from autoposter.db.models import MediaItem, Render
 
+from conftest import seed_media_item
+
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 
@@ -32,14 +34,10 @@ async def _seed(session, *, library="Movies", art_kind="poster", **render_fields
     A fresh rating key per call because the column is unique and these tests
     seed several rows into one shared database.
     """
-    item = MediaItem(
-        rating_key=f"rk-{uuid4().hex[:12]}",
-        library=library,
-        kind="movie",
+    item = await seed_media_item(
+        session, f"rk-{uuid4().hex[:12]}", library=library, kind="movie",
         title="Dune: Part Two",
     )
-    session.add(item)
-    await session.flush()
     fields = {"status": "rendered", "asset_path": "/assets/Movies/Dune/poster.jpg"}
     fields.update(render_fields)
     render = Render(item_id=item.id, art_kind=art_kind, **fields)

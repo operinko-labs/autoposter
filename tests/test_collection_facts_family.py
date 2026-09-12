@@ -30,12 +30,12 @@ from autoposter.config.schema import CollectionDefinition
 from autoposter.db.models import ItemFacts, MediaItem
 from autoposter.providers.tmdb_lists import TmdbListClient
 
+from conftest import seed_media_item
+
 
 async def _item(session, rating_key, *, library="Movies", kind="movie", title="X",
                 **facts):
-    item = MediaItem(rating_key=rating_key, library=library, kind=kind, title=title)
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, rating_key, library=library, kind=kind, title=title)
     if facts:
         session.add(ItemFacts(item_id=item.id, **facts))
         await session.flush()

@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from autoposter.arr.sync import enqueue_unknown_items
-from autoposter.db.models import Job, MediaItem
+from autoposter.db.models import Job, MediaItem, MediaItemServerRef
 
 
 class FakeGuid:
@@ -29,9 +29,31 @@ async def _pending_jobs(session):
     return (await session.execute(select(Job).where(Job.state == "pending"))).scalars().all()
 
 
-async def test_an_item_with_a_media_items_row_is_not_enqueued(session):
-    session.add(MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune"))
+async def _known_item(session, rating_key, **columns):
+    """One committed ``media_items`` row with its own Plex ref -- a row
+    ``enqueue_unknown_items``'s anti-join (now over ``media_item_server_refs``)
+    must find as already known.
+
+    ``identity_key`` is synthesized from the rating key rather than computed
+    from any external id a test also passes in: one fixture below builds two
+    rows sharing one ``tmdb_id`` on purpose, an ambiguous re-key state a real
+    identity-keyed upsert can no longer produce (``identity_key`` is UNIQUE
+    since Task 6).
+    """
+    fields = dict(library="Movies", kind="movie", title="Item")
+    fields.update(columns)
+    item = MediaItem(identity_key=f"{fields['kind']}:legacy:plex:{rating_key}", **fields)
+    session.add(item)
+    await session.flush()
+    session.add(MediaItemServerRef(
+        item_id=item.id, server="plex", native_id=rating_key, library=fields["library"],
+    ))
     await session.commit()
+    return item
+
+
+async def test_an_item_with_a_media_items_row_is_not_enqueued(session):
+    await _known_item(session, "1", title="Dune")
 
     items = [FakeItem("1", "Dune", ["tmdb://438631"])]
     count = await enqueue_unknown_items(session, items, "movie", "Movies")
@@ -76,8 +98,7 @@ async def test_running_twice_does_not_double_enqueue(session):
 
 
 async def test_the_returned_count_matches_the_number_of_rows_still_missing(session):
-    session.add(MediaItem(rating_key="30", library="Movies", kind="movie", title="Known"))
-    await session.commit()
+    await _known_item(session, "30", title="Known")
 
     items = [
         FakeItem("30", "Known", ["tmdb://30"]),
@@ -102,7 +123,7 @@ async def test_the_enqueued_payload_carries_the_items_rating_key(session):
 
     assert count == 1
     jobs = await _pending_jobs(session)
-    assert jobs[0].payload["rating_key"] == "40"
+    assert jobs[0].payload["refs"]["plex"] == "40"
 
 
 async def test_an_empty_section_enqueues_nothing(session):
@@ -137,18 +158,14 @@ async def test_an_identity_already_stored_under_another_key_is_enqueued_from_tha
     producer into a repairer: the job forks, the pipeline's identity re-key
     fires, and the item is fixed rather than duplicated.
     """
-    session.add(MediaItem(
-        rating_key="900", library="Movies", kind="movie", title="Old Title",
-        tmdb_id=438631, year=2021,
-    ))
-    await session.commit()
+    await _known_item(session, "900", title="Old Title", tmdb_id=438631, year=2021)
 
     items = [FakeItem("901", "Dune", ["tmdb://438631"])]
     count = await enqueue_unknown_items(session, items, "movie", "Movies")
 
     assert count == 1
     jobs = await _pending_jobs(session)
-    assert jobs[0].payload["rating_key"] == "900", (
+    assert jobs[0].payload["refs"]["plex"] == "900", (
         "discovery enqueued the live key and would have minted a twin"
     )
     assert jobs[0].payload["title"] == "Old Title"
@@ -159,18 +176,14 @@ async def test_two_rows_for_one_identity_fall_back_to_the_live_key(session):
     merge's pair; enqueuing either one's key here would choose at random, so
     discovery does exactly what it does today and leaves the pair alone."""
     for key in ("900", "902"):
-        session.add(MediaItem(
-            rating_key=key, library="Movies", kind="movie", title="Old Title",
-            tmdb_id=438631, year=2021,
-        ))
-    await session.commit()
+        await _known_item(session, key, title="Old Title", tmdb_id=438631, year=2021)
 
     items = [FakeItem("901", "Dune", ["tmdb://438631"])]
     count = await enqueue_unknown_items(session, items, "movie", "Movies")
 
     assert count == 1
     jobs = await _pending_jobs(session)
-    assert jobs[0].payload["rating_key"] == "901"
+    assert jobs[0].payload["refs"]["plex"] == "901"
     assert jobs[0].payload["title"] == "Dune"
 
 
@@ -200,18 +213,14 @@ async def test_a_stale_row_in_a_different_library_is_not_the_guess(
     enqueue the Movies item's own intent -- neither library's guess may
     cross into the other's.
     """
-    session.add(MediaItem(
-        rating_key="900", library=stale_library, kind="movie", title="Old Title",
-        tmdb_id=438631, year=2021,
-    ))
-    await session.commit()
+    await _known_item(session, "900", library=stale_library, title="Old Title", tmdb_id=438631, year=2021)
 
     items = [FakeItem("901", "Dune", ["tmdb://438631"])]
     count = await enqueue_unknown_items(session, items, "movie", sweep_library)
 
     assert count == 1
     jobs = await _pending_jobs(session)
-    assert jobs[0].payload["rating_key"] == "901", (
+    assert jobs[0].payload["refs"]["plex"] == "901", (
         "the guess crossed into another library and enqueued that row's "
         "intent instead of the discovered item's own"
     )

@@ -27,8 +27,10 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ItemMetadataOverride, Job, MediaItem
+from autoposter.db.models import ItemMetadataOverride, Job
 from autoposter.redact import redact_urls
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -97,12 +99,10 @@ async def auth_headers(client):
 
 
 async def _item(session, kind: str = "movie") -> int:
-    item = MediaItem(
-        rating_key="12345", library="Movies", kind=kind, title="Heat",
+    item = await seed_media_item(
+        session, "12345", library="Movies", kind=kind, title="Heat",
         year=1995, tmdb_id=949,
     )
-    session.add(item)
-    await session.commit()
     return item.id
 
 

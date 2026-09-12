@@ -280,7 +280,7 @@ async def test_the_job_completes_with_a_rendered_poster_through_process_item(
     provider = _Provider([_logo(BAD_LOGO_URL)])
     intent = RenderIntent(
         kind="movie", title="Inside Out 2", tmdb_id=1022789,
-        imdb_id="tt22022452", year=2024, rating_key="1",
+        imdb_id="tt22022452", year=2024, refs={"plex": "1"},
     )
 
     async with _http({

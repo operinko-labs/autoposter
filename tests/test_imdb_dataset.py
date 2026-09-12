@@ -199,13 +199,13 @@ async def test_wanted_ids_splits_movies_from_shows_via_episodes(session):
     has its own row if a SeriesAdd webhook happened to arrive -- so the show
     set must be drawn from kind IN ('show', 'episode'), not just 'show'."""
     session.add_all([
-        MediaItem(rating_key="m1", library="Movies", kind="movie", title="M",
+        MediaItem(identity_key="movie:legacy:plex:m1", library="Movies", kind="movie", title="M",
                   imdb_id="tt0111161"),
-        MediaItem(rating_key="s1", library="Shows", kind="show", title="S",
+        MediaItem(identity_key="show:legacy:plex:s1", library="Shows", kind="show", title="S",
                   imdb_id="tt11280740"),
-        MediaItem(rating_key="e1", library="Shows", kind="episode", title="E",
+        MediaItem(identity_key="episode:legacy:plex:e1", library="Shows", kind="episode", title="E",
                   imdb_id="tt22222222", season_number=1, episode_number=1),
-        MediaItem(rating_key="e2", library="Shows", kind="episode", title="E2",
+        MediaItem(identity_key="episode:legacy:plex:e2", library="Shows", kind="episode", title="E2",
                   imdb_id=None, season_number=1, episode_number=2),
     ])
     await session.commit()
@@ -247,7 +247,8 @@ async def test_is_stale_true_when_data_is_older_than_the_interval(session):
 async def _seed_movie(session_factory, tconst: str = "tt0111161") -> None:
     async with session_factory() as seed:
         seed.add(MediaItem(
-            rating_key="m1", library="Movies", kind="movie", title="M", imdb_id=tconst
+            identity_key="movie:legacy:plex:m1", library="Movies", kind="movie", title="M",
+            imdb_id=tconst,
         ))
         await seed.commit()
 
@@ -283,7 +284,8 @@ async def test_auto_refresh_skips_when_data_is_fresh_no_transport_call(session_f
 async def test_auto_refresh_runs_when_data_is_older_than_the_interval(session_factory):
     async with session_factory() as seed:
         seed.add(MediaItem(
-            rating_key="m1", library="Movies", kind="movie", title="M", imdb_id="tt0111161"
+            identity_key="movie:legacy:plex:m1", library="Movies", kind="movie", title="M",
+            imdb_id="tt0111161",
         ))
         await store_ratings(seed, {"tt0111161": 9.0})
         await seed.execute(text("UPDATE imdb_ratings SET updated_at = now() - interval '48 hours'"))

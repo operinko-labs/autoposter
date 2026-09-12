@@ -22,16 +22,18 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
+from autoposter.db.models import ActionDismissal, EventLog, Job, Render
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
 ADMIN_PASSWORD_HASH = hash_password(PASSWORD)
 
 #: Every key the endpoint is allowed to serve, and no other. Row 213: counts
-#: and Plex rating keys only -- no asset path, no host, no free text.
+#: and per-server refs only -- no asset path, no host, no free text.
 RESPONSE_KEYS = {
-    "status", "matched", "selected", "cleared", "items", "enqueued", "rating_keys",
+    "status", "matched", "selected", "cleared", "items", "enqueued", "items_detail",
 }
 
 
@@ -62,9 +64,9 @@ async def _seed(session, *, rating_key, library="Movies", art_kind="poster", **r
     """One media item and one render row, the shape test_api_action_center.py
     seeds. Fingerprints default to non-null so "was it cleared?" is a real
     question rather than a tautology."""
-    item = MediaItem(rating_key=rating_key, library=library, kind="movie", title=f"T{rating_key}")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(
+        session, rating_key, library=library, kind="movie", title=f"T{rating_key}",
+    )
     fields = {
         "status": "no_art",
         "asset_path": f"/assets/{rating_key}.jpg",
@@ -128,7 +130,7 @@ async def test_one_row_rebuild_clears_that_rows_fingerprints_and_queues_its_item
 
     assert body["cleared"] == 1
     assert body["enqueued"] == 1
-    assert body["rating_keys"] == ["1"]
+    assert body["items_detail"] == [{"id": pressed.id, "refs": {"plex": "1"}}]
     assert await _fingerprints_of(session, pressed_id) == (None, None)
     # And no others: the blast radius is exactly the row pressed.
     assert await _fingerprints_of(session, untouched_id) == ("2" * 64, "2" * 64)
@@ -217,7 +219,7 @@ async def test_the_bulk_apply_reports_the_whole_shape_and_records_one_event(
     """The whole-dict assertion C5 asks for. A key added later has to be added
     here too, which is the point: this response is a contract the page and
     row 213 both read."""
-    await _seed(session, rating_key="7")
+    item, _ = await _seed(session, rating_key="7")
 
     body = (
         await client.post("/api/actions/rebuild", headers=auth_headers, json={"apply": True})
@@ -230,7 +232,7 @@ async def test_the_bulk_apply_reports_the_whole_shape_and_records_one_event(
         "cleared": 1,
         "items": 1,
         "enqueued": 1,
-        "rating_keys": ["7"],
+        "items_detail": [{"id": item.id, "refs": {"plex": "7"}}],
     }
     events = (await session.execute(select(EventLog))).scalars().all()
     assert [event.event_type for event in events] == ["action_center_rebuild"]
@@ -272,9 +274,7 @@ async def test_the_bulk_rebuild_collapses_two_flagged_kinds_of_one_item_into_one
 ):
     """The queue's unit is a render row; the work's unit is an item. Two
     flagged kinds of one item clear two fingerprints and queue ONE job."""
-    item = MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, "1", library="Movies", kind="movie", title="Dune")
     session.add_all([
         Render(item_id=item.id, art_kind="poster", status="no_art",
                asset_path="/a.jpg", fingerprint="a" * 64),
@@ -459,18 +459,23 @@ async def test_a_bulk_rebuild_with_no_matches_writes_no_event_log_row(
     assert (await session.execute(select(EventLog))).scalars().all() == []
 
 
-async def test_rating_keys_are_sorted_lexicographically(client, auth_headers, session):
-    """I2#4: `sorted(...)` on `rating_keys`. Every assertion above is over a
+async def test_items_detail_is_sorted_by_plex_ref_lexicographically(
+    client, auth_headers, session
+):
+    """I2#4: `sorted(...)` on the Plex refs. Every assertion above is over a
     one-element list, which cannot tell a sort from a pass-through. Seeding
     "9" before "2" gives them ascending `Render.id`s, so an unsorted
     (insertion-order) return would read `["9", "2"]`; the endpoint's own
     `sorted()` must produce `["2", "9"]`.
     """
-    await _seed(session, rating_key="9")
-    await _seed(session, rating_key="2")
+    nine, _ = await _seed(session, rating_key="9")
+    two, _ = await _seed(session, rating_key="2")
 
     body = (
         await client.post("/api/actions/rebuild", headers=auth_headers, json={"apply": True})
     ).json()
 
-    assert body["rating_keys"] == ["2", "9"]
+    assert body["items_detail"] == [
+        {"id": two.id, "refs": {"plex": "2"}},
+        {"id": nine.id, "refs": {"plex": "9"}},
+    ]

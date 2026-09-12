@@ -31,7 +31,7 @@ import logging
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import ItemCredit, MediaItem
+from autoposter.db.models import ItemCredit, MediaItem, MediaItemServerRef
 from autoposter.plex.client import TAG_BATCH_CHUNK, fetch_credit_index
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,10 @@ async def scan_library_credits(
     """
     rows = (
         await session.execute(
-            select(MediaItem.id, MediaItem.rating_key).where(
+            select(MediaItemServerRef.item_id, MediaItemServerRef.native_id)
+            .join(MediaItem, MediaItem.id == MediaItemServerRef.item_id)
+            .where(
+                MediaItemServerRef.server == "plex",
                 MediaItem.library == library,
                 MediaItem.kind.in_(_KINDS.get(library_type, ())),
             )
@@ -91,20 +94,32 @@ async def scan_library_credits(
     ).all()
     if not rows:
         return (0, 0)
-    by_key = {str(rating_key): item_id for item_id, rating_key in rows}
+    by_key = {native_id: item_id for item_id, native_id in rows}
     fetched = await asyncio.to_thread(
         fetch_credit_index, section, list(by_key), chunk_size
     )
-    answered_ids = []
-    values = []
-    for rating_key, credits in fetched.items():
-        item_id = by_key.get(rating_key)
+    # Collected as ordered sets, not lists. ``by_key`` is inverted from
+    # (item_id, native_id) pairs, so two Plex refs on one item would map two
+    # native ids onto the SAME item_id, Plex would answer for both, and the
+    # identical (item_id, kind, person) triple would reach insert() twice --
+    # a UniqueViolation that fails the whole scan. Spec §4.1's one-ref-per-
+    # (item, server) invariant closes that path; this is the belt to its
+    # braces, and it also keeps the reported counts honest.
+    seen_ids: list[int] = []
+    seen_triples: list[tuple[int, str, str]] = []
+    for native_id, credits in fetched.items():
+        item_id = by_key.get(native_id)
         if item_id is None:
             continue
-        answered_ids.append(item_id)
+        seen_ids.append(item_id)
         for kind, field in _FIELD_FOR_KIND.items():
             for person in getattr(credits, field):
-                values.append({"item_id": item_id, "kind": kind, "person": person})
+                seen_triples.append((item_id, kind, person))
+    answered_ids = list(dict.fromkeys(seen_ids))
+    values = [
+        {"item_id": item_id, "kind": kind, "person": person}
+        for item_id, kind, person in dict.fromkeys(seen_triples)
+    ]
     if not answered_ids:
         return (0, 0)
     await session.execute(

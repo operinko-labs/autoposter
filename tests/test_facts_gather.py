@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import func, select
 
 from autoposter.config.schema import OperationsConfig
-from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.db.models import ItemFacts
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts import gather as gather_module
 from autoposter.facts.gather import (
@@ -22,6 +22,8 @@ from autoposter.facts.gather import (
 from autoposter.facts.models import GatheredFacts
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.tvdb import TVDBClient
+
+from conftest import seed_media_item
 
 FIXTURES = Path(__file__).parent / "fixtures" / "facts"
 
@@ -131,9 +133,7 @@ async def test_episode_without_imdb_data_still_returns_audience(session):
 
 
 async def test_persist_is_idempotent(session):
-    media = MediaItem(rating_key="p1", library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "p1", library="Movies", kind="movie", title="X")
     await persist_facts(session, media.id, GatheredFacts(critic_rating=4.9))
     await persist_facts(session, media.id, GatheredFacts(critic_rating=5.1))
     rows = (await session.execute(select(ItemFacts))).scalars().all()
@@ -144,9 +144,7 @@ async def test_persist_is_idempotent(session):
 async def test_persist_a_full_row_survives_a_later_empty_gather(session):
     """Finding 4: a transient failure (e.g. a cached TMDB 404, or an item
     resolving without a tmdb_id) must not blank a previously complete row."""
-    media = MediaItem(rating_key="p4", library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "p4", library="Movies", kind="movie", title="X")
 
     full = GatheredFacts(
         critic_rating=4.9, audience_rating=6.3, content_rating="17",
@@ -170,9 +168,7 @@ async def test_persist_a_partial_gather_only_overwrites_what_it_found(session):
     """A partial gather (e.g. no tmdb_id this pass, so only critic_rating is
     present) must not blank the genres/studio a previous gather stored, and
     must merge into -- not replace -- the stored sources map."""
-    media = MediaItem(rating_key="p5", library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "p5", library="Movies", kind="movie", title="X")
 
     full = GatheredFacts(
         critic_rating=4.9, audience_rating=6.3, genres=["Horror"], studio="A24",
@@ -200,11 +196,9 @@ async def test_persist_a_partial_gather_only_overwrites_what_it_found(session):
 async def test_persist_season_produces_no_pointless_row(session):
     """Finding 4: a season carries no facts of its own (see gather_facts), so
     persisting its always-empty GatheredFacts() must not create a row at all."""
-    media = MediaItem(
-        rating_key="p6", library="Shows", kind="season", title="S1", season_number=1,
+    media = await seed_media_item(
+        session, "p6", library="Shows", kind="season", title="S1", season_number=1,
     )
-    session.add(media)
-    await session.flush()
 
     result = await persist_facts(session, media.id, GatheredFacts())
 
@@ -222,9 +216,7 @@ async def test_persist_facts_never_hands_back_an_open_transaction(session):
     Both returns, because both do it: the upsert path's trailing read and the
     ``_stored()`` helper the empty-gather and item_id-only returns go
     through."""
-    media = MediaItem(rating_key="p9", library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "p9", library="Movies", kind="movie", title="X")
 
     await persist_facts(session, media.id, GatheredFacts(critic_rating=4.9))
     assert session.in_transaction() is False, "the upsert path's trailing read"
@@ -341,10 +333,7 @@ async def test_updated_at_advances_on_second_persist_facts(session_factory):
     """
     # Create a media item in the database
     async with session_factory() as s:
-        media = MediaItem(rating_key="p2", library="Movies", kind="movie", title="X")
-        s.add(media)
-        await s.flush()
-        await s.commit()
+        media = await seed_media_item(s, "p2", library="Movies", kind="movie", title="X")
         media_id = media.id
 
     # First persist_facts call in a separate transaction
@@ -383,10 +372,7 @@ async def test_fetched_at_advances_on_second_persist_facts(session_factory):
     """
     # Create a media item in the database
     async with session_factory() as s:
-        media = MediaItem(rating_key="p3", library="Movies", kind="movie", title="X")
-        s.add(media)
-        await s.flush()
-        await s.commit()
+        media = await seed_media_item(s, "p3", library="Movies", kind="movie", title="X")
         media_id = media.id
 
     # First persist_facts call in a separate transaction
@@ -418,9 +404,7 @@ async def test_fetched_at_advances_on_second_persist_facts(session_factory):
 
 
 async def test_persist_writes_the_three_prefetch_columns(session):
-    media = MediaItem(rating_key="pf1", library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "pf1", library="Movies", kind="movie", title="X")
     await persist_facts(session, media.id, GatheredFacts(
         tmdb_origin_country=["US", "GB"],
         tmdb_original_language="en",
@@ -439,9 +423,7 @@ async def test_a_later_gather_without_them_does_not_blank_them(session):
     -- it is a NOT NULL JSONB defaulting to ``[]``, so a plain SQL COALESCE
     could not tell 'found nothing' from 'honestly empty', which is exactly why
     ``persist_facts`` builds its SET clause from populated fields only."""
-    media = MediaItem(rating_key="pf2", library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "pf2", library="Movies", kind="movie", title="X")
     await persist_facts(session, media.id, GatheredFacts(
         tmdb_origin_country=["FI"], tmdb_original_language="fi",
         tmdb_collection_id=7,
@@ -462,9 +444,7 @@ async def test_persist_writes_the_two_status_columns(session):
     (`render/pipeline.py` selects `ItemFacts` and hands it to
     `OverlayItemView`), so a value that never reaches this table never
     reaches a status badge."""
-    media = MediaItem(rating_key="st1", library="Shows", kind="show", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "st1", library="Shows", kind="show", title="X")
     await persist_facts(session, media.id, GatheredFacts(
         tmdb_status="returning",
         last_episode_aired=date(2026, 8, 20),
@@ -480,9 +460,7 @@ async def test_a_later_gather_without_the_status_fields_does_not_blank_them(sess
     `tmdb_id` -- or a TMDb 429 that skipped the show fetch -- must not erase
     what a complete pass stored. This is the property that makes the drift
     sweep safe to run against a partially-degraded provider."""
-    media = MediaItem(rating_key="st2", library="Shows", kind="show", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "st2", library="Shows", kind="show", title="X")
     await persist_facts(session, media.id, GatheredFacts(
         tmdb_status="ended", last_episode_aired=date(2024, 5, 1),
     ))
@@ -501,9 +479,7 @@ async def test_a_gather_whose_only_fact_is_a_status_still_writes_a_row(session):
     results have no column. A show TMDb knows nothing about except that it
     ended must still get its row, or `status` is a family that silently does
     nothing for the sparsest shows in the library."""
-    media = MediaItem(rating_key="st3", library="Shows", kind="show", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "st3", library="Shows", kind="show", title="X")
     await persist_facts(session, media.id, GatheredFacts(tmdb_status="canceled"))
     row = (await session.execute(select(ItemFacts))).scalar_one()
     assert row.tmdb_status == "canceled"
@@ -521,9 +497,7 @@ async def test_an_empty_gather_still_records_that_we_looked(session):
     (``scheduler/jobs.py:142-151``). Before this, an item TMDb has never heard
     of and an item nothing ever fetched were the same two NULLs.
     """
-    media = MediaItem(rating_key="pf3", library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "pf3", library="Movies", kind="movie", title="X")
     assert media.facts_attempted_at is None
 
     result = await persist_facts(session, media.id, GatheredFacts())
@@ -539,9 +513,7 @@ async def test_an_empty_gather_still_records_that_we_looked(session):
 async def test_a_non_empty_gather_stamps_the_attempt_too(session):
     """The stamp is unconditional -- one statement on both paths, not two
     statements that can drift apart."""
-    media = MediaItem(rating_key="pf4", library="Movies", kind="movie", title="X")
-    session.add(media)
-    await session.flush()
+    media = await seed_media_item(session, "pf4", library="Movies", kind="movie", title="X")
     await persist_facts(session, media.id, GatheredFacts(critic_rating=4.9))
     await session.refresh(media)
     assert media.facts_attempted_at is not None

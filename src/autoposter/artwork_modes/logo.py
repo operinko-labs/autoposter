@@ -53,6 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty, refuse_if_implausible
 from autoposter.db.models import MediaItem
+from autoposter.db.refs import native_ids
 from autoposter.plex.artwork import selected_uploaded_logo_key
 from autoposter.providers import base as art
 from autoposter.render.artwork_fetch import pick_guarded_logo
@@ -236,7 +237,7 @@ class LogoMode:
         rows = (
             await session.execute(
                 select(
-                    MediaItem.id, MediaItem.rating_key, MediaItem.kind,
+                    MediaItem.id, MediaItem.kind,
                     MediaItem.tmdb_id, MediaItem.tvdb_id, MediaItem.imdb_id,
                 )
                 .where(*_conditions(self._kind, self._library, self._item_id))
@@ -244,6 +245,8 @@ class LogoMode:
             )
         ).all()
         total = len(rows)
+        # One query for the whole candidate set's Plex ids, not one per row.
+        plex_ids = await native_ids(session, [row.id for row in rows], "plex")
         # End the read transaction before the probe phase: what follows is one
         # Plex request per candidate, then a provider call and an upload per
         # missing logo. The per-item marker writes below open their own short
@@ -259,24 +262,29 @@ class LogoMode:
         missing_from_plex = 0
         probe_failed = 0
         for row in rows:
+            native_id = plex_ids.get(row.id)
+            if native_id is None:
+                logger.info("logo: %s has no Plex ref, skipped", row.id)
+                missing_from_plex += 1
+                continue
             try:
-                ref = await self._server.fetch_ref(row.rating_key)
+                ref = await self._server.fetch_ref(native_id)
             except Exception:  # noqa: BLE001 - one bad item must not abort the probe
                 logger.warning(
-                    "logo: could not probe Plex item %s", row.rating_key, exc_info=True
+                    "logo: could not probe Plex item %s", native_id, exc_info=True
                 )
                 probe_failed += 1
                 continue
             if ref is None:
-                # A stale rating_key (item deleted/moved in Plex) is expected,
+                # A stale native id (item deleted/moved in Plex) is expected,
                 # not a crash -- one concise INFO line, no traceback, tallied
                 # separately from a probe failure (backup.py's PR #112 hotfix
                 # shape).
-                logger.info("logo: %s no longer in Plex, skipped", row.rating_key)
+                logger.info("logo: %s no longer in Plex, skipped", native_id)
                 missing_from_plex += 1
                 continue
             if not await self._server.has_clearlogo(ref):
-                missing.append((row, ref))
+                missing.append((row, ref, native_id))
 
         items_missing_logo = len(missing)
         refusal = refuse_if_implausible(
@@ -286,7 +294,10 @@ class LogoMode:
         )
         if refusal is not None:
             if missing_from_plex:
-                logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+                logger.info(
+                    "logo: skipped %d item(s) with no Plex id or no longer in Plex",
+                    missing_from_plex,
+                )
             if probe_failed:
                 logger.info("logo: could not probe %d item(s)", probe_failed)
             return LogoUpdateResult(
@@ -296,7 +307,10 @@ class LogoMode:
 
         if not self._apply:
             if missing_from_plex:
-                logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+                logger.info(
+                    "logo: skipped %d item(s) with no Plex id or no longer in Plex",
+                    missing_from_plex,
+                )
             if probe_failed:
                 logger.info("logo: could not probe %d item(s)", probe_failed)
             return LogoUpdateResult(
@@ -305,11 +319,11 @@ class LogoMode:
             )
 
         uploaded = unmarked = no_logo_available = upload_failed = 0
-        for row, ref in missing:
+        for row, ref, native_id in missing:
             # An outcome name rather than a bool, because "it did not work" is
             # two different operator problems here: nothing usable was on the
             # ladder, and the upload did not go through.
-            outcome, marker = await self._upload_one(row, ref)
+            outcome, marker = await self._upload_one(row, ref, native_id)
             if outcome == "no_logo_available":
                 no_logo_available += 1
                 continue
@@ -320,13 +334,16 @@ class LogoMode:
             # is whether a marker records it: without one the revert's first
             # condition can never hold, so the operator has to be told which
             # of these it can claim back.
-            if await self._record_marker(session, row, marker):
+            if await self._record_marker(session, row, marker, native_id):
                 uploaded += 1
             else:
                 unmarked += 1
 
         if missing_from_plex:
-            logger.info("logo: skipped %d item(s) no longer in Plex", missing_from_plex)
+            logger.info(
+                "logo: skipped %d item(s) with no Plex id or no longer in Plex",
+                missing_from_plex,
+            )
         if probe_failed:
             logger.info("logo: could not probe %d item(s)", probe_failed)
 
@@ -336,7 +353,9 @@ class LogoMode:
             probe_failed=probe_failed,
         )
 
-    async def _record_marker(self, session: AsyncSession, row, marker: str | None) -> bool:
+    async def _record_marker(
+        self, session: AsyncSession, row, marker: str | None, native_id: str,
+    ) -> bool:
         """Commit this item's marker before the next item's upload starts.
 
         Per item, not once at the end of the run, because the Plex side of this
@@ -369,14 +388,14 @@ class LogoMode:
             await session.rollback()
             logger.warning(
                 "logo: uploaded a clearlogo for %s but could not record its "
-                "marker -- the revert will not claim it", row.rating_key, exc_info=True,
+                "marker -- the revert will not claim it", native_id, exc_info=True,
             )
             return False
         # The write itself is still made when ``marker`` is None: it clears any
         # stale key an earlier run left on an item whose logo has since gone.
         return marker is not None
 
-    async def _upload_one(self, row, ref) -> tuple[str, str | None]:
+    async def _upload_one(self, row, ref, native_id: str) -> tuple[str, str | None]:
         """Fetch and push one item's logo: ``(outcome, marker to record)``.
 
         The outcome is ``"uploaded"``, ``"no_logo_available"`` (the ladder
@@ -423,7 +442,7 @@ class LogoMode:
                         imdb_id=row.imdb_id,
                     ),
                     Path(tmp),
-                    native_id=row.rating_key,
+                    native_id=native_id,
                     raster_only=True,
                 )
                 if logo_path is None:
@@ -433,7 +452,7 @@ class LogoMode:
                     # provider URL (row 209).
                     logger.warning(
                         "logo: no usable clearlogo for %s -- %d candidate(s) skipped",
-                        row.rating_key, skipped,
+                        native_id, skipped,
                     )
                     return "no_logo_available", None
                 # Read inside the temporary directory's scope: it is removed on
@@ -442,7 +461,7 @@ class LogoMode:
                 marker = await self._server.upload_logo(ref, data, logo_path.suffix)
         except Exception:  # noqa: BLE001 - see the docstring
             logger.warning(
-                "logo: could not upload a clearlogo for %s", row.rating_key, exc_info=True
+                "logo: could not upload a clearlogo for %s", native_id, exc_info=True
             )
             return "upload_failed", None
         return "uploaded", marker
@@ -483,11 +502,13 @@ class LogoRevertMode:
 
         marked = (
             await session.execute(
-                select(MediaItem.id, MediaItem.rating_key, MediaItem.logo_upload_key)
+                select(MediaItem.id, MediaItem.logo_upload_key)
                 .where(MediaItem.logo_upload_key.is_not(None), *conditions)
                 .order_by(MediaItem.id)
             )
         ).all()
+        # One query for the whole marked set's Plex ids, not one per row.
+        plex_ids = await native_ids(session, [row.id for row in marked], "plex")
         # End the read transaction before the probe phase: what follows is one
         # Plex request per marked item, then a clear per item of ours. The
         # marker clearing below opens its own transaction. See reset.py for why
@@ -506,26 +527,31 @@ class LogoRevertMode:
         # that rather than a reliance on the data happening to be empty.
         if CAP_LOGO_UPLOAD_KEY in self._server.capabilities:
             for row in marked:
+                native_id = plex_ids.get(row.id)
+                if native_id is None:
+                    logger.info("logo revert: %s has no Plex ref, skipped", row.id)
+                    missing += 1
+                    continue
                 try:
-                    plex_item = await self._server.fetch_item(row.rating_key)
+                    plex_item = await self._server.fetch_item(native_id)
                     selected = await asyncio.to_thread(selected_uploaded_logo_key, plex_item)
                 except PlexNotFound:
                     # Expected, not a crash: the item was deleted/moved in Plex
                     # since it was marked. One concise line, no traceback --
                     # counted separately from a real probe failure below
                     # (backup.py's PR #112 hotfix shape).
-                    logger.info("logo revert: %s no longer in Plex, skipped", row.rating_key)
+                    logger.info("logo revert: %s no longer in Plex, skipped", native_id)
                     missing += 1
                     continue
                 except Exception:  # noqa: BLE001 - one bad item must not abort the probe
                     logger.warning(
                         "logo revert: could not probe Plex item %s",
-                        row.rating_key, exc_info=True,
+                        native_id, exc_info=True,
                     )
                     probe_failed += 1
                     continue
                 if selected == row.logo_upload_key:
-                    ours.append(row)
+                    ours.append((row, native_id))
 
         items_with_our_logo = len(ours)
         refusal = refuse_if_implausible(
@@ -535,7 +561,10 @@ class LogoRevertMode:
         )
         if refusal is not None:
             if missing:
-                logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+                logger.info(
+                    "logo revert: skipped %d item(s) with no Plex id or no longer in Plex",
+                    missing,
+                )
             if probe_failed:
                 logger.info("logo revert: could not probe %d item(s)", probe_failed)
             return LogoRevertResult(
@@ -545,7 +574,10 @@ class LogoRevertMode:
 
         if not self._apply:
             if missing:
-                logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+                logger.info(
+                    "logo revert: skipped %d item(s) with no Plex id or no longer in Plex",
+                    missing,
+                )
             if probe_failed:
                 logger.info("logo revert: could not probe %d item(s)", probe_failed)
             return LogoRevertResult(
@@ -554,18 +586,18 @@ class LogoRevertMode:
             )
 
         cleared = failed = 0
-        for row in ours:
+        for row, native_id in ours:
             try:
-                ref = await self._server.fetch_ref(row.rating_key)
+                ref = await self._server.fetch_ref(native_id)
             except Exception:  # noqa: BLE001 - see above
                 logger.warning(
                     "logo revert: could not fetch Plex item %s",
-                    row.rating_key, exc_info=True,
+                    native_id, exc_info=True,
                 )
                 failed += 1
                 continue
             if ref is None:
-                logger.info("logo revert: %s no longer in Plex, skipped", row.rating_key)
+                logger.info("logo revert: %s no longer in Plex, skipped", native_id)
                 missing += 1
                 continue
             try:
@@ -573,7 +605,7 @@ class LogoRevertMode:
             except Exception:  # noqa: BLE001 - see above
                 logger.warning(
                     "logo revert: could not clear the clearlogo for %s",
-                    row.rating_key, exc_info=True,
+                    native_id, exc_info=True,
                 )
                 failed += 1
                 continue
@@ -589,7 +621,10 @@ class LogoRevertMode:
         await session.commit()
 
         if missing:
-            logger.info("logo revert: skipped %d item(s) no longer in Plex", missing)
+            logger.info(
+                "logo revert: skipped %d item(s) with no Plex id or no longer in Plex",
+                missing,
+            )
         if probe_failed:
             logger.info("logo revert: could not probe %d item(s)", probe_failed)
 

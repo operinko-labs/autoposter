@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.badges.compose import (
@@ -26,7 +25,8 @@ from autoposter.badges.values import (
 )
 from autoposter.config.loader import config_for_library, render_version_for
 from autoposter.config.schema import Config, TextStyle
-from autoposter.db.models import EventLog, ItemFacts, MediaItem, Render
+from autoposter.db.models import ItemFacts, MediaItem, MediaItemServerRef, Render
+from autoposter.db.refs import item_id_for
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
@@ -62,6 +62,7 @@ from autoposter.render.textfit import fit_point_size, prepare_text
 from autoposter.servers.base import (
     CAP_ARTWORK_PROVENANCE, CAP_LOCK_ARTWORK, CAP_TITLE_CARD_URL,
 )
+from autoposter.servers.identity import identity_key_for, parent_identity_key_for
 
 logger = logging.getLogger(__name__)
 
@@ -597,13 +598,13 @@ def adopted_fingerprint(
 
 
 async def fetch_plex_generated_base(
-    http: httpx.AsyncClient, plex, rating_key: str, destination: Path,
+    http: httpx.AsyncClient, plex, native_id: str, destination: Path,
     *, base_url: str, headers: dict[str, str], stage: str,
 ) -> str | None:
     """Download Plex's own generated title-card frame, or answer ``None``.
 
     The plex-preview fallback (roadmap row 241): lazily fetches the plexapi
-    item for ``rating_key`` (adjudication A2 -- only an episode whose
+    item for ``native_id`` (adjudication A2 -- only an episode whose
     provider ladder came back empty ever reaches this, so this is not a
     second fetch for every item ``process_item`` already handles), lists its
     posters, and downloads the ``media://``-prefixed entry
@@ -620,7 +621,7 @@ async def fetch_plex_generated_base(
 
     Built as a ``functools.partial`` at app.py's composition time, with
     ``http``, ``plex``, ``base_url`` and the token header baked in --
-    ``render_artifact`` calls the result with only ``rating_key`` and
+    ``render_artifact`` calls the result with only ``native_id`` and
     ``destination``, so the token is never in scope there at all.
 
     M1: a non-2xx from Plex (a rotated token's 401, a 3xx now that
@@ -628,13 +629,13 @@ async def fetch_plex_generated_base(
     from ``_download``'s ``raise_for_status()``. ``process_item``'s per-kind
     containment only catches ``SourceRefused``, so left uncaught this would
     fail the whole job over what used to be a quiet ``no_art`` row. Caught
-    here and logged once, by rating key and status code only -- never the
+    here and logged once, by native id and status code only -- never the
     URL, which carries no token itself but is still not worth logging -- so
     the caller falls through to the existing ``no_art`` outcome.
     """
     if CAP_TITLE_CARD_URL not in plex.capabilities:
         return None
-    plex_item = await plex.fetch_item(rating_key)
+    plex_item = await plex.fetch_item(native_id)
     url = await generated_title_card_url(plex_item, base_url)
     if url is None:
         return None
@@ -645,257 +646,153 @@ async def fetch_plex_generated_base(
     except httpx.HTTPStatusError as exc:
         logger.warning(
             "Plex's generated frame fetch failed for %s: HTTP %s",
-            rating_key, exc.response.status_code,
+            native_id, exc.response.status_code,
         )
         return None
 
 
-# The events_log identity of a re-key, for the reason scheduler/prune.py's
-# PRUNE_SOURCE/PRUNE_EVENT are constants: the audit row is the only surviving
-# record that a row's Plex key moved under it, and a typo in either would make
-# a library's worth of them unfindable.
-REKEY_SOURCE = "rekey"
-REKEY_EVENT = "media_item_rekeyed"
+async def upsert_server_ref(session: AsyncSession, item_id: int, item: ResolvedItem) -> None:
+    """ONE ref per (item, server) -- spec §4.1's invariant, enforced here.
 
-# The events_log identity of a FORK STOP, filed under REKEY_SOURCE beside the
-# re-key's own row rather than under a source of its own: both are the same
-# identity story, and an operator asking "what happened to this row's key"
-# should grep one source. Its own event_type, because the two rows say
-# opposite things -- one records a key that moved, the other a job that
-# declined to touch a key that did not.
-FORK_EVENT = "process_item_fork_stopped"
+    A key that moved to another item (a Plex re-match, a library rebuild) is
+    re-pointed by the upsert, which is the whole of the old
+    ``_rekey_by_identity``: identity is the row, the server id is an
+    attribute. But re-pointing alone would leave the item holding BOTH ids
+    for that server -- the old one still points at this row -- and every
+    reader that asks "what is this item's Plex id" (``db/refs.py``, the API
+    payloads, the credits scan) would then have to pick one of several
+    arbitrarily. The item's other ids for THIS server are deleted instead:
+    the one just resolved is the live one, by construction.
 
-# The no-op outcome's name. A job that stops here COMPLETES -- queue/worker's
-# `else: await complete(...)` -- so it is never retried, never deferred and
-# never parked. `complete()` does write `job.last_error` (the SERVED column,
-# api/jobs.py), but writes it None (queue/jobs.py:327): NOTHING IS SERVED,
-# which is stricter than the class-name-only rule row 213 sets for the paths
-# that do serve something. _served_reason is never even reached -- it is
-# called only from the fail() branches. The pod log's WARNING and this audit
-# row are the whole record.
-FORK_OUTCOME = "fork_stopped"
-
-
-def _identity_clauses(item: ResolvedItem) -> list:
-    """The external-id half of the identity predicate, as OR-able clauses.
-
-    Empty when the resolved item carries no external id at all. That is the
-    "never a title-only match" rule expressed as an absence rather than as a
-    special case: with no clause to OR there is no identity to match on, and
-    every caller reads the empty list as a refusal.
+    Only this server's other refs. A Jellyfin id and a Plex id for the same
+    item are the point of the table, not a conflict.
     """
-    clauses = []
-    if item.tmdb_id is not None:
-        clauses.append(MediaItem.tmdb_id == item.tmdb_id)
-    if item.tvdb_id is not None:
-        clauses.append(MediaItem.tvdb_id == item.tvdb_id)
-    if item.imdb_id is not None:
-        clauses.append(MediaItem.imdb_id == item.imdb_id)
-    return clauses
-
-
-async def _identity_candidates(
-    session: AsyncSession, item: ResolvedItem
-) -> list[MediaItem]:
-    """Every row carrying ``item``'s identity under some OTHER key, locked.
-
-    Its own function for two reasons. It is where the ``FOR UPDATE`` lives,
-    and a lock taken half-way down a longer function is the kind of thing that
-    gets moved by accident; and it is the seam the lost-race test wraps, which
-    needs somewhere to land a competing insert between the free-key check and
-    the update.
-
-    The predicate is the same cross-check ``_fetch_by_rating_key_sync``
-    already applies, and adds no new field: same kind, same library, the same
-    season/episode coordinates, and at least one external id in common. The
-    coordinates are not decoration -- every season of one show carries the
-    show's ids, so without them season 1's row matches season 2's resolution
-    and the exactly-one guard below refuses every season in the library
-    instead of making the one right re-key.
-
-    ``LIMIT 2`` because the caller only ever asks "exactly one?". A third row
-    changes no decision and a library-sized result is not worth reading to
-    find that out.
-    """
-    clauses = _identity_clauses(item)
-    if not clauses:
-        return []
-    return (
-        await session.execute(
-            select(MediaItem)
-            .where(MediaItem.kind == item.kind)
-            .where(MediaItem.library == item.library)
-            .where(MediaItem.season_number.is_not_distinct_from(item.season_number))
-            .where(MediaItem.episode_number.is_not_distinct_from(item.episode_number))
-            .where(or_(*clauses))
-            .where(MediaItem.rating_key != item.native_id)
-            .order_by(MediaItem.id)
-            .limit(2)
-            .with_for_update()
-        )
-    ).scalars().all()
-
-
-async def _rekey_by_identity(
-    session: AsyncSession, item: ResolvedItem
-) -> str | None:
-    """Move an existing row onto ``item``'s live rating key. Returns the old key.
-
-    ``media_items`` is keyed on the Plex rating key and the Plex rating key is
-    a *hint*: ``resolve()`` returns the key it FOUND, which after a re-match
-    or a library rebuild is not the key the row holds. ``_upsert_media_item``
-    below is an ``ON CONFLICT (rating_key)`` upsert, so a new key conflicts
-    with nothing and INSERTS -- a second row that inherits every future render
-    while the original keeps its renders, its facts, its dismissals, its
-    ``logo_upload_key`` and its children and is never written again.
-
-    The precondition is proved from the DATABASE, not from a key comparison,
-    and that is the whole design. Comparing ``intent.rating_key`` to
-    ``item.native_id`` covers only the paths that CARRY a key; the ratings
-    drift sweep and the Sonarr/Radarr webhooks carry none by construction, and
-    both minted twins with no warning at all. Two facts, in this order:
-
-    1. **No row already holds the resolved key.** If one does, the twin exists
-       already, and reconciling two rows is the ``plex_merge`` job's work
-       under a dry run an operator reads first -- so this does nothing. This
-       check is also the hot path's entire cost: an item whose key has not
-       moved satisfies it with its own row and returns immediately.
-    2. **Exactly one row carries the resolved identity.** Zero is an ordinary
-       new item; more than one is an ambiguity that would otherwise be settled
-       by picking a side at random.
-
-    Concurrency: ``rating_key`` carries a real unique constraint, which is why
-    ``_upsert_media_item`` is an upsert in the first place. Two workers can
-    resolve the same identity at once, so the candidate is taken ``FOR
-    UPDATE`` and the flush is guarded -- the loser rolls back and falls
-    through to the ordinary upsert, which then finds the row the winner
-    created. A lost race must never fail a job.
-
-    The write is committed rather than left to the caller's transaction. A
-    ``process_item`` whose every art kind refuses raises and the worker rolls
-    back, so a flush-only re-key would be lost -- and the same fork would then
-    happen again on every subsequent pass while the audit trail said it had
-    been fixed.
-    """
-    taken = (
-        await session.execute(
-            select(MediaItem.id).where(MediaItem.rating_key == item.native_id)
-        )
-    ).scalar_one_or_none()
-    if taken is not None:
-        return None
-
-    candidates = await _identity_candidates(session, item)
-    if len(candidates) != 1:
-        if candidates:
-            logger.warning(
-                "not re-keying to %s: %d rows carry that identity "
-                "(%s in %r); the twin merge owns this pair",
-                item.native_id, len(candidates), item.kind, item.library,
-            )
-        # The candidate query above takes FOR UPDATE. Left open, this
-        # transaction would hold that lock across the rest of process_item's
-        # render -- the provider fetch, the image download, the ImageMagick
-        # compose -- blocking any concurrent upsert or prune on either row
-        # for that whole window. Rolling back releases it immediately; there
-        # is nothing pending in this transaction to lose (the candidate
-        # query is read-only). This also fires on the zero-candidate path
-        # (an ordinary new item), which is the common case.
-        await session.rollback()
-        return None
-
-    stale = candidates[0]
-    stale_id = stale.id
-    old_key = stale.rating_key
-    try:
-        # An ORM mutation rather than a Core UPDATE: the row is in this
-        # session's identity map (the SELECT above loaded it), and a Core
-        # UPDATE with synchronize_session=False would leave the in-memory
-        # object still reporting the OLD key -- which is exactly what
-        # _upsert_media_item's re-SELECT would then hand back.
-        stale.rating_key = item.native_id
-        await session.flush()
-        session.add(EventLog(
-            source=REKEY_SOURCE,
-            event_type=REKEY_EVENT,
-            payload={
-                "media_item_id": stale_id,
-                "old_rating_key": old_key,
-                "new_rating_key": item.native_id,
-                "kind": item.kind,
-                "library": item.library,
-                "title": item.title,
-                "season_number": item.season_number,
-                "episode_number": item.episode_number,
-                "tmdb_id": item.tmdb_id,
-                "tvdb_id": item.tvdb_id,
-                "imdb_id": item.imdb_id,
-            },
-            outcome=f"re-keyed {old_key} -> {item.native_id} on an identity match",
-        ))
-        await session.commit()
-    except (IntegrityError, DBAPIError) as exc:
-        # IntegrityError is the unique-constraint race (two workers resolve
-        # the same identity at once). DBAPIError also belongs here, but only
-        # when it carries sqlstate 40P01 -- under asyncpg, a lock cycle
-        # across two concurrent re-keys surfaces as a plain DBAPIError, not
-        # OperationalError, with that sqlstate stamped onto ``exc.orig``.
-        # Anything else (e.g. a dropped connection) must still fail the job.
-        if not isinstance(exc, IntegrityError) and getattr(
-            exc.orig, "sqlstate", None
-        ) != "40P01":
-            raise
-        await session.rollback()
-        if isinstance(exc, IntegrityError):
-            logger.warning(
-                "re-key of %s to %s lost a race; the winner's row holds the "
-                "key, so this pass stops rather than upsert onto it",
-                old_key, item.native_id, exc_info=True,
-            )
-        else:
-            logger.warning(
-                "re-key of %s to %s lost a race to a deadlock; nothing took "
-                "the key in THIS transaction -- the rollback says no more "
-                "than that -- so this pass falls through and mints a fresh "
-                "twin unless another worker landed the key first",
-                old_key, item.native_id, exc_info=True,
-            )
-        return None
-
-    logger.info(
-        "re-keyed media_items row %d from %s to %s (%s %r)",
-        stale_id, old_key, item.native_id, item.kind, item.title,
+    stmt = insert(MediaItemServerRef).values(
+        item_id=item_id, server=item.server, native_id=item.native_id, library=item.library,
     )
-    return old_key
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_server_ref",
+        set_={"item_id": item_id, "library": item.library, "updated_at": func.now()},
+    )
+    await session.execute(stmt)
+    await session.execute(
+        delete(MediaItemServerRef).where(
+            MediaItemServerRef.item_id == item_id,
+            MediaItemServerRef.server == item.server,
+            MediaItemServerRef.native_id != item.native_id,
+        )
+    )
+
+
+def _is_file_replacement(existing_key: str, key: str) -> bool:
+    """Do these two keys differ ONLY in ``identity_key``'s file field?
+
+    ``kind:provider:id:coords:file`` (servers/identity.py, five fields, the
+    last of which may itself contain colons -- hence ``maxsplit=4``). The
+    same first four fields mean the same kind, the same provider id and the
+    same season/episode coordinates: the same *item*. A different fifth
+    field is a different file for it.
+
+    The legacy placeholder ``kind:legacy:plex:<id>`` has only four fields and
+    is deliberately not matched here -- it is handled on its own branch.
+    """
+    a = existing_key.split(":", 4)
+    b = key.split(":", 4)
+    return len(a) == 5 and len(b) == 5 and a[:4] == b[:4] and a[4] != b[4]
+
+
+async def _rekey_in_place(session: AsyncSession, item: ResolvedItem, key: str) -> None:
+    """Move an existing row onto the incoming key IN PLACE when the server
+    ref says it is the same item under a new key (spec §4.2/§4.6).
+
+    Two shapes reach this, both keyed on the row the incoming
+    ``(server, native_id)`` already points at:
+
+    **The migration's legacy placeholder.** A row the migration could not
+    otherwise identify is keyed on its Plex id alone
+    (``kind:legacy:plex:<id>``) -- a placeholder, not a real identity. Plex
+    only, because that is what the placeholder was minted from; a Jellyfin
+    ref carrying the same id string is a different item entirely.
+
+    **A file replacement.** A Radarr quality upgrade replaces a movie's file
+    in place: same Plex ratingKey, same tmdb id, new basename -- and the
+    basename is in the key. Without this the upsert would INSERT a second row
+    under the new key and re-point the ref onto it, orphaning the original's
+    overrides, dismissals and renders on a row nothing will ever resolve
+    again. The same ref plus the same ``kind:provider:id:coords:`` prefix is
+    what makes that safe to assert: it is the same item, the same server, the
+    same season and episode -- only its file moved. A DIFFERENT ref with the
+    same prefix is the 4K/HD pair and stays two rows, which is why the ref
+    lookup, not the prefix, is the first test.
+
+    Either way, a genuine re-match onto a different identity (a Plex re-match
+    onto another item, a rename to a different film) matches neither shape:
+    the ref simply re-points, same as before.
+
+    The full key may already belong to ANOTHER row, in which case there is
+    nothing to promote onto -- the unique index would abort it. The existing
+    row is left as it is and the upsert below hits that other row, with the
+    ref re-pointing to it.
+
+    Not atomic across two concurrent workers resolving the same native id at
+    once: both could read the same pre-promotion ``existing_key`` before
+    either writes. The window is narrow (one SELECT to the next UPDATE), and
+    the unique index on ``identity_key`` aborts the loser's transaction
+    rather than corrupting anything -- the loser's caller retries the whole
+    upsert, same as any other constraint-violation retry in this module.
+    """
+    existing_id = await item_id_for(session, item.server, item.native_id)
+    if existing_id is None:
+        return
+    existing_key = (
+        await session.execute(select(MediaItem.identity_key).where(MediaItem.id == existing_id))
+    ).scalar_one_or_none()
+    if existing_key is None or existing_key == key:
+        return
+    is_legacy = (
+        item.server == "plex" and existing_key == f"{item.kind}:legacy:plex:{item.native_id}"
+    )
+    if not (is_legacy or _is_file_replacement(existing_key, key)):
+        return
+    already_used = (
+        await session.execute(select(MediaItem.id).where(MediaItem.identity_key == key))
+    ).scalar_one_or_none()
+    if already_used is not None:
+        return
+    await session.execute(update(MediaItem).where(MediaItem.id == existing_id).values(identity_key=key))
+    logger.info("identity re-keyed in place: %s -> %s (item %d)", existing_key, key, existing_id)
 
 
 async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> MediaItem:
     """Insert or update the item, safe under concurrent workers.
 
-    ``rating_key`` carries a real unique constraint. A select-then-insert here
-    would race: two workers can both miss the select and both try to insert,
-    and the loser's flush raises ``IntegrityError``. The Postgres upsert makes
-    the write atomic; the row is then re-selected to get an ORM-tracked object.
+    ``identity_key`` carries the unique constraint (spec §4.2), so the
+    Postgres upsert is atomic -- the same reason the old ``rating_key``
+    upsert was one; a select-then-insert here would race two workers that
+    both resolve the same identity at once.
 
-    ``parent_id`` is looked up by the parent's rating key rather than passed in,
-    because ``ResolvedItem`` only carries the parent's Plex identity, not its
-    database id. If the parent has not been processed yet there is no row to
-    find, so ``parent_id`` is left null rather than invented — a later upsert
-    of this same item (e.g. a re-delivered webhook) will fill it in once the
-    parent exists.
+    ``parent_id`` is resolved through the parent's own identity key rather
+    than a server-native id, so an episode finds its show regardless of which
+    server (or server key) either was last resolved through. A parent not yet
+    processed leaves it null rather than inventing one; a later upsert of
+    this same item fills it in once the parent exists. The ``set_`` below
+    only overwrites ``parent_id`` when THIS upsert resolved one -- a re-visit
+    that finds no parent (the parent row does not exist YET, or this call
+    carries no parent ids at all) must not null out a parent_id an earlier
+    upsert already set.
     """
+    key = identity_key_for(item)
+    await _rekey_in_place(session, item, key)
     parent_id = None
-    if item.parent_native_id is not None:
+    parent_key = parent_identity_key_for(item)
+    if parent_key is not None:
         parent_id = (
-            await session.execute(
-                select(MediaItem.id).where(MediaItem.rating_key == item.parent_native_id)
-            )
+            await session.execute(select(MediaItem.id).where(MediaItem.identity_key == parent_key))
         ).scalar_one_or_none()
 
     mutable = dict(
         library=item.library,
         kind=item.kind,
-        parent_id=parent_id,
         title=item.title,
         year=item.year,
         season_number=item.season_number,
@@ -906,17 +803,28 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
         tvdb_id=item.tvdb_id,
         imdb_id=item.imdb_id,
     )
-    stmt = insert(MediaItem).values(rating_key=item.native_id, **mutable)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["rating_key"], set_={**mutable, "updated_at": func.now()}
-    )
+    stmt = insert(MediaItem).values(identity_key=key, parent_id=parent_id, **mutable)
+    on_update = dict(mutable, updated_at=func.now())
+    if parent_id is not None:
+        on_update["parent_id"] = parent_id
+    stmt = stmt.on_conflict_do_update(index_elements=["identity_key"], set_=on_update)
     await session.execute(stmt)
-    await session.flush()
-    return (
+    row = (
         await session.execute(
-            select(MediaItem).where(MediaItem.rating_key == item.native_id)
+            select(MediaItem)
+            .where(MediaItem.identity_key == key)
+            # populate_existing: a second upsert of the same item in one
+            # session (a parent arriving between two passes over the same
+            # child, in the tests) must not hand back the FIRST call's
+            # cached object -- the identity map returns it unrefreshed by
+            # default, which is exactly how a just-written parent_id would
+            # silently read back as the stale None from before it existed.
+            .execution_options(populate_existing=True)
         )
     ).scalar_one()
+    await upsert_server_ref(session, row.id, item)
+    await session.flush()
+    return row
 
 
 async def _get_or_create_render(
@@ -1159,7 +1067,7 @@ async def render_artifact(
     """Build one artifact. Idempotent: safe to run repeatedly for the same item.
 
     ``plex_generated_base`` is the plex-preview fallback's own hook (roadmap
-    row 241): an async callable ``(rating_key, destination, *, stage) -> str
+    row 241): an async callable ``(native_id, destination, *, stage) -> str
     | None`` -- ``fetch_plex_generated_base`` bound at app.py's composition
     time via ``functools.partial`` with ``http``, ``plex``, ``base_url`` and
     the ``X-Plex-Token`` header baked in, so this function never sees the
@@ -1879,7 +1787,7 @@ async def apply_badges(
     # for an exempt item with no override at all.
     if config.operations.item_overrides_enabled:
         exempt = exemption_reason(
-            config.operations, media_item.rating_key, media_item.imdb_id,
+            config.operations, ref.native_id, media_item.imdb_id,
             getattr(plex_item, "labels", None),
         )
         if exempt is None:
@@ -2015,7 +1923,7 @@ async def apply_badges(
     except Exception:
         render.upload_status = "failed"
         await session.flush()
-        logger.warning("badge upload failed for %s", media_item.rating_key, exc_info=True)
+        logger.warning("badge upload failed for %s", ref.native_id, exc_info=True)
         return
 
     render.upload_status = "uploaded"
@@ -2065,107 +1973,8 @@ async def process_item(
 
     ``plex_generated_base`` is passed straight to ``render_artifact``; see
     its own docstring for what it does and why it is optional.
-
-    Answers ``[]`` -- a completed no-op job -- when the intent carried a
-    rating key, the resolved key differs, and a ``media_items`` row already
-    exists under the resolved key that the identity re-key did not put there.
-    A resolved key with no row at all is NOT a stop: that job falls through to
-    the ordinary upsert exactly as before, which is what still mints a newly
-    discovered item. See the fork stop below.
     """
     item = await plex.resolve(intent)
-
-    # The identity fork (roadmap: the ~411 unscorable floor investigation).
-    # `resolve()` treats `intent.rating_key` as a hint and is free to return a
-    # DIFFERENT key -- the live copy's, after a re-match or a library rebuild
-    # renumbers the item. Everything below this point (media_item upsert, the
-    # render rows, the Plex field writes) is keyed on the RESOLVED item, not
-    # the one the intent named. The served surfaces stay class-name-only as
-    # everywhere else in this queue; the pod log is the trusted sink, so this
-    # is a WARNING there and nowhere else -- but it turns a silent hole into a
-    # grep.
-    forked = intent.rating_key is not None and item.native_id != intent.rating_key
-    if forked:
-        logger.warning(
-            "resolved rating key %s for %r differs from the intent's %s; "
-            "the intent's row will not be scored by this job",
-            item.native_id, item.title, intent.rating_key,
-        )
-
-    # The re-key. The WARNING above only fires when the intent CARRIED a key,
-    # so it can never see the two silent producers -- the ratings-drift sweep
-    # and the webhook intake both build intents with no rating key at all --
-    # and a key-comparison guard here would leave both open. This asks the
-    # database instead, which closes every upserting path in one place: is the
-    # resolved key free, and does exactly one row carry the resolved identity.
-    # It must run BEFORE the first _upsert_media_item below, because that is
-    # the call that would otherwise insert the twin (and render_artifact, the
-    # refusal path and the badge path all upsert again after it).
-    rekeyed_from = await _rekey_by_identity(session, item)
-
-    # The fork stop. It fires on exactly one condition: a row ALREADY HOLDS
-    # the resolved key and it is not this intent's row. Then the resolved item
-    # is somebody else's -- it has its own media_items row and its own visits,
-    # and this job was never asked about it. Carrying on rendered it, uploaded
-    # it, and -- because the unchanged-check compares against the intent's row
-    # -- wrote Plex fields to it on every single pass ("plex: wrote 2 field(s)
-    # to movie 'Boss Level'", every run, forever).
-    #
-    # Two filters, cheapest first, and the order is the whole design:
-    #
-    # 1. `rekeyed_from != intent.rating_key`. A re-key that MOVED this
-    #    intent's row onto the resolved key is the success this phase exists
-    #    for: the row under that key is ours, and the job goes on. Checking it
-    #    first also means the hot path -- an unforked item, or a successful
-    #    re-key -- never issues the query below at all.
-    # 2. A row exists under `item.native_id`. This is the part that cannot be
-    #    inferred from the re-key's return value, because _rekey_by_identity
-    #    answers None on FIVE different refusals and only two of them mean a
-    #    row is there (the key was already taken; an IntegrityError race the
-    #    winner committed). On the other three -- zero identity candidates, an
-    #    ambiguous pair, a 40P01 deadlock -- the resolved key is EMPTY, there
-    #    is no twin, and stopping would delete a job's whole purpose: the
-    #    ordinary upsert below is what mints that row, and it is what arr
-    #    discovery relies on. The twin merge reconciles rows; it never creates
-    #    them, so a stop there would wait for something that never comes.
-    #
-    # One indexed read on the rating_key unique constraint, and an honest one:
-    # four of the five refusal arms roll back before returning (:797, :841),
-    # ending the transaction, and the taken-key arm has issued nothing but
-    # this same select -- so whatever it sees is committed truth.
-    #
-    # This changes nothing about the refusal itself (`p-rekey-facts.md` C1:
-    # cross-library or id-disjoint is not a re-key, and the pair stays the
-    # twin merge's work), and nothing about the row-less fall-through C1.1
-    # calls "the twin path as today" -- only about a pair that already exists.
-    # Returning an empty list COMPLETES the job (queue/worker.py's
-    # `else: complete(...)`), so it is never retried, deferred or parked; a
-    # job that cannot do anything useful must not look like a failure an
-    # operator has to clear.
-    if forked and rekeyed_from != intent.rating_key:
-        resolved_row_id = (
-            await session.execute(
-                select(MediaItem.id).where(MediaItem.rating_key == item.native_id)
-            )
-        ).scalar_one_or_none()
-        if resolved_row_id is not None:
-            session.add(EventLog(
-                source=REKEY_SOURCE,
-                event_type=FORK_EVENT,
-                payload={
-                    "intent_rating_key": intent.rating_key,
-                    "resolved_rating_key": item.native_id,
-                    "kind": item.kind,
-                    "library": item.library,
-                    "title": item.title,
-                },
-                outcome=FORK_OUTCOME,
-            ))
-            # A commit, not a flush: _rekey_by_identity's refusal paths roll
-            # back (releasing their FOR UPDATE), and this row must survive
-            # whatever the caller does next.
-            await session.commit()
-            return []
 
     media_item = None
     # Roadmap row 92. A separately-named object, and NOT a rebinding of

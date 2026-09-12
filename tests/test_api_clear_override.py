@@ -24,8 +24,10 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import Job, MediaItem, Render
+from autoposter.db.models import Job, Render
 from autoposter.queue.jobs import enqueue
+
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -75,12 +77,10 @@ async def auth_headers(client):
 
 async def _item(session, kind: str = "movie", with_render: bool = True) -> int:
     """One media item, optionally with a rendered row carrying fingerprints."""
-    item = MediaItem(
-        rating_key="rk1", library=LIBRARY, kind=kind, title="A Movie",
+    item = await seed_media_item(
+        session, "rk1", library=LIBRARY, kind=kind, title="A Movie",
         year=1999, tmdb_id=TMDB_ID, root_folder=ROOT_FOLDER,
     )
-    session.add(item)
-    await session.flush()
     if with_render:
         session.add(
             Render(

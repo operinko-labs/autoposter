@@ -58,6 +58,7 @@ from sqlalchemy.orm import aliased
 from autoposter.config.loader import RENDER_ART_KINDS, render_version_for
 from autoposter.config.schema import Config
 from autoposter.db.models import ManagedCollection, MediaItem, Render
+from autoposter.db.refs import native_ids
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.render.pipeline import (
@@ -108,7 +109,7 @@ class _Candidate:
     year: int | None
     season_number: int | None
     episode_number: int | None
-    rating_key: str
+    native_id: str | None
 
 
 def _file_sha256(path: Path) -> str:
@@ -244,6 +245,7 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
     rows = (
         await session.execute(
             select(
+                Render.item_id,
                 Render.art_kind,
                 Render.source_url,
                 Render.base_sha256,
@@ -258,7 +260,6 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
                 MediaItem.tmdb_id,
                 MediaItem.tvdb_id,
                 MediaItem.imdb_id,
-                MediaItem.rating_key,
                 parent.title.label("parent_title"),
             )
             .join(MediaItem, Render.item_id == MediaItem.id)
@@ -267,6 +268,8 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
             .order_by(Render.id)
         )
     ).all()
+    # One query for every examined row's Plex id, not one per row.
+    plex_ids = await native_ids(session, [row.item_id for row in rows], "plex")
 
     cache: dict[str, str] = {}
     # Element 0 of every fingerprint this walk recomputes, once per kind
@@ -327,7 +330,7 @@ async def _walk(session: AsyncSession, config: Config) -> list[_Candidate]:
                 year=row.year,
                 season_number=row.season_number,
                 episode_number=row.episode_number,
-                rating_key=row.rating_key,
+                native_id=plex_ids.get(row.item_id),
             )
         )
     return candidates
@@ -373,7 +376,7 @@ async def affected_items(session: AsyncSession, new_config: Config) -> list[Rend
             year=candidate.year,
             season_number=candidate.season_number,
             episode_number=candidate.episode_number,
-            rating_key=candidate.rating_key,
+            refs={"plex": candidate.native_id} if candidate.native_id else {},
         )
         if intent.dedupe_key in seen:
             continue

@@ -1,13 +1,13 @@
 """The adopted marker on renders."""
 from sqlalchemy import select
 
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
+
+from conftest import seed_media_item
 
 
 async def _render(session, **kw):
-    item = MediaItem(kind="movie", rating_key="1", title="X", library="Movies")
-    session.add(item)
-    await session.flush()
+    item = await seed_media_item(session, "1", kind="movie", title="X", library="Movies")
     render = Render(item_id=item.id, art_kind="poster", asset_path="/x.jpg", **kw)
     session.add(render)
     await session.flush()

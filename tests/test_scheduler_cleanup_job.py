@@ -16,23 +16,20 @@ import pytest
 from sqlalchemy import select
 
 from autoposter.config.holder import ConfigHolder
-from autoposter.db.models import MediaItem, Render, Run
+from autoposter.db.models import Render, Run
 from autoposter.scheduler import jobs
 from autoposter.scheduler.jobs import find_orphaned_assets, make_cleanup_job, move_to_backup
 from autoposter.scheduler.run_history import open_run
+
+from conftest import seed_media_item
 
 _next_rating_key = iter(str(n) for n in range(1, 1_000_000))
 
 
 async def _make_render(session, asset_path, *, art_kind="poster") -> Render:
-    item = MediaItem(
-        rating_key=next(_next_rating_key),
-        library="Movies",
-        kind="movie",
-        title="Item",
+    item = await seed_media_item(
+        session, next(_next_rating_key), library="Movies", kind="movie", title="Item",
     )
-    session.add(item)
-    await session.commit()
     render = Render(item_id=item.id, art_kind=art_kind, asset_path=str(asset_path))
     session.add(render)
     await session.commit()

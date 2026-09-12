@@ -5,10 +5,10 @@ writes to ``item_facts`` and nothing here reads a provider: an override row
 holds only what an operator typed, which is the freezing hazard's own rule
 (``frontend/src/api/overrides.ts:13-21``) read onto this row.
 
-Keyed on ``media_items.id`` and never on ``rating_key``: the 2026-09-03
-identity re-key MUTATES ``rating_key`` in place (``render/pipeline.py``'s
-``_rekey_by_identity``) precisely so that children keyed on ``id`` survive the
-move, and a rating-key-keyed table would silently detach on every re-key.
+Keyed on ``media_items.id`` and never on a server's own id: a Plex rating key
+moves, and since the identity re-key it is a ``media_item_server_refs`` row
+the pipeline re-points rather than a column on ``media_items`` at all. A table
+keyed on it would silently detach every time that happened.
 """
 from datetime import datetime
 
@@ -17,15 +17,14 @@ from sqlalchemy import select
 
 from autoposter.db.models import ItemMetadataOverride, MediaItem
 
+from conftest import seed_media_item
+
 
 async def _item(session, rating_key: str = "1", kind: str = "movie") -> MediaItem:
-    item = MediaItem(
-        rating_key=rating_key, library="Movies", kind=kind, title="Heat",
+    return await seed_media_item(
+        session, rating_key, library="Movies", kind=kind, title="Heat",
         year=1995, tmdb_id=949,
     )
-    session.add(item)
-    await session.flush()
-    return item
 
 
 async def test_an_override_row_round_trips(session):
@@ -86,14 +85,14 @@ async def test_deleting_the_item_cascades_the_overrides(session):
 
 async def test_an_override_survives_a_re_key(session):
     """The whole reason the FK is ``media_items.id``. A re-key mutates
-    ``rating_key`` on the SAME row and leaves ``id`` alone, so the override
-    stays attached with no work at all. A ``rating_key``-keyed table would
+    ``identity_key`` on the SAME row and leaves ``id`` alone, so the override
+    stays attached with no work at all. An ``identity_key``-keyed table would
     have detached here, silently."""
     item = await _item(session, rating_key="16201")
     session.add(ItemMetadataOverride(item_id=item.id, field="studio", value="A24"))
     await session.commit()
 
-    item.rating_key = "165269"
+    item.identity_key = "movie:legacy:plex:165269"
     await session.commit()
     session.expire_all()
 
@@ -101,7 +100,7 @@ async def test_an_override_survives_a_re_key(session):
     reloaded = (
         await session.execute(select(MediaItem).where(MediaItem.id == row.item_id))
     ).scalar_one()
-    assert reloaded.rating_key == "165269"
+    assert reloaded.identity_key == "movie:legacy:plex:165269"
 
 
 # --- the vocabulary, the parser and the loader -----------------------------

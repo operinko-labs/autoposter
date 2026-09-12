@@ -27,7 +27,8 @@ import pytest
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config
-from autoposter.db.models import ImdbRating, ItemFacts, ItemMetadataOverride, MediaItem
+from autoposter.db import refs
+from autoposter.db.models import ImdbRating, ItemFacts, ItemMetadataOverride
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
@@ -58,10 +59,8 @@ async def _override(session, field: str, value: str) -> None:
     store reads by are the same id, and pre-creating the row would assume
     exactly that. ``_item``'s rating key is ``"1"``.
     """
-    media = (
-        await session.execute(select(MediaItem).where(MediaItem.rating_key == "1"))
-    ).scalar_one()
-    session.add(ItemMetadataOverride(item_id=media.id, field=field, value=value))
+    item_id = await refs.item_id_for(session, "plex", "1")
+    session.add(ItemMetadataOverride(item_id=item_id, field=field, value=value))
     await session.commit()
 
 

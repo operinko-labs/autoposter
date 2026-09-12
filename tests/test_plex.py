@@ -566,14 +566,14 @@ async def test_an_episode_intent_without_coordinates_is_absent_not_a_bad_request
     client = PlexClient(server=server, excluded_libraries=[])
     no_coordinates = RenderIntent(
         kind="episode", title="Severance", tvdb_id=371980,
-        season_number=None, episode_number=None, rating_key="557",
+        season_number=None, episode_number=None, refs={"plex": "557"},
     )
     # The shape production actually holds: a year-grouped special, filed under
     # `parentIndex` 2024 with no `index` of its own. plexapi needs BOTH
     # coordinates, so half of them is still an unmakeable call.
     year_grouped_special = RenderIntent(
         kind="episode", title="Severance", tvdb_id=371980,
-        season_number=2024, episode_number=None, rating_key="557",
+        season_number=2024, episode_number=None, refs={"plex": "557"},
     )
 
     for intent in (no_coordinates, year_grouped_special):
@@ -590,7 +590,7 @@ async def test_an_episode_intent_with_coordinates_still_descends():
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="episode", title="Severance", tvdb_id=371980,
-        season_number=2, episode_number=3, rating_key="557",
+        season_number=2, episode_number=3, refs={"plex": "557"},
     )
 
     item = await client.resolve(intent)
@@ -620,7 +620,7 @@ async def test_a_live_special_with_no_episode_number_still_resolves_by_rating_ke
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="episode", title="The 2024 Special", tvdb_id=371980,
-        season_number=2024, episode_number=None, rating_key="601",
+        season_number=2024, episode_number=None, refs={"plex": "601"},
     )
 
     item = await client.resolve(intent)
@@ -642,7 +642,7 @@ async def test_a_season_intent_without_a_number_is_absent_not_a_bad_request():
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="season", title="Severance", tvdb_id=371980,
-        season_number=None, rating_key="556",
+        season_number=None, refs={"plex": "556"},
     )
 
     with pytest.raises(ItemNotFound):
@@ -657,7 +657,7 @@ async def test_a_season_intent_with_a_number_still_descends():
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="season", title="Severance", tvdb_id=371980,
-        season_number=2, rating_key="556",
+        season_number=2, refs={"plex": "556"},
     )
 
     item = await client.resolve(intent)
@@ -730,7 +730,7 @@ async def test_a_direct_rating_key_fetch_of_a_season_carries_the_shows_own_title
     item = await client.resolve(
         RenderIntent(
             kind="season", title="Severance", tvdb_id=371980,
-            season_number=2, rating_key="556",
+            season_number=2, refs={"plex": "556"},
         )
     )
 
@@ -896,7 +896,7 @@ async def test_an_episode_with_a_rating_key_resolves_without_any_guid_search():
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="episode", title="Who Is Alive?", tmdb_id=64677, tvdb_id=1123661,
-        season_number=2, episode_number=3, rating_key="557",
+        season_number=2, episode_number=3, refs={"plex": "557"},
     )
 
     item = await client.resolve(intent)
@@ -915,7 +915,7 @@ async def test_a_season_with_a_rating_key_resolves_without_any_guid_search():
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="season", title="Season 2", tvdb_id=1123661, season_number=2,
-        rating_key="556",
+        refs={"plex": "556"},
     )
 
     item = await client.resolve(intent)
@@ -939,7 +939,7 @@ async def test_a_movie_with_a_rating_key_resolves_directly_with_its_own_file():
     server = FakeServer([movies], items_by_key={12345: movie})
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
-        kind="movie", title="Dune: Part Two", tmdb_id=693134, rating_key="12345"
+        kind="movie", title="Dune: Part Two", tmdb_id=693134, refs={"plex": "12345"}
     )
 
     item = await client.resolve(intent)
@@ -969,7 +969,7 @@ async def test_the_rating_key_shortcut_returns_exactly_what_the_guid_search_woul
     )
 
     by_guid = await client.resolve(RenderIntent(**fields))
-    by_key = await client.resolve(RenderIntent(**fields, rating_key="557"))
+    by_key = await client.resolve(RenderIntent(**fields, refs={"plex": "557"}))
 
     assert by_key == by_guid
     assert by_guid.file_path is None
@@ -987,7 +987,7 @@ async def test_a_stale_rating_key_falls_back_to_the_guid_search():
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="episode", title="Severance", tvdb_id=371980,
-        season_number=2, episode_number=3, rating_key="557",
+        season_number=2, episode_number=3, refs={"plex": "557"},
     )
 
     item = await client.resolve(intent)
@@ -1010,7 +1010,7 @@ async def test_a_rating_key_naming_the_wrong_kind_of_item_falls_back():
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="episode", title="Severance", tvdb_id=371980,
-        season_number=2, episode_number=3, rating_key="556",
+        season_number=2, episode_number=3, refs={"plex": "556"},
     )
 
     item = await client.resolve(intent)
@@ -1036,7 +1036,7 @@ async def test_a_rating_key_inside_an_excluded_library_resolves_nothing():
     client = PlexClient(server=server, excluded_libraries=["Shows"])
     intent = RenderIntent(
         kind="episode", title="Severance", tvdb_id=371980,
-        season_number=2, episode_number=3, rating_key="557",
+        season_number=2, episode_number=3, refs={"plex": "557"},
     )
 
     with pytest.raises(ItemNotFound):
@@ -1059,7 +1059,7 @@ async def test_the_rating_key_shortcut_returns_exactly_what_the_guid_search_woul
     fields = dict(kind="season", title="Severance", tvdb_id=371980, season_number=2)
 
     by_guid = await client.resolve(RenderIntent(**fields))
-    by_key = await client.resolve(RenderIntent(**fields, rating_key="556"))
+    by_key = await client.resolve(RenderIntent(**fields, refs={"plex": "556"}))
 
     assert by_key == by_guid
     assert shows.getguid_calls == ["tvdb://371980"]
@@ -1084,7 +1084,7 @@ async def test_a_renumbered_rating_key_landing_on_the_wrong_episode_falls_back()
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="episode", title="Severance", tvdb_id=371980,
-        season_number=2, episode_number=3, rating_key="557",
+        season_number=2, episode_number=3, refs={"plex": "557"},
     )
 
     item = await client.resolve(intent)
@@ -1114,7 +1114,7 @@ async def test_a_renumbered_rating_key_landing_on_the_wrong_movie_falls_back():
     server = FakeServer([movies], items_by_key={12345: impostor})
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
-        kind="movie", title="Dune: Part Two", tmdb_id=693134, rating_key="12345",
+        kind="movie", title="Dune: Part Two", tmdb_id=693134, refs={"plex": "12345"},
     )
 
     item = await client.resolve(intent)
@@ -1133,7 +1133,7 @@ async def test_a_malformed_rating_key_falls_back_instead_of_raising():
     client = PlexClient(server=server, excluded_libraries=[])
     intent = RenderIntent(
         kind="episode", title="Severance", tvdb_id=371980,
-        season_number=2, episode_number=3, rating_key="not-a-number",
+        season_number=2, episode_number=3, refs={"plex": "not-a-number"},
     )
 
     item = await client.resolve(intent)
@@ -1265,7 +1265,7 @@ async def test_exists_many_uses_the_stored_rating_key_before_any_guid_search():
 
     intent = RenderIntent(
         kind="episode", title="An Episode", season_number=1, episode_number=3,
-        rating_key="555",
+        refs={"plex": "555"},
     )
 
     assert await client.exists_many([intent]) == [True]
@@ -1309,7 +1309,7 @@ async def test_exists_many_lets_a_probe_failure_out():
 
     movies = FakeSection("Movies", "/mnt/Media/Movies", [])
     client = PlexClient(server=BrokenServer([movies]), excluded_libraries=[])
-    intent = RenderIntent(kind="movie", title="Anything", rating_key="1")
+    intent = RenderIntent(kind="movie", title="Anything", refs={"plex": "1"})
 
     with pytest.raises(ConnectionError):
         await client.exists_many([intent])
@@ -1377,9 +1377,9 @@ async def test_keys_resolve_answers_only_for_the_stored_key(server):
     client = PlexClient(server=live_server, excluded_libraries=[])
 
     live = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                        rating_key="12345")
+                        refs={"plex": "12345"})
     stale = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134,
-                         rating_key="999")
+                         refs={"plex": "999"})
 
     assert await client.keys_resolve([live, stale]) == [True, False]
     assert movies.getguid_calls == [], (
