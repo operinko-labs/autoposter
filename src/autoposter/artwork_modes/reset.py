@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty, refuse_if_implausible
 from autoposter.db.models import MediaItem
+from autoposter.db.refs import native_ids
 from autoposter.servers.base import CAP_ARTWORK_PROVENANCE, CAP_RESET_TO_AGENT_DEFAULT
 
 logger = logging.getLogger(__name__)
@@ -164,12 +165,14 @@ class ResetMode:
 
         rows = (
             await session.execute(
-                select(MediaItem.rating_key, MediaItem.kind)
+                select(MediaItem.id, MediaItem.kind)
                 .where(*conditions)
                 .order_by(MediaItem.id)
             )
         ).all()
         total = len(rows)
+        # One query for the whole candidate set's Plex ids, not one per row.
+        plex_ids = await native_ids(session, [row.id for row in rows], "plex")
         # End the read transaction before the probe phase. What follows is one
         # Plex request per candidate over a whole library and touches no row of
         # this result again (they are plain tuples, not ORM objects, so nothing
@@ -178,8 +181,8 @@ class ResetMode:
         # pinning the oldest xmin and blocking autovacuum meanwhile.
         await session.commit()
 
-        # Which fields of which candidates are showing art we uploaded. Rating
-        # keys rather than the fetched refs: the probe walks the whole
+        # Which fields of which candidates are showing art we uploaded. Native
+        # ids rather than the fetched refs: the probe walks the whole
         # filtered set, which can be the entire library, while the write walks at
         # most ``max_changes`` of it -- holding every probed ref alive to save
         # the applied run one fetch each would be the wrong trade. A dry run, the
@@ -188,11 +191,16 @@ class ResetMode:
         missing = 0
         probe_failed = 0
         for row in rows:
+            native_id = plex_ids.get(row.id)
+            if native_id is None:
+                logger.info("reset: %s has no Plex ref, skipped", row.id)
+                missing += 1
+                continue
             try:
-                ref = await self._server.fetch_ref(row.rating_key)
+                ref = await self._server.fetch_ref(native_id)
             except Exception:  # noqa: BLE001 - one bad item must not abort the probe
                 logger.warning(
-                    "reset: could not fetch Plex item %s", row.rating_key, exc_info=True
+                    "reset: could not fetch Plex item %s", native_id, exc_info=True
                 )
                 probe_failed += 1
                 continue
@@ -201,7 +209,7 @@ class ResetMode:
                 # it was last scanned. One concise line, no traceback --
                 # counted separately from a real probe failure below (backup.py's
                 # PR #112 hotfix shape).
-                logger.info("reset: %s no longer in Plex, skipped", row.rating_key)
+                logger.info("reset: %s no longer in Plex, skipped", native_id)
                 missing += 1
                 continue
             # None for artwork nobody stamped, for a field the item has nothing
@@ -219,12 +227,12 @@ class ResetMode:
                     ]
             except Exception:  # noqa: BLE001 - one bad item must not abort the probe
                 logger.warning(
-                    "reset: could not probe Plex item %s", row.rating_key, exc_info=True
+                    "reset: could not probe Plex item %s", native_id, exc_info=True
                 )
                 probe_failed += 1
                 continue
             if kinds:
-                ours[row.rating_key] = kinds
+                ours[native_id] = kinds
 
         items_with_our_art = len(ours)
         fields = sum(len(kinds) for kinds in ours.values())
@@ -257,17 +265,17 @@ class ResetMode:
             )
 
         reset = failed = 0
-        for rating_key, kinds in ours.items():
+        for native_id, kinds in ours.items():
             try:
-                ref = await self._server.fetch_ref(rating_key)
+                ref = await self._server.fetch_ref(native_id)
             except Exception:  # noqa: BLE001 - see above
                 logger.warning(
-                    "reset: could not fetch Plex item %s", rating_key, exc_info=True
+                    "reset: could not fetch Plex item %s", native_id, exc_info=True
                 )
                 failed += len(kinds)
                 continue
             if ref is None:
-                logger.info("reset: %s no longer in Plex, skipped", rating_key)
+                logger.info("reset: %s no longer in Plex, skipped", native_id)
                 missing += 1
                 continue
             if CAP_RESET_TO_AGENT_DEFAULT not in self._server.capabilities:
@@ -283,7 +291,7 @@ class ResetMode:
                 except Exception:  # noqa: BLE001 - see above
                     logger.warning(
                         "reset: could not reset %s for %s",
-                        art_kind, rating_key, exc_info=True,
+                        art_kind, native_id, exc_info=True,
                     )
                     failed += 1
                     continue
@@ -293,7 +301,7 @@ class ResetMode:
                     # Unlocked, but Plex holds no agent art to fall back to, so
                     # what is displayed did not change.
                     logger.warning(
-                        "reset: no agent %s available for %s", art_kind, rating_key
+                        "reset: no agent %s available for %s", art_kind, native_id
                     )
                     failed += 1
 

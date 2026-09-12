@@ -15,9 +15,9 @@ from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.artwork_modes.backup import BackupMode
 from autoposter.config.loader import load_config
-from autoposter.db.models import MediaItem
 from autoposter.plex.artwork import fetch_artwork as _plex_fetch_artwork
 from autoposter.servers.base import ServerItemRef
+from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PLEX_URL = "http://plex.local"
@@ -126,13 +126,10 @@ def _headers():
 
 async def _add_item(session, *, rating_key, kind="movie", library="Movies",
                     root_folder="A (1999)", season=None, episode=None):
-    item = MediaItem(
-        rating_key=rating_key, library=library, kind=kind, title="A",
+    return await seed_media_item(
+        session, rating_key, kind=kind, library=library,
         root_folder=root_folder, season_number=season, episode_number=episode,
     )
-    session.add(item)
-    await session.commit()
-    return item
 
 
 async def test_backup_writes_the_tree_at_the_right_paths(

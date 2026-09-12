@@ -10,6 +10,7 @@ from autoposter.artwork_modes.base import (
     refuse_if_implausible,
 )
 from autoposter.db.models import MediaItem
+from conftest import seed_media_item
 
 
 # --- the plausibility cap ----------------------------------------------------
@@ -62,8 +63,7 @@ async def test_refuse_if_empty_refuses_an_empty_table(session):
 
 
 async def test_refuse_if_empty_passes_once_a_row_exists(session):
-    session.add(MediaItem(rating_key="1", library="Movies", kind="movie", title="Dune"))
-    await session.commit()
+    await seed_media_item(session, "1", library="Movies", kind="movie", title="Dune")
     assert await refuse_if_empty(session, MediaItem, table_name="media_items") is None
 
 

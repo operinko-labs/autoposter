@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty
 from autoposter.db.models import MediaItem
+from autoposter.db.refs import native_ids
 from autoposter.render import naming
 from autoposter.render.pipeline import ART_KINDS_FOR
 
@@ -160,7 +161,7 @@ class BackupMode:
         rows = (
             await session.execute(
                 select(
-                    MediaItem.rating_key,
+                    MediaItem.id,
                     MediaItem.library,
                     MediaItem.kind,
                     MediaItem.root_folder,
@@ -169,6 +170,8 @@ class BackupMode:
                 ).order_by(MediaItem.id)
             )
         ).all()
+        # One query for the whole walk's Plex ids, not one per row.
+        plex_ids = await native_ids(session, [row.id for row in rows], "plex")
         # End the read transaction before the walk: what follows is a Plex
         # request and a file write per (item, kind) over the whole library, and
         # nothing reads the database again. See reset.py for why the rows
@@ -183,11 +186,16 @@ class BackupMode:
                 # has nowhere its art could be filed.
                 skipped += 1
                 continue
+            native_id = plex_ids.get(row.id)
+            if native_id is None:
+                logger.info("backup: %s has no Plex ref, skipped", row.id)
+                missing_items += 1
+                continue
             try:
-                ref = await self._server.fetch_ref(row.rating_key)
+                ref = await self._server.fetch_ref(native_id)
             except Exception:  # noqa: BLE001 - one bad item must not abort the walk
                 logger.warning(
-                    "backup: could not fetch Plex item %s", row.rating_key, exc_info=True
+                    "backup: could not fetch Plex item %s", native_id, exc_info=True
                 )
                 failed += 1
                 continue
@@ -195,7 +203,7 @@ class BackupMode:
                 # Expected, not a crash: the item was deleted from Plex after
                 # its DB row was written. One concise line, no traceback --
                 # counted separately from real failures below.
-                logger.info("backup: %s no longer in Plex, skipped", row.rating_key)
+                logger.info("backup: %s no longer in Plex, skipped", native_id)
                 missing_items += 1
                 continue
 
@@ -212,8 +220,8 @@ class BackupMode:
                 )
                 if missing is not None:
                     logger.warning(
-                        "backup: %s (rating_key %s) has no %s -- skipping its %s",
-                        row.kind, row.rating_key, missing, art_kind,
+                        "backup: %s (native id %s) has no %s -- skipping its %s",
+                        row.kind, native_id, missing, art_kind,
                     )
                     skipped += 1
                     continue
@@ -222,7 +230,7 @@ class BackupMode:
                 except Exception:  # noqa: BLE001 - see above
                     logger.warning(
                         "backup: could not read %s for %s",
-                        art_kind, row.rating_key, exc_info=True,
+                        art_kind, native_id, exc_info=True,
                     )
                     failed += 1
                     continue
@@ -240,7 +248,7 @@ class BackupMode:
                 except Exception:  # noqa: BLE001 - see above
                     logger.warning(
                         "backup: could not write %s for %s",
-                        path, row.rating_key, exc_info=True,
+                        path, native_id, exc_info=True,
                     )
                     failed += 1
                     continue

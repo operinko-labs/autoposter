@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import refuse_if_empty, refuse_if_implausible
 from autoposter.db.models import MediaItem
+from autoposter.db.refs import native_ids
 from autoposter.render import naming
 from autoposter.render.pipeline import ART_KINDS_FOR
 
@@ -124,7 +125,6 @@ class RestoreMode:
             await session.execute(
                 select(
                     MediaItem.id,
-                    MediaItem.rating_key,
                     MediaItem.library,
                     MediaItem.kind,
                     MediaItem.root_folder,
@@ -136,6 +136,8 @@ class RestoreMode:
             )
         ).all()
         total = len(rows)
+        # One query for the whole filtered set's Plex ids, not one per row.
+        plex_ids = await native_ids(session, [row.id for row in rows], "plex")
         # End the read transaction before the planning phase: what follows is a
         # stat per (item, kind) over a possible NFS mount and then a push per
         # file, and nothing reads the database again until the run is over. See
@@ -151,8 +153,14 @@ class RestoreMode:
         planned: dict[str, list[tuple[str, Path]]] = {}
         items_with_backup = 0
         files = skipped = 0
+        missing = 0
         for row in rows:
             if row.root_folder is None:
+                continue
+            native_id = plex_ids.get(row.id)
+            if native_id is None:
+                logger.info("restore: %s has no Plex ref, skipped", row.id)
+                missing += 1
                 continue
             present: list[tuple[str, Path]] = []
             for art_kind in ART_KINDS_FOR[row.kind]:
@@ -161,13 +169,13 @@ class RestoreMode:
                 # and ``asset_path`` cannot name a file without the number.
                 # Unguarded it raises while planning, so the trigger 500s
                 # before it pushes anything at all.
-                missing = naming.missing_number(
+                missing_number = naming.missing_number(
                     art_kind, row.season_number, row.episode_number
                 )
-                if missing is not None:
+                if missing_number is not None:
                     logger.warning(
-                        "restore: %s (rating_key %s) has no %s -- skipping its %s",
-                        row.kind, row.rating_key, missing, art_kind,
+                        "restore: %s (native id %s) has no %s -- skipping its %s",
+                        row.kind, native_id, missing_number, art_kind,
                     )
                     skipped += 1
                     continue
@@ -178,7 +186,7 @@ class RestoreMode:
                 if await asyncio.to_thread(path.is_file):
                     present.append((art_kind, path))
             if present:
-                planned[row.rating_key] = present
+                planned[native_id] = present
                 items_with_backup += 1
                 files += len(present)
 
@@ -191,21 +199,22 @@ class RestoreMode:
             # See the empty-table refusal above: dry_run is not self._apply.
             return RestoreResult(
                 total, items_with_backup, files, skipped, 0, 0,
-                not self._apply, refused=refusal,
+                not self._apply, missing=missing, refused=refusal,
             )
 
         if not self._apply:
             return RestoreResult(
-                total, items_with_backup, files, skipped, 0, 0, dry_run=True
+                total, items_with_backup, files, skipped, 0, 0, dry_run=True,
+                missing=missing,
             )
 
-        pushed = failed = missing = 0
-        for rating_key, entries in planned.items():
+        pushed = failed = 0
+        for native_id, entries in planned.items():
             try:
-                ref = await self._server.fetch_ref(rating_key)
+                ref = await self._server.fetch_ref(native_id)
             except Exception:  # noqa: BLE001 - one bad item must not abort the run
                 logger.warning(
-                    "restore: could not fetch Plex item %s", rating_key, exc_info=True
+                    "restore: could not fetch Plex item %s", native_id, exc_info=True
                 )
                 failed += len(entries)
                 continue
@@ -214,7 +223,7 @@ class RestoreMode:
                 # its DB row was written. One concise line, no traceback --
                 # counted separately from real failures below (backup.py's
                 # PR #112 hotfix shape).
-                logger.info("restore: %s no longer in Plex, skipped", rating_key)
+                logger.info("restore: %s no longer in Plex, skipped", native_id)
                 missing += 1
                 continue
             for art_kind, path in entries:
@@ -225,7 +234,7 @@ class RestoreMode:
                 except Exception:  # noqa: BLE001 - see above
                     logger.warning(
                         "restore: could not push %s for %s",
-                        art_kind, rating_key, exc_info=True,
+                        art_kind, native_id, exc_info=True,
                     )
                     failed += 1
 

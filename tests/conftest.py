@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from autoposter.config.loader import load_config
 from autoposter.db.base import Base
+from autoposter.db.models import MediaItem, MediaItemServerRef
 
 # The suites a pull request defers to the merge commit. The contract itself is
 # written at the "Test" step in .forgejo/workflows/ci.yml; in short, a pull
@@ -290,6 +291,41 @@ def no_outbound_network(monkeypatch):
         )
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
+
+
+async def seed_media_item(
+    session, native_id: str, *, server: str = "plex", kind: str = "movie",
+    library: str = "Movies", title: str = "A", root_folder: str | None = None,
+    season_number: int | None = None, episode_number: int | None = None,
+    parent: MediaItem | None = None, **extra,
+) -> MediaItem:
+    """Seed one ``media_items`` row plus its ``media_item_server_refs`` row.
+
+    ``media_items.rating_key`` no longer exists (Task 6): a row is identified
+    by ``identity_key``, and its per-server native id lives in a separate
+    ``MediaItemServerRef``. Shared here so every artwork-mode and
+    metadata-backup suite that used to write ``MediaItem(rating_key=...)``
+    seeds the same pair the same way, rather than repeating it per file.
+    ``identity_key`` is synthesized from ``native_id`` rather than from any
+    external id a test also passes in -- these suites care about identifying
+    an item by its server id, exactly as ``rating_key`` did, not about the
+    identity-key scheme itself (``test_scheduler_prune_job.py``'s ``_add_item``
+    precedent).
+    """
+    item = MediaItem(
+        identity_key=f"{kind}:legacy:{server}:{native_id}",
+        library=library, kind=kind, title=title, root_folder=root_folder,
+        season_number=season_number, episode_number=episode_number,
+        parent_id=parent.id if parent is not None else None,
+        **extra,
+    )
+    session.add(item)
+    await session.flush()
+    session.add(MediaItemServerRef(
+        item_id=item.id, server=server, native_id=native_id, library=library,
+    ))
+    await session.commit()
+    return item
 
 
 def decodable_png(size: tuple[int, int] = (8, 12)) -> bytes:
