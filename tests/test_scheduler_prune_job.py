@@ -334,7 +334,10 @@ async def test_an_applied_retire_deletes_the_row(session):
     outcome = await retire(session, scan.prunable)
     await session.commit()
 
-    assert outcome.pruned == ["11"]
+    # ``media_items.id``, not the Plex native id: a candidate need not have
+    # one at all (I4), and a None in this list matched every other ref-less
+    # candidate downstream.
+    assert outcome.pruned == [item_id]
     assert outcome.skipped == 0
     session.expire_all()
     assert (
@@ -399,13 +402,14 @@ async def test_every_row_of_a_pruned_family_gets_its_own_audit_row(session):
     ``find_prunable`` hands them over deepest-first."""
     show = await _add_item(session, "100", kind="show")
     season = await _add_item(session, "110", kind="season", parent=show)
-    await _add_item(session, "111", kind="episode", parent=season)
+    episode = await _add_item(session, "111", kind="episode", parent=season)
+    deepest_first = [episode.id, season.id, show.id]
     scan = await find_prunable(session, FakePlex(live=set()))
 
     outcome = await retire(session, scan.prunable)
     await session.commit()
 
-    assert outcome.pruned == ["111", "110", "100"]
+    assert outcome.pruned == deepest_first
     keys = {
         event.payload["rating_key"]
         for event in (await session.execute(select(EventLog))).scalars().all()
@@ -534,7 +538,7 @@ async def test_a_blocked_family_does_not_spare_an_unrelated_gone_row(session):
     outcome = await retire(session, scan.prunable)
     await session.commit()
 
-    assert outcome.pruned == ["11"]
+    assert outcome.pruned == [movie_id]
     assert outcome.skipped == 3
     session.expire_all()
     assert (
@@ -1009,6 +1013,56 @@ async def test_an_applied_pass_counts_directories_off_what_it_actually_pruned(se
     assert "WARNING" not in summary, (
         f"only the pruned row orphans a directory, and it is at the cap: {summary!r}"
     )
+
+
+class _ReupsertingByIdPlex(FakePlex):
+    """``_ReupsertingPlex`` for a row that has no Plex ref to find it by."""
+
+    def __init__(self, session, item_id, *, title="New Title"):
+        super().__init__(())
+        self._session = session
+        self._item_id = item_id
+        self._title = title
+
+    async def exists_many(self, intents):
+        flags = await super().exists_many(intents)
+        await self._session.execute(
+            update(MediaItem).where(MediaItem.id == self._item_id).values(title=self._title)
+        )
+        await self._session.commit()
+        return flags
+
+
+async def _add_ref_less_item(session, title, *, kind="movie", library="Movies"):
+    """A ``media_items`` row with NO server ref at all -- what a Jellyfin-only
+    item, or a row whose only ref was deleted, looks like to this sweep.
+    ``find_prunable`` reads its ``native_id`` back as ``None``."""
+    item = MediaItem(identity_key=f"{kind}:path:::{title}", library=library, kind=kind, title=title)
+    session.add(item)
+    await session.commit()
+    return item
+
+
+async def test_a_skipped_ref_less_row_does_not_speak_for_the_other_ref_less_rows(session):
+    """I4. A candidate with no Plex ref has ``native_id=None``, so keying the
+    applied pass's "what was actually deleted" set on the native id put a
+    ``None`` in it -- and every OTHER ref-less candidate then matched, whether
+    or not it was deleted. Here the surviving row would have claimed the
+    deleted one's directory count as a second orphan. Matching on
+    ``media_items.id`` is what closes it."""
+    kept = await _add_ref_less_item(session, "Kept")
+    await _add_ref_less_item(session, "Gone")
+
+    plex = _ReupsertingByIdPlex(session, kept.id)
+    summary = await _job(_config(apply=True), plex).run(session)
+
+    assert "pruned 1 of 2" in summary
+    assert "1 asset director" in summary, (
+        f"the skipped ref-less row was counted as deleted too: {summary!r}"
+    )
+    session.expire_all()
+    survivors = (await session.execute(select(MediaItem.title))).scalars().all()
+    assert survivors == ["New Title"]
 
 
 async def test_a_skipped_rows_queued_job_is_not_dismissed(session):

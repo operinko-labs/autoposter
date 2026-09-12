@@ -339,14 +339,22 @@ async def find_prunable(
 class RetireOutcome:
     """What one applied pass actually removed.
 
-    ``pruned`` is the Plex native ids of rows that were really deleted, not
-    the candidates offered: the job disposal downstream must key off what
-    happened, or it would dismiss the queued work of a row that survived.
+    ``pruned`` is the ``media_items.id`` of every row really deleted, not the
+    candidates offered: the job disposal and the directory count downstream
+    must key off what happened, or they would speak for a row that survived.
+
+    The id, not the Plex native id, because a candidate can have NO native id
+    at all -- a row with no ``media_item_server_refs`` entry for Plex reads
+    back as ``native_id=None`` (``find_prunable``), and a list holding a
+    ``None`` matched every other ref-less candidate when the caller filtered
+    on it. ``media_items.id`` is the one identifier every row is guaranteed
+    to have.
+
     ``skipped`` counts rows that changed under the pass and were therefore
     left alone.
     """
 
-    pruned: list[str]
+    pruned: list[int]
     skipped: int
 
 
@@ -433,7 +441,7 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
     a parent deleted first would take its descendants before they get audit
     rows of their own, and ``blocked`` would never see the child at all.
     """
-    pruned: list[str] = []
+    pruned: list[int] = []
     skipped = 0
     blocked: set[int] = set()  # ids whose deletion a skipped descendant forbids
     for candidate in candidates:
@@ -507,7 +515,7 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
             outcome="pruned: no Plex item resolves for this row",
         ))
         await session.flush()
-        pruned.append(candidate.native_id)
+        pruned.append(candidate.id)
     return RetireOutcome(pruned=pruned, skipped=skipped)
 
 
@@ -685,15 +693,26 @@ def make_prune_job(
             )
 
         outcome = await retire(session, scan.prunable)
-        dismissed = await dismiss_jobs_for(session, outcome.pruned)
         # Counted off what was actually deleted, not off the candidates:
         # ``retire`` leaves any row that changed under the pass, and those
         # orphan nothing. Reporting the candidate total would claim directories
         # no delete created and could fire the cleanup-cap warning over a
         # threshold this prune never crossed. The dry run has no such
         # distinction to make -- there, the candidates are the whole story.
-        pruned_keys = set(outcome.pruned)
-        deleted = [c for c in scan.prunable if c.native_id in pruned_keys]
+        #
+        # Matched on ``id``, never on ``native_id``: a candidate with no Plex
+        # ref reads back as ``native_id=None``, and a None in the set matched
+        # every other ref-less candidate -- claiming their directories and
+        # dismissing their queued jobs on the strength of a row that was
+        # skipped.
+        pruned_ids = set(outcome.pruned)
+        deleted = [c for c in scan.prunable if c.id in pruned_ids]
+        # Only the rows that HAVE a Plex id: the job payloads are matched by
+        # that id, so a None would match nothing useful and is not worth
+        # sending.
+        dismissed = await dismiss_jobs_for(
+            session, [c.native_id for c in deleted if c.native_id is not None]
+        )
         directories = _directory_count(deleted)
         # The same rule for the excluded population, and for the same reason:
         # "retired" must describe rows that are gone, not rows that were
