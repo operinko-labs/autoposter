@@ -3,7 +3,15 @@ from __future__ import annotations
 
 import posixpath
 
-FILE_BEARING = frozenset({"movie", "episode"})
+# Only a movie carries its own file. The Plex resolver rebinds its match
+# CONTAINER to the SHOW for a season *or an episode* intent
+# (plex/client.py:416-436) and reads the file_path off that container --
+# which for a show is always None -- so no producer can ever hand an episode
+# a real file_path either (pinned by tests/test_plex.py: a resolved episode's
+# ``file_path is None``). Plex only has one file per episode anyway: a
+# 4K/1080p pair under one episode is not two Plex items the way it is for two
+# movie files living directly under the library root.
+FILE_BEARING = frozenset({"movie"})
 
 
 def identity_key(kind: str, *, tmdb_id: int | None, tvdb_id: int | None, imdb_id: str | None,
@@ -26,15 +34,20 @@ def identity_key(kind: str, *, tmdb_id: int | None, tvdb_id: int | None, imdb_id
             # renames/moves that never touch the file itself).
             return f"{kind}:{ns}:{value}:{coords}:{file}"
     # No provider id: fall back to on-disk location, which is shared,
-    # server-neutral storage. A movie/episode needs its own basename first --
-    # the folder alone can't name a *file* -- and only then gains the root
-    # folder, which disambiguates two provider-less items that happen to
+    # server-neutral storage. A movie needs its own basename first -- the
+    # folder alone can't name a *file* -- and only then gains the root
+    # folder, which disambiguates two provider-less movies that happen to
     # share a literal basename (e.g. two "movie.mkv" in different folders --
-    # a real collision, not a contrived one). A show/season has no file of
-    # its own; its folder alone -- the show's own root_folder -- is the only
-    # thing to key on.
+    # a real collision, not a contrived one). A show/season/episode has no
+    # file of its own; its folder alone -- the show's own root_folder -- is
+    # the only thing to key on.
     if kind in FILE_BEARING:
-        pfile = (f"{root_folder}/{file}" if root_folder else file) if file else ""
+        if not file:
+            pfile = ""
+        elif root_folder:
+            pfile = f"{root_folder}/{file}"
+        else:
+            pfile = file
     else:
         pfile = root_folder or ""
     if pfile:

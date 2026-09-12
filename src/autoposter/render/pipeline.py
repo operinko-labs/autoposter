@@ -57,7 +57,7 @@ from autoposter.render.textfit import fit_point_size, prepare_text
 from autoposter.servers.base import (
     CAP_ARTWORK_PROVENANCE, CAP_LOCK_ARTWORK, CAP_TITLE_CARD_URL,
 )
-from autoposter.servers.identity import identity_key, identity_key_for, parent_identity_key_for
+from autoposter.servers.identity import identity_key_for, parent_identity_key_for
 
 logger = logging.getLogger(__name__)
 
@@ -662,44 +662,50 @@ async def upsert_server_ref(session: AsyncSession, item_id: int, item: ResolvedI
 
 
 async def _promote_weak_key(session: AsyncSession, item: ResolvedItem, key: str) -> None:
-    """Promote a weak identity key onto the incoming full key IN PLACE.
+    """Promote the migration's legacy placeholder key onto the incoming full
+    key IN PLACE, the first time Plex actually resolves that row.
 
-    Two producers can compute different keys for the very same item: the
-    migration keys an unresolved row on its Plex id alone
-    (``kind:legacy:plex:<id>``), and an adopted episode used to carry no
-    file_path at all, keying on the bare ``kind:ns:id:coords:`` form (see
-    ``adopt/walk.py``). Without this, the next real resolve of that same
-    native id would upsert a SECOND row under the full key and just re-point
-    the ref onto it, leaving the placeholder row behind as an orphan. A
-    genuine re-match onto a DIFFERENT identity (a Plex re-match, a rename to
-    a different item) is not weak and must not be promoted -- the ref simply
+    The migration keys a row it cannot otherwise identify on its Plex id
+    alone (``kind:legacy:plex:<id>``) -- a placeholder, not a real identity.
+    Without this, the first real resolve of that same native id would upsert
+    a SECOND row under the full key and just re-point the ref onto it,
+    leaving the placeholder row behind as an orphan. A genuine re-match onto
+    a DIFFERENT identity (a Plex re-match, a rename to a different item) is
+    not this placeholder and must not be promoted -- the ref simply
     re-points, same as today.
+
+    (There is no "bare key" case to promote here: every producer that can
+    ever reach ``_upsert_media_item`` -- the pipeline's resolve, and
+    ``adopt/walk.py`` -- hands a movie its file_path, and a show/season/
+    episode never carries one at all (servers/identity.py's FILE_BEARING),
+    so there is no producer that can ever compute a "weaker" form of a
+    movie's key than another, nor any file-shaped form for the others.)
+
+    Not atomic across two concurrent workers resolving the same native id at
+    once: both could read the same pre-promotion ``existing_key`` before
+    either writes. The window is narrow (one SELECT to the next UPDATE), and
+    the unique index on ``identity_key`` aborts the loser's transaction
+    rather than corrupting anything -- the loser's caller retries the whole
+    upsert, same as any other constraint-violation retry in this module.
     """
+    if item.server != "plex":
+        # The legacy form is the migration's placeholder for a PLEX id
+        # specifically (``kind:legacy:plex:<id>``) -- a Jellyfin ref can
+        # never be the row that placeholder was minted for.
+        return
     existing_id = await item_id_for(session, item.server, item.native_id)
     if existing_id is None:
         return
     existing_key = (
         await session.execute(select(MediaItem.identity_key).where(MediaItem.id == existing_id))
     ).scalar_one_or_none()
-    if existing_key is None or existing_key == key:
-        return
     legacy_key = f"{item.kind}:legacy:plex:{item.native_id}"
-    try:
-        bare_key = identity_key(
-            item.kind, tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, imdb_id=item.imdb_id,
-            season_number=item.season_number, episode_number=item.episode_number,
-            file_path=None, root_folder=None,
-        )
-    except ValueError:
-        # No provider id and no root_folder either -- there is no "bare"
-        # form for this item at all, so it can't be the weak-key case.
-        bare_key = None
-    if existing_key not in (legacy_key, bare_key):
+    if existing_key != legacy_key:
         return
     # The full key may already belong to ANOTHER row (a real, previously
-    # resolved item) -- promoting the weak row on top of it would collide
-    # with the unique constraint. Leave the weak row as-is; the upsert below
-    # hits the other row instead and the ref re-points to it.
+    # resolved item) -- promoting the placeholder row on top of it would
+    # collide with the unique constraint. Leave the placeholder row as-is;
+    # the upsert below hits the other row instead and the ref re-points to it.
     already_used = (
         await session.execute(select(MediaItem.id).where(MediaItem.identity_key == key))
     ).scalar_one_or_none()

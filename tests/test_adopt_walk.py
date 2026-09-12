@@ -52,31 +52,16 @@ class FakeMovie:
         self.guids = [FakeGuid(g) for g in guids]
 
 
-class FakeMediaPart:
-    def __init__(self, file_path):
-        self.file = file_path
-
-
-class FakeMedia:
-    def __init__(self, file_path):
-        self.parts = [FakeMediaPart(file_path)]
-
-
 class FakeEpisode:
     type = "episode"
 
-    def __init__(self, rating_key, title, season_number, episode_number, year=None, guids=(),
-                 file_path=None):
+    def __init__(self, rating_key, title, season_number, episode_number, year=None, guids=()):
         self.ratingKey = rating_key
         self.title = title
         self.parentIndex = season_number
         self.index = episode_number
         self.year = year
         self.guids = [FakeGuid(g) for g in guids]
-        # A real Plex episode carries its own media part; without one (no
-        # guids AND no file) an episode has nothing at all to key on -- see
-        # ``_resolved_episode``.
-        self.media = [FakeMedia(file_path)] if file_path else []
 
 
 class FakeSeason:
@@ -318,8 +303,7 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     config = _config(tmp_path)
     library_root = tmp_path / "TV Shows"
     show_dir = str(library_root / "Breaking Bad (2008)")
-    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1,
-                          file_path=str(library_root / "Breaking Bad (2008)" / "s01e01.mkv"))
+    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1)
     season = FakeSeason("20", "Season 1", season_number=1, episodes=[episode])
     show = FakeShow("10", "Breaking Bad", show_dir, seasons=[season])
     section = FakeSection("TV Shows", [str(library_root)], [show])
@@ -361,6 +345,36 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     ).scalar_one()
     assert season_render.adopted is True
     assert season_render.base_sha256 == hashlib.sha256(b"season-poster").hexdigest()
+
+
+async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents_when_the_show_has_a_guid(
+    session, tmp_path
+):
+    """The guid-bearing counterpart of the test above: the show carries a
+    real tvdb guid, so the season and episode's PARENT ids come from the
+    show's own guids (``_resolved_season``/``_resolved_episode`` mirror the
+    Plex resolver's own ``parent_guids``), and both hops resolve by provider
+    id rather than falling back to root_folder."""
+    config = _config(tmp_path)
+    library_root = tmp_path / "TV Shows"
+    show_dir = str(library_root / "Breaking Bad (2008)")
+    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1)
+    season = FakeSeason("20", "Season 1", season_number=1, episodes=[episode])
+    show = FakeShow("10", "Breaking Bad", show_dir, seasons=[season], guids=["tvdb://81189"])
+    section = FakeSection("TV Shows", [str(library_root)], [show])
+
+    report = await adopt_library(session, config, section, dry_run=False)
+
+    assert report.items == 3
+
+    show_row = await _media_item_by_native_id(session, "10")
+    season_row = await _media_item_by_native_id(session, "20")
+    episode_row = await _media_item_by_native_id(session, "30")
+
+    assert show_row.identity_key == "show:tvdb:81189::"
+    assert season_row.identity_key == "season:tvdb:81189:s1:"
+    assert season_row.parent_id == show_row.id
+    assert episode_row.parent_id == season_row.id
 
 
 def test_the_adoption_walk_carries_the_shows_title_onto_each_season():
@@ -414,7 +428,6 @@ def _lazy_show_section(tmp_path, reads):
     episode = LazyPlexObject(
         reads, type="episode", ratingKey="30", title="Pilot",
         parentIndex=1, index=1, year=None, guids=[],
-        media=[FakeMedia(str(library_root / "Breaking Bad (2008)" / "s01e01.mkv"))],
     )
     season = LazyPlexObject(
         reads, type="season", ratingKey="20", title="Season 1", index=1,
@@ -474,10 +487,8 @@ async def test_an_unnumbered_episode_is_counted_and_does_not_abort_the_walk(sess
     """
     config = _config(tmp_path)
     library_root = tmp_path / "TV Shows"
-    good = FakeEpisode("30", "Pilot", season_number=1, episode_number=1,
-                       file_path=str(library_root / "Breaking Bad (2008)" / "s01e01.mkv"))
-    unnumbered = FakeEpisode("31", "Episode 05-28", season_number=1, episode_number=None,
-                            file_path=str(library_root / "Breaking Bad (2008)" / "special.mkv"))
+    good = FakeEpisode("30", "Pilot", season_number=1, episode_number=1)
+    unnumbered = FakeEpisode("31", "Episode 05-28", season_number=1, episode_number=None)
     season = FakeSeason("20", "Season 1", season_number=1, episodes=[unnumbered, good])
     show = FakeShow("10", "Breaking Bad", str(library_root / "Breaking Bad (2008)"), [season])
     section = FakeSection("TV Shows", [str(library_root)], [show])
@@ -532,15 +543,11 @@ async def test_an_unnumbered_season_is_counted_and_takes_its_episodes_with_it(se
     """
     config = _config(tmp_path)
     library_root = tmp_path / "TV Shows"
-    episode = FakeEpisode("31", "Episode 05-28", season_number=None, episode_number=None,
-                          file_path=str(library_root / "Breaking Bad (2008)" / "special.mkv"))
+    episode = FakeEpisode("31", "Episode 05-28", season_number=None, episode_number=None)
     orphan_season = FakeSeason("21", "Specials", season_number=None, episodes=[episode])
     good_season = FakeSeason(
         "20", "Season 1", season_number=1,
-        episodes=[FakeEpisode(
-            "30", "Pilot", season_number=1, episode_number=1,
-            file_path=str(library_root / "Breaking Bad (2008)" / "s01e01.mkv"),
-        )],
+        episodes=[FakeEpisode("30", "Pilot", season_number=1, episode_number=1)],
     )
     show = FakeShow(
         "10", "Breaking Bad", str(library_root / "Breaking Bad (2008)"),

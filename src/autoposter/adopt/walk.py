@@ -149,7 +149,9 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
     # A Plex season carries no provider guids of its own -- mirrors the SHOW's
     # guids here, exactly as plex/client.py's own match resolution does
     # (``container = item.show()`` there), so an adopted season and a
-    # pipeline-resolved season compute the SAME identity key.
+    # pipeline-resolved season compute the SAME identity key. The same show
+    # guids are also the season's PARENT ids (parent_identity_key_for's
+    # "show" lookup), mirroring the resolver's own ``parent_guids``.
     guids = _guids(show)
     return ResolvedItem(
         server="plex", native_id=str(season.ratingKey), library=library, kind="season",
@@ -158,6 +160,8 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
         root_folder=root_folder, file_path=None, art_url=None,
         tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
         imdb_id=guids.get("imdb"), parent_native_id=str(show.ratingKey),
+        parent_tmdb_id=_as_int(guids.get("tmdb")), parent_tvdb_id=_as_int(guids.get("tvdb")),
+        parent_imdb_id=guids.get("imdb"),
         # Roadmap row 78. `show` is already a parameter -- the walk holds it
         # for the root folder and the parent key -- so the show's title costs
         # nothing here and must agree with what PlexClient.resolve produces,
@@ -167,25 +171,29 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
     )
 
 
-def _resolved_episode(library: str, season, episode, root_folder: str) -> ResolvedItem:
+def _resolved_episode(library: str, show, season, episode, root_folder: str) -> ResolvedItem:
+    # An episode's own guids come from the episode itself, same as the
+    # resolver. Its file_path is always None: the Plex resolver rebinds its
+    # match container to the SHOW for a season/episode intent
+    # (plex/client.py:416-436) and reads file_path off THAT container, which
+    # for a show is always None -- no producer, adopted or resolved, can
+    # ever hand an episode a real file_path (servers/identity.py's
+    # FILE_BEARING no longer includes "episode" for exactly this reason).
     guids = _guids(episode)
-    # Read exactly as plex/client.py's own match resolution does: the file
-    # path is what an episode's identity keys on (spec §4.2), and a real
-    # pipeline-resolved episode fills it from the same media part -- an
-    # adopted row must carry the same file_path or the two would compute
-    # DIFFERENT identity keys and mint a second row for one item.
-    file_path = None
-    if getattr(episode, "media", None):
-        parts = episode.media[0].parts
-        if parts:
-            file_path = parts[0].file
+    # The episode's PARENT is its season, which the resolver's own
+    # ``parent_guids`` -- and this walk's ``_resolved_season`` above -- key
+    # off the SHOW's guids, not the episode's own. Mirrored here so
+    # parent_identity_key_for's season lookup lands on that same row.
+    show_guids = _guids(show)
     return ResolvedItem(
         server="plex", native_id=str(episode.ratingKey), library=library, kind="episode",
         title=episode.title, year=getattr(episode, "year", None),
         season_number=episode.parentIndex, episode_number=episode.index,
-        root_folder=root_folder, file_path=file_path, art_url=None,
+        root_folder=root_folder, file_path=None, art_url=None,
         tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
         imdb_id=guids.get("imdb"), parent_native_id=str(season.ratingKey),
+        parent_tmdb_id=_as_int(show_guids.get("tmdb")), parent_tvdb_id=_as_int(show_guids.get("tvdb")),
+        parent_imdb_id=show_guids.get("imdb"),
     )
 
 
@@ -226,7 +234,7 @@ def _resolve_section(section) -> list[ResolvedItem]:
                 resolved.append(_resolved_season(library, top, season, show.root_folder))
                 for episode in season.episodes():
                     resolved.append(
-                        _resolved_episode(library, season, episode, show.root_folder)
+                        _resolved_episode(library, top, season, episode, show.root_folder)
                     )
     return resolved
 

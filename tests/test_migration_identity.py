@@ -94,7 +94,9 @@ async def test_up_down_up_with_every_identity_shape():
     assert keys[3] == "movie:path:::Unmatched/u.mkv"
     assert keys[4] == "movie:legacy:plex:4"
     assert keys[5] == "show:tvdb:71663::"
-    assert keys[6] == "episode:tvdb:71663:s2e3:s02e03.mkv"
+    # No file field: an episode never carries its own file_path (the Plex
+    # resolver's match container for a season/episode intent is the show).
+    assert keys[6] == "episode:tvdb:71663:s2e3:"
     assert keys[10] == "show:path:::Orphan Show (2001)"
     assert 7 not in keys, "the duplicate 4K row merged into the newest row"
     assert (1, "plex", "7") in refs, "the merged row's Plex id now points at the survivor"

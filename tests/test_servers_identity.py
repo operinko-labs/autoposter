@@ -34,9 +34,14 @@ def test_show_and_season_carry_no_file():
                         episode_number=None, file_path=None) == "season:tvdb:71663:s2:"
 
 
-def test_episode_keys_on_series_id_coordinates_and_file():
+def test_episode_keys_on_series_id_and_coordinates_only():
+    # An episode never carries its own file_path -- the Plex resolver rebinds
+    # its match container to the SHOW for a season/episode intent and reads
+    # file_path off THAT (plex/client.py), which is always None -- so an
+    # episode's key, like a season's, never includes a file field, even when
+    # a caller passes one.
     assert identity_key("episode", tmdb_id=None, tvdb_id=71663, imdb_id=None, season_number=2,
-                        episode_number=3, file_path="/tv/s02e03.mkv") == "episode:tvdb:71663:s2e3:s02e03.mkv"
+                        episode_number=3, file_path="/tv/s02e03.mkv") == "episode:tvdb:71663:s2e3:"
 
 
 def test_precedence_is_tmdb_then_tvdb_then_imdb():
@@ -59,9 +64,11 @@ def test_no_provider_falls_back_to_path_then_legacy():
 
 
 def test_path_fallback_still_carries_coordinates():
-    """The empty id slot must not swallow the coords slot next to it."""
+    """The empty id slot -- and, for an episode, the always-empty file slot
+    too -- must not swallow the coords slot next to them."""
     assert identity_key("episode", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=2,
-                        episode_number=3, file_path="/tv/s02e03.mkv") == "episode:path::s2e3:s02e03.mkv"
+                        episode_number=3, file_path="/tv/s02e03.mkv",
+                        root_folder="The Simpsons (1989)") == "episode:path::s2e3:The Simpsons (1989)"
 
 
 def test_a_windows_path_yields_the_same_basename_as_posix():
@@ -126,7 +133,8 @@ def test_identity_key_for_a_resolved_item_and_its_parent():
     ep = resolved("plex", "9", kind="episode", tmdb_id=None, tvdb_id=71663, season_number=2,
                   episode_number=3, file_path="/tv/s02e03.mkv")
     ep = dataclasses.replace(ep, parent_tvdb_id=71663)
-    assert identity_key_for(ep) == "episode:tvdb:71663:s2e3:s02e03.mkv"
+    # No file field: an episode never carries its own file_path.
+    assert identity_key_for(ep) == "episode:tvdb:71663:s2e3:"
     # An episode's parent is its own SEASON, not the show directly (two-hop
     # model: config/impact.py, api/routes.py's detail breadcrumb).
     assert parent_identity_key_for(ep) == "season:tvdb:71663:s2:"
