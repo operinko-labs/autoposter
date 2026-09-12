@@ -279,7 +279,7 @@ async def gather_facts(
             # only -- the URL carries a TMDb id.
             logger.warning(
                 "tmdb collection request failed for %s; skipping sort_title: %s",
-                item.rating_key, type(exc).__name__,
+                item.native_id, type(exc).__name__,
             )
         else:
             sort_title = franchise_sort_title(order, item.tmdb_id)
