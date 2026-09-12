@@ -107,7 +107,7 @@ async def _seed_library(session, config) -> None:
     rows = [
         (
             ResolvedItem(
-                rating_key="rk1", library="Movies", kind="movie", title="A Movie",
+                server="plex", native_id="rk1", library="Movies", kind="movie", title="A Movie",
                 year=1999, season_number=None, episode_number=None,
                 root_folder="A Movie (1999)", file_path=None, art_url=None,
                 tmdb_id=550, tvdb_id=None, imdb_id=None,
@@ -116,7 +116,7 @@ async def _seed_library(session, config) -> None:
         ),
         (
             ResolvedItem(
-                rating_key="rk2", library="TV Shows", kind="episode", title="Pilot",
+                server="plex", native_id="rk2", library="TV Shows", kind="episode", title="Pilot",
                 year=1999, season_number=1, episode_number=1,
                 root_folder="A Show (1999)", file_path=None, art_url=None,
                 tmdb_id=1399, tvdb_id=None, imdb_id=None,
@@ -126,7 +126,7 @@ async def _seed_library(session, config) -> None:
     ]
     for item, art_kind in rows:
         row = MediaItem(
-            rating_key=item.rating_key, library=item.library, kind=item.kind,
+            rating_key=item.native_id, library=item.library, kind=item.kind,
             title=item.title, year=item.year, tmdb_id=item.tmdb_id,
             season_number=item.season_number, episode_number=item.episode_number,
             root_folder=item.root_folder,
@@ -157,13 +157,13 @@ async def _seed_logo_poster(session, config) -> None:
     it, and a scheduler tweak re-renders every logo'd poster in the library.
     """
     item = ResolvedItem(
-        rating_key="rk9", library="Movies", kind="movie", title="Logo Movie",
+        server="plex", native_id="rk9", library="Movies", kind="movie", title="Logo Movie",
         year=1999, season_number=None, episode_number=None,
         root_folder="Logo Movie (1999)", file_path=None, art_url=None,
         tmdb_id=680, tvdb_id=None, imdb_id=None,
     )
     row = MediaItem(
-        rating_key=item.rating_key, library=item.library, kind=item.kind,
+        rating_key=item.native_id, library=item.library, kind=item.kind,
         title=item.title, year=item.year, tmdb_id=item.tmdb_id, root_folder=item.root_folder,
     )
     session.add(row)

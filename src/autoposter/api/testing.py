@@ -101,7 +101,7 @@ def _sample_item(length: str) -> ResolvedItem:
     the show title for the season poster's second block, and, for the title
     card, the season and episode numbers."""
     return ResolvedItem(
-        rating_key="sample", library="sample", kind="movie",
+        server="plex", native_id="sample", library="sample", kind="movie",
         title=SAMPLE_TITLES[length], year=None,
         season_number=SAMPLE_SEASON, episode_number=SAMPLE_EPISODE,
         root_folder="sample", file_path=None, art_url=None,
