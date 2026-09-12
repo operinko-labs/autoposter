@@ -23,7 +23,9 @@ from autoposter.collections.credits import (
     scan_credits,
     scan_library_credits,
 )
-from autoposter.db.models import ItemCredit, MediaItem
+from autoposter.db.models import ItemCredit, MediaItem, MediaItemServerRef
+
+from conftest import seed_media_item
 
 
 class FakeTag:
@@ -74,10 +76,7 @@ def config():
 
 
 async def _item(session, rating_key, *, library="Movies", kind="movie", title="X"):
-    item = MediaItem(rating_key=rating_key, library=library, kind=kind, title=title)
-    session.add(item)
-    await session.flush()
-    return item
+    return await seed_media_item(session, rating_key, library=library, kind=kind, title=title)
 
 
 def _movies(*items) -> FakeServer:
@@ -95,7 +94,9 @@ async def _rows(session, item_id) -> list[tuple[str, str]]:
 
 async def _stamps(session) -> dict[str, object]:
     result = await session.execute(
-        select(MediaItem.rating_key, MediaItem.credits_attempted_at)
+        select(MediaItemServerRef.native_id, MediaItem.credits_attempted_at)
+        .join(MediaItem, MediaItem.id == MediaItemServerRef.item_id)
+        .where(MediaItemServerRef.server == "plex")
     )
     return {key: stamp for key, stamp in result.all()}
 

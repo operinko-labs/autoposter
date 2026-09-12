@@ -31,7 +31,7 @@ import logging
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import ItemCredit, MediaItem
+from autoposter.db.models import ItemCredit, MediaItem, MediaItemServerRef
 from autoposter.plex.client import TAG_BATCH_CHUNK, fetch_credit_index
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,10 @@ async def scan_library_credits(
     """
     rows = (
         await session.execute(
-            select(MediaItem.id, MediaItem.rating_key).where(
+            select(MediaItemServerRef.item_id, MediaItemServerRef.native_id)
+            .join(MediaItem, MediaItem.id == MediaItemServerRef.item_id)
+            .where(
+                MediaItemServerRef.server == "plex",
                 MediaItem.library == library,
                 MediaItem.kind.in_(_KINDS.get(library_type, ())),
             )
@@ -91,14 +94,14 @@ async def scan_library_credits(
     ).all()
     if not rows:
         return (0, 0)
-    by_key = {str(rating_key): item_id for item_id, rating_key in rows}
+    by_key = {native_id: item_id for item_id, native_id in rows}
     fetched = await asyncio.to_thread(
         fetch_credit_index, section, list(by_key), chunk_size
     )
     answered_ids = []
     values = []
-    for rating_key, credits in fetched.items():
-        item_id = by_key.get(rating_key)
+    for native_id, credits in fetched.items():
+        item_id = by_key.get(native_id)
         if item_id is None:
             continue
         answered_ids.append(item_id)

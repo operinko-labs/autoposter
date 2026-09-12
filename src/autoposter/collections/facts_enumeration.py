@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import ItemFacts, MediaItem
+from autoposter.db.models import ItemFacts, MediaItem, MediaItemServerRef
 
 __all__ = [
     "FACTS_FIELDS",
@@ -215,11 +215,15 @@ async def items_with_values(
     else:
         matches = column.in_([field.value_type(one) for one in values])
     stmt = (
-        select(MediaItem.rating_key)
+        select(MediaItemServerRef.native_id)
         .select_from(ItemFacts)
         .join(MediaItem, MediaItem.id == ItemFacts.item_id)
-        .where(*_scope(field, library, library_type), matches)
-        .order_by(MediaItem.title.asc(), MediaItem.rating_key.asc())
+        .join(MediaItemServerRef, MediaItemServerRef.item_id == MediaItem.id)
+        .where(
+            *_scope(field, library, library_type), matches,
+            MediaItemServerRef.server == "plex",
+        )
+        .order_by(MediaItem.title.asc(), MediaItemServerRef.native_id.asc())
     )
     return list((await session.execute(stmt)).scalars())
 
