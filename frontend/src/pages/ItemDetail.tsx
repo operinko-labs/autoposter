@@ -1088,12 +1088,16 @@ export function ItemDetail() {
           </>
         )}
         {item.kind} ·{" "}
-        {Object.entries(item.refs).map(([s, id], i) => (
-          <Fragment key={s}>
-            {i > 0 && " "}
-            <span className="mono">{s} {id}</span>
-          </Fragment>
-        ))}
+        {Object.keys(item.refs).length === 0 ? (
+          <span className="mono">—</span>
+        ) : (
+          Object.entries(item.refs).map(([s, id], i) => (
+            <Fragment key={s}>
+              {i > 0 && " "}
+              <span className="mono">{s} {id}</span>
+            </Fragment>
+          ))
+        )}
       </p>
 
       {error !== null && <p className="page-error">{error}</p>}

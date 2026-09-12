@@ -943,6 +943,24 @@ describe("ItemDetail parentage", () => {
     expect(breadcrumb.textContent).toContain("jellyfin 0a1b");
   });
 
+  it("shows a placeholder instead of a dangling separator when an item has no refs at all", async () => {
+    stubFetch({
+      "/api/items/154245": () => json({ ...EPISODE_WITH_PARENT, refs: {} }),
+      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
+    });
+
+    await renderItem(154245);
+
+    const breadcrumb = document.querySelector(".item-meta") as HTMLElement;
+    // The old rendering ended "episode · rating key —"; the replacement must
+    // still end on a placeholder, not on the "·" separator with nothing after
+    // it -- an item with no server rows is a real, servable state, not one
+    // the page can afford to render badly.
+    expect(breadcrumb.textContent?.trim().endsWith("—")).toBe(true);
+    expect(breadcrumb.textContent).not.toMatch(/·\s*$/);
+  });
+
   it("names the show in a season's header and breadcrumb, analogous to an episode", async () => {
     stubFetch({
       "/api/items/88": () => json(SEASON_WITH_PARENT),
