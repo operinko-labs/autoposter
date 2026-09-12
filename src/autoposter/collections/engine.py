@@ -233,6 +233,11 @@ _INHERITED_BY_EXPANSION = (
     "sync_mode",
     "tmdb_summary",
     "changes_webhook",
+    # Row 269: how a family's members are SORTED, and whether each unit
+    # creates a collection at all, are properties of the family, written once
+    # on the placeholder -- exactly like ``item_label``.
+    "member_sort",
+    "create_collection",
 )
 
 
