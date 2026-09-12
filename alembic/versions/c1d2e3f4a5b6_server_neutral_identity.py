@@ -58,7 +58,7 @@ def upgrade() -> None:
     op.add_column('media_items', sa.Column('identity_key', sa.Text(), nullable=True))
     rows = conn.execute(sa.text(
         "SELECT id, kind, tmdb_id, tvdb_id, imdb_id, season_number, episode_number, "
-        "file_path, rating_key FROM media_items ORDER BY updated_at DESC, id DESC"
+        "file_path, root_folder, rating_key FROM media_items ORDER BY updated_at DESC, id DESC"
     )).mappings().all()
     survivors: dict[str, int] = {}
     updates: list[dict] = []
@@ -66,7 +66,7 @@ def upgrade() -> None:
         key = identity_key(
             row['kind'], tmdb_id=row['tmdb_id'], tvdb_id=row['tvdb_id'], imdb_id=row['imdb_id'],
             season_number=row['season_number'], episode_number=row['episode_number'],
-            file_path=row['file_path'], legacy=row['rating_key'],
+            file_path=row['file_path'], root_folder=row['root_folder'], legacy=row['rating_key'],
         )
         if key in survivors:
             _merge_into(conn, stale_id=row['id'], survivor_id=survivors[key], key=key)

@@ -1,3 +1,5 @@
+import pytest
+
 from autoposter.servers.identity import identity_key, identity_key_for, parent_identity_key_for
 from media_server_doubles import resolved
 
@@ -69,6 +71,54 @@ def test_a_windows_path_yields_the_same_basename_as_posix():
                      episode_number=None,
                      file_path="C:\\Media\\Movies\\Title (2020)\\Title (2020).mkv")
     assert a == b
+
+
+def test_a_provider_less_show_keys_on_its_root_folder():
+    assert identity_key("show", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
+                        episode_number=None, file_path=None,
+                        root_folder="The Simpsons (1989)") == "show:path:::The Simpsons (1989)"
+
+
+def test_a_provider_less_season_keys_on_coordinates_and_root_folder():
+    assert identity_key("season", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=2,
+                        episode_number=None, file_path=None,
+                        root_folder="The Simpsons (1989)") == "season:path::s2:The Simpsons (1989)"
+
+
+def test_a_provider_less_movie_keys_on_root_folder_and_basename():
+    assert identity_key("movie", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
+                        episode_number=None, file_path="/m/Unmatched/u.mkv",
+                        root_folder="Unmatched") == "movie:path:::Unmatched/u.mkv"
+    # No root_folder at all: falls back to the bare basename, unchanged.
+    assert identity_key("movie", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
+                        episode_number=None, file_path="/m/Unmatched/u.mkv",
+                        root_folder=None) == "movie:path:::u.mkv"
+
+
+def test_two_same_named_provider_less_movies_in_different_folders_stay_apart():
+    a = identity_key("movie", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
+                     episode_number=None, file_path="/a/movie.mkv", root_folder="Dune (2024)")
+    b = identity_key("movie", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
+                     episode_number=None, file_path="/b/movie.mkv", root_folder="Arrival (2016)")
+    assert a != b
+
+
+def test_a_provider_less_show_with_an_empty_root_folder_and_no_legacy_still_raises():
+    with pytest.raises(ValueError):
+        identity_key("show", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
+                     episode_number=None, file_path=None, root_folder="")
+
+
+def test_a_show_with_a_tvdb_id_ignores_root_folder():
+    assert identity_key("show", tmdb_id=None, tvdb_id=71663, imdb_id=None, season_number=None,
+                        episode_number=None, file_path=None,
+                        root_folder="The Simpsons (1989)") == "show:tvdb:71663::"
+
+
+def test_a_movie_with_a_tmdb_id_keeps_the_bare_basename_ignoring_root_folder():
+    assert identity_key("movie", tmdb_id=603, tvdb_id=None, imdb_id=None, season_number=None,
+                        episode_number=None, file_path="/a/The Matrix (1999)/m.mkv",
+                        root_folder="The Matrix (1999)") == "movie:tmdb:603::m.mkv"
 
 
 def test_identity_key_for_a_resolved_item_and_its_parent():

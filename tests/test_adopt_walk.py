@@ -52,16 +52,31 @@ class FakeMovie:
         self.guids = [FakeGuid(g) for g in guids]
 
 
+class FakeMediaPart:
+    def __init__(self, file_path):
+        self.file = file_path
+
+
+class FakeMedia:
+    def __init__(self, file_path):
+        self.parts = [FakeMediaPart(file_path)]
+
+
 class FakeEpisode:
     type = "episode"
 
-    def __init__(self, rating_key, title, season_number, episode_number, year=None, guids=()):
+    def __init__(self, rating_key, title, season_number, episode_number, year=None, guids=(),
+                 file_path=None):
         self.ratingKey = rating_key
         self.title = title
         self.parentIndex = season_number
         self.index = episode_number
         self.year = year
         self.guids = [FakeGuid(g) for g in guids]
+        # A real Plex episode carries its own media part; without one (no
+        # guids AND no file) an episode has nothing at all to key on -- see
+        # ``_resolved_episode``.
+        self.media = [FakeMedia(file_path)] if file_path else []
 
 
 class FakeSeason:
@@ -185,14 +200,15 @@ async def test_existing_non_adopted_render_is_left_untouched_and_skipped(session
     _write(poster, b"poster-bytes")
 
     # Its own row, sharing the SAME identity the walk's own discovery will
-    # compute (no guids, so a movie's identity falls back to its file's
-    # basename): upsert_server_ref repoints native_id "1" to whatever row
-    # _upsert_media_item's own call resolves to, so a row under a DIFFERENT
-    # identity here would have its ref stolen out from under it and the
-    # render below would attach to a row the walk never touches.
+    # compute (no guids, so a movie's identity falls back to its root folder
+    # and file's basename): upsert_server_ref repoints native_id "1" to
+    # whatever row _upsert_media_item's own call resolves to, so a row under
+    # a DIFFERENT identity here would have its ref stolen out from under it
+    # and the render below would attach to a row the walk never touches.
     media_item = await _upsert_media_item(
         session, resolved("plex", "1", title="Dune: Part Two", tmdb_id=None,
-                           file_path=str(tmp_path / "Movies" / "Dune (2024)" / "movie.mkv")),
+                           file_path=str(tmp_path / "Movies" / "Dune (2024)" / "movie.mkv"),
+                           root_folder="Dune (2024)"),
     )
     real_render = Render(
         item_id=media_item.id, art_kind="poster", asset_path=str(poster),
@@ -302,7 +318,8 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     config = _config(tmp_path)
     library_root = tmp_path / "TV Shows"
     show_dir = str(library_root / "Breaking Bad (2008)")
-    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1)
+    episode = FakeEpisode("30", "Pilot", season_number=1, episode_number=1,
+                          file_path=str(library_root / "Breaking Bad (2008)" / "s01e01.mkv"))
     season = FakeSeason("20", "Season 1", season_number=1, episodes=[episode])
     show = FakeShow("10", "Breaking Bad", show_dir, seasons=[season])
     section = FakeSection("TV Shows", [str(library_root)], [show])
@@ -330,7 +347,11 @@ async def test_show_walk_adopts_seasons_and_episodes_with_correct_parents(sessio
     episode_row = await _media_item_by_native_id(session, "30")
 
     assert season_row.parent_id == show_row.id
-    assert episode_row.parent_id == season_row.id
+    # ``parent_identity_key_for`` always targets the SHOW's own identity key,
+    # for a season or an episode alike (servers/identity.py) -- there is no
+    # intermediate season->show->episode chain; both a season's and an
+    # episode's parent_id point directly at the show row.
+    assert episode_row.parent_id == show_row.id
     assert episode_row.season_number == 1
     assert episode_row.episode_number == 1
 
@@ -394,6 +415,7 @@ def _lazy_show_section(tmp_path, reads):
     episode = LazyPlexObject(
         reads, type="episode", ratingKey="30", title="Pilot",
         parentIndex=1, index=1, year=None, guids=[],
+        media=[FakeMedia(str(library_root / "Breaking Bad (2008)" / "s01e01.mkv"))],
     )
     season = LazyPlexObject(
         reads, type="season", ratingKey="20", title="Season 1", index=1,
@@ -453,8 +475,10 @@ async def test_an_unnumbered_episode_is_counted_and_does_not_abort_the_walk(sess
     """
     config = _config(tmp_path)
     library_root = tmp_path / "TV Shows"
-    good = FakeEpisode("30", "Pilot", season_number=1, episode_number=1)
-    unnumbered = FakeEpisode("31", "Episode 05-28", season_number=1, episode_number=None)
+    good = FakeEpisode("30", "Pilot", season_number=1, episode_number=1,
+                       file_path=str(library_root / "Breaking Bad (2008)" / "s01e01.mkv"))
+    unnumbered = FakeEpisode("31", "Episode 05-28", season_number=1, episode_number=None,
+                            file_path=str(library_root / "Breaking Bad (2008)" / "special.mkv"))
     season = FakeSeason("20", "Season 1", season_number=1, episodes=[unnumbered, good])
     show = FakeShow("10", "Breaking Bad", str(library_root / "Breaking Bad (2008)"), [season])
     section = FakeSection("TV Shows", [str(library_root)], [show])
@@ -509,11 +533,15 @@ async def test_an_unnumbered_season_is_counted_and_takes_its_episodes_with_it(se
     """
     config = _config(tmp_path)
     library_root = tmp_path / "TV Shows"
-    episode = FakeEpisode("31", "Episode 05-28", season_number=None, episode_number=None)
+    episode = FakeEpisode("31", "Episode 05-28", season_number=None, episode_number=None,
+                          file_path=str(library_root / "Breaking Bad (2008)" / "special.mkv"))
     orphan_season = FakeSeason("21", "Specials", season_number=None, episodes=[episode])
     good_season = FakeSeason(
         "20", "Season 1", season_number=1,
-        episodes=[FakeEpisode("30", "Pilot", season_number=1, episode_number=1)],
+        episodes=[FakeEpisode(
+            "30", "Pilot", season_number=1, episode_number=1,
+            file_path=str(library_root / "Breaking Bad (2008)" / "s01e01.mkv"),
+        )],
     )
     show = FakeShow(
         "10", "Breaking Bad", str(library_root / "Breaking Bad (2008)"),
@@ -582,12 +610,13 @@ async def test_a_rerun_splits_newly_adopted_from_re_confirmed(session, tmp_path)
     _write(old_poster, b"poster-bytes")
 
     # Sharing the SAME identity the walk's own discovery will compute for
-    # "2" (no guids, so a movie's identity falls back to its file's
-    # basename) -- see test_existing_non_adopted_render_is_left_untouched_
+    # "2" (no guids, so a movie's identity falls back to its root folder and
+    # file's basename) -- see test_existing_non_adopted_render_is_left_untouched_
     # and_skipped's comment for why a mismatch here would have
     # upsert_server_ref steal the ref out from under this row.
     already_adopted = await _upsert_media_item(
-        session, resolved("plex", "2", title="Arrival", tmdb_id=None, file_path=old_path),
+        session, resolved("plex", "2", title="Arrival", tmdb_id=None, file_path=old_path,
+                           root_folder="Arrival (2016)"),
     )
     session.add(Render(
         item_id=already_adopted.id, art_kind="poster", asset_path=str(old_poster),

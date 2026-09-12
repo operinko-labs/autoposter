@@ -87,6 +87,114 @@ async def test_a_later_upsert_with_no_parent_id_does_not_clobber_an_existing_one
     assert row2.parent_id == show.id, "a parent-less upsert nulled out an existing parent_id"
 
 
+# --- weak-key promotion (task 8d, spec §4.2 amendment) ----------------------
+
+
+async def test_a_bare_episode_key_is_promoted_to_the_full_key_when_the_file_arrives(session):
+    """An adopted episode used to carry no file_path at all, keying on the
+    bare ``kind:ns:id:coords:`` form. The next real resolve of the same
+    native id must promote that row onto the full key in place, not mint a
+    second row beside it."""
+    bare = await pipeline._upsert_media_item(session, resolved(
+        "plex", "6", kind="episode", tvdb_id=71663, tmdb_id=None,
+        season_number=2, episode_number=3, file_path=None,
+    ))
+    assert bare.identity_key == "episode:tvdb:71663:s2e3:"
+
+    full = await pipeline._upsert_media_item(session, resolved(
+        "plex", "6", kind="episode", tvdb_id=71663, tmdb_id=None,
+        season_number=2, episode_number=3, file_path="/tv/s02e03.mkv",
+    ))
+    assert full.id == bare.id
+    assert full.identity_key == "episode:tvdb:71663:s2e3:s02e03.mkv"
+    rows = (await session.execute(select(MediaItem))).scalars().all()
+    assert len(rows) == 1
+    refs = (
+        await session.execute(select(MediaItemServerRef.native_id, MediaItemServerRef.item_id))
+    ).all()
+    assert refs == [("6", full.id)]
+
+
+async def test_a_legacy_placeholder_key_is_promoted_to_the_full_key(session):
+    """The migration's placeholder for an unresolved row (``kind:legacy:plex:<id>``)
+    is promoted onto the real identity the first time Plex resolves it, exactly
+    like the bare-key case above."""
+    legacy_row = MediaItem(
+        identity_key="movie:legacy:plex:4", library="Movies", kind="movie", title="Nothing",
+        year=2002, season_number=None, episode_number=None, root_folder=None, file_path=None,
+        tmdb_id=None, tvdb_id=None, imdb_id=None,
+    )
+    session.add(legacy_row)
+    await session.flush()
+    session.add(MediaItemServerRef(item_id=legacy_row.id, server="plex", native_id="4", library="Movies"))
+    await session.commit()
+
+    full = await pipeline._upsert_media_item(
+        session, resolved("plex", "4", tmdb_id=603, file_path="/m/m.mkv"),
+    )
+    assert full.id == legacy_row.id
+    assert full.identity_key == "movie:tmdb:603::m.mkv"
+    rows = (await session.execute(select(MediaItem))).scalars().all()
+    assert len(rows) == 1
+
+
+async def test_a_genuine_rematch_is_not_promoted(session):
+    """A Plex re-match onto a genuinely DIFFERENT identity is not weak -- the
+    old row is left exactly as it was, and the ref simply re-points, same as
+    today's behaviour after Task 7."""
+    old = await pipeline._upsert_media_item(
+        session, resolved("plex", "42", tmdb_id=1, file_path="/a.mkv"),
+    )
+    assert old.identity_key == "movie:tmdb:1::a.mkv"
+
+    new = await pipeline._upsert_media_item(
+        session, resolved("plex", "42", tmdb_id=2, file_path="/b.mkv"),
+    )
+    assert new.id != old.id
+    rows = (await session.execute(select(MediaItem))).scalars().all()
+    assert len(rows) == 2
+    refs = (
+        await session.execute(select(MediaItemServerRef.native_id, MediaItemServerRef.item_id))
+    ).all()
+    assert refs == [("42", new.id)]
+
+
+async def test_a_weak_row_is_not_promoted_when_the_full_key_already_exists_elsewhere(session):
+    """The full key can already belong to ANOTHER row (resolved through a
+    different native id first) -- promoting the weak row on top of it would
+    collide with the unique constraint. The weak row is left alone and the
+    ref re-points to the row that already carries the full key."""
+    weak = await pipeline._upsert_media_item(session, resolved(
+        "plex", "6", kind="episode", tvdb_id=71663, tmdb_id=None,
+        season_number=2, episode_number=3, file_path=None,
+    ))
+    assert weak.identity_key == "episode:tvdb:71663:s2e3:"
+
+    full_row = await pipeline._upsert_media_item(session, resolved(
+        "plex", "66", kind="episode", tvdb_id=71663, tmdb_id=None,
+        season_number=2, episode_number=3, file_path="/tv/s02e03.mkv",
+    ))
+    assert full_row.identity_key == "episode:tvdb:71663:s2e3:s02e03.mkv"
+    assert full_row.id != weak.id
+
+    result = await pipeline._upsert_media_item(session, resolved(
+        "plex", "6", kind="episode", tvdb_id=71663, tmdb_id=None,
+        season_number=2, episode_number=3, file_path="/tv/s02e03.mkv",
+    ))
+    assert result.id == full_row.id
+
+    rows = (await session.execute(select(MediaItem))).scalars().all()
+    assert len(rows) == 2
+    weak_reloaded = (
+        await session.execute(select(MediaItem).where(MediaItem.id == weak.id))
+    ).scalar_one()
+    assert weak_reloaded.identity_key == "episode:tvdb:71663:s2e3:"
+    refs = dict((
+        await session.execute(select(MediaItemServerRef.native_id, MediaItemServerRef.item_id))
+    ).all())
+    assert refs == {"6": full_row.id, "66": full_row.id}
+
+
 async def test_a_moved_native_id_writes_no_event_log_row(session):
     """The old re-key wrote an audit row every time a Plex key moved onto an
     identity match. Identity now IS the key, so a native id moving to another

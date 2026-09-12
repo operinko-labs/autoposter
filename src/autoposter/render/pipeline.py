@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from autoposter.badges.values import (
 from autoposter.config.loader import config_for_library, render_version_for
 from autoposter.config.schema import Config, TextStyle
 from autoposter.db.models import ItemFacts, MediaItem, MediaItemServerRef, Render
+from autoposter.db.refs import item_id_for
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
@@ -56,7 +57,7 @@ from autoposter.render.textfit import fit_point_size, prepare_text
 from autoposter.servers.base import (
     CAP_ARTWORK_PROVENANCE, CAP_LOCK_ARTWORK, CAP_TITLE_CARD_URL,
 )
-from autoposter.servers.identity import identity_key_for, parent_identity_key_for
+from autoposter.servers.identity import identity_key, identity_key_for, parent_identity_key_for
 
 logger = logging.getLogger(__name__)
 
@@ -660,6 +661,54 @@ async def upsert_server_ref(session: AsyncSession, item_id: int, item: ResolvedI
     await session.execute(stmt)
 
 
+async def _promote_weak_key(session: AsyncSession, item: ResolvedItem, key: str) -> None:
+    """Promote a weak identity key onto the incoming full key IN PLACE.
+
+    Two producers can compute different keys for the very same item: the
+    migration keys an unresolved row on its Plex id alone
+    (``kind:legacy:plex:<id>``), and an adopted episode used to carry no
+    file_path at all, keying on the bare ``kind:ns:id:coords:`` form (see
+    ``adopt/walk.py``). Without this, the next real resolve of that same
+    native id would upsert a SECOND row under the full key and just re-point
+    the ref onto it, leaving the placeholder row behind as an orphan. A
+    genuine re-match onto a DIFFERENT identity (a Plex re-match, a rename to
+    a different item) is not weak and must not be promoted -- the ref simply
+    re-points, same as today.
+    """
+    existing_id = await item_id_for(session, item.server, item.native_id)
+    if existing_id is None:
+        return
+    existing_key = (
+        await session.execute(select(MediaItem.identity_key).where(MediaItem.id == existing_id))
+    ).scalar_one_or_none()
+    if existing_key is None or existing_key == key:
+        return
+    legacy_key = f"{item.kind}:legacy:plex:{item.native_id}"
+    try:
+        bare_key = identity_key(
+            item.kind, tmdb_id=item.tmdb_id, tvdb_id=item.tvdb_id, imdb_id=item.imdb_id,
+            season_number=item.season_number, episode_number=item.episode_number,
+            file_path=None, root_folder=None,
+        )
+    except ValueError:
+        # No provider id and no root_folder either -- there is no "bare"
+        # form for this item at all, so it can't be the weak-key case.
+        bare_key = None
+    if existing_key not in (legacy_key, bare_key):
+        return
+    # The full key may already belong to ANOTHER row (a real, previously
+    # resolved item) -- promoting the weak row on top of it would collide
+    # with the unique constraint. Leave the weak row as-is; the upsert below
+    # hits the other row instead and the ref re-points to it.
+    already_used = (
+        await session.execute(select(MediaItem.id).where(MediaItem.identity_key == key))
+    ).scalar_one_or_none()
+    if already_used is not None:
+        return
+    await session.execute(update(MediaItem).where(MediaItem.id == existing_id).values(identity_key=key))
+    logger.info("identity promoted: %s -> %s (item %d)", existing_key, key, existing_id)
+
+
 async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> MediaItem:
     """Insert or update the item, safe under concurrent workers.
 
@@ -679,6 +728,7 @@ async def _upsert_media_item(session: AsyncSession, item: ResolvedItem) -> Media
     upsert already set.
     """
     key = identity_key_for(item)
+    await _promote_weak_key(session, item, key)
     parent_id = None
     parent_key = parent_identity_key_for(item)
     if parent_key is not None:

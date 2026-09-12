@@ -165,11 +165,21 @@ def _resolved_season(library: str, show, season, root_folder: str) -> ResolvedIt
 
 def _resolved_episode(library: str, season, episode, root_folder: str) -> ResolvedItem:
     guids = _guids(episode)
+    # Read exactly as plex/client.py's own match resolution does: the file
+    # path is what an episode's identity keys on (spec §4.2), and a real
+    # pipeline-resolved episode fills it from the same media part -- an
+    # adopted row must carry the same file_path or the two would compute
+    # DIFFERENT identity keys and mint a second row for one item.
+    file_path = None
+    if getattr(episode, "media", None):
+        parts = episode.media[0].parts
+        if parts:
+            file_path = parts[0].file
     return ResolvedItem(
         server="plex", native_id=str(episode.ratingKey), library=library, kind="episode",
         title=episode.title, year=getattr(episode, "year", None),
         season_number=episode.parentIndex, episode_number=episode.index,
-        root_folder=root_folder, file_path=None, art_url=None,
+        root_folder=root_folder, file_path=file_path, art_url=None,
         tmdb_id=_as_int(guids.get("tmdb")), tvdb_id=_as_int(guids.get("tvdb")),
         imdb_id=guids.get("imdb"), parent_native_id=str(season.ratingKey),
     )

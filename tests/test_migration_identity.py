@@ -15,20 +15,24 @@ pytestmark = pytest.mark.skipif(not SCRATCH, reason="needs AUTOPOSTER_TEST_DATAB
 SEED = [
     """
     INSERT INTO media_items (rating_key, library, kind, tmdb_id, tvdb_id, imdb_id, title, year,
-                             season_number, episode_number, file_path, updated_at) VALUES
-     ('1', 'Movies', 'movie', 603, NULL, 'tt0133093', 'The Matrix', 1999, NULL, NULL, '/m/The Matrix (1999)/m-4k.mkv', '2026-01-07 00:00:00+00'),
-     ('2', 'Movies', 'movie', 603, NULL, 'tt0133093', 'The Matrix', 1999, NULL, NULL, '/m/The Matrix (1999)/m-1080p.mkv', '2026-01-02 00:00:00+00'),
-     ('3', 'Movies', 'movie', NULL, NULL, NULL, 'Unmatched', 2001, NULL, NULL, '/m/Unmatched/u.mkv', '2026-01-03 00:00:00+00'),
-     ('4', 'Movies', 'movie', NULL, NULL, NULL, 'Nothing', 2002, NULL, NULL, NULL, '2026-01-04 00:00:00+00'),
-     ('5', 'TV', 'show', NULL, 71663, NULL, 'The Simpsons', 1989, NULL, NULL, '/tv/The Simpsons', '2026-01-05 00:00:00+00'),
-     ('6', 'TV', 'episode', NULL, 71663, NULL, 'Ep', 1990, 2, 3, '/tv/The Simpsons/s02e03.mkv', '2026-01-06 00:00:00+00'),
-     ('7', 'Movies', 'movie', 603, NULL, NULL, 'The Matrix dup', 1999, NULL, NULL, '/m/The Matrix (1999)/m-4k.mkv', '2026-01-01 00:00:00+00'),
+                             season_number, episode_number, file_path, root_folder, updated_at) VALUES
+     ('1', 'Movies', 'movie', 603, NULL, 'tt0133093', 'The Matrix', 1999, NULL, NULL, '/m/The Matrix (1999)/m-4k.mkv', NULL, '2026-01-07 00:00:00+00'),
+     ('2', 'Movies', 'movie', 603, NULL, 'tt0133093', 'The Matrix', 1999, NULL, NULL, '/m/The Matrix (1999)/m-1080p.mkv', NULL, '2026-01-02 00:00:00+00'),
+     ('3', 'Movies', 'movie', NULL, NULL, NULL, 'Unmatched', 2001, NULL, NULL, '/m/Unmatched/u.mkv', 'Unmatched', '2026-01-03 00:00:00+00'),
+     ('4', 'Movies', 'movie', NULL, NULL, NULL, 'Nothing', 2002, NULL, NULL, NULL, NULL, '2026-01-04 00:00:00+00'),
+     ('5', 'TV', 'show', NULL, 71663, NULL, 'The Simpsons', 1989, NULL, NULL, '/tv/The Simpsons', NULL, '2026-01-05 00:00:00+00'),
+     ('6', 'TV', 'episode', NULL, 71663, NULL, 'Ep', 1990, 2, 3, '/tv/The Simpsons/s02e03.mkv', NULL, '2026-01-06 00:00:00+00'),
+     ('7', 'Movies', 'movie', 603, NULL, NULL, 'The Matrix dup', 1999, NULL, NULL, '/m/The Matrix (1999)/m-4k.mkv', NULL, '2026-01-01 00:00:00+00'),
      -- A second collision pair sharing an IDENTICAL updated_at (unlike 1/7
      -- above), so the merge's primary sort key can't break the tie and the
      -- `, id DESC` secondary sort (spec §6.5) has to: the higher id, 9, must
      -- survive over 8.
-     ('8', 'Movies', 'movie', 42, NULL, NULL, 'Extra', 2020, NULL, NULL, '/m/Extra (2020)/e.mkv', '2026-02-01 00:00:00+00'),
-     ('9', 'Movies', 'movie', 42, NULL, NULL, 'Extra dup', 2020, NULL, NULL, '/m/Extra (2020)/e.mkv', '2026-02-01 00:00:00+00');
+     ('8', 'Movies', 'movie', 42, NULL, NULL, 'Extra', 2020, NULL, NULL, '/m/Extra (2020)/e.mkv', NULL, '2026-02-01 00:00:00+00'),
+     ('9', 'Movies', 'movie', 42, NULL, NULL, 'Extra dup', 2020, NULL, NULL, '/m/Extra (2020)/e.mkv', NULL, '2026-02-01 00:00:00+00'),
+     -- A provider-less show (task 8d, spec §4.2 amendment): no guids at all,
+     -- so it keys on its own folder rather than raising -- the amendment
+     -- this migration now carries through via `root_folder`.
+     ('10', 'TV', 'show', NULL, NULL, NULL, 'Orphan Show', 2001, NULL, NULL, '/tv/Orphan Show (2001)', 'Orphan Show (2001)', '2026-01-08 00:00:00+00');
     """,
     """
     INSERT INTO renders (item_id, art_kind, source_mode, asset_path, upload_status, status) VALUES
@@ -87,10 +91,11 @@ async def test_up_down_up_with_every_identity_shape():
 
     assert keys[1] == "movie:tmdb:603::m-4k.mkv"
     assert keys[2] == "movie:tmdb:603::m-1080p.mkv"
-    assert keys[3] == "movie:path:::u.mkv"
+    assert keys[3] == "movie:path:::Unmatched/u.mkv"
     assert keys[4] == "movie:legacy:plex:4"
     assert keys[5] == "show:tvdb:71663::"
     assert keys[6] == "episode:tvdb:71663:s2e3:s02e03.mkv"
+    assert keys[10] == "show:path:::Orphan Show (2001)"
     assert 7 not in keys, "the duplicate 4K row merged into the newest row"
     assert (1, "plex", "7") in refs, "the merged row's Plex id now points at the survivor"
     assert deliveries == {(1, "plex", "uploaded")}, "the stale row's render was a duplicate art_kind and was dropped, not delivered"
@@ -113,8 +118,8 @@ async def test_up_down_up_with_every_identity_shape():
     assert back[1] == "1" and back[3] == "3"
 
     _alembic("upgrade", "head")
-    # 7, not the original 9: both collisions (7 into 1, 8 into 9) are
-    # permanent, so the round trip is stable at the seven surviving items,
+    # 8, not the original 10: both collisions (7 into 1, 8 into 9) are
+    # permanent, so the round trip is stable at the eight surviving items,
     # each with one ref.
-    assert len(await _rows(engine, "SELECT 1 FROM media_item_server_refs")) == 7
+    assert len(await _rows(engine, "SELECT 1 FROM media_item_server_refs")) == 8
     await engine.dispose()
