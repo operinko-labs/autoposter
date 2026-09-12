@@ -30,6 +30,10 @@ class GatheredFacts:
     # ``item_facts`` column for it and no migration. Kometa's
     # ``mass_added_at_update``, movie libraries only.
     added_at: date | None = None
+    # Roadmap row 268, the same rule again: a mass-op WRITE value derived per
+    # pass from ``/collection/{id}``, which the provider cache already holds
+    # for ``tmdb_summary:`` definitions. No column, no migration.
+    sort_title: str | None = None
     # The three prefetch fields (roadmap rows 189/192). Named OURS, never
     # Kometa's filter names, and enumeration-only: row 156 owns the question of
     # ever making a facts-backed value `filters:`-writable, and it needs a
@@ -67,6 +71,7 @@ class GatheredFacts:
                 self.user_rating is not None,
                 self.original_title,
                 self.added_at,
+                self.sort_title,
                 self.tmdb_origin_country,
                 self.tmdb_original_language,
                 self.tmdb_collection_id is not None,
