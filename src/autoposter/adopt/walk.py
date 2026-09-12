@@ -18,7 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.schema import Config
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import Render
+from autoposter.db.refs import item_id_for
 from autoposter.plex.client import ResolvedItem, parse_guids
 from autoposter.render import naming
 from autoposter.render.pipeline import (
@@ -222,11 +223,12 @@ def _hash_file(path: Path) -> str:
 
 
 async def _existing_render(session: AsyncSession, native_id: str, art_kind: str) -> Render | None:
+    item_id = await item_id_for(session, "plex", native_id)
+    if item_id is None:
+        return None
     return (
         await session.execute(
-            select(Render)
-            .join(MediaItem, Render.item_id == MediaItem.id)
-            .where(MediaItem.rating_key == native_id, Render.art_kind == art_kind)
+            select(Render).where(Render.item_id == item_id, Render.art_kind == art_kind)
         )
     ).scalar_one_or_none()
 
@@ -237,7 +239,7 @@ async def _adopt_item(
     counters.items += 1
     # Upserted unconditionally, one per item, regardless of what its art kinds
     # turn out to need below -- a media_items row exists for everything walked,
-    # there may already be one from a webhook, and rating_key is unique.
+    # there may already be one from a webhook, and identity_key is unique.
     media_item = None
     if not dry_run:
         media_item = await _upsert_media_item(session, resolved)
@@ -263,7 +265,7 @@ async def _adopt_item(
         if missing_number is not None:
             counters.unnumbered += 1
             logger.warning(
-                "adoption: %s %r (rating_key %s) has no %s -- skipping its %s",
+                "adoption: %s %r (native id %s) has no %s -- skipping its %s",
                 resolved.kind, resolved.title, resolved.native_id,
                 missing_number, art_kind,
             )

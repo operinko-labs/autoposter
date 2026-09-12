@@ -17,15 +17,17 @@ The three things worth knowing before changing anything here:
   under the pass survives it.
 """
 import asyncio
+from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, update
 
 from autoposter.config.holder import ConfigHolder
-from autoposter.db.models import EventLog, ItemFacts, Job, MediaItem, Render, ScheduledRun
-from autoposter.plex.client import ResolvedItem
-from autoposter.render.pipeline import _upsert_media_item
+from autoposter.db.models import (
+    EventLog, ItemFacts, Job, MediaItem, MediaItemServerRef, Render, ScheduledRun,
+)
+from autoposter.intake.arr import RenderIntent
 from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.prune import (
     PRUNE_EVENT,
@@ -61,19 +63,45 @@ class FakePlex:
 
 
 async def _add_item(session, rating_key, *, kind="movie", parent=None, **columns):
-    """One ``media_items`` row, committed so its ``updated_at`` is a settled
-    value from its own transaction (which the concurrency guard depends on)."""
+    """One ``media_items`` row, with its own Plex ref, committed so its
+    ``updated_at`` is a settled value from its own transaction (which the
+    concurrency guard depends on).
+
+    ``identity_key`` is synthesized from the rating key rather than from any
+    external id a test also passes in: ``media_items.identity_key`` is
+    UNIQUE (Task 6), and this suite's whole point is rows distinguished only
+    by their own Plex id, exactly like ``rating_key`` used to be before it
+    moved off this table.
+    """
+    library = columns.pop("library", "Movies" if kind == "movie" else "TV Shows")
     item = MediaItem(
-        rating_key=rating_key,
-        library=columns.pop("library", "Movies" if kind == "movie" else "TV Shows"),
+        identity_key=f"{kind}:legacy:plex:{rating_key}",
+        library=library,
         kind=kind,
         title=columns.pop("title", f"Item {rating_key}"),
         parent_id=parent.id if parent is not None else None,
         **columns,
     )
     session.add(item)
+    await session.flush()
+    session.add(MediaItemServerRef(
+        item_id=item.id, server="plex", native_id=rating_key, library=library,
+    ))
     await session.commit()
+    # Test bookkeeping only -- not a mapped column, so it survives
+    # session.expire_all() untouched and needs no extra query to read back.
+    item.native_id = rating_key
     return item
+
+
+def _producer_payload(native_id: str, *, title: str = "Gone", kind: str = "movie") -> dict:
+    """A job payload built the way the real producers build it -- through
+    ``RenderIntent`` and ``asdict`` -- so ``dismiss_jobs_for``'s jsonb query is
+    exercised against the shape production actually writes
+    (``payload["refs"]["plex"]``), not a hand-built ``{"rating_key": ...}``
+    dict that would stay green even if the ``refs`` half of the query broke.
+    """
+    return asdict(RenderIntent(kind=kind, title=title, refs={"plex": native_id}))
 
 
 async def test_a_row_plex_still_resolves_is_never_a_candidate(session):
@@ -91,7 +119,7 @@ async def test_a_row_that_no_longer_resolves_is_prunable(session):
 
     scan = await find_prunable(session, FakePlex(live={"10"}))
 
-    assert [c.rating_key for c in scan.prunable] == ["11"]
+    assert [c.native_id for c in scan.prunable] == ["11"]
     assert (scan.gone, scan.held, scan.total) == (1, 0, 2)
 
 
@@ -140,7 +168,7 @@ async def test_a_family_that_is_entirely_gone_is_prunable_deepest_first(session)
 
     scan = await find_prunable(session, FakePlex(live=set()))
 
-    assert [c.rating_key for c in scan.prunable] == ["111", "110", "100"]
+    assert [c.native_id for c in scan.prunable] == ["111", "110", "100"]
     assert (scan.gone, scan.held, scan.total) == (3, 0, 3)
 
 
@@ -154,7 +182,7 @@ async def test_a_gone_child_under_a_surviving_parent_is_prunable_on_its_own(sess
 
     scan = await find_prunable(session, FakePlex(live={"100", "110"}))
 
-    assert [c.rating_key for c in scan.prunable] == ["111"]
+    assert [c.native_id for c in scan.prunable] == ["111"]
     assert (scan.gone, scan.held, scan.total) == (1, 0, 3)
 
 
@@ -171,7 +199,7 @@ async def test_an_excluded_librarys_row_is_gone_even_though_plex_resolves_it(ses
 
     scan = await find_prunable(session, FakePlex(live={"10", "11"}), frozenset({"DVR"}))
 
-    assert [c.rating_key for c in scan.prunable] == ["11"]
+    assert [c.native_id for c in scan.prunable] == ["11"]
     assert (scan.gone, scan.held, scan.total, scan.excluded) == (1, 0, 2, 1)
 
 
@@ -189,7 +217,7 @@ async def test_an_excluded_familys_resolving_descendant_does_not_hold_it(session
         session, FakePlex(live={"100", "110", "111"}), frozenset({"DVR"})
     )
 
-    assert [c.rating_key for c in scan.prunable] == ["111", "110", "100"]
+    assert [c.native_id for c in scan.prunable] == ["111", "110", "100"]
     assert (scan.gone, scan.held, scan.excluded) == (3, 0, 3)
 
 
@@ -228,7 +256,7 @@ async def test_the_fold_never_retires_a_row_whose_own_library_is_permitted(sessi
 
     # Only the excluded episode goes. The excluded show is gone-but-held by its
     # permitted episode; the permitted show was never gone at all.
-    assert [c.rating_key for c in scan.prunable] == ["301"]
+    assert [c.native_id for c in scan.prunable] == ["301"]
     assert (scan.gone, scan.held, scan.total, scan.excluded) == (2, 1, 4, 1)
 
 
@@ -266,7 +294,7 @@ def test_intent_for_leaves_no_identity_behind():
     from autoposter.scheduler.prune import PruneCandidate
 
     candidate = PruneCandidate(
-        id=1, rating_key="9", kind="movie", library="Movies", title="A Movie",
+        id=1, native_id="9", kind="movie", library="Movies", title="A Movie",
         parent_id=None, tmdb_id=1, tvdb_id=2, imdb_id="tt3", year=1999,
         season_number=None, episode_number=None, logo_upload_key=None,
         updated_at=datetime.now(timezone.utc),
@@ -386,7 +414,7 @@ async def test_the_renders_and_facts_of_a_pruned_row_go_with_it(session):
 
 
 async def test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped(session):
-    """The concurrency guard, exercised through the actual writer.
+    """The concurrency guard, exercised against the row a worker touched.
 
     A worker can resolve and re-upsert a row between this sweep's probe and its
     delete -- the pass is minutes long and the pool never stops. The delete is
@@ -395,20 +423,20 @@ async def test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped(
     as the worker just wrote it. Each write is its own committed transaction,
     which is what makes the two ``now()`` values differ; nothing here asserts
     on a timestamp or a duration.
+
+    A plain ORM update stands in for the real upsert here: since Task 6 a real
+    ``_upsert_media_item`` finds the row to update by ``identity_key``, and
+    this row's synthetic one (``_add_item``) is not something a real
+    ``ResolvedItem`` could ever compute -- the guard being pinned reads
+    ``updated_at`` alone, which ``onupdate=func.now()`` stamps on any ORM
+    update to the row, exactly as the real upsert's own ON CONFLICT arm does.
     """
     item = await _add_item(session, "11", title="Old Title")
     item_id = item.id
     scan = await find_prunable(session, FakePlex(live=set()))
-    assert [c.rating_key for c in scan.prunable] == ["11"]
+    assert [c.native_id for c in scan.prunable] == ["11"]
 
-    resolved = ResolvedItem(
-        server="plex", native_id="11", library="Movies", kind="movie",
-        title="New Title",
-        year=2001, season_number=None, episode_number=None,
-        root_folder="New Title (2001)", file_path="/mnt/Media/Movies/x.mkv",
-        art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
-    )
-    await _upsert_media_item(session, resolved)
+    await session.execute(update(MediaItem).where(MediaItem.id == item_id).values(title="New Title"))
     await session.commit()
 
     outcome = await retire(session, scan.prunable)
@@ -441,21 +469,13 @@ async def test_a_re_upserted_child_holds_its_whole_family_back_from_the_delete(s
     episode = await _add_item(session, "111", kind="episode", parent=season)
     show_id, season_id, episode_id = show.id, season.id, episode.id
     scan = await find_prunable(session, FakePlex(live=set()))
-    assert [c.rating_key for c in scan.prunable] == ["111", "110", "100"]
+    assert [c.native_id for c in scan.prunable] == ["111", "110", "100"]
 
-    # parent_rating_key so the upsert keeps the episode under its season:
-    # _upsert_media_item resolves parent_id from it, and without it the row
-    # would come back detached and out of the cascade's reach, which is the
-    # very thing this test needs to stay in it.
-    resolved = ResolvedItem(
-        server="plex", native_id="111", library="TV Shows", kind="episode",
-        title="New Title",
-        year=2001, season_number=1, episode_number=3,
-        root_folder="A Show (2001)", file_path="/mnt/Media/TV/x.mkv",
-        art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
-        parent_native_id="110",
-    )
-    await _upsert_media_item(session, resolved)
+    # A plain ORM update stands in for the real re-upsert (see the sibling
+    # test's docstring): the episode's parent_id is already correct from
+    # _add_item, so touching only its own row is enough to bump its
+    # updated_at the way a real re-resolve would.
+    await session.execute(update(MediaItem).where(MediaItem.id == episode_id).values(title="New Title"))
     await session.commit()
 
     outcome = await retire(session, scan.prunable)
@@ -480,24 +500,16 @@ async def test_a_blocked_family_does_not_spare_an_unrelated_gone_row(session):
     gone is still deleted in the same pass, with its audit row."""
     show = await _add_item(session, "100", kind="show", title="A Show")
     season = await _add_item(session, "110", kind="season", parent=show)
-    await _add_item(session, "111", kind="episode", parent=season)
+    episode = await _add_item(session, "111", kind="episode", parent=season)
+    episode_id = episode.id
     movie = await _add_item(session, "11", title="A Movie")
     movie_id = movie.id
     scan = await find_prunable(session, FakePlex(live=set()))
 
-    # parent_rating_key so the upsert keeps the episode under its season:
-    # _upsert_media_item resolves parent_id from it, and without it the row
-    # would come back detached and out of the cascade's reach, which is the
-    # very thing this test needs to stay in it.
-    resolved = ResolvedItem(
-        server="plex", native_id="111", library="TV Shows", kind="episode",
-        title="New Title",
-        year=2001, season_number=1, episode_number=3,
-        root_folder="A Show (2001)", file_path="/mnt/Media/TV/x.mkv",
-        art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
-        parent_native_id="110",
-    )
-    await _upsert_media_item(session, resolved)
+    # A plain ORM update stands in for the real re-upsert -- see
+    # test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped's
+    # docstring.
+    await session.execute(update(MediaItem).where(MediaItem.id == episode_id).values(title="New Title"))
     await session.commit()
 
     outcome = await retire(session, scan.prunable)
@@ -518,11 +530,18 @@ async def test_a_blocked_family_does_not_spare_an_unrelated_gone_row(session):
 
 async def test_pending_and_parked_jobs_for_a_pruned_row_are_dismissed(session):
     """A parked job for a pruned row is pure Failures-page noise, and a pending
-    one would park by construction -- nothing can resolve it any more."""
+    one would park by construction -- nothing can resolve it any more.
+
+    Enqueued through the real producer shape (``payload["refs"]["plex"]``),
+    not a hand-built ``{"rating_key": ...}`` payload: the query this pins is
+    ``payload["refs"]["plex"] OR payload["rating_key"]``, and a test that only
+    ever wrote the legacy half would stay green even if the ``refs`` half of
+    that query were broken.
+    """
     for state in ("pending", "parked"):
         session.add(Job(
             kind="process_item",
-            payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+            payload=_producer_payload("11"),
             dedupe_key=f"process_item:movie:title gone:{state}",
             state=state,
         ))
@@ -537,12 +556,32 @@ async def test_pending_and_parked_jobs_for_a_pruned_row_are_dismissed(session):
     assert states == {"dismissed"}
 
 
+async def test_a_legacy_shaped_payload_is_still_matched(session):
+    """A job queued before ``refs`` existed carries only the bare
+    ``rating_key`` key -- the OR clause's other half -- and must still be
+    found."""
+    session.add(Job(
+        kind="process_item",
+        payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+        dedupe_key="process_item:movie:title gone:legacy",
+        state="parked",
+    ))
+    await session.commit()
+
+    dismissed = await dismiss_jobs_for(session, ["11"])
+    await session.commit()
+
+    assert dismissed == 1
+    session.expire_all()
+    assert (await session.execute(select(Job))).scalar_one().state == "dismissed"
+
+
 async def test_a_running_job_is_left_to_park_itself(session):
     """A claimed job is never interrupted anywhere in this project; one running
     against a pruned row simply parks, and the next applied pass dismisses it."""
     session.add(Job(
         kind="process_item",
-        payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+        payload=_producer_payload("11"),
         dedupe_key="process_item:movie:title gone",
         state="running",
     ))
@@ -559,7 +598,7 @@ async def test_a_running_job_is_left_to_park_itself(session):
 async def test_jobs_for_other_rating_keys_are_untouched(session):
     session.add(Job(
         kind="process_item",
-        payload={"kind": "movie", "title": "Still Here", "rating_key": "22"},
+        payload=_producer_payload("22", title="Still Here"),
         dedupe_key="process_item:movie:title still here",
         state="parked",
     ))
@@ -619,28 +658,36 @@ class _ReupsertingPlex(FakePlex):
     from inside ``exists_many`` puts it where a fixture cannot reach it -- in
     the middle of one ``job.run`` -- so what these tests exercise is the job's
     own handling of a skip, not ``retire``'s.
+
+    A plain ORM update of the row named by ``native_id`` stands in for the
+    real re-upsert: since Task 6 the real ``_upsert_media_item`` finds its
+    row by ``identity_key``, which this fixture's rows (``_add_item``) never
+    carry one a real ``ResolvedItem`` could compute -- ``onupdate=func.now()``
+    bumps ``updated_at`` on this update exactly as the real upsert's ON
+    CONFLICT arm does, which is the only thing the guard being pinned reads.
     """
 
-    def __init__(self, session, resolved, live=()):
+    def __init__(self, session, native_id, *, title="New Title", live=()):
         super().__init__(live)
         self._session = session
-        self._resolved = resolved
+        self._native_id = native_id
+        self._title = title
 
     async def exists_many(self, intents):
         flags = await super().exists_many(intents)
-        await _upsert_media_item(self._session, self._resolved)
+        item_id = (
+            await self._session.execute(
+                select(MediaItemServerRef.item_id).where(
+                    MediaItemServerRef.server == "plex",
+                    MediaItemServerRef.native_id == self._native_id,
+                )
+            )
+        ).scalar_one()
+        await self._session.execute(
+            update(MediaItem).where(MediaItem.id == item_id).values(title=self._title)
+        )
         await self._session.commit()
         return flags
-
-
-def _resolved_movie(rating_key, *, title="New Title"):
-    """What a worker would write back for a movie it has just re-resolved."""
-    return ResolvedItem(
-        server="plex", native_id=rating_key, library="Movies", kind="movie", title=title,
-        year=2001, season_number=None, episode_number=None,
-        root_folder=f"{title} (2001)", file_path="/mnt/Media/Movies/x.mkv",
-        art_url=None, tmdb_id=None, tvdb_id=None, imdb_id=None,
-    )
 
 
 async def test_the_job_is_named_and_paced_off_the_holder():
@@ -873,7 +920,7 @@ async def test_an_applied_pass_prunes_dismisses_and_reports_the_file_consequence
     session.add(Render(item_id=item.id, art_kind="poster", asset_path="/assets/a.jpg"))
     session.add(Job(
         kind="process_item",
-        payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+        payload=_producer_payload("11"),
         dedupe_key="process_item:movie:title gone",
         state="parked",
     ))
@@ -885,7 +932,13 @@ async def test_an_applied_pass_prunes_dismisses_and_reports_the_file_consequence
     assert "dismissed 1" in summary
     assert "asset_cleanup" in summary
     session.expire_all()
-    assert [i.rating_key for i in (await session.execute(select(MediaItem))).scalars()] == ["10"]
+    surviving_ids = (await session.execute(select(MediaItem.id))).scalars().all()
+    survivor_refs = (
+        await session.execute(
+            select(MediaItemServerRef.native_id).where(MediaItemServerRef.item_id.in_(surviving_ids))
+        )
+    ).scalars().all()
+    assert survivor_refs == ["10"]
     assert (await session.execute(select(Job))).scalar_one().state == "dismissed"
     assert len((await session.execute(select(EventLog))).scalars().all()) == 1
 
@@ -929,7 +982,7 @@ async def test_an_applied_pass_counts_directories_off_what_it_actually_pruned(se
     await _add_item(session, "10")
     await _add_item(session, "11", title="Old Title")
 
-    plex = _ReupsertingPlex(session, _resolved_movie("11"))
+    plex = _ReupsertingPlex(session, "11")
     summary = await _job(_config(apply=True, max_orphans=1), plex).run(session)
 
     assert "pruned 1 of 2" in summary
@@ -948,13 +1001,13 @@ async def test_a_skipped_rows_queued_job_is_not_dismissed(session):
     await _add_item(session, "11", title="Old Title")
     session.add(Job(
         kind="process_item",
-        payload={"kind": "movie", "title": "Gone", "rating_key": "11"},
+        payload=_producer_payload("11"),
         dedupe_key="process_item:movie:title gone",
         state="parked",
     ))
     await session.commit()
 
-    plex = _ReupsertingPlex(session, _resolved_movie("11"))
+    plex = _ReupsertingPlex(session, "11")
     summary = await _job(_config(apply=True), plex).run(session)
 
     assert "pruned 0 of 1" in summary
@@ -962,7 +1015,12 @@ async def test_a_skipped_rows_queued_job_is_not_dismissed(session):
     assert "shielded by one that did" in summary
     session.expire_all()
     survivor = (await session.execute(select(MediaItem))).scalar_one()
-    assert (survivor.rating_key, survivor.title) == ("11", "New Title")
+    survivor_native_id = (
+        await session.execute(
+            select(MediaItemServerRef.native_id).where(MediaItemServerRef.item_id == survivor.id)
+        )
+    ).scalar_one()
+    assert (survivor_native_id, survivor.title) == ("11", "New Title")
     assert (await session.execute(select(Job))).scalar_one().state == "parked"
     assert (await session.execute(select(EventLog))).scalars().all() == [], (
         "nothing was deleted, so nothing may carry a deletion audit row"
@@ -980,7 +1038,7 @@ async def test_an_applied_pass_retires_excluded_rows_and_counts_them_separately(
     await _add_item(session, "11", library="DVR", kind="show")
     session.add(Job(
         kind="process_item",
-        payload={"kind": "show", "title": "Recorded", "rating_key": "11"},
+        payload=_producer_payload("11", title="Recorded", kind="show"),
         dedupe_key="process_item:show:title recorded",
         state="deferred",
     ))
@@ -993,7 +1051,13 @@ async def test_an_applied_pass_retires_excluded_rows_and_counts_them_separately(
     assert "1 row(s) in excluded libraries retired" in summary
     assert "dismissed 1" in summary
     session.expire_all()
-    assert [i.rating_key for i in (await session.execute(select(MediaItem))).scalars()] == ["10"]
+    surviving_ids = (await session.execute(select(MediaItem.id))).scalars().all()
+    survivor_refs = (
+        await session.execute(
+            select(MediaItemServerRef.native_id).where(MediaItemServerRef.item_id.in_(surviving_ids))
+        )
+    ).scalars().all()
+    assert survivor_refs == ["10"]
     assert (await session.execute(select(Job))).scalar_one().state == "dismissed"
     (event,) = (await session.execute(select(EventLog))).scalars().all()
     assert event.payload["rating_key"] == "11"

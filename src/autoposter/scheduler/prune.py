@@ -29,7 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import SHARE_CHECK_MIN_ITEMS, refuse_if_empty
@@ -38,6 +38,7 @@ from autoposter.db.models import EventLog, MediaItem, Render
 # Aliased: ``Job`` in this package means the scheduler's dataclass
 # (``scheduler/core.py``), and the queue row of the same name would shadow it.
 from autoposter.db.models import Job as QueuedJob
+from autoposter.db.refs import native_ids as native_ids_for, refs_for
 from autoposter.intake.arr import RenderIntent
 from autoposter.scheduler.core import Job
 
@@ -89,7 +90,7 @@ class PruneCandidate:
     """
 
     id: int
-    rating_key: str
+    native_id: str | None
     kind: str
     library: str
     title: str
@@ -149,10 +150,10 @@ def intent_for(candidate: PruneCandidate) -> RenderIntent:
     """The intent the pipeline would build for this row.
 
     Field for field what ``_enqueue_reprocess`` builds (``api/routes.py``),
-    ``rating_key`` included -- that is what lets the probe try the stored Plex
-    identity before falling back to a GUID search. The probe has to ask exactly
-    what the pipeline asks, or the sweep would decide "gone" on a question the
-    pipeline never poses.
+    the stored Plex native id included -- that is what lets the probe try the
+    stored identity before falling back to a GUID search. The probe has to ask
+    exactly what the pipeline asks, or the sweep would decide "gone" on a
+    question the pipeline never poses.
     """
     return RenderIntent(
         kind=candidate.kind,
@@ -163,7 +164,7 @@ def intent_for(candidate: PruneCandidate) -> RenderIntent:
         year=candidate.year,
         season_number=candidate.season_number,
         episode_number=candidate.episode_number,
-        refs={"plex": candidate.rating_key},
+        refs={"plex": candidate.native_id} if candidate.native_id else {},
     )
 
 
@@ -235,7 +236,6 @@ async def find_prunable(
         await session.execute(
             select(
                 MediaItem.id,
-                MediaItem.rating_key,
                 MediaItem.kind,
                 MediaItem.library,
                 MediaItem.title,
@@ -251,10 +251,17 @@ async def find_prunable(
             ).order_by(MediaItem.id)
         )
     ).all()
+    if not rows:
+        return PruneScan(prunable=[], gone=0, held=0, total=0, excluded=0)
+    # One query for the whole table's Plex ids, not one per row: the probe
+    # below already asks Plex once per row, and a second per-row round trip
+    # to this database for the same information would double the sweep's own
+    # query count for nothing.
+    plex_ids = await native_ids_for(session, [row.id for row in rows], "plex")
     candidates = [
         PruneCandidate(
             id=row.id,
-            rating_key=row.rating_key,
+            native_id=plex_ids.get(row.id),
             kind=row.kind,
             library=row.library,
             title=row.title,
@@ -270,8 +277,6 @@ async def find_prunable(
         )
         for row in rows
     ]
-    if not candidates:
-        return PruneScan(prunable=[], gone=0, held=0, total=0, excluded=0)
 
     # The reads above (refuse_if_empty's probe and this full media_items
     # read) opened a transaction the walk below would otherwise hold idle
@@ -334,10 +339,11 @@ async def find_prunable(
 class RetireOutcome:
     """What one applied pass actually removed.
 
-    ``pruned`` is the rating keys of rows that were really deleted, not the
-    candidates offered: the job disposal downstream must key off what happened,
-    or it would dismiss the queued work of a row that survived. ``skipped``
-    counts rows that changed under the pass and were therefore left alone.
+    ``pruned`` is the Plex native ids of rows that were really deleted, not
+    the candidates offered: the job disposal downstream must key off what
+    happened, or it would dismiss the queued work of a row that survived.
+    ``skipped`` counts rows that changed under the pass and were therefore
+    left alone.
     """
 
     pruned: list[str]
@@ -437,7 +443,7 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
         if candidate.id in blocked:
             logger.info(
                 "prune: %s (%s) held by a descendant that changed under the pass",
-                candidate.rating_key, candidate.kind,
+                candidate.native_id, candidate.kind,
             )
             if candidate.parent_id is not None:
                 blocked.add(candidate.parent_id)
@@ -466,18 +472,25 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
         if removed is None:
             logger.info(
                 "prune: %s (%s) changed under the pass; left alone",
-                candidate.rating_key, candidate.kind,
+                candidate.native_id, candidate.kind,
             )
             if candidate.parent_id is not None:
                 blocked.add(candidate.parent_id)
             skipped += 1
             continue
+        # Read before the row is gone: the FK from media_item_server_refs
+        # cascades on this same delete, so a refs_for read taken after it
+        # would find nothing to report.
+        refs = await refs_for(session, candidate.id)
         session.add(EventLog(
             source=PRUNE_SOURCE,
             event_type=PRUNE_EVENT,
             payload={
                 "media_item_id": candidate.id,
-                "rating_key": candidate.rating_key,
+                # Legacy key, kept for any reader still watching for it
+                # (spec §4.5); "refs" is the full per-server picture.
+                "rating_key": candidate.native_id,
+                "refs": refs,
                 "kind": candidate.kind,
                 "library": candidate.library,
                 "title": candidate.title,
@@ -493,11 +506,11 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
             outcome="pruned: no Plex item resolves for this row",
         ))
         await session.flush()
-        pruned.append(candidate.rating_key)
+        pruned.append(candidate.native_id)
     return RetireOutcome(pruned=pruned, skipped=skipped)
 
 
-async def dismiss_jobs_for(session: AsyncSession, rating_keys: list[str]) -> int:
+async def dismiss_jobs_for(session: AsyncSession, native_ids: list[str]) -> int:
     """Dismiss the pending, deferred and parked jobs queued for rows that were pruned.
 
     A parked job for a pruned row is pure Failures-page noise, and a pending
@@ -506,14 +519,15 @@ async def dismiss_jobs_for(session: AsyncSession, rating_keys: list[str]) -> int
     waiting for an item that has been pruned would look for it every six hours
     for the life of the deployment. Jobs
     carry no foreign key to ``media_items`` (``db/models.py``), so they are
-    found the only way the payload allows: by the ``rating_key`` the
-    ``RenderIntent`` carries. Payloads written before that field existed carry
-    none; those are out of scope and unreachable here. That is harmless rather
-    than a gap: webhook-born payloads carry no ``rating_key`` by design
-    (``intake/arr.py`` -- Sonarr and Radarr know nothing about Plex), and an
-    item Plex never held has no ``media_items`` row for this sweep to have
-    been retiring in the first place. Such a job -- deferred or otherwise --
-    ends only by operator Cancel.
+    found the only way the payload allows: by the Plex native id the
+    ``RenderIntent`` carries, matched against BOTH ``payload["refs"]["plex"]``
+    and the legacy ``payload["rating_key"]`` a job queued before ``refs``
+    existed still carries. That is harmless rather than a gap: webhook-born
+    payloads carry no Plex id by design (``intake/arr.py`` -- Sonarr and
+    Radarr know nothing about Plex), and an item Plex never held has no
+    ``media_items`` row for this sweep to have been retiring in the first
+    place. Such a job -- deferred or otherwise -- ends only by operator
+    Cancel.
 
     ``running`` jobs are deliberately left alone. A claimed job is never
     interrupted anywhere in this project (``api/jobs.py``), and one running
@@ -527,14 +541,17 @@ async def dismiss_jobs_for(session: AsyncSession, rating_keys: list[str]) -> int
     rather than blocking the sweep behind it -- that row is ``running``, which
     this does not touch anyway.
     """
-    if not rating_keys:
+    if not native_ids:
         return 0
     jobs = (
         await session.execute(
             select(QueuedJob)
             .where(QueuedJob.kind == "process_item")
             .where(QueuedJob.state.in_(("pending", "deferred", "parked")))
-            .where(QueuedJob.payload["rating_key"].astext.in_(rating_keys))
+            .where(or_(
+                QueuedJob.payload["refs"]["plex"].astext.in_(native_ids),
+                QueuedJob.payload["rating_key"].astext.in_(native_ids),
+            ))
             .with_for_update(skip_locked=True)
         )
     ).scalars().all()
@@ -675,7 +692,7 @@ def make_prune_job(
         # threshold this prune never crossed. The dry run has no such
         # distinction to make -- there, the candidates are the whole story.
         pruned_keys = set(outcome.pruned)
-        deleted = [c for c in scan.prunable if c.rating_key in pruned_keys]
+        deleted = [c for c in scan.prunable if c.native_id in pruned_keys]
         directories = _directory_count(deleted)
         # The same rule for the excluded population, and for the same reason:
         # "retired" must describe rows that are gone, not rows that were

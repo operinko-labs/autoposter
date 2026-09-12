@@ -592,13 +592,13 @@ def adopted_fingerprint(
 
 
 async def fetch_plex_generated_base(
-    http: httpx.AsyncClient, plex, rating_key: str, destination: Path,
+    http: httpx.AsyncClient, plex, native_id: str, destination: Path,
     *, base_url: str, headers: dict[str, str], stage: str,
 ) -> str | None:
     """Download Plex's own generated title-card frame, or answer ``None``.
 
     The plex-preview fallback (roadmap row 241): lazily fetches the plexapi
-    item for ``rating_key`` (adjudication A2 -- only an episode whose
+    item for ``native_id`` (adjudication A2 -- only an episode whose
     provider ladder came back empty ever reaches this, so this is not a
     second fetch for every item ``process_item`` already handles), lists its
     posters, and downloads the ``media://``-prefixed entry
@@ -615,7 +615,7 @@ async def fetch_plex_generated_base(
 
     Built as a ``functools.partial`` at app.py's composition time, with
     ``http``, ``plex``, ``base_url`` and the token header baked in --
-    ``render_artifact`` calls the result with only ``rating_key`` and
+    ``render_artifact`` calls the result with only ``native_id`` and
     ``destination``, so the token is never in scope there at all.
 
     M1: a non-2xx from Plex (a rotated token's 401, a 3xx now that
@@ -623,13 +623,13 @@ async def fetch_plex_generated_base(
     from ``_download``'s ``raise_for_status()``. ``process_item``'s per-kind
     containment only catches ``SourceRefused``, so left uncaught this would
     fail the whole job over what used to be a quiet ``no_art`` row. Caught
-    here and logged once, by rating key and status code only -- never the
+    here and logged once, by native id and status code only -- never the
     URL, which carries no token itself but is still not worth logging -- so
     the caller falls through to the existing ``no_art`` outcome.
     """
     if CAP_TITLE_CARD_URL not in plex.capabilities:
         return None
-    plex_item = await plex.fetch_item(rating_key)
+    plex_item = await plex.fetch_item(native_id)
     url = await generated_title_card_url(plex_item, base_url)
     if url is None:
         return None
@@ -640,7 +640,7 @@ async def fetch_plex_generated_base(
     except httpx.HTTPStatusError as exc:
         logger.warning(
             "Plex's generated frame fetch failed for %s: HTTP %s",
-            rating_key, exc.response.status_code,
+            native_id, exc.response.status_code,
         )
         return None
 
@@ -963,7 +963,7 @@ async def render_artifact(
     """Build one artifact. Idempotent: safe to run repeatedly for the same item.
 
     ``plex_generated_base`` is the plex-preview fallback's own hook (roadmap
-    row 241): an async callable ``(rating_key, destination, *, stage) -> str
+    row 241): an async callable ``(native_id, destination, *, stage) -> str
     | None`` -- ``fetch_plex_generated_base`` bound at app.py's composition
     time via ``functools.partial`` with ``http``, ``plex``, ``base_url`` and
     the ``X-Plex-Token`` header baked in, so this function never sees the
@@ -1658,7 +1658,7 @@ async def apply_badges(
     # for an exempt item with no override at all.
     if config.operations.item_overrides_enabled:
         exempt = exemption_reason(
-            config.operations, media_item.rating_key, media_item.imdb_id,
+            config.operations, ref.native_id, media_item.imdb_id,
             getattr(plex_item, "labels", None),
         )
         if exempt is None:
@@ -1794,7 +1794,7 @@ async def apply_badges(
     except Exception:
         render.upload_status = "failed"
         await session.flush()
-        logger.warning("badge upload failed for %s", media_item.rating_key, exc_info=True)
+        logger.warning("badge upload failed for %s", ref.native_id, exc_info=True)
         return
 
     render.upload_status = "uploaded"

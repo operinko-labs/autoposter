@@ -13,24 +13,32 @@ from types import SimpleNamespace
 from sqlalchemy import select, text
 
 from autoposter.config.holder import ConfigHolder
-from autoposter.db.models import ItemFacts, Job, MediaItem
+from autoposter.db.models import ItemFacts, Job, MediaItem, MediaItemServerRef
 from autoposter.scheduler import jobs as scheduler_jobs
 from autoposter.scheduler.jobs import make_credits_job, make_drift_job, sweep_stale_facts
 
-_next_rating_key = iter(str(n) for n in range(1, 1_000_000))
+_next_native_id = iter(str(n) for n in range(1, 1_000_000))
 
 
 async def _make_item(session, *, kind="movie", title="Item", tmdb_id=None, parent_id=None):
+    native_id = next(_next_native_id)
+    library = "Movies" if kind == "movie" else "TV Shows"
     item = MediaItem(
-        rating_key=next(_next_rating_key),
-        library="Movies" if kind == "movie" else "TV Shows",
+        identity_key=f"{kind}:legacy:plex:{native_id}",
+        library=library,
         kind=kind,
         title=title,
         tmdb_id=tmdb_id,
         parent_id=parent_id,
     )
     session.add(item)
+    await session.flush()
+    session.add(MediaItemServerRef(
+        item_id=item.id, server="plex", native_id=native_id, library=library,
+    ))
     await session.commit()
+    # Test bookkeeping only -- not a mapped column.
+    item.native_id = native_id
     return item
 
 
@@ -266,4 +274,4 @@ async def test_the_enqueued_intent_carries_the_rows_rating_key(session):
 
     assert count == 1
     (job,) = (await session.execute(select(Job).order_by(Job.id))).scalars().all()
-    assert job.payload["refs"]["plex"] == item.rating_key
+    assert job.payload["refs"]["plex"] == item.native_id

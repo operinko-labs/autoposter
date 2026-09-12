@@ -57,11 +57,12 @@ from autoposter.db.models import (
     MediaItem,
     Render,
 )
+from autoposter.db.refs import native_ids as native_ids_for
 from autoposter.intake.arr import RenderIntent
 from autoposter.scheduler.core import Job
 # Reused verbatim rather than reimplemented: an in-flight payload names a
-# rating key and nothing else, and two spellings of "find the jobs for this
-# key" would eventually disagree about which states count.
+# Plex native id and nothing else, and two spellings of "find the jobs for
+# this id" would eventually disagree about which states count.
 from autoposter.scheduler.prune import dismiss_jobs_for
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ class MergeRow:
     """
 
     id: int
-    rating_key: str
+    native_id: str | None
     kind: str
     library: str
     title: str
@@ -221,9 +222,9 @@ class MergeOutcome:
 def intent_for_row(row: MergeRow) -> RenderIntent:
     """The intent the pipeline would build for this row.
 
-    Field for field what ``prune.intent_for`` builds, ``rating_key``
-    included -- the probe has to ask exactly what the pipeline asks, or this
-    job would decide a row's fate on a question the pipeline never poses.
+    Field for field what ``prune.intent_for`` builds, the stored Plex native
+    id included -- the probe has to ask exactly what the pipeline asks, or
+    this job would decide a row's fate on a question the pipeline never poses.
     """
     return RenderIntent(
         kind=row.kind,
@@ -234,7 +235,7 @@ def intent_for_row(row: MergeRow) -> RenderIntent:
         year=row.year,
         season_number=row.season_number,
         episode_number=row.episode_number,
-        refs={"plex": row.rating_key},
+        refs={"plex": row.native_id} if row.native_id else {},
     )
 
 
@@ -373,7 +374,6 @@ async def _all_rows(session: AsyncSession) -> list[MergeRow]:
         await session.execute(
             select(
                 MediaItem.id,
-                MediaItem.rating_key,
                 MediaItem.kind,
                 MediaItem.library,
                 MediaItem.title,
@@ -391,7 +391,10 @@ async def _all_rows(session: AsyncSession) -> list[MergeRow]:
             ).order_by(MediaItem.id)
         )
     ).all()
-    return [MergeRow(**row._mapping) for row in rows]
+    # One query for the whole table's Plex ids, not one per row -- the same
+    # discipline find_prunable's own batch read follows.
+    plex_ids = await native_ids_for(session, [row.id for row in rows], "plex")
+    return [MergeRow(native_id=plex_ids.get(row.id), **row._mapping) for row in rows]
 
 
 async def _plan_merges(
@@ -469,10 +472,12 @@ async def find_mergeable(session: AsyncSession) -> MergeScan:
 
     Probe-free on purpose (A5): the operator can read this report during an
     outage, size the population, and only then decide. The election is the
-    newest rating key -- Plex numbers upward, so the row created by the fork
-    is the live one in every case the recon examined -- and the APPLIED pass
-    verifies it against Plex before it deletes anything, which is where the
-    heuristic earns its keep or is refused.
+    row with the later ``updated_at`` (ties broken by the higher ``id``) --
+    since Task 6's identity-keyed upsert, two rows sharing one identity can
+    no longer be minted going forward (``identity_key`` is unique), so this
+    election only ever meets a pair a migration or a restore left behind, and
+    the APPLIED pass verifies it against Plex before it deletes anything,
+    which is where the heuristic earns its keep or is refused.
     """
     rows = await _all_rows(session)
     if not rows:
@@ -490,6 +495,12 @@ async def find_mergeable(session: AsyncSession) -> MergeScan:
 
     pairs: list[MergePair] = []
     ambiguous = 0
+    # No row can make a pair unelectable any more: the election orders rows
+    # by (updated_at, id), which every row has, rather than by parsing a
+    # server-specific key as an integer. Kept in MergeScan's shape (and in
+    # every summary line) rather than removed, so a future election rule that
+    # CAN refuse a pair has a bucket to report into without another shape
+    # change.
     unelectable = 0
     clustered_ids: set[int] = set()
     for cluster in _identity_clusters(pairable):
@@ -497,15 +508,7 @@ async def find_mergeable(session: AsyncSession) -> MergeScan:
         if len(cluster) != 2:
             ambiguous += 1
             continue
-        if not all(row.rating_key.isdigit() for row in cluster):
-            # The election orders keys as integers. A key that is not a number
-            # cannot be ordered, and guessing an order would guess which row
-            # dies.
-            unelectable += 1
-            continue
-        survivor, stale = sorted(
-            cluster, key=lambda row: int(row.rating_key), reverse=True
-        )
+        survivor, stale = sorted(cluster, key=lambda row: (row.updated_at, row.id), reverse=True)
         pairs.append(MergePair(stale=stale, survivor=survivor))
 
     plans = await _plan_merges(session, pairs)
@@ -716,7 +719,7 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
         ):
             logger.info(
                 "merge: %s -> %s changed under the pass; left alone",
-                pair.stale.rating_key, pair.survivor.rating_key,
+                pair.stale.native_id, pair.survivor.native_id,
             )
             await session.rollback()
             skipped += 1
@@ -928,7 +931,7 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
             # direction, and a redundant guard costs a comparison.
             logger.warning(
                 "merge: %s changed between the lock and the delete; rolled back",
-                pair.stale.rating_key,
+                pair.stale.native_id,
             )
             await session.rollback()
             skipped += 1
@@ -939,9 +942,11 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
             event_type=MERGE_EVENT,
             payload={
                 "stale_media_item_id": pair.stale.id,
-                "stale_rating_key": pair.stale.rating_key,
+                # Legacy key names, kept for any reader still watching for
+                # them (spec §4.5): the value is now the Plex native id.
+                "stale_rating_key": pair.stale.native_id,
                 "survivor_media_item_id": pair.survivor.id,
-                "survivor_rating_key": pair.survivor.rating_key,
+                "survivor_rating_key": pair.survivor.native_id,
                 "kind": pair.stale.kind,
                 "library": pair.stale.library,
                 "title": pair.stale.title,
@@ -968,13 +973,13 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
                 "stale_logo_upload_key": stale.logo_upload_key,
             },
             outcome=(
-                f"merged {pair.stale.rating_key} into {pair.survivor.rating_key} "
+                f"merged {pair.stale.native_id} into {pair.survivor.native_id} "
                 "on an identity match"
             ),
         ))
         await session.commit()
 
-        merged.append((pair.stale.rating_key, pair.survivor.rating_key))
+        merged.append((pair.stale.native_id, pair.survivor.native_id))
         renders_repointed += len(plan.renders_repoint)
         renders_dropped += len(plan.renders_drop)
         dismissals_repointed += len(dismissals_repoint)
@@ -1066,7 +1071,7 @@ def _tail(scan: MergeScan) -> str:
         )
     if scan.fossils:
         named = " | ".join(
-            f"id={row.id}, key={row.rating_key}, title={row.title!r}"
+            f"id={row.id}, key={row.native_id}, title={row.title!r}"
             for row in scan.fossils[:_FOSSIL_NAMES_MAX]
         )
         remainder = len(scan.fossils) - _FOSSIL_NAMES_MAX

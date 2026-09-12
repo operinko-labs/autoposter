@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.arr.client import ArrClient, ArrKind
 from autoposter.arr.paths import map_path
-from autoposter.db.models import MediaItem
+from autoposter.db.models import MediaItem, MediaItemServerRef
+from autoposter.db.refs import native_ids
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import as_int, parse_guids
 from autoposter.queue.jobs import enqueue
@@ -350,15 +351,15 @@ async def _stale_rows_by_key(
     ``enqueue_unknown_items`` is a single query by design and this must not
     undo that.
 
-    Exactly as wide as the pipeline's own re-key predicate
-    (``render.pipeline._identity_candidates``): same ``kind``, same
-    ``library``, and a non-empty external-id intersection. Library-blind was
-    tried and overturned (C6): a wrong guess does not cost what today's
-    (pre-phase) code costs -- it enqueues the OTHER library's row's intent
-    and the discovered item is never enqueued at all, forever, which is a
-    real regression against the 4K/HD dual-library population this phase
-    treats as first-class. The season/episode columns are pinned NULL
-    because this sweep only ever walks movie and show sections.
+    Same ``kind``, same ``library``, and a non-empty external-id
+    intersection -- as wide as this sweep's own guess needs to be and no
+    wider. Library-blind was tried and overturned (C6): a wrong guess does
+    not cost what today's (pre-phase) code costs -- it enqueues the OTHER
+    library's row's intent and the discovered item is never enqueued at all,
+    forever, which is a real regression against the 4K/HD dual-library
+    population this phase treats as first-class. The season/episode columns
+    are pinned NULL because this sweep only ever walks movie and show
+    sections.
 
     Exactly one match or nothing: two rows carrying one identity is the
     ``plex_merge`` job's pair, and enqueuing either one's key would pick a
@@ -433,9 +434,11 @@ async def enqueue_unknown_items(
     predicate.
 
     The comparison against ``media_items`` is one query -- an anti-join over
-    every rating key in the section -- not one query per item. Dedupe is left
-    to ``enqueue``'s own ``dedupe_key`` convention, so a second run before the
-    first pass's jobs have drained does not queue anything twice.
+    every rating key in the section, now via ``media_item_server_refs`` since
+    the Plex id moved off ``media_items`` itself -- not one query per item.
+    Dedupe is left to ``enqueue``'s own ``dedupe_key`` convention, so a second
+    run before the first pass's jobs have drained does not queue anything
+    twice.
 
     ``items`` is the section's contents, listed once by the caller and
     shared with ``sync_section`` -- listing a Plex section takes seconds and
@@ -444,11 +447,13 @@ async def enqueue_unknown_items(
     if not items:
         return 0
 
-    rating_keys = [str(item.ratingKey) for item in items]
+    section_native_ids = [str(item.ratingKey) for item in items]
     known = set(
         (
             await session.execute(
-                select(MediaItem.rating_key).where(MediaItem.rating_key.in_(rating_keys))
+                select(MediaItemServerRef.native_id)
+                .where(MediaItemServerRef.server == "plex")
+                .where(MediaItemServerRef.native_id.in_(section_native_ids))
             )
         ).scalars()
     )
@@ -461,6 +466,10 @@ async def enqueue_unknown_items(
         if str(item.ratingKey) not in known
     }
     stale_by_key = await _stale_rows_by_key(session, kind, library, guids_by_key)
+    # One query for every stale row's OWN Plex id, not one per match.
+    stale_native_ids = await native_ids(
+        session, [row.id for row in stale_by_key.values()], "plex"
+    )
 
     enqueued = 0
     for item in items:
@@ -481,6 +490,7 @@ async def enqueue_unknown_items(
             # row's intent instead makes the job fork, which is what lets the
             # pipeline's identity re-key repair the row rather than duplicate
             # it.
+            stale_native_id = stale_native_ids.get(stale.id)
             intent = RenderIntent(
                 kind=kind,
                 title=stale.title,
@@ -488,7 +498,7 @@ async def enqueue_unknown_items(
                 tvdb_id=stale.tvdb_id,
                 imdb_id=stale.imdb_id,
                 year=stale.year,
-                refs={"plex": stale.rating_key},
+                refs={"plex": stale_native_id} if stale_native_id else {},
             )
         else:
             guids = guids_by_key[key]
