@@ -318,7 +318,7 @@ operations:
 Twinned keys rather than a list-shaped setting: it matches the existing style and keeps every current config valid unchanged. Plex's `resolve_max_attempts` keeps its meaning for the Plex path; Jellyfin has no copy (attempts belong to deliveries, §5.3). Live-versus-restart follows each key's Plex twin (`config/live.py`).
 
 ### 7.2 Secrets and boot
-`AUTOPOSTER_JELLYFIN_API_KEY` is added. `AUTOPOSTER_PLEX_TOKEN` **leaves** `_SECRET_ENV` (`schema.py:20`). A new category, **server credentials**, holds both, with the rule: *configured* = the five remaining hard secrets present **and** at least one server with both an address (config) and a credential (secret). `missing_hard_secret_names` keeps its meaning for the five; a new `missing_server_setup()` answers the server half; `boot.is_configured` (`boot.py:83`) requires both. A configured server whose credential is missing is a boot refusal naming the variable; zero configured servers is a boot refusal with a fixed sentence.
+`AUTOPOSTER_JELLYFIN_APIKEY` is added. `AUTOPOSTER_PLEX_TOKEN` **leaves** `_SECRET_ENV` (`schema.py:20`). A new category, **server credentials**, holds both, with the rule: *configured* = the five remaining hard secrets present **and** at least one server with both an address (config) and a credential (secret). `missing_hard_secret_names` keeps its meaning for the five; a new `missing_server_setup()` answers the server half; `boot.is_configured` (`boot.py:83`) requires both. A configured server whose credential is missing is a boot refusal naming the variable; zero configured servers is a boot refusal with a fixed sentence.
 
 ### 7.3 Documents
 `config/autoposter.example.yaml` gains the block (its schema test walks every key). `deploy/README.md` gains "Media servers" and the ExternalSecret line. `.env.example` gains the key.
@@ -330,7 +330,7 @@ Twinned keys rather than a list-shaped setting: it matches the existing style an
 - **Progress:** `/progress` gains `servers: {plex: {configured, checked}, jellyfin: {…}}` — ten keys. `required` no longer lists the Plex token.
 - **Staging:** `stage_config_document` (`setup.py:1409`) requires at least one server URL whose credential is staged or resolved, not a Plex URL unconditionally; `_apply_staged_urls` (`:1450-1478`) treats `jellyfin` as it treats `plex`.
 - **Check table:** `CHECK_SYSTEMS` gains `jellyfin` (typed address; `GET /System/Info`; header auth) — ten systems; `SYSTEMS_WITH_AN_ADDRESS` gains it (`Setup.tsx:113`, `setup_checks.py` host=None).
-- **Frontend tables:** `PROVIDER_LABELS` gains the key; `REQUIRED_PROVIDER_NAMES` drops the Plex token (`Setup.tsx:87-93`); `SYSTEM_FOR_CREDENTIAL` gains `AUTOPOSTER_JELLYFIN_API_KEY: "jellyfin"`.
+- **Frontend tables:** `PROVIDER_LABELS` gains the key; `REQUIRED_PROVIDER_NAMES` drops the Plex token (`Setup.tsx:87-93`); `SYSTEM_FOR_CREDENTIAL` gains `AUTOPOSTER_JELLYFIN_APIKEY: "jellyfin"`.
 - **Finish pane:** summarises each configured server and which were checked; "left for later" covers the un-configured server.
 - **Pinned assertions that move (deliberately):** `tests/test_api_setup.py:59-66` (HARD tuple), `:516-519` and `:1347-1350` (nine-key progress shape), `:526`/`:1901` (`required`); `tests/test_api_setup_check.py:89-103` (nine-key check set); `frontend/src/pages/setupSteps.test.ts:6-17, 46-108`; `Setup.test.tsx:519, 236, 244, 261`; `SetupFinishPane.test.tsx:36-76`.
 
