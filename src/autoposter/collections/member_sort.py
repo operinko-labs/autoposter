@@ -161,6 +161,11 @@ async def commit_assignment(
         to_release = []
 
     if dry_run:
+        # Silent when there is nothing to do, like the real path below: a
+        # library with no member_sort definition must produce no action
+        # line (the ported-sources golden pins every dry-run action).
+        if not wanted and not to_release:
+            return [], []
         return [
             "%s: would record %d sort position(s) and release %d"
             % (library, len(wanted), len(to_release))
