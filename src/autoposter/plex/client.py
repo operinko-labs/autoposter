@@ -7,8 +7,11 @@ import requests
 from plexapi.exceptions import NotFound as PlexNotFound
 
 from autoposter.intake.arr import RenderIntent
+from autoposter.plex import artwork as plex_artwork
 from autoposter.render.naming import derive_root_folder
-from autoposter.servers.base import (  # noqa: F401 -- re-exported for existing importers
+from autoposter.servers.base import (
+    CAP_ARTWORK_PROVENANCE, CAP_FIELD_LOCKS, CAP_LOCK_ARTWORK, CAP_LOGO_UPLOAD,
+    CAP_LOGO_UPLOAD_KEY, CAP_RESET_TO_AGENT_DEFAULT, CAP_TITLE_CARD_URL,
     ItemNotFound, PathMismatch, ResolvedItem, SectionItem, ServerItemRef,
 )
 
@@ -260,18 +263,42 @@ class _RawMatch:
     show_title: str | None = None
 
 
+#: The Plex arm of ``MediaServer.capabilities`` (spec §3.4) -- every operation
+#: ``plex/artwork.py`` and ``plex/writer.py`` back, wired up below.
+PLEX_CAPABILITIES = frozenset({
+    CAP_LOCK_ARTWORK, CAP_LOGO_UPLOAD, CAP_LOGO_UPLOAD_KEY, CAP_FIELD_LOCKS,
+    CAP_ARTWORK_PROVENANCE, CAP_TITLE_CARD_URL, CAP_RESET_TO_AGENT_DEFAULT,
+})
+
+
 class PlexClient:
-    """Resolves render intents to Plex items.
+    """Resolves render intents to Plex items, and conforms to ``MediaServer``.
 
     ``plexapi`` is synchronous, so calls run in a thread to keep the event loop free.
     All ``plexapi`` attribute access happens inside that thread — attributes on
     partial objects can trigger a synchronous HTTP reload, so nothing touched back
     on the event loop may be a ``plexapi`` object.
+
+    ``http``/``base_url``/``token`` back the artwork read-back methods
+    (``fetch_artwork``/``artwork_provenance``/``check_liveness``), which need an
+    HTTP client of their own rather than ``plexapi``'s -- see those functions in
+    ``plex/artwork.py``. They default to unset because most callers (``resolve``,
+    ``list_items``, the write paths) never touch them; ``app.py``'s construction
+    site is the one that supplies real values.
     """
 
-    def __init__(self, server, excluded_libraries: list[str]):
+    name = "plex"
+    capabilities = PLEX_CAPABILITIES
+
+    def __init__(
+        self, server, excluded_libraries: list[str],
+        http=None, base_url: str = "", token: str = "",
+    ):
         self._server = server
         self._excluded = set(excluded_libraries)
+        self._http = http
+        self.base_url = base_url
+        self._headers = {"X-Plex-Token": token} if token else {}
 
     def _sections(self, wanted_type: str):
         """The non-excluded library sections of one Plex type ("movie"/"show").
@@ -739,3 +766,79 @@ class PlexClient:
             original_title=match.original_title,
             show_title=match.show_title,
         )
+
+    async def fetch_ref(self, native_id: str) -> ServerItemRef | None:
+        """The ``ServerItemRef`` for a rating key, or ``None`` if Plex no longer has it.
+
+        Built off ``fetch_item`` -- the same plain GET ``resolve()``'s writer
+        callers use -- rather than a fresh search, since a native id is already
+        as precise an address as Plex offers.
+        """
+        try:
+            item = await self.fetch_item(native_id)
+        except PlexNotFound:
+            return None
+        return ServerItemRef(
+            "plex", str(item.ratingKey),
+            getattr(item, "librarySectionTitle", ""), getattr(item, "type", ""),
+        )
+
+    async def upload_artwork(self, ref: ServerItemRef, data: bytes, art_kind: str, lock: bool) -> None:
+        item = await self.fetch_item(ref.native_id)
+        await asyncio.to_thread(plex_artwork.upload_artwork, item, data, art_kind, lock)
+
+    async def upload_logo(self, ref: ServerItemRef, data: bytes, suffix: str = ".png") -> str | None:
+        item = await self.fetch_item(ref.native_id)
+        return await asyncio.to_thread(plex_artwork.upload_logo, item, data, suffix)
+
+    async def clear_logo(self, ref: ServerItemRef) -> None:
+        item = await self.fetch_item(ref.native_id)
+        await asyncio.to_thread(plex_artwork.clear_logo, item)
+
+    async def has_clearlogo(self, ref: ServerItemRef) -> bool:
+        item = await self.fetch_item(ref.native_id)
+        return await plex_artwork.has_clearlogo(item)
+
+    async def fetch_artwork(self, ref: ServerItemRef, art_kind: str) -> bytes | None:
+        item = await self.fetch_item(ref.native_id)
+        fetched = await plex_artwork.fetch_artwork(
+            self._http, item, self.base_url, self._headers, art_kind,
+        )
+        return fetched[0] if fetched is not None else None
+
+    async def artwork_provenance(self, ref: ServerItemRef, art_kind: str) -> str | None:
+        item = await self.fetch_item(ref.native_id)
+        return await plex_artwork.artwork_provenance(
+            self._http, item, base_url=self.base_url, headers=self._headers, art_kind=art_kind,
+        )
+
+    async def reset_artwork_to_agent_default(self, ref: ServerItemRef, art_kind: str) -> bool:
+        item = await self.fetch_item(ref.native_id)
+        return await asyncio.to_thread(plex_artwork.reset_artwork_to_agent_default, item, art_kind)
+
+    async def apply_facts(
+        self, ref: ServerItemRef, facts, operations=None,
+        parental_categories=None, overrides=None,
+    ) -> dict:
+        # Imported here, not at module scope: plex/writer.py pulls in
+        # facts/gather.py, which imports ResolvedItem back off this module --
+        # a module-level import here would deadlock that cycle on load.
+        from autoposter.plex.writer import apply_facts as plex_apply_facts
+
+        item = await self.fetch_item(ref.native_id)
+        return await plex_apply_facts(item, facts, operations, parental_categories, overrides)
+
+    async def check_liveness(self) -> bool:
+        """Whether the configured Plex server answers at all.
+
+        ``True`` with no ``http`` client configured: a caller in that shape
+        (the conformance suite's Plex arm, today) has no way to probe over
+        HTTP and no business asserting the server is down.
+        """
+        if self._http is None:
+            return True
+        try:
+            response = await self._http.get(f"{self.base_url}/identity")
+            return response.is_success
+        except Exception:
+            return False
