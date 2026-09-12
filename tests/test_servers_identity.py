@@ -47,10 +47,28 @@ def test_precedence_is_tmdb_then_tvdb_then_imdb():
 
 
 def test_no_provider_falls_back_to_path_then_legacy():
+    # Five-field shape per spec §4.2 -- kind:provider:id:coords:basename, with
+    # provider="path" and an EMPTY id slot -- not a shortened four-field form.
+    # (An earlier draft of this test encoded the four-field form; that was wrong.)
     assert identity_key("movie", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
-                        episode_number=None, file_path="/x/only.mkv") == "movie:path::only.mkv"
+                        episode_number=None, file_path="/x/only.mkv") == "movie:path:::only.mkv"
     assert identity_key("movie", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=None,
                         episode_number=None, file_path=None, legacy="123") == "movie:legacy:plex:123"
+
+
+def test_path_fallback_still_carries_coordinates():
+    """The empty id slot must not swallow the coords slot next to it."""
+    assert identity_key("episode", tmdb_id=None, tvdb_id=None, imdb_id=None, season_number=2,
+                        episode_number=3, file_path="/tv/s02e03.mkv") == "episode:path::s2e3:s02e03.mkv"
+
+
+def test_a_windows_path_yields_the_same_basename_as_posix():
+    a = identity_key("movie", tmdb_id=603, tvdb_id=None, imdb_id=None, season_number=None,
+                     episode_number=None, file_path="/plex/Movies/Title (2020)/Title (2020).mkv")
+    b = identity_key("movie", tmdb_id=603, tvdb_id=None, imdb_id=None, season_number=None,
+                     episode_number=None,
+                     file_path="C:\\Media\\Movies\\Title (2020)\\Title (2020).mkv")
+    assert a == b
 
 
 def test_identity_key_for_a_resolved_item_and_its_parent():

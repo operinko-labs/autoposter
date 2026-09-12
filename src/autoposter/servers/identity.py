@@ -19,10 +19,12 @@ def identity_key(kind: str, *, tmdb_id: int | None, tvdb_id: int | None, imdb_id
     if kind in FILE_BEARING and file_path:
         file = posixpath.basename(file_path.replace("\\", "/"))
     for ns, value in (("tmdb", tmdb_id), ("tvdb", tvdb_id), ("imdb", imdb_id)):
-        if value:
+        if value is not None and value != "":
             return f"{kind}:{ns}:{value}:{coords}:{file}"
     if file:
-        return f"{kind}:path:{coords}:{file}"
+        # Five-field shape per spec §4.2, provider="path" and an EMPTY id slot --
+        # not a shortened four-field form. Do not "simplify" this back down.
+        return f"{kind}:path::{coords}:{file}"
     if legacy:
         return f"{kind}:legacy:plex:{legacy}"
     raise ValueError(f"{kind}: no provider id, no file path and no legacy key -- nothing to key on")
