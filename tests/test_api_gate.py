@@ -47,15 +47,16 @@ PLEX_ONLY_ROUTES: list[tuple[str, str, dict | None]] = [
     ("DELETE", "/api/items/1/metadata-overrides/title", None),
 ]
 
-# spec §9's "deliberately not gated" list (Task 11's report), one route per
-# group -- the task instructions say one check per group is enough. The
-# `/api/setup/plex/*` group is not included: those routes are not even
-# mounted on this application (they belong to the separate first-start-wizard
-# app `boot.py` builds, which has no `app.state.setup` here at all -- see the
-# report), so there is nothing on THIS app for that group to assert against.
+# spec §9's "deliberately not gated" list (Task 11's report) -- every route
+# the addendum names except the `/api/setup/plex/*` group, which is not
+# included: those routes are not even mounted on this application (they
+# belong to the separate first-start-wizard app `boot.py` builds, which has
+# no `app.state.setup` here at all -- see the report), so there is nothing
+# on THIS app for that group to assert against.
 NOT_GATED_ROUTES: list[tuple[str, str, dict | None]] = [
     ("GET", "/api/collections/catalog", None),
     ("GET", "/api/collections/definitions", None),
+    ("POST", "/api/collections/parse-source", {"url": "https://trakt.tv/lists/1"}),
     ("GET", "/api/playlists/definitions", None),
     ("GET", "/api/items/999999/metadata-overrides", None),  # 404, not 409: not gated
 ]
@@ -115,6 +116,11 @@ async def test_not_gated_routes_never_answer_409_on_a_plex_less_app(plexless, me
     assert response.status_code != 409, (
         f"{method} {path} answered 409 on a Plex-less app; it is not supposed "
         "to be behind require_plex at all"
+    )
+    # A 4xx validation answer is fine (not what this is ruling out); a 5xx
+    # would otherwise pass the check above just as silently as a 409 would.
+    assert response.status_code < 500, (
+        f"{method} {path} answered {response.status_code} ({response.text})"
     )
 
 
