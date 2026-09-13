@@ -27,7 +27,9 @@ from autoposter.config import state as state_module
 # declared here, because a fixture imported into this namespace and then named
 # as a test parameter is an F811 redefinition.
 from test_api_setup import (  # noqa: F401
+    EXAMPLE,
     FAKE_DB_URL,
+    PLEX_URL,
     PUBLIC_URL,
     _answering,
     _authenticate,
@@ -195,6 +197,136 @@ async def test_a_jellyfin_only_document_does_not_inherit_the_example_plex_block(
     document = setup_app.state.setup.config_document
     assert document["jellyfin"] == {"url": JELLYFIN_URL, "excluded_libraries": ["Photos"]}
     assert "plex" not in document
+
+
+async def test_a_malformed_jellyfin_address_is_refused_with_the_jellyfin_sentence(
+    setup_client,
+):
+    """The page renders `detail` beside the field that was refused, so the
+    sentence has to be about the address the operator actually typed. The
+    shared guard refuses userinfo -- the Plex field's own pinned case -- and
+    this is the other server's wording of the same refusal."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config",
+        json={"jellyfin_url": "http://user:pass@jf.example"},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.JELLYFIN_URL_NOT_AN_ADDRESS
+    assert "Plex" not in response.text
+
+
+async def test_one_submit_can_configure_both_servers(setup_client, setup_app):
+    """The third shape spec 8 allows, and the one the pane saves when both
+    cards are filled in before Save."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/config",
+        json={
+            "plex_url": PLEX_URL,
+            "excluded_libraries": ["Photos"],
+            "jellyfin_url": JELLYFIN_URL,
+            "jellyfin_excluded_libraries": ["Home Videos"],
+        },
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    document = setup_app.state.setup.config_document
+    assert document["plex"]["url"] == PLEX_URL
+    assert document["plex"]["excluded_libraries"] == ["Photos"]
+    assert document["jellyfin"] == {
+        "url": JELLYFIN_URL, "excluded_libraries": ["Home Videos"],
+    }
+
+
+@pytest.mark.parametrize("jellyfin_first", [False, True])
+async def test_saving_one_server_card_never_destroys_the_other(
+    setup_client, setup_app, jellyfin_first
+):
+    """The two cards on the servers step may be saved one at a time, in either
+    order, and each save rebuilds the document FROM THE EXAMPLE -- so a server
+    this body does not name has to be restored from what this session already
+    staged for it. Dropped instead, the operator's first card vanished with a
+    200 and no sentence, which is the shape spec 8 describes for the pane.
+    """
+    token = await _authenticate(setup_client)
+    plex = {"plex_url": PLEX_URL, "excluded_libraries": ["Photos"]}
+    jellyfin = {
+        "jellyfin_url": JELLYFIN_URL, "jellyfin_excluded_libraries": ["Home Videos"],
+    }
+    first, second = (jellyfin, plex) if jellyfin_first else (plex, jellyfin)
+
+    assert (
+        await setup_client.post("/api/setup/config", json=first, headers=_headers(token))
+    ).status_code == 200
+    response = await setup_client.post(
+        "/api/setup/config", json=second, headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    document = setup_app.state.setup.config_document
+    assert document["plex"]["url"] == PLEX_URL
+    assert document["plex"]["excluded_libraries"] == ["Photos"]
+    assert document["jellyfin"] == {
+        "url": JELLYFIN_URL, "excluded_libraries": ["Home Videos"],
+    }
+
+
+async def test_a_library_read_that_fails_is_a_class_name_and_never_the_error_text(
+    setup_client, monkeypatch
+):
+    """`/plex/libraries`' arm on the second server: httpx embeds the whole url
+    -- and an operator address -- in its own messages, so the failure reaches
+    the page as the exception CLASS and a fixed sentence."""
+    token = await _authenticate(setup_client)
+
+    async def explode(base_url, api_key, transport=None):
+        raise httpx.ConnectError("connection refused to " + JELLYFIN_URL)
+
+    monkeypatch.setattr(setup_jellyfin, "library_list", explode)
+
+    response = await setup_client.post(
+        "/api/setup/jellyfin/libraries",
+        json={"base_url": JELLYFIN_URL, "credential_value": JELLYFIN_KEY},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == setup_api.CHECK_UNREACHABLE.format(
+        system="Jellyfin", failure="ConnectError"
+    )
+    assert JELLYFIN_URL not in response.text and JELLYFIN_KEY not in response.text
+
+
+async def test_the_servers_line_reads_a_document_the_deployment_already_has(
+    setup_client, monkeypatch, tmp_path
+):
+    """The other branch of `_document_for_boot`, and a real deployment shape:
+    a mounted document names Plex, its token does not resolve, and the pod is
+    in setup mode over some other credential. `configured` has to come off that
+    document -- the wizard staged nothing -- or the servers step would report
+    itself unstarted and the finish step would refuse it."""
+    mounted = tmp_path / "config" / "autoposter.yaml"
+    mounted.parent.mkdir(parents=True, exist_ok=True)
+    mounted.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(mounted))
+    token = await _authenticate(setup_client)
+
+    progress = (await setup_client.get("/api/setup/progress", headers=_headers(token))).json()
+
+    assert progress["servers"]["plex"] == {
+        "configured": True, "credential": False, "checked": False,
+    }
+    assert progress["servers"]["jellyfin"]["configured"] is False
+    # The address itself is never in the body, on either branch.
+    assert "plex-host" not in (await setup_client.get(
+        "/api/setup/progress", headers=_headers(token)
+    )).text
 
 
 # --- the walk ----------------------------------------------------------------
