@@ -49,6 +49,9 @@ class FakeMediaServer:
     cleared_logos: list[ServerItemRef] = field(default_factory=list)
     facts_written: list[tuple[ServerItemRef, object]] = field(default_factory=list)
     resolve_calls: int = 0
+    #: fix round 1, I5: configurable per instance, so a test can prove one
+    #: server's own exempting label never exempts a write on another server.
+    labels: list[str] = field(default_factory=list)
 
     def _require(self, capability: str) -> None:
         if capability not in self.capabilities:
@@ -79,7 +82,7 @@ class FakeMediaServer:
         ]
 
     async def item_labels(self, ref) -> list[str]:
-        return []
+        return self.labels
 
     async def list_items(self, kind: str) -> list[SectionItem]:
         return [

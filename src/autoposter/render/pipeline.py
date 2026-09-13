@@ -1751,6 +1751,7 @@ async def compose_badged_bytes(
     server=None,
     ref: ServerItemRef | None = None,
     facts=None,
+    solo_delivery: tuple[str, object, ServerItemRef] | None = None,
 ) -> bytes | None:
     """Compose one render's badged bytes, or ``None`` when there is nothing to
     compose -- badges off for this library, a background (never badged), a
@@ -1783,6 +1784,23 @@ async def compose_badged_bytes(
 
     ``http``/``mdblist`` are unchanged from the old ``apply_badges``; see the
     module's other docstrings for what each is for.
+
+    ``solo_delivery`` (fix round 1, I2) is ``(name, server, ref)`` for the
+    ONE configured server that is both resolved and upload-enabled this
+    pass, when there is exactly one -- ``process_item`` computes and passes
+    it; ``None`` (the multi-server case, or a caller like
+    ``retry_pending_deliveries`` that never supplies it) skips this
+    entirely, and ``deliver`` runs its own per-server ``_already_delivered``
+    check after composing instead. When set, adoption is checked BEFORE the
+    per-definition resolution and ``compose_badges`` itself -- the old
+    single-server ordering -- so a cutover (a whole library with no
+    ``badge_fingerprint`` yet, every render already carrying its own EXIF
+    fingerprint) does not recompose bytes already sitting on the one server
+    that matters. On a match, this function records the delivery itself
+    (there is no ``data`` for ``deliver`` to act on) and returns ``None``;
+    ``deliver`` still runs afterward, sees the row already there, and leaves
+    it alone (its own ``data is None`` catch-up only acts on a MISSING or
+    ``pending`` row).
     """
     # Roadmap row 92, and it must be ABOVE the `badges.enabled` gate: see the
     # old `apply_badges`' own note, still true here.
@@ -1918,6 +1936,22 @@ async def compose_badged_bytes(
     if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
         return None
 
+    # Fix round 1, I2: the single-server adoption shortcut, checked BEFORE
+    # any image work -- see this function's own docstring on `solo_delivery`.
+    # `render.badge_fingerprint` is set to the freshly-computed value FIRST:
+    # `_already_delivered` compares the server's recorded provenance against
+    # this same column, and the whole point is to compare it against the
+    # fingerprint THIS pass just computed, not whatever stale value (or
+    # `None`) predates it. Harmless when adoption does not match too -- the
+    # normal compose path below sets the exact same value again at the end.
+    if solo_delivery is not None:
+        solo_name, solo_server, solo_ref = solo_delivery
+        render.badge_fingerprint = fingerprint
+        if await _already_delivered(session, config, solo_server, solo_name, solo_ref, render):
+            await deliveries.record(session, render.id, solo_name, "uploaded")
+            await session.flush()
+            return None
+
     resolved_images: dict[str, Path] = {}
     usable_definitions = []
     for definition in matched_definitions:
@@ -1993,13 +2027,13 @@ async def deliver(
 
     A background render, a render that never produced a base image, or a
     library with badges off entirely is a no-op here TOO -- the exact same
-    three checks ``compose_badged_bytes`` itself opens with, repeated because
-    ``process_item`` now calls this function unconditionally, once per
-    render, the same shape it used to call the single ``apply_badges`` in:
-    calling it only when a render happens to qualify would silently skip a
-    MISSED server's own ``pending``/``failed`` row for every OTHER render in
-    the item, which depends only on resolution, never on this render's own
-    eligibility.
+    three checks ``compose_badged_bytes`` itself opens with. Repeated
+    deliberately rather than folded into one shared gate: ``process_item``
+    calls this function unconditionally, once per render -- the same per-
+    render shape it used to call the single ``apply_badges`` in -- so a test
+    (or a future caller) that monkeypatches either half still observes it
+    running, regardless of that render's own status, rather than being
+    silently skipped by a guard at the call site.
 
     ``deliveries.rollup`` is called once at the end, unconditionally: it only
     ever recomputes off whatever rows already exist, so a pass that recorded
@@ -2025,10 +2059,45 @@ async def deliver(
     for name, server in servers.items():
         ref = refs.get(name)
         if ref is not None:
-            if not getattr(library_config.badges, f"upload_to_{name}", False):
-                await deliveries.record(session, render.id, name, "skipped")
-                continue
             if data is None:
+                # Fix round 1, I1/I3: checked BEFORE the `upload_to_<name>`
+                # gate below, and never falling through to it -- an
+                # unchanged fingerprint (nothing new composed) must never
+                # overwrite an already-`uploaded` row with `skipped` just
+                # because the toggle happens to be off this pass. A server
+                # with no row yet, or one still `pending`, gets a fresh
+                # `pending` row with NO delay (`retry_in=0`), so the very
+                # next `retry_pending_deliveries` pass delivers it straight
+                # from the already-badged asset -- the catch-up a server
+                # whose `upload_to_<name>` was only just turned on, or one
+                # newly added to the config, needs for a render whose
+                # fingerprint had already settled.
+                existing_status = (
+                    await session.execute(
+                        select(RenderDelivery.status).where(
+                            RenderDelivery.render_id == render.id,
+                            RenderDelivery.server == name,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing_status is None or existing_status == "pending":
+                    await deliveries.record(session, render.id, name, "pending", retry_in=0)
+                continue
+            if not getattr(library_config.badges, f"upload_to_{name}", False):
+                # I3: `skipped` is stamped only the FIRST time a server is
+                # considered -- an already-recorded outcome (most of all
+                # `uploaded`) must not be rewritten just because the toggle
+                # is off this particular pass.
+                already_recorded = (
+                    await session.execute(
+                        select(RenderDelivery.id).where(
+                            RenderDelivery.render_id == render.id,
+                            RenderDelivery.server == name,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if already_recorded is None:
+                    await deliveries.record(session, render.id, name, "skipped")
                 continue
             if await _already_delivered(session, library_config, server, name, ref, render):
                 await deliveries.record(session, render.id, name, "uploaded")
@@ -2119,8 +2188,34 @@ async def process_item(
             resolved_on[name] = await server.resolve(intent)
         except ItemNotFound as exc:      # PathMismatch included
             misses[name] = exc
+        except Exception as exc:
+            # Fix round 1, I4: a transport error (or any other failure) from
+            # ONE server's resolve must not abort the item for every other
+            # server (spec §6.1) -- logged, never a URL, and treated exactly
+            # like an ItemNotFound miss for delivery purposes: this server
+            # gets a `pending` row (`deliver`'s own misses handling), retried
+            # by the next `retry_pending_deliveries` pass, while the loop
+            # continues to the remaining servers.
+            logger.warning(
+                "%s: resolve failed (%s); treating as a miss",
+                name, deliveries.failure_detail(exc),
+            )
+            misses[name] = exc
     if not resolved_on:
-        raise next(iter(misses.values()))
+        # Fix round 1 minor: `servers` itself can be empty (no media server
+        # configured at all), which used to raise `StopIteration` from
+        # `next(iter(misses.values()))` on an empty dict -- a confusing
+        # crash rather than the ItemNotFound-class signal the worker's
+        # defer/park ladder expects. An ItemNotFound miss (a scan-in-progress
+        # wait) outranks any other exception here: if at least one server
+        # simply has not seen the file yet, that is the honest reason to
+        # report, even when another server failed for a different reason.
+        if not misses:
+            raise ItemNotFound("no media server is configured")
+        not_found = next(
+            (exc for exc in misses.values() if isinstance(exc, ItemNotFound)), None,
+        )
+        raise not_found or next(iter(misses.values()))
     item = resolved_on.get("plex") or next(iter(resolved_on.values()))
     media_item = await _upsert_media_item(session, item)
     for other in resolved_on.values():
@@ -2227,21 +2322,54 @@ async def process_item(
             if refused:
                 # A refusal's rollback() above (see the comment on `results`)
                 # expired every `Render` already sitting in `results`, not
-                # just the refused kind's own row. Left alone, the loop
-                # below's first read of an earlier survivor's `.art_kind` is
-                # a plain attribute access outside an awaited call -- a
-                # MissingGreenlet under asyncio -- which this block's own
-                # `except` swallows, silently costing the WHOLE item its
-                # badges rather than just the refused kind's. Refresh every
-                # survivor before touching any of them.
+                # just the refused kind's own row -- AND `media_item` itself
+                # (Task 19: created unconditionally, up front, so it exists
+                # as a Python object through the whole artifact loop and is
+                # just as exposed to that rollback). Left alone, the loop
+                # below's first read of an earlier survivor's `.art_kind`, or
+                # `compose_badged_bytes`' own read of `media_item.library`
+                # (fix round 1: called unconditionally, once per render, so
+                # it is reached even for a render this block used to skip
+                # before ever touching `media_item`), is a plain attribute
+                # access outside an awaited call -- a MissingGreenlet under
+                # asyncio -- which this block's own `except` swallows,
+                # silently costing the WHOLE item its badges rather than
+                # just the refused kind's. Refresh every survivor before
+                # touching any of them.
+                #
+                # `media_item` gets a fresh re-upsert instead of a refresh:
+                # unlike a `Render` row (already committed before this
+                # render's own refusal, by an EARLIER pass or an earlier
+                # sibling kind this same pass), `media_item` was only ever
+                # INSERTed in the transaction the refusal's rollback() just
+                # undid -- a rolled-back INSERT is detached, not merely
+                # expired, so `session.refresh` on this exact Python
+                # reference raises `InvalidRequestError`. `_upsert_media_item`
+                # is idempotent and this is the same re-upsert the refusal
+                # handler above and `render_artifact` both already do for
+                # their own reasons.
                 for render in results:
                     await session.refresh(render)
+                media_item = await _upsert_media_item(session, item)
             # Every resolved server's own ref, for `deliver`'s fan-out.
             refs = {name: resolved_item.ref for name, resolved_item in resolved_on.items()}
             # `compose_badged_bytes` still samples live media info and native
             # ratings off Plex alone (see its own docstring) -- `None` when
             # this pass never resolved one, which degrades rather than raises.
             plex_item = resolved_on.get("plex")
+            # Fix round 1, I2: when exactly one resolved server is
+            # upload-enabled this pass, compose_badged_bytes gets to check
+            # adoption for THAT server before doing any image work at all --
+            # see its own docstring. More than one (or zero) leaves `deliver`
+            # to check each server on its own, after composing.
+            upload_enabled_resolved = [
+                (name, servers[name], resolved_item.ref)
+                for name, resolved_item in resolved_on.items()
+                if getattr(library_config.badges, f"upload_to_{name}", False)
+            ]
+            solo_delivery = (
+                upload_enabled_resolved[0] if len(upload_enabled_resolved) == 1 else None
+            )
             for render in results:
                 # Compose once per render, deliver to every server: render
                 # once per art kind, deliver per server (spec §5). Called
@@ -2257,6 +2385,7 @@ async def process_item(
                     session, config, render, media_item, http=http, mdblist=mdblist,
                     server=servers.plex if plex_item is not None else None,
                     ref=plex_item.ref if plex_item is not None else None,
+                    solo_delivery=solo_delivery,
                 )
                 await deliver(session, config, render, media_item, servers, refs, data, misses=misses)
         except AttributeError:

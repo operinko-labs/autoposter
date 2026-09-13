@@ -10,6 +10,8 @@ from sqlalchemy import select
 
 from autoposter.config.loader import load_config, render_version_for
 from autoposter.db.models import MediaItem, Render, RenderDelivery
+from autoposter.facts.mdblist import NullMDBListClient
+from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
@@ -26,6 +28,7 @@ from autoposter.servers.registry import Servers
 from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved as fake_resolved
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+ORACLE = Path(__file__).parent / "fixtures" / "oracle"
 
 
 @pytest.fixture
@@ -1366,3 +1369,175 @@ async def test_no_server_resolving_still_defers_the_job(session, config_with_bad
 
     with pytest.raises(ItemNotFound):
         await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+
+# Fix round 1 (controller review of Task 19).
+
+
+async def test_metadata_fan_out_reaches_every_resolved_server_with_its_own_ref(
+    session, monkeypatch,
+):
+    """I5: apply_metadata's write loop (ruling 4) must reach EVERY resolved
+    server, each with its OWN ref -- and one server's exempting label must
+    never leak into another server's own exemption check."""
+    config = load_config(EXAMPLE)
+    config.operations.write_to_jellyfin = True
+    config.operations.ignore_labels = ["exempt-me"]
+    # This test is about the metadata write loop, not badges -- disabled so
+    # the badge stage (which would otherwise try to open a real base image
+    # `_fake_render_artifact` never wrote) never runs at all.
+    config.badges.enabled = False
+    plex = FakeMediaServer(name="plex", labels=["exempt-me"])
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    jf.items[INTENT.dedupe_key] = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+    servers = Servers({"plex": plex, "jellyfin": jf})
+
+    class _FakeTMDBFacts:
+        async def movie(self, tmdb_id):
+            return GatheredFacts(audience_rating=6.3, sources={"audience_rating": "tmdb"})
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    await pipeline_module.process_item(
+        session, config, None, servers, [], INTENT,
+        tmdb_facts=_FakeTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    assert plex.facts_written == [], "plex's own ignore_labels match must exempt plex, and only plex"
+    assert len(jf.facts_written) == 1, "jellyfin must still be written -- plex's label must not leak"
+    ref, _facts = jf.facts_written[0]
+    assert ref.native_id == "j1", "jellyfin must be written with its OWN ref, not plex's"
+
+
+async def test_an_unresolved_jellyfin_delivers_from_a_pending_row_once_it_resolves(
+    session, config_with_badges, monkeypatch,
+):
+    """I1: a server added late (or one whose upload_to_<name> was only just
+    turned on) must not wait for the NEXT fingerprint change to get its
+    first delivery -- an unchanged compose (``data is None``) still catches
+    a resolved, upload-enabled server with no delivery row up with a
+    `pending` row and no delay, so the very next retry pass delivers it
+    from the already-badged asset. Plex, already `uploaded` from an earlier
+    pass, must not be touched."""
+    from autoposter import deliveries
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    servers, plex, jf = _two_servers()
+
+    async def _fake_compose_none(*args, **kwargs):
+        return None  # an unchanged fingerprint, from a previous pass
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose_none)
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+    # Seeds the "already delivered to plex on an earlier pass" state
+    # directly: compose_badged_bytes always answers None here (an unchanged
+    # fingerprint), so this pass alone could never produce it.
+    await deliveries.record(session, poster.id, "plex", "uploaded")
+    await deliveries.rollup(session, poster.id)
+    await session.commit()
+
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    rows = {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    }
+    assert rows == {("plex", "uploaded"), ("jellyfin", "pending")}
+    assert plex.uploads == [], "the already-uploaded plex row must not be touched"
+
+
+async def test_a_single_upload_enabled_server_skips_compose_on_matching_provenance(
+    session, config_with_badges, monkeypatch,
+):
+    """I2: with exactly one resolved, upload-enabled server, adoption is
+    checked BEFORE any image work -- cutover (a whole library with no
+    badge_fingerprint yet, every render already carrying its own EXIF
+    fingerprint) must not recompose bytes already sitting on that server.
+
+    Two passes, the ``tests/test_badge_pipeline.py::_fingerprint_of`` shape:
+    the first pass badges normally (learning the real fingerprint, since a
+    hand-picked string could never match what ``compose_badged_bytes``
+    actually computes); the render is then reset to the state adoption or a
+    database restore leaves it in, ``artwork_provenance`` answers with the
+    now-known fingerprint, and the second pass must neither call
+    ``compose_badges`` nor upload -- only record ``uploaded``.
+    """
+    config_with_badges.badges.adopt_from_plex = True
+
+    async def _fake_render_artifact_with_real_base(session, config, http, item, art_kind, providers, **_kwargs):
+        # Unlike the shared `_fake_render_artifact`, this one must point at a
+        # REAL image: the first pass below composes for real (there is no
+        # fingerprint to adopt onto yet), and `compose_badges` opens
+        # `asset_path` with Pillow.
+        media_item = await pipeline_module._upsert_media_item(session, item)
+        render = await pipeline_module._get_or_create_render(
+            session, media_item, art_kind, str(ORACLE / "All_Souls_base_no_overlay.jpg"),
+        )
+        render.status = "rendered"
+        render.base_sha256 = "abc"
+        await session.commit()
+        return render
+
+    monkeypatch.setattr(
+        pipeline_module, "render_artifact", _fake_render_artifact_with_real_base,
+    )
+
+    class _FakePlexItem:
+        """Just enough for `media_info_from_plex` to read without reloading."""
+
+        def __init__(self):
+            self.media = [type("M", (), {
+                "parts": [], "videoResolution": "1080",
+                "audioCodec": "eac3", "audioChannels": 6,
+            })()]
+            self.duration = 4845912
+            self.seasonNumber = None
+            self.episodeNumber = None
+
+    class _ProvenanceServer(FakeMediaServer):
+        provenance: str | None = None
+
+        async def fetch_item(self, native_id):
+            return _FakePlexItem()
+
+        async def artwork_provenance(self, ref, art_kind):
+            return self.provenance
+
+    plex = _ProvenanceServer(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    servers = Servers({"plex": plex})
+
+    renders = await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert poster.upload_status == "uploaded"
+    assert len(plex.uploads) == 1
+    fingerprint = poster.badge_fingerprint
+
+    # Reset to the adoption/restore state: no fingerprint, no delivery
+    # history, upload count zeroed so a real second upload would be visible.
+    poster.badge_fingerprint = None
+    poster.upload_status = "pending"
+    from sqlalchemy import delete as _delete
+    await session.execute(_delete(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+    await session.commit()
+    plex.uploads.clear()
+    plex.provenance = fingerprint
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compose_badges must not run when adoption matches")
+
+    monkeypatch.setattr(pipeline_module, "compose_badges", _boom)
+
+    renders = await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert poster.upload_status == "uploaded"
+    assert poster.badge_fingerprint == fingerprint
+    assert plex.uploads == [], "the real upload must not run either -- this is adoption, not a copy"
