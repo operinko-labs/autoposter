@@ -266,14 +266,14 @@ def test_an_update_adds_a_url_field_to_an_entry_that_has_none():
     assert fields["username"] == "row-121-operator-username"
 
 
-# --- I1: the half-created entry is finished, not re-preserved disabled ------
+# --- the half-created entry is finished, not re-preserved disabled ---------
 #
 # `find_existing` matches a leftover disabled entry by NAME, and C2a's ordinary
 # rule is to PUT every `on*` flag back exactly as found -- but an entry whose
 # ACCEPTED flags are every one `False` cannot be an operator's own choice
 # (nobody keeps a webhook that fires on nothing), so it can only be OUR OWN
-# half-create. The controller's 2026-09-07 ruling: that one shape is finished
-# with the accepted flags instead of re-preserved dead.
+# half-create. That one shape is finished with the accepted flags instead of
+# re-preserved dead.
 
 
 def test_an_all_false_entry_is_finished_not_preserved_dead():
@@ -468,7 +468,7 @@ async def test_a_failed_enabling_write_is_the_fixed_refusal_and_no_third_write()
 
 
 async def test_a_half_created_entry_is_finished_on_the_next_run():
-    """The two-run reproduction of I1: run one's enabling PUT fails and leaves
+    """The two-run reproduction: run one's enabling PUT fails and leaves
     a disabled entry behind; run two's GET finds it by NAME and must send ONE
     PUT carrying the accepted flags -- not the dead ones it was left with --
     and report `("updated", None)`."""
@@ -925,7 +925,7 @@ async def test_the_route_registers_with_the_checked_address_and_the_staged_secre
 async def test_a_concurrent_second_call_is_refused_without_reaching_the_arr(
     setup_client, setup_state, monkeypatch
 ):
-    """Review I1: the register button has no `disabled`, so a double press can
+    """The register button has no `disabled`, so a double press can
     overlap two calls, and an overlapping pair both lists an empty
     registration and both creates -- the duplicate facts C2a exists to
     prevent. The in-flight guard refuses the second outright, and the fake
@@ -1186,15 +1186,14 @@ async def test_the_registration_never_sends_an_api_key_the_resolver_supplied(
 
 
 # --- the residual, closed: a RESOLVED secret is bound to the address the
-# resolving document names (final review I1, the controller's 2026-09-07
-# ruling). `AUTOPOSTER_WEBHOOK_SECRET` resolving from the environment rather
-# than being minted and staged this session means the provider step minted
-# nothing -- so this is the deployment's own secret, not this wizard's, and a
-# check only proves a host ANSWERED, never who owns it. Refusing outright
-# would dead-end a shape no operator could satisfy (the residual as it was
-# left open), so the bound moves onto the address instead: a resolved secret
-# may be sent only to the base URL this deployment's own resolving
-# configuration document already names for the service.
+# resolving document names. `AUTOPOSTER_WEBHOOK_SECRET` resolving from the
+# environment rather than being minted and staged this session means the
+# provider step minted nothing -- so this is the deployment's own secret, not
+# this wizard's, and a check only proves a host ANSWERED, never who owns it.
+# Refusing outright would dead-end a shape no operator could satisfy (the
+# residual as it was left open), so the bound moves onto the address instead:
+# a resolved secret may be sent only to the base URL this deployment's own
+# resolving configuration document already names for the service.
 
 
 def _resolving_document(tmp_path, monkeypatch, sonarr_base_url):

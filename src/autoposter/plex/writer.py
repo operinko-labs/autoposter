@@ -142,7 +142,7 @@ def _locked_in_plex(item, plex_field: str) -> bool | None:
 def _ensure_locked(edits: dict[str, object], item, plex_field: str) -> None:
     """Lock ``plex_field`` when an override's value already matches Plex's.
 
-    Task-2 fix round 1, ruling on I-1: ``override_edits`` diffs on VALUE, but
+    ``override_edits`` diffs on VALUE, but
     a field the operator pinned must end up locked even when there is
     nothing to write -- an unlocked field Plex agrees with today is exactly
     the one Plex's own agent is free to rewrite on its next refresh, before
@@ -185,7 +185,7 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
     }
     edits: dict[str, object] = {}
     for field, verb in verbs.items():
-        # Checked before the collision log below (task-2 fix round 1, m-1):
+        # Checked before the collision log below:
         # a field this KIND cannot carry, or with no Plex name at all, could
         # never have collided with anything, so the log must not claim one.
         if field not in writable or field not in _PLEX_FIELD_NAMES:
@@ -198,7 +198,7 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
             )
             continue
         if verb == "remove" and field not in _REMOVABLE_FIELDS:
-            # Row 87's I1, applied to a set that row 99 just widened: an
+            # Row 87's rule, applied to a set that row 99 widened: an
             # accepted-but-ignored verb is indistinguishable from a working
             # one that has been switched off, so say so rather than pass
             # silently. Not a config-load refusal: ``{critic_rating: remove}``
@@ -209,7 +209,7 @@ def verb_edits(item, operations, overridden=frozenset()) -> dict[str, object]:
             # (the sibling question, for ``reset``) closed as won't-do, and
             # restore-from-backup is refiled as roadmap row 256 under row 86.
             #
-            # INFO, not WARNING (task-2 fix round 1, I-2): this fires once
+            # INFO, not WARNING: this fires once
             # PER ITEM per pass, the same per-item volume as the sibling
             # "would %s %s on %s" line ten lines below, which is INFO for the
             # identical reason. A single library-wide config mistake would
@@ -732,7 +732,7 @@ def plan_edits(
             # ``genre.locked``; ``apply_facts`` strips the PLURAL prefix
             # ``"genres."``, so this one reaches ``item.edit()``.
             #
-            # INSIDE the ``and genres`` gate on purpose (row 246 C3): an item
+            # INSIDE the ``and genres`` gate on purpose (row 246): an item
             # no provider has genres for is not one this service owns the
             # genre list of, and it stays untouched exactly as it does today.
             _ensure_locked(edits, item, "genre")

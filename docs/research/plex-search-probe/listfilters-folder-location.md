@@ -1,6 +1,6 @@
 # `listFilters` and the folder filter — the row-176 pre-code probe
 
-**Date:** 2026-09-06 · **Rows:** 176 (facts C1), and 177's open question answered in the
+**Date:** 2026-09-06 · **Rows:** 176, and 177's open question answered in the
 same payload · **Mode:** read-only, two GETs.
 
 ## Why
@@ -10,7 +10,7 @@ a function call rather than a table entry: `Library.get_search_key`
 (`modules/plex.py:1286-1297`) reads `listFilters` at RUN time and takes the first filter
 whose `filter` is `source` **or** whose displayed title folds to `folder_location`. The
 field is therefore a property of THIS server, and a transcription that hard-coded `source`
-would be exactly the mistake the row was filed to avoid. Facts C1 requires the read before
+would be exactly the mistake the row was filed to avoid. The row requires the read before
 any code.
 
 ## Read-only proof
@@ -34,7 +34,7 @@ Run against the production pod, which already holds both the token
 
 ```bash
 kubectl -n media exec deploy/autoposter -- python -c '...'   # the script in the plan,
-                                                            # Task 1 Step 2
+                                                            # step 2
 ```
 
 ## Result

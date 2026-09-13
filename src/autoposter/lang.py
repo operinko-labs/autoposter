@@ -23,8 +23,8 @@ def base_language_code(value: str) -> str:
     Transcribed from Kometa's ``base_language_code`` (modules/plex.py:141-151),
     including its fallback: a value that cannot be parsed comes back unchanged,
     so an unrecognised code targets itself rather than nothing. ``langcodes``
-    is the same library Kometa uses -- see the phase-9b Task 4 Step 0 decision
-    record for why it was added rather than transcribed. It lived in
+    is the same library Kometa uses, taken as a dependency rather than
+    transcribed. It lived in
     ``builders/plex_search.py`` until the location-names phase, then in
     ``collections/filters.py`` because ``_matches_one``'s language fold (row
     204) needed it and the model layer must not import a builder, and it lives

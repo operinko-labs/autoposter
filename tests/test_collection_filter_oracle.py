@@ -25,8 +25,7 @@ used applies: fetch the code, run it, pin the answer.
 | The version | ``VERSION`` -- 2.4.8 |
 
 All from ``https://raw.githubusercontent.com/Kometa-Team/Kometa/master``. The
-oracle script is reproduced verbatim in ``.superpowers/sdd/task-4-report.md``;
-it imports **nothing** from this repository -- not ``filters``, not
+oracle script imports **nothing** from this repository -- not ``filters``, not
 ``filter_values``, not the fixtures' loader. It does import ``plexapi``,
 because Kometa reads its item attributes through plexapi and an oracle that
 read them some other way would be testing a different program.
@@ -36,7 +35,7 @@ reader can weigh them:
 
 - **Kometa reloads every item before filtering it** (``plex.py:2785``). The
   oracle's server answers that reload with the same element the listing
-  carried. That is sound for these nine attributes precisely because Task 2's
+  carried. That is sound for these nine attributes precisely because a
   probe established it -- they are listing-resident and agree with
   ``/library/metadata`` -- and it is the reason the other six tier-1
   attributes are deferred rather than filtered here.
@@ -73,8 +72,8 @@ meaning. They are gone; see ``filters.OPERATORS_BY_TYPE``.
 
 ``tests/fixtures/collections/filter_oracle_listing.xml`` is 120 movies in the
 shape of a Plex section listing. The presence and absence of each attribute
-follows Task 2's probe of the production server
-(``.superpowers/sdd/task-2-report.md`` section 1.7), with the rare-absence
+follows a probe of the production server
+(section 1.7), with the rare-absence
 classes deliberately over-represented, and a handful of items pinned so that
 each adjudicated rule is actually decided by the operator it belongs to rather
 than by some earlier predicate. ``test_the_library_mirrors_the_probes_shapes``
@@ -228,7 +227,7 @@ def test_the_whole_oracle_run_costs_no_plex_requests(listing):
 
 def test_the_library_mirrors_the_probes_shapes(listing):
     """The fixture's presence/absence classes against the probe's own counts
-    (``.superpowers/sdd/task-2-report.md`` 1.7). Deliberately
+    (section 1.7). Deliberately
     over-represented, not proportional: ``rating`` was absent on 1 movie of
     1955 and ``contentRating`` on 14, which at 120 items rounds to nothing at
     all -- and a missing-value rule the data never exercises is a rule nobody
@@ -342,7 +341,7 @@ def test_a_regex_is_case_sensitive_like_kometas(listing):
 
 
 def test_the_missing_value_rule_is_exercised_by_the_library(listing):
-    """The brief's first target, over real data rather than a case table.
+    """The oracle's first target, over real data rather than a case table.
 
     ``studio.not: Hallmark Entertainment`` is in config A, and three items have
     no studio to compare -- ``.not`` on a ``str`` KEEPS them (they clear that

@@ -64,8 +64,8 @@ def parse_content_rating(payload: dict) -> str | None:
 
 
 # The `ratings[]` entry's `source` value, and which sub-field to read, for
-# each MDBList-sourced overlay rating this service exposes. Probe section
-# 2.3.3 (`.superpowers/sdd/p-overlay-datasources-probe.md`) names Kometa's own
+# each MDBList-sourced overlay rating this service exposes. The datasources
+# probe (section 2.3.3) names Kometa's own
 # attribute per field and its transform; the RAW HTTP JSON shape below
 # (`ratings: [{source, value, score, votes}, ...]` plus two top-level
 # scalars) is THIS CLIENT's own, not something the probe -- a Kometa-source-
@@ -303,8 +303,8 @@ class MDBListClient:
     """Reads Common Sense age ratings.
 
     Movies are addressed by TMDB id and shows by TVDB id — the asymmetry is
-    MDBList's, not ours. MDBList is slow-moving data (see the Global
-    Constraints), so every request goes through the Phase 1 cache seam, same
+    MDBList's, not ours. MDBList is slow-moving data, so every request goes
+    through the shared provider cache seam, same
     as ``TMDBFactsClient``. ``apikey`` is sent as a query parameter, but
     ``build_cache_key`` already strips it from the cache key, so it is never
     persisted in ``provider_cache``.

@@ -95,7 +95,7 @@ cannot be counted before its owner's membership is read.
   to prevent, and a cost that cannot be planned cannot be refused before it is
   spent. A copy is CREATED in the definition's order and ``addItems`` appends,
   so it is correct at creation and drifts only by later additions. Roadmap row
-  98's ledger records this.
+  98 records this.
 - **Per-library access is not pre-checked.** ``MyPlexServerShare.allLibraries``
   and ``Section.shared`` are pinned in the contract file, but reading them
   costs one plex.tv GET per restricted user per pass and nothing here depends
@@ -240,7 +240,7 @@ class UserSync:
     def owner_refusal(self) -> str | None:
         """``None`` to proceed, or the sentence that stops the whole stage.
 
-        C13 A9, and it runs before the first write rather than as a 401
+        It runs before the first write rather than as a 401
         discovered partway through a fan-out that has already written to
         somebody. One plex.tv GET: ``account.resources()`` carries
         ``clientIdentifier`` and ``owned``, and only the owner may mint another
@@ -614,7 +614,7 @@ async def plan_user_sync(
 
     Doing it the other way round -- filling ``targets`` and reading each
     listing in one loop, then evaluating the caps at the end -- keeps the
-    LETTER of C13 A6, because nothing is written either way. It loses the
+    LETTER of the cap rule, because nothing is written either way. It loses the
     point: a ``sync_to_users: all`` that suddenly resolves to two hundred
     accounts would mint two hundred tokens and issue two hundred PMS listings
     before refusing, which is most of the cost the caps were written against
@@ -1019,7 +1019,7 @@ async def user_sweep_candidates(
 ) -> tuple[list, list]:
     """``(candidates, unreachable)`` -- user copies no configuration asks for.
 
-    C13 A2: three removal events, ONE predicate. A row is a candidate when its
+    Three removal events, ONE predicate. A row is a candidate when its
     ``(definition_key, plex_user_id)`` pair is not in the set this
     configuration resolves to -- which covers a user dropped from
     ``sync_to_users``, a definition deleted outright, and a definition that

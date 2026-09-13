@@ -62,13 +62,13 @@ is false, so CREATE never calls ``Test`` at all), then a PUT of the returned
 entry's id with the real flags -- the UPDATE path, where ``forceSave`` already
 skips the test. A failure on that second write is reported the same fixed way
 as any other failure and leaves the entry behind disabled rather than absent.
-That is genuinely self-healing, by the controller's 2026-09-07 ruling: the next
+That is genuinely self-healing, by the 2026-09-07 decision: the next
 run's update arm (``build_body``) finds this entry by NAME, sees every ``on*``
 flag ``False`` -- a shape no operator would leave a webhook in, since it fires
 on nothing -- reads that as our own unfinished create rather than a deliberate
 choice, and writes the accepted flags instead of preserving the dead ones.
 Every other existing entry, with any flag ticked, is still preserved exactly
-as C2a requires.
+as found.
 
 Two bodies from two tables rather than one with nulls: Sonarr 400s on
 ``onMovieAdded`` and Radarr on ``onSeriesAdd``. The ticked events are exactly
@@ -87,11 +87,11 @@ row 213 covers those too.
 Nothing here reads the *arr's own response body into anything returned or
 logged: a 400 from Sonarr echoes the submitted ``fields``, secret included. A
 failure is a status marker or an exception CLASS NAME, and never raises -- a
-failed registration must not block the wizard's finish (facts C3). The operator
+failed registration must not block the wizard's finish. The operator
 can paste the secret by hand, which is what they do today, and a registration
 that gated the exit would turn a third-party outage into an unfinishable wizard.
 
-**The residual, stated whole (final review I1) -- and closed.** The address this
+**The residual, stated whole -- and closed.** The address this
 writes to was staged by a SUCCESSFUL check, and a check proves that a host
 ANSWERED -- never who owns it. So the API key is read from the wizard's
 ``staged`` map alone, the same rule ``check_connection`` applies one step
@@ -102,9 +102,9 @@ resolves, the provider step mints nothing, and staging a replacement would write
 a secret the environment then shadows -- an *arr signing its deliveries with a
 value this service does not expect. Making it staged-only would therefore refuse
 the registration on that shape with a sentence no operator could satisfy: a dead
-end of exactly the class the review's other findings warn against.
+end of exactly the class this surface exists to avoid.
 
-**The controller's 2026-09-07 ruling closes it a different way: the bound moves
+**The 2026-09-07 decision closes it a different way: the bound moves
 onto the ADDRESS.** When the secret this registration would send is RESOLVED --
 not staged this session -- ``api/setup.py``'s ``register_arr_webhook`` reads the
 base URL the SAME deployment's own resolving configuration document already
@@ -285,12 +285,12 @@ def build_body(service: str, public_url: str, secret: str, existing: dict | None
 
     With ``existing`` absent this is the whole registration, from the two
     tables above. With one present it is THAT ENTRY, deep-copied, with the url
-    and the token header refreshed and nothing else touched (facts C2a) -- the
+    and the token header refreshed and nothing else touched -- the
     copy matters because the caller reads the fetched listing again for the id
     it PUTs to. The one exception: an entry whose accepted ``on*`` flags are
     every one ``False`` is finished with the accepted flags instead, on the
-    controller's 2026-09-07 ruling that such an entry can only be our own
-    unfinished create (see the block below and I1).
+    2026-09-07 decision that such an entry can only be our own unfinished
+    create (see the block below).
     """
     if existing is None:
         return {
@@ -329,8 +329,8 @@ def build_body(service: str, public_url: str, secret: str, existing: dict | None
     if "headers" not in seen:
         fields.append({"name": "headers", "value": [{"key": TOKEN_HEADER, "value": secret}]})
 
-    # The controller's 2026-09-07 half-create ruling, the one exception to
-    # C2a's "preserve every `on*` flag as found": an entry whose ACCEPTED `on*`
+    # The 2026-09-07 half-create decision, the one exception to
+    # "preserve every `on*` flag as found": an entry whose ACCEPTED `on*`
     # flags are every one `False` cannot be an operator's own choice -- nobody
     # keeps a webhook that fires on nothing -- so by construction it can only
     # be OUR OWN unfinished create (`_create_body` forces exactly these flags
@@ -338,7 +338,7 @@ def build_body(service: str, public_url: str, secret: str, existing: dict | None
     # `_create_body` and the module docstring). This finishes that create
     # instead of writing the dead flags back and reporting "updated" over a
     # hook that would never fire. Any entry with even one flag ticked is still
-    # returned untouched, C2a's rule intact.
+    # returned untouched, the preserve rule intact.
     if all(body.get(event) is False for event in _EVENTS[service]):
         body.update(_EVENTS[service])
     return body
@@ -468,7 +468,7 @@ async def register(
                 # (`build_body`) finishes it rather than re-preserving the
                 # dead flags: an entry whose `on*` flags are ALL `False` is
                 # read as our own half-create, not an operator's choice
-                # (the controller's 2026-09-07 ruling), so `find_existing`
+                # (the 2026-09-07 decision), so `find_existing`
                 # finding it by NAME leads to it being turned on, not kept off.
                 written = await client.post(
                     f"{origin}{NOTIFICATION_PATH}",

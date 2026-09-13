@@ -42,7 +42,7 @@ URL = "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7"
 KOMETA_POST = "/library/collections?sectionId=2&smart=1&title=Oracle%20Collection&type=1&uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26contentRating%3D5%26and%3D1%26contentRating%3D7"
 KOMETA_PUT = "/library/collections/12345/items?uri=server%3A%2F%2Fabc123%2Fcom.plexapp.plugins.library%2Flibrary%2Fsections%2F2%2Fall%3Ftype%3D1%26sort%3DtitleSort%26contentRating%3D5%26and%3D1%26contentRating%3D7"
 
-# Three more configs of the oracle, closing the review's Important 2: config 12
+# Three more configs of the oracle: config 12
 # is the ONE byte the shipped envelope computes rather than passes through
 # (smart.py:149's ``1 if libtype == "movie" else 2``), and 8/15 are the
 # ``!`` -> ``%21`` encoding class that config 1 alone never exercises. Copied
@@ -349,7 +349,7 @@ async def test_a_supplied_listing_is_used_instead_of_listing_the_section(session
 
 
 async def test_taking_over_a_list_row_stamps_it_smart_and_clears_its_stamps(session):
-    """The C11 remediation path, in the list -> smart direction.
+    """The remediation path, in the list -> smart direction.
 
     The definition was a ``plex_search``; the operator switched it to
     ``smart_filter``, met the shape refusal, and did what it told them --
@@ -385,7 +385,7 @@ async def test_taking_over_a_list_row_stamps_it_smart_and_clears_its_stamps(sess
 
 
 async def test_a_filter_matching_nothing_refuses_at_create(session):
-    """C8, without ``ignore_blank_results``. Kometa offers the switch; an
+    """Without ``ignore_blank_results``. Kometa offers the switch; an
     error-downgrade switch is the ``validate:`` class 9b already refused."""
     section = FakeSection(matches=0)
     with pytest.raises(SmartFilterMatchedNothing) as caught:
@@ -525,7 +525,7 @@ async def test_a_dry_run_against_an_existing_collection_reports_update_not_creat
 
 
 async def test_an_unchanged_definition_writes_nothing_and_probes_nothing(session):
-    """C10: the hash is over the BUILT URI, so a pass whose URI is unchanged
+    """The hash is over the BUILT URI, so a pass whose URI is unchanged
     short-circuits before the probe. That is what keeps a smart definition from
     costing one Plex query per pass forever."""
     existing = FakeCollection(TITLE, labels=[LABEL], smart=True)
@@ -545,7 +545,7 @@ async def test_an_unchanged_definition_writes_nothing_and_probes_nothing(session
 
 
 async def test_the_hash_is_over_the_uri_and_not_over_plexs_echo(session):
-    """C10 in one assertion: two different URIs hash differently and the same
+    """Two different URIs hash differently and the same
     URI hashes identically, and nothing anywhere reads ``Collection.content``.
     Plex-side manual edits to a smart filter therefore go undetected -- exactly
     as they do for the Common Sense family today, whose hash is over the desired
@@ -578,7 +578,7 @@ async def test_a_changed_summary_alone_re_applies(session):
 
 
 async def test_a_removed_summary_is_cleared_and_unlocked(session):
-    """Roadmap row 187 (9c Minor M-B). The summary is IN the definition hash,
+    """Roadmap row 187. The summary is IN the definition hash,
     so deleting ``summary:`` triggers a pass -- which then performed no
     summary edit at all and stored the new hash as current: the operator's
     edit recognised, acted on by nothing, recorded as done. Now it clears:
@@ -660,7 +660,7 @@ async def test_a_caller_that_asserts_no_summary_clears_nothing(session):
 
 
 async def test_the_update_action_does_not_claim_the_filter_changed(session):
-    """9c Minor M-A, folded into row 187: a settings-only or summary-only
+    """Roadmap row 187: a settings-only or summary-only
     edit re-PUTs a byte-identical uri while the old string said 'updated the
     smart filter'. The pass cannot know which part changed, so the string
     stops claiming one."""
@@ -727,7 +727,7 @@ async def test_a_collection_that_is_not_ours_is_left_alone(session):
 
 
 async def test_a_list_collection_under_a_smart_definition_refuses(session):
-    """C11, the smart half. The collection exists and is ours, and it is a LIST
+    """The smart half. The collection exists and is ours, and it is a LIST
     collection -- so the definition changed shape and this refuses rather than
     deleting it the way Kometa does (modules/builder.py:1768-1772)."""
     dumb = FakeCollection(TITLE, labels=[LABEL], smart=False)
@@ -773,7 +773,7 @@ async def test_an_episode_level_smart_create_posts_type_four(session):
 
 
 async def test_an_agreeing_episode_level_smart_collection_proceeds_to_the_update(session):
-    """Branch review I-1: the agreeing branch of ``_level_conflict`` at a
+    """The agreeing branch of ``_level_conflict`` at a
     non-item level, pinned through the real entry point. An existing
     EPISODE-level smart collection under a definition that still asks for
     episode level must not be caught by the refusal below -- ``have ==
@@ -792,13 +792,13 @@ async def test_an_agreeing_episode_level_smart_collection_proceeds_to_the_update
 
 
 async def test_a_smart_collection_that_exists_at_another_level_is_refused(session):
-    """Task 3 review I-1: an existing SHOW-level smart collection whose
+    """An existing SHOW-level smart collection whose
     definition now asks for episode level. There is no PUT that re-levels a
     smart collection, so this refuses -- the same call ``shape_conflict``
     makes for a smart/list conversion, one axis over -- rather than PUTting
     the episode-level filter onto the collection Plex created at show level.
 
-    Task 4 review I-3: the message names the collection and offers the delete
+    The message names the collection and offers the delete
     conditionally, mirroring ``shape_conflict``'s own wording exactly."""
     existing = FakeCollection(TITLE, labels=[LABEL], smart=True, subtype="show")
     section = FakeSection(matches=7, existing=[existing])
@@ -819,7 +819,7 @@ async def test_a_smart_collection_that_exists_at_another_level_is_refused(sessio
 
 
 async def test_a_smart_collection_whose_level_cannot_be_read_is_refused(session):
-    """Task 4 review I-1: plexapi's ``Collection.subtype`` has no default, so
+    """plexapi's ``Collection.subtype`` has no default, so
     ``None`` means the running plexapi no longer carries it -- not "no level
     recorded". The update must fail CLOSED: refuse rather than guess and PUT
     the new level's filter onto a collection whose own level is unknown."""
@@ -841,7 +841,7 @@ async def test_a_smart_collection_whose_level_cannot_be_read_is_refused(session)
 
 
 def test_the_item_level_smart_hash_is_unmoved():
-    """Facts C8, the only leg of the storm guard search-tail E-2 could have
+    """The only leg of the storm guard search-tail E-2 could have
     moved. ``smart_definition_hash`` hashes the BUILT URI, and every
     item-level URI is byte-identical after the kind/search-type split -- so no
     existing smart collection re-writes its filter on the first pass after this
@@ -855,7 +855,7 @@ def test_the_item_level_smart_hash_is_unmoved():
     assert smart_definition_hash(URL, None) == SHIPPED_ITEM_LEVEL_HASH
 
 
-# --- row 222 (Task 2 review I-1): poster_url threads through this callsite --
+# --- row 222: poster_url threads through this callsite --
 
 # `.invalid` is reserved by RFC 2606 and can never resolve; `resolve_host` is
 # patched out below so nothing ever asks. Copied by value from
@@ -883,7 +883,7 @@ def _image_handler(data, seen):
 async def test_a_definitions_poster_url_reaches_the_smart_reconcilers_poster_step(
     session, config_factory, tmp_path, monkeypatch
 ):
-    """Task 2 review I-1: `smart.py:567-573` threads `poster_url=` into
+    """`smart.py:567-573` threads `poster_url=` into
     `apply_poster` alongside `poster_kind`/`poster_key`, but nothing drove
     `reconcile_smart_collection` with a definition carrying one -- deleting
     that one kwarg left the whole suite green.

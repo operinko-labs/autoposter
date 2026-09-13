@@ -7,7 +7,7 @@ the third smart builder. Its siblings mark the two shapes it sits between:
 This one manages a family whose titles and queries are both derived from what
 the LIBRARY turns out to hold.
 
-**One write path, one grammar (decision C1).** Upstream's twelve tag/scan
+**One write path, one grammar.** Upstream's twelve tag/scan
 dynamic types generate ``smart_filter`` collections created by a raw POST with
 the ``build_filter`` query (meta.py:950, builder.py:1476-1478, plex.py:1592-1600)
 -- the grammar 9b's oracle transcribes and 9c's reconciler already writes. So
@@ -57,7 +57,7 @@ static table. A dynamic family's titles are the library's: offline enumeration
 is impossible, and online enumeration would put a Plex call inside
 ``_titles_must_not_collide``, which runs on every config write
 (``config/schema.py``). So this builder declares none, the engine falls through
-to ``{definition.title}`` (9c decision C6), and two things follow -- the
+to ``{definition.title}``, and two things follow -- the
 placeholder's title is reserved although no collection is created under it, and
 the family's real titles are invisible to the leftovers report and the sweep.
 That is roadmap rows 135/162's gap widening per dynamic type, recorded here and
@@ -484,7 +484,7 @@ class DynamicParams(BaseModel):
     # read off the query builder instead of invented above it. Below zero still
     # refuses: that is a typo, not an intent.
     limit: int | None = Field(default=None, ge=0)
-    # C8's refuse-over-surprise floor. 50 is chosen against the production
+    # The refuse-over-surprise floor. 50 is chosen against the production
     # library: content ratings enumerate to ~7, decades to ~12, genres to ~25,
     # countries to 63, networks to 91, subtitle languages to 115 and studios to
     # 824 -- so the families that would create more collections than an operator
@@ -1187,7 +1187,7 @@ class DynamicBuilder:
                 "%s: %r" % (where, one)
                 for one in keys if str(one) not in present
             ]
-        # T2 review, Minor M-3. Every individual absent member above is
+        # Every individual absent member above is
         # already named, but a bucket whose members are ALL absent builds no
         # collection at all (dynamic_keys.py:144-146) -- a fact the per-member
         # lines do not say, so it is named here too.

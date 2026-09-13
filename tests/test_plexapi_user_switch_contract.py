@@ -68,7 +68,7 @@ def test_the_account_lists_resources_and_a_resource_says_whether_we_own_it():
 
 
 def test_there_is_no_home_user_class_at_all():
-    """Corrects the symbol the 98c brief reached for. ``account.users()``
+    """Corrects the symbol the 98c pass reached for. ``account.users()``
     returns ``MyPlexUser`` for Home users and shared friends alike, so the
     classifier is a FLAG on that one class, not a second class."""
     assert not hasattr(myplex, "MyPlexHomeUser")
@@ -145,7 +145,7 @@ def test_copy_to_user_is_exactly_the_chain_we_refuse_to_call():
     ``copyToUser`` routes through ``switchUser``, which routes through
     ``get_token`` and hands its result -- ``None`` included -- straight to
     ``PlexServer``. Neither identifier appears anywhere in ``src/`` on this
-    branch; Task 2's last step proves that half."""
+    branch; the last step below proves that half."""
     assert "self._server.switchUser(user)" in inspect.getsource(Playlist.copyToUser)
     switch = inspect.getsource(PlexServer.switchUser)
     assert "userToken = user.get_token(self.machineIdentifier)" in switch

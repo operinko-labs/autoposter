@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.models import Job, Render, Run
 
-# How many rows per job name the cleanup pass keeps (facts C6). Chosen as a
+# How many rows per job name the cleanup pass keeps. Chosen as a
 # history depth rather than a byte budget: 500 passes is about five years of a
 # weekly job, a month and a half of an hourly one, and a day and a half of the
 # five-minutely stale_job_reclaim -- the cheapest job being the one that
@@ -39,7 +39,7 @@ RUN_HISTORY_KEEP = 500
 # scheduled_runs.last_detail's own truncation in scheduler/core.py.
 _DETAIL_WIDTH = 2000
 
-# Job names whose passes must record NO run history (fix round 1, Critical).
+# Job names whose passes must record NO run history.
 # `stale_job_reclaim` is the one job `app.py` registers unconditionally
 # (app.py:366) rather than behind `scheduler.enabled` -- it runs every
 # STALE_RECLAIM_INTERVAL_SECONDS (five minutes) regardless of that switch,
@@ -48,7 +48,8 @@ _DETAIL_WIDTH = 2000
 # own call, scoped to `kind="full_pass"`, would never bound a
 # stale_job_reclaim row anyway. Recording stale_job_reclaim's
 # passes would grow this table forever, untrimmed, in that first-class
-# supported configuration -- exactly what C6 exists to prevent. It is also
+# supported configuration -- exactly what the keep bound exists to prevent.
+# It is also
 # not an operator-visible pass: nothing serves its history the way the other
 # jobs' rows are meant to be read. Consulted in `scheduler/core.py`'s
 # `_maybe_run`, before `open_run` is even called, so an unrecorded name never
@@ -61,13 +62,13 @@ async def open_run(session: AsyncSession, *, kind: str, name: str) -> int:
 
     Any still-open row for the same ``name`` (``finished_at IS NULL``) is
     closed first, in this same transaction, as ``status='interrupted'`` with
-    ``finished_at`` on the database clock (fix round 1, Important 2) -- a pod
+    ``finished_at`` on the database clock -- a pod
     SIGKILL or crash between a prior open and its own close otherwise leaves
     that row `running` forever, since nothing else ever reconciles it. The
     next pass of the same name is the first thing to notice.
 
     Scoped to ``kind == "scheduled"``: full passes all share the name
-    ``full_pass`` (Task 2 opens one per button press), so an unscoped WHERE
+    ``full_pass`` (one row per button press), so an unscoped WHERE
     would orphan the previous open full pass as ``interrupted`` on a second
     press, before its counts are ever stamped. A full pass has its own closer
     (the drain-watcher) and must never be closed here.
@@ -125,7 +126,7 @@ async def trim_run_history(
     different row on every call.
 
     ``kind``/``name`` scope the delete to one recorded name -- the
-    drain-watcher's own call (fix round 1, I-2) passes both so that trimming
+    drain-watcher's own call passes both so that trimming
     what it just closed never re-ranks every scheduled job's rows too.
     Omitted, as the cleanup pass omits them, the delete covers the whole
     table.
@@ -185,8 +186,8 @@ FULL_PASS_CEILING_SECONDS = 24 * 60 * 60
 # an art kind is.
 _ART_KINDS = ("poster", "season_poster", "background", "title_card")
 
-# The job states each count column reads. `parked` is deliberately absent
-# (facts C3): a parked job is an operator matter the Action Center owns, and a
+# The job states each count column reads. `parked` is deliberately absent:
+# a parked job is an operator matter the Action Center owns, and a
 # run rollup is not a surface anyone can act on it from.
 _JOB_STATE_COLUMNS = {"processed": "done", "failed": "failed", "deferred": "deferred"}
 
@@ -266,7 +267,7 @@ async def close_drained_full_passes(
 ) -> int:
     """Close every open full pass that has drained, or run out of time.
 
-    C2's drain-watcher. "Drained" is: no ``process_item`` job created at or
+    The drain-watcher. "Drained" is: no ``process_item`` job created at or
     after the run's ``started_at`` is still ``pending`` or ``running``.
     ``deferred`` is excluded on purpose -- it is a wait, not work in flight
     (``queue/jobs.py``'s ``DEFER_INTERVAL_SECONDS`` is six hours with no
@@ -284,7 +285,7 @@ async def close_drained_full_passes(
     Both follow from window attribution, which is the honest mechanism
     available; an id on the job is not, at any price this row can pay.
 
-    ``open_runs`` is walked oldest-first (fix round 1, I-1) and stops at the
+    ``open_runs`` is walked oldest-first and stops at the
     first row still draining: a second press while the first pass's jobs are
     still in flight can enqueue nothing at all (``enqueue_batch``'s ``ON
     CONFLICT DO NOTHING``), and without this ordering that jobless younger row
@@ -371,7 +372,7 @@ async def close_drained_full_passes(
 
     if closed:
         # The bound holds for full-pass rows here rather than through the
-        # (conditionally-registered) cleanup job (fix round 1, I-2): the
+        # (conditionally-registered) cleanup job: the
         # watcher runs regardless of `scheduler.enabled`, and so does the
         # writer it is bounding (`POST /api/full-pass`). Scoped to this
         # kind/name so trimming what was just closed never re-ranks every

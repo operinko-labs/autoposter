@@ -4,7 +4,7 @@ Filed by roadmap row 257, which row 148's close filed as *"the prerequisite
 nothing downstream can be honestly sized without"*. Before this file existed,
 Kometa's `imdb_search` surface was transcribed nowhere in this repository:
 `kometa-collections.md` is scoped to `oscars`/`imdb`/`content_rating_cs` and
-greps to zero for `imdb_search`, and `.superpowers/kometa-v2.4.8/` holds three
+greps to zero for `imdb_search`, and the fetched Kometa v2.4.8 tree holds three
 data YAMLs, not Python source.
 
 Ground truth for this document, in priority order:

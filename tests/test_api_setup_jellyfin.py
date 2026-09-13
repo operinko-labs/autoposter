@@ -133,7 +133,7 @@ async def test_library_list_names_ids_and_types_only():
 async def test_the_libraries_route_reads_with_a_typed_key_and_refuses_without_one(
     setup_client, monkeypatch
 ):
-    """Review I1's rule on the second server: the caller named the host, so the
+    """The rule on the second server: the caller named the host, so the
     key that goes to it is the caller's own -- typed into this request, or one
     this wizard staged. Never the resolver's."""
     token = await _authenticate(setup_client)
@@ -271,7 +271,7 @@ async def test_a_check_alone_does_not_answer_the_config_step(setup_client, monke
     contradicted it removed: a submit that names no address is refused, and a
     passed check is not a second way to answer the step.
 
-    Since a probe stopped configuring a server (review I2), the escape could
+    Since a probe stopped configuring a server, the escape could
     only ever stage a document with no server block -- a 200 that `finish`
     then refuses, which is exactly the shape "there is no shape in which this
     step accepts a document the next boot then rejects" rules out.

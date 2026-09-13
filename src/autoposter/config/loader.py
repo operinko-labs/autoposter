@@ -16,7 +16,7 @@ def _default_config_path() -> Path:
     every existing deployment on exactly today's path: the Kubernetes one sets
     the variable (helmrelease.yaml's env block) and so does
     docker-compose.yml's ``api`` service, and both mount a document at the
-    path they set. That is roadmap row 121's C5.
+    path they set. That is roadmap row 121's rule.
 
     The variable being SET is not enough, because the image itself sets it:
     the runtime stage bakes ``ENV AUTOPOSTER_CONFIG=/config/autoposter.yaml``,

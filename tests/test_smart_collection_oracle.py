@@ -190,7 +190,7 @@ KOMETA_PUT = {
 def our_query(libtype, params, default_sort):
     """OUR query string for one config -- 9b's builder, with 9c's default sort.
 
-    ``sort_by or (default_sort,)`` is the whole of C5's sort delta. The shipped
+    ``sort_by or (default_sort,)`` is the whole of the sort delta. The shipped
     builder writes it as that one expression
     (``smart_filter.SmartFilterBuilder.search_url``); this writes an EQUIVALENT
     of it in three statements, because the params here are a raw mapping rather
@@ -218,9 +218,9 @@ def our_query(libtype, params, default_sort):
 def test_the_envelope_is_byte_identical_to_kometas(name, libtype, params, default_sort):
     """OUR query, wrapped by the driver's envelope, against Kometa's own key.
 
-    The envelope here is the DRIVER's, because Task 2 has not been written yet:
-    this task's subject is the query reaching the envelope unchanged. Task 2's
-    ``test_the_create_post_is_byte_identical_to_the_oracles`` then asserts the
+    The envelope here is the DRIVER's, because the shipped writer's own test has
+    not been written yet: this test's subject is the query reaching the envelope
+    unchanged. ``test_the_create_post_is_byte_identical_to_the_oracles`` then asserts the
     SHIPPED envelope against these same pinned strings, which is what makes the
     pair a gate rather than a round trip.
     """
@@ -327,7 +327,7 @@ def test_the_transcribed_uri_root_matches_plexapis_shape():
 
 
 def test_a_filter_matching_nothing_refuses_in_kometa_too():
-    """C8 adopts this verdict, so it is pinned rather than assumed. Both paths:
+    """This module adopts this verdict, so it is pinned rather than assumed. Both paths:
     create refuses unless ``ignore_blank_results`` is set, update refuses
     unconditionally -- which is why 9c refusing at both is the stricter reading
     of upstream and not a departure from it.
@@ -341,7 +341,7 @@ def test_a_filter_matching_nothing_refuses_in_kometa_too():
         driver.create_smart_collection(TITLE, 1, "?type=1&sort=titleSort&year=1900", 0)
     with pytest.raises(driver.Failed, match="No items for smart filter"):
         driver.update_smart_collection(RATING_KEY, "?type=1&sort=titleSort&year=1900", 0)
-    # The escape hatch upstream offers and 9c refuses to offer (C8), recorded so
+    # The escape hatch upstream offers and 9c refuses to offer, recorded so
     # the refusal reads as a decision rather than as something nobody noticed.
     assert driver.create_smart_collection(
         TITLE, 1, "?type=1&sort=titleSort&year=1900", 0, ignore_blank_results=True,

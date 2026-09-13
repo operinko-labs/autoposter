@@ -23,7 +23,7 @@ reason this builder has a bigger params model than the list ones.
 **Introspection is refused on this endpoint.** The constraint input objects,
 their field names, the range shapes, the date format and the sort enums were all
 walked live on 2026-08-25 through the GraphQL validator's own error messages;
-the full probe log is in ``.superpowers/sdd/archive/p8c-task-3-report.md`` and the fixtures
+the fixtures
 under ``tests/fixtures/collections/imdb_search_*.json`` are recordings of what
 the endpoint answered. Nothing here is recalled.
 
@@ -698,7 +698,7 @@ class ImdbSearchParams(BaseModel):
             and self.runtime_gte > self.runtime_lte
         ):
             # Its two neighbours above interpolate their values; this one does
-            # not, because C1/row 213 postdates them and binds every sentence
+            # not, because row 213 postdates them and binds every sentence
             # this row writes. The two keys are the whole diagnosis anyway.
             raise ValueError(
                 "`runtime_gte` is above `runtime_lte`, so no title can match "

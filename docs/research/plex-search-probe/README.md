@@ -1,6 +1,6 @@
 # Plex search DSL — the live read-only probe
 
-Phase 9b Task 5. Run against the operator's production Plex on 2026-08-26 with
+Phase 9b. Run against the operator's production Plex on 2026-08-26 with
 explicit go-ahead, **read-only throughout**. The server address and token are
 scrubbed from every line here and in `probe-roundtrip.txt`; the placeholder is
 `<plex-host>`.
@@ -44,7 +44,7 @@ LibrarySection.listFilterChoices GET /library/sections/{k}/{field}
 PlexServer.fetchItem             GET /library/metadata/{k}
 ```
 
-**The brief's literal grep does not reproduce as "empty", and saying so
+**The spec's literal grep does not reproduce as "empty", and saying so
 matters more than the tidier claim.** Run verbatim against the script in §8 it
 returns **2 hits** — and both are the module docstring's own *negation* of the
 very names the pattern hunts for:
@@ -89,7 +89,7 @@ finds **11 call sites across exactly the four GET-only methods above**
 (`fetchItems` ×6, `all` ×2, `listFilterChoices` ×2, `fetchItem` ×1) and nothing
 else.
 
-Two precautions beyond the brief:
+Two precautions beyond the spec:
 
 - Listing attributes are read through `object.__getattribute__` — the same trick
   `filter_values._listing_value` uses — so touching `item.genres` in Probe 3
@@ -98,7 +98,7 @@ Two precautions beyond the brief:
   list Probe 3 exists to measure.
 - Queries are issued strictly sequentially, one `fetchItems` at a time.
 
-**Scrub verification** (brief Step 4) against the captured output — the host
+**Scrub verification** (spec Step 4) against the captured output — the host
 with and without scheme, the token, and any live `X-Plex-Token` parameter:
 
 ```
@@ -142,16 +142,16 @@ duration         ?type=1&sort=titleSort&duration%3E%3E=7200000.0
 studio           ?type=1&sort=titleSort&studio=Columbia%20Pictures
 ```
 
-`duration` **is** round-trippable, settling the brief's doubt: the bare form is
+`duration` **is** round-trippable, settling the spec's doubt: the bare form is
 refused, but the `.gt` spelling renders and agrees.
 
 `studio` is a `str` row, so the bare form is `contains` on both paths. It agreed
-exactly at 43 items, so the case-folding hypothesis the brief anticipated **did
+exactly at 43 items, so the case-folding hypothesis the spec anticipated **did
 not arise**.
 
-### 2.1 Two predicates the brief's literal values could not decide
+### 2.1 Two predicates the spec's literal values could not decide
 
-The brief requires each predicate to be "decidable and none trivially
+The spec requires each predicate to be "decidable and none trivially
 everything or nothing". Two of its suggested values failed that on this library,
 and an agreement at 0 or at the whole library exercises no translation. Both
 were re-run against library-derived values; **the originals are reported above
@@ -169,13 +169,13 @@ value:
 server: 291   client: 291   |s-c|=0 |c-s|=0   AGREE
 ```
 
-So `content_rating` **is** verified — by the addendum, not by the brief's value.
+So `content_rating` **is** verified — by the follow-up, not by the spec's value.
 
 **`added` — "a third of the way through the library's range".** Read as the
 33rd-percentile *item* this landed on `2025-01-08`, the **minimum** date: about
 a third of this library was added on its first day (a bulk import), so the
 predicate matched all 1960 and agreed at the trivially-everything end. Read as a
-third of the **date range** — the brief's actual words — it is `2025-07-25`,
+third of the **date range** — the spec's actual words — it is `2025-07-25`,
 which splits 651/1960. That is the value in the table above.
 
 ```
@@ -196,7 +196,7 @@ added boundary sensitivity, around 2025-07-25
 Only items within the server/runner offset of the boundary could ever disagree,
 and this boundary has **none**. So the 651/651 agreement is *not* evidence that
 the two clocks agree — it is evidence that this predicate could not tell.
-**Row 154 stands unreconciled and unmeasured**; Task 7 should restate it as
+**Row 154 stands unreconciled and unmeasured**; it should be restated as
 still-open rather than citing this run as a pass.
 
 ---
@@ -241,7 +241,7 @@ studios `S4C` and `ITV1` — production companies, not the broadcast network. If
 `network` were merely an alias for `studio` the values would coincide. They do
 not, so `network` carries information no other shipped attribute does.
 
-**The distinction Task 7 must keep:** `network` is usable in a `plex_search`
+**The distinction to keep:** `network` is usable in a `plex_search`
 and remains **stranded in `filters:`**, because the client side still has no
 item attribute to read. This is the same split as `genre` (§5), and it is the
 concrete argument for keeping the two vocabularies distinct.
@@ -250,7 +250,7 @@ concrete argument for keeping the two vocabularies distinct.
 
 ## 4. Probe 2 — language search, and the AND-under-`all` question
 
-### The value vocabulary is a MIX (decides the Task 4 Step 0 option)
+### The value vocabulary is a MIX (decides the Step 0 option)
 
 `audioLanguage`, 46 values — 2-letter (`es`), locale tags (`es-419`, `en-GB`),
 3-letter (`arc`, `mul`, `myn`, `zxx`), and one full English word, `english`.
@@ -283,13 +283,13 @@ would have to carry every Spanish variant at once, and none does. The `any:`
 column proves the zero is not "this library has no Spanish content" — there are
 442 such films.
 
-The "one exact variant" yardstick (beyond the brief) is what makes this
+The "one exact variant" yardstick (beyond the spec) is what makes this
 airtight: bare `es` alone also returns 0, so the library files its Spanish under
 the locale tags. Without that column, the `all:` zero could have been misread as
 a bug in the expansion rather than in the conjunction.
 
 **This is a row to file, not a divergence to fix** — the builder is faithfully
-reproducing `builder.py:4245-4248`. Recommendation for Task 7: the params
+reproducing `builder.py:4245-4248`. Recommendation: the params
 docstring should tell operators to write language predicates under `any:`.
 
 ---
@@ -311,13 +311,13 @@ drops — searched, and the movie found every time.
 **Verdict:** the search path does not read the listing and is not subject to its
 2-tag cap. `genre` is usable in a `plex_search` while staying deferred in
 `filters:` — which is the concrete reason the two vocabularies are worth keeping
-distinct, exactly as the brief predicted.
+distinct, exactly as the spec predicted.
 
 ---
 
 ## 6. Part C — the six removed spellings: Plex answers all six
 
-T1 corrections (A) and (B) turned six spellings into refusals because Kometa's
+Corrections (A) and (B) turned six spellings into refusals because Kometa's
 `searches` list has no such key. **This asks only what Plex does — it is
 evidence for the narrowing, not a change to it.**
 
@@ -341,7 +341,7 @@ field".
 
 **Verdict: all six are answered happily by Plex 1.43.4.** The refusals are a
 **Kometa restriction this service inherits by choice**, not a Plex limitation.
-That is the row T1's concern #2 asked for. The choice is defensible — one
+That is the row the review's second concern asked for. The choice is defensible — one
 grammar across both systems beats a spelling that works here and errors in
 Kometa — but it should be documented as a choice rather than as a constraint.
 
@@ -382,13 +382,13 @@ environment (passed through as bare `-e NAME`, so neither ever appears on a
 command line):
 
 ```bash
-docker compose -p p9bt5 -f docker-compose.yml -f .superpowers/isolated-db.yml \
+docker compose -p p9bt5 -f docker-compose.yml -f scratch/isolated-db.yml \
     run --rm --no-deps -e PROBE_PLEX_URL -e PROBE_PLEX_TOKEN \
     test python p9b_probe.py > probe-roundtrip.txt
 ```
 
 ```python
-"""Phase 9b Task 5 -- the read-only live probe.
+"""Phase 9b -- the read-only live probe.
 
 READ-ONLY. The ONLY plexapi calls this script makes are:
 
@@ -497,13 +497,13 @@ def round_trip(section, items, resolver, name, skey, fkey, value):
 
 
 def part_a_addendum(section, items, resolver, boundary: str) -> None:
-    """The two round-trips the brief's literal predicates could not decide.
+    """The two round-trips the spec's literal predicates could not decide.
 
     Neither replaces its row above; both are reported alongside it, because a
     round-trip that agrees at zero and one that agrees at everything are both
     agreements that exercised no translation.
     """
-    rule("PART A ADDENDUM -- the two predicates the brief's values could not decide")
+    rule("PART A ADDENDUM -- the two predicates the spec's values could not decide")
 
     ratings = Counter(
         str(listing_attr(i, "contentRating"))
@@ -519,7 +519,7 @@ def part_a_addendum(section, items, resolver, boundary: str) -> None:
             "content_rating", "content_rating", chosen,
         )
         emit(f"  written  : {{'content_rating': {chosen!r}}}  "
-             f"(the library's most common, replacing the brief's 'PG-13')")
+             f"(the library's most common, replacing the spec's 'PG-13')")
         emit(f"  query    : /library/sections/{section.key}/all{query}")
         emit(f"  server   : {len(server_keys)}   client: {len(client_keys)}   "
              f"|s-c|={len(only_s)} |c-s|={len(only_c)}   verdict: {verdict}")
@@ -553,7 +553,7 @@ def part_a(section, items, resolver) -> None:
     # 33rd percentile instead and landed on the MINIMUM date, because a third
     # of this library was added on its first day: the predicate then matched
     # all 1960 items and the round-trip agreed at the trivially-everything end,
-    # which is exactly what the brief says a predicate must not do.
+    # which is exactly what the spec says a predicate must not do.
     low, high = added[0].date(), added[-1].date()
     a_third_in = (low + (high - low) / 3).isoformat()
     by_percentile = added[len(added) // 3].date().isoformat()
@@ -779,7 +779,7 @@ def probe_3_genre(server, movies, items) -> None:
 def part_c_spellings(movies, library_total: int) -> None:
     rule("PART C -- the six removed spellings, as bare server queries")
     emit("These six are refusals in this build because Kometa's `searches` list "
-         "has no such key (T1 corrections A and B). The question here is only "
+         "has no such key (corrections A and B). The question here is only "
          "what PLEX does with them -- evidence for the narrowing, not a change.")
     emit(f"library total (movie listing walk): {library_total}")
 

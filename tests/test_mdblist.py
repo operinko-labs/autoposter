@@ -93,7 +93,7 @@ def test_parse_ratings_treats_a_falsy_source_value_as_none_not_zero():
 
 
 def test_parse_ratings_treats_a_string_zero_the_same_as_a_numeric_zero():
-    """L-4, fix round 1: the falsy gate ran on the RAW value, before
+    """The falsy gate ran on the RAW value, before
     coercion -- a numeric `0` is caught by `if not raw`, but the string
     `"0"` is truthy on `raw` and survived coercion to a legitimate-looking
     `0.0`. The probe's own rule (`X / 10 if X else None`) has to apply to
@@ -218,7 +218,7 @@ async def test_quota_exhaustion_raises_a_distinct_error():
 
 
 async def test_repeated_lookups_hit_the_cache_not_the_transport(session):
-    """Finding 2: MDBList must go through the Phase 1 cache seam, like every
+    """MDBList must go through the Phase 1 cache seam, like every
     other provider request — it is slow-moving data worth caching."""
     calls = []
 

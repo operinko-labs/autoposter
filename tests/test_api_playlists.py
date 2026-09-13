@@ -265,7 +265,7 @@ async def test_the_listing_is_the_same_composition_the_pass_runs(
     """One composition, three readers — the constraint, pinned on the third.
 
     The pass and the delete sweep both enumerate
-    ``playlist_presets.playlist_definitions`` (T1 Step 11), and this listing is
+    ``playlist_presets.playlist_definitions``, and this listing is
     the third caller. Nothing stops it re-expanding the presets and appending
     the operator's own by hand, and that would agree with the function today
     and drift silently later — while the panel's ``overrideOrdinal`` counts on
@@ -675,7 +675,7 @@ def test_a_served_user_reason_is_redacted_like_every_other_string():
 async def test_the_delete_leaves_the_user_copies_and_says_so(
     client, app, auth_headers, session_factory
 ):
-    """C13 A2 has exactly three removal events and this endpoint is not one of
+    """There are exactly three removal events and this endpoint is not one of
     them: a user copy is removed by the sweep, through one gate and one cap.
     Deleting them here would mean plex.tv plus one blocking session per user
     inside an HTTP handler with no cap, and RETIRING the rows without deleting

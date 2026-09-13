@@ -31,10 +31,10 @@ running the application with hot reload — all inside containers.
 
 **Out:** editor integration. No `.devcontainer/`, no language server, no
 debugger wiring. The two things a devcontainer buys — a language server and a
-debugger — serve a human at a keyboard, and work here is driven mostly through
-Claude Code, which edits files on the host. The standard fix for bind-mount
+debugger — serve a human at a keyboard, and work here is driven mostly through tooling
+that edits files on the host. The standard fix for bind-mount
 file-watching performance on Windows is to clone the workspace into a container
-volume; that is foreclosed regardless, because concurrent agent sessions
+volume; that is foreclosed regardless, because concurrent sessions
 require the host working tree to remain the source of truth.
 
 **Also out:** wrapper scripts. `docker compose` verbs are used directly, so

@@ -5,12 +5,12 @@ Every number here came from `badges/spec.py` unchanged; the CHANGE is that
 each is now an attribute of the general schema rather than a field of a
 bespoke dataclass. `badges/spec.py`'s `BADGES` is derived from this dict, so
 the five existing badge pin files are the oracle for the swap and none of
-them is edited (see the plan's parity law).
+them is edited (the parity law: shape AND value, not shape only).
 
 Values come from Kometa v2.4.8's overlay defaults, cross-checked against
 measured pixels from two production oracle images -- see
-docs/research/kometa-overlays.md. Attribute semantics are banked in
-`.superpowers/sdd/p-overlay-grammar-probe.md`, cited by section.
+docs/research/kometa-overlays.md. Attribute semantics come from the overlay
+grammar probe, cited by section.
 """
 from autoposter.overlays.assets import INTER_BOLD, INTER_MEDIUM
 from autoposter.overlays.schema import OverlayDefinition
@@ -19,10 +19,10 @@ BUILTIN_OVERLAYS: dict[str, OverlayDefinition] = {
     # A plain image overlay: the left/top alignment is get_cord's `else`
     # branch, where the offset is the raw distance from the origin edge
     # (probe section 3.3). No `builtin:` value: `resolution.png`/
-    # `resolution/` is a directory, and `resolve_image_path` (T3) refuses a
+    # `resolution/` is a directory, and `resolve_image_path` refuses a
     # `builtin:` that resolves to a missing file. This badge's own value
     # names the file inside `IMAGE_BADGE_DIRS["resolution"]` at render time
-    # (T2 Step 45) -- a value question, not a layout one, so the definition
+    # -- a value question, not a layout one, so the definition
     # names no specific image. `font_size=55` is stated explicitly because
     # the schema's own default is 36, `BadgeSpec.font_size` defaults to 55,
     # and this badge draws no text either way -- the parity law is shape AND
@@ -81,7 +81,7 @@ BUILTIN_OVERLAYS: dict[str, OverlayDefinition] = {
     # are deliberately NOT scaled: Kometa lets them overflow. No `builtin:`
     # value, for the same reason as `resolution`: `audio_codec/compact` is a
     # directory, not a file, and this badge's own value names the file inside
-    # `IMAGE_BADGE_DIRS["audio_codec"]` (T2 Step 45). `font_size=55` stated
+    # `IMAGE_BADGE_DIRS["audio_codec"]`. `font_size=55` stated
     # explicitly for the same shape-and-value reason as `resolution`.
     "audio_codec": OverlayDefinition(
         name="audio_codec",
@@ -145,7 +145,7 @@ BUILTIN_OVERLAYS: dict[str, OverlayDefinition] = {
     #
     # This is the badge that looks most like a Kometa queue: one flag per
     # audio language, stacked 61px apart. It is deliberately NOT expressed as
-    # one -- the queue is filed forward on row 97 (facts C1.5), and
+    # one -- the queue is filed forward on row 97, and
     # badges/compose.py::_draw_languages keeps its bespoke loop.
     "languages": OverlayDefinition(
         name="text(<<audio_language>>)",

@@ -109,7 +109,7 @@ async def sync_membership(
     except Exception as exc:  # noqa: BLE001 - see the docstring
         # CLASS NAME only on the served surface. An httpx error's message
         # carries the request URL and the URL carries apikey= as a query
-        # parameter (facts C1.4). The full detail, with traceback, goes to the
+        # parameter. The full detail, with traceback, goes to the
         # pod log where credentials are already expected to appear.
         logger.exception(
             "%r: pushing %d member(s) to MDBList list %r failed",

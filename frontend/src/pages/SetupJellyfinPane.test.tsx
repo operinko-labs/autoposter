@@ -119,7 +119,7 @@ describe("SetupJellyfinPane", () => {
     // refused when no key is typed and none is staged, and the page renders
     // `detail` as it stands -- which is only safe because it is fixed, carries
     // no value and names no host. An invented sentence here would pass while
-    // proving nothing about what an operator actually reads (review M1).
+    // proving nothing about what an operator actually reads.
     const detail =
       "a check against an address you supply must carry the key typed beside it; " +
       "a credential this deployment already holds is never sent to an address a " +

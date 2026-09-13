@@ -232,7 +232,7 @@ async def test_a_library_failure_is_recorded_class_name_only(session, caplog):
         assert "SECRETTOKEN" not in surface
         assert "X-Plex-Token" not in surface
 
-    # The compensating control, pinned rather than assumed (T1 review carry):
+    # The compensating control, pinned rather than assumed:
     # narrowing the served surfaces to a class name is only safe because the
     # rollback handler's ``logger.exception`` still writes the FULL message and
     # traceback to the pod log -- the operator's one complete copy, under the

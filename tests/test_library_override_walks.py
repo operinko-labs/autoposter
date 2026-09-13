@@ -1,4 +1,4 @@
-"""The two config walks learn a ``dict[str, Model]`` arm (roadmap row 92, C3).
+"""The two config walks learn a ``dict[str, Model]`` arm (roadmap row 92).
 
 Both walks find nested models through a closed vocabulary -- a bare model and
 ``list[Model]`` -- and both get a mapping of models wrong in their own way.
@@ -114,7 +114,7 @@ def test_an_unknown_section_under_a_library_is_still_reported():
 
 
 def test_document_paths_already_reports_a_mapped_leaf():
-    """Pinned rather than changed (C3, read against the code): this walk is
+    """Pinned rather than changed (read against the code): this walk is
     shape-driven and has never needed a model, so it already answers the
     dotted leaf the editor renders as "overridden" and ``_drop_refusal``
     counts. A change here would be a change for its own sake."""

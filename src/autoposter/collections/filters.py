@@ -5,9 +5,10 @@ evaluated client-side against the items a builder resolved, and this module is
 the whole of what that means: which attributes exist, what each one's values
 are, which operators each type accepts, and what an operator's YAML turns into.
 Nothing here touches Plex -- ``evaluate`` reads a *view*, a mapping-like
-accessor whose real implementation (Task 2) sits over resolved plexapi items.
+accessor whose real implementation sits over resolved plexapi items.
 Keeping the model Plex-free is what lets the operator semantics be pinned as
-data, which is the point: phase 9b translates this same vocabulary into a Plex
+data, which is the point: the smart-collection layer translates this same
+vocabulary into a Plex
 *search*, so a disagreement between the two would be a filter that means one
 thing in a normal collection and another in a smart one.
 
@@ -29,12 +30,12 @@ with the wrong meaning still loads, still runs, and produces a full, plausible,
 wrong collection. Two things are done about it. Every judgement call carries its
 reasoning on the row, and the ones this transcription was **not** confident
 about are marked in the note. A fresh call is ``UNVERIFIED-TRANSCRIPTION``. A
-call this module's own fix round checked against named Kometa evidence reads
+call re-checked against named Kometa evidence reads
 ``SETTLED-BY-REVIEW`` (the code changed to match) or ``SETTLED-IN-FAVOR`` (the
 original transcription was already right); a note with none of these is a claim
-this module has stood behind since Task 1.
+this module has stood behind since it was first written.
 
-``SETTLED-BY-ORACLE`` outranks all of them. Task 4 ran a Kometa oracle: 120
+``SETTLED-BY-ORACLE`` outranks all of them. A Kometa oracle was run: 120
 listing-shaped items and two filter configs, evaluated by this module and by
 **Kometa 2.4.8's own filter code**, fetched and transcribed standalone
 (``modules/util.py``'s ``is_date_filter``/``is_number_filter``/
@@ -43,9 +44,8 @@ listing-shaped items and two filter configs, evaluated by this module and by
 Its verdicts are the ones marked that way below, and they OVERRULE an earlier
 ``SETTLED-BY-REVIEW`` where the two disagree -- one such marker cited a
 comparison that is not in Kometa's source at all, which is the failure mode a
-recollection has and a fetched file does not. The procedure, the transcription
-and every adjudication are in ``.superpowers/sdd/task-4-report.md``; the
-comparison itself is ``tests/test_collection_filter_oracle.py``, which pins
+recollection has and a fetched file does not. The comparison itself is
+``tests/test_collection_filter_oracle.py``, which pins
 Kometa's member lists as data.
 
 **The missing-value rule splits by value-type family (SETTLED-BY-ORACLE).** For
@@ -67,8 +67,8 @@ drops it. Emergent upstream, matched here for parity, applied in ``_matches``.
 
 This was originally shipped uniform
 (a single rule, no type exception) and marked ``UNVERIFIED-TRANSCRIPTION``
-because a per-type exception is a rule nobody remembers; a fix round then
-settled it on a recollection, and the ORACLE confirmed the recollection against
+because a per-type exception is a rule nobody remembers; it was then
+settled on a recollection, and the ORACLE confirmed the recollection against
 the source. ``is_number_filter`` (util.py:623-632) opens the disjunction it
 returns with a bare ``value is None``, and ``is_date_filter``
 (util.py:598-600) opens with ``if value is None: return True`` -- both return
@@ -79,7 +79,7 @@ a ``values`` list that is empty when the item has no value, and its final
 expression then reads False (keep) for ``.not``/``.isnot`` and True (drop) for
 the positive modifiers -- which is the tag half of the rule, falling out of
 Kometa's own code rather than being asserted about it. This is the rule the
-brief named as the oracle's first target, and it holds. Both halves are applied
+oracle was pointed at first, and it holds. Both halves are applied
 in exactly one place, ``_matches`` below, so that every operator gets the rule
 for its type and no operator can quietly opt out.
 
@@ -132,7 +132,7 @@ in total -- and then phase B's own probe gave ``plays`` and ``last_played``
 real listing accessors and appended ``user_rating`` with one, so those three
 are the first names counted here that an operator can actually filter on
 rather than merely find in the table), while the 1 unsearched name is what
-is left of 9b's own tail, filed per family for T6 -- search-tails-1 took seven
+is left of 9b's own tail, filed per family -- search-tails-1 took seven
 of the 22 (rows 170 + 172: the text pair, which also moved the filter-covered
 count by two, and the five media booleans, which are search-only and move no
 filter number), search-tail E-1 took twenty (row 173's family E, all
@@ -197,12 +197,12 @@ __all__ = [
 VALUE_TYPES = ("tag", "str", "int", "float", "date", "duration", "bool")
 ITEM_KINDS = ("movie", "show")
 
-# Where a row's data comes from, for the CLIENT-SIDE filter. ``probe`` was Task
-# 2's question, not a shrug: Plex's listing endpoint carries some child elements
+# Where a row's data comes from, for the CLIENT-SIDE filter. ``probe`` was a
+# real question, not a shrug: Plex's listing endpoint carries some child elements
 # and not others depending on the server and the request, so a row marked
 # ``probe`` becomes ``listing`` (ships scan-free) or ``tier2-deferred`` (drops
 # out of tier 1 rather than shipping a silent request-per-item) once the
-# read-only probe answers. Task 2's probe (2026-08-25) answered all seven of
+# read-only probe answers. That probe (2026-08-25) answered all seven of
 # tier 1's, so no row carries ``probe`` today. 9b added two tiers rather than
 # reusing an existing one, because both would have been a lie:
 #
@@ -914,7 +914,7 @@ _BOTH = ("movie", "show")
 # The source split is phase B's arithmetic, not 9a's, and phase B moved rows
 # in two directions:
 #
-# - Task 2's probe left 9 listing / 6 tier2-deferred, and phase B moved five
+# - The read-only probe left 9 listing / 6 tier2-deferred, and phase B moved five
 #   of that six onto ``tier2-batched`` when the batched
 #   ``/library/metadata/{k1,k2,...}`` read was measured returning the families
 #   the listing had truncated or stripped. Only ``network`` stayed, and it
@@ -939,8 +939,7 @@ _BOTH = ("movie", "show")
 # THE PROBE, in one paragraph, because six of these rows were a refusal and
 # a reader deserves the reason without leaving the file. Read-only, against the
 # production server (ShadowPlex, Plex 1.43.4.10903-e5521bd8c, 1955 movies /
-# 284 shows), 2026-08-25; the full log is in
-# ``.superpowers/sdd/task-2-report.md``. The finding that decided most of it:
+# 284 shows), 2026-08-25. The finding that decided most of it:
 # Plex's section listing does not merely omit some child elements, it TRUNCATES
 # the ones it does send. Genre comes back capped at two per item -- never three,
 # anywhere in either section -- while the item's own metadata endpoint returns
@@ -1119,9 +1118,9 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "naive datetime in the RUNNER's local clock, not the Plex server's. "
         "Compared at the MOMENT, time of day included -- see the date "
         "convention in `_as_moment` -- so `added.after: 2026-06-01` keeps "
-        "something added at 09:15 that day. ADJUDICATED sweep-2 (row 154, "
-        "9b's D6 one module over): the runner-dependence is documented, not "
-        "converted -- since the comparison moved to the moment (9a Task 4), a "
+        "something added at 09:15 that day. Sweep-2 (row 154): the "
+        "runner-dependence is documented, not "
+        "converted -- since the comparison moved to the moment, a "
         "runner-clock offset shifts EVERY `added` comparison by that offset, "
         "not only ones near midnight; the Plex server's own zone (what an "
         "operator means) is not in the listing, and any fixed zone would make "
@@ -1149,7 +1148,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "`duration.gt: 90` is an hour and a half, not 90ms. Its own value type "
         "rather than `int` so the unit lives in the table instead of in a "
         "comment on one row. SETTLED-BY-ORACLE: the view hands back the EXACT "
-        "quotient `ms / 60000`, a float, not a rounded int. Task 2 rounded it, "
+        "quotient `ms / 60000`, a float, not a rounded int. This row rounded it at first, "
         "to keep `.eq` off float equality; Kometa does not (`test_number /= "
         "60000`, plex.py:2923-2926), and rounding silently moved every RANGE "
         "comparison for runtimes within half a minute of the threshold -- the "
@@ -1207,7 +1206,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "carry is a `studio` naming the network (E4, Hulu, Paramount+), which is "
         "a DIFFERENT attribute with its own row and its own string semantics; "
         "conflating them is not a substitution this table will make silently. "
-        "Filed for tier 2 -- see the Task 2 report's recommendation. "
+        "Filed for tier 2. "
         "PHASE B VERDICT, recorded rather than shipped false: the batch read "
         "cannot conjure an attrib Plex 1.43.4 emits nowhere (0/284 in the "
         "listing AND absent from /library/metadata), so `network` stays "
@@ -1218,8 +1217,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         # Already show-scoped by search_translation (plex.py:63), so
         # show_translation never sees it and the two columns are equal rather
         # than the second being None. 9a proved the ITEM attribute absent on
-        # Plex 1.43.4; whether the SEARCH field answers is Task 5's probe #1,
-        # the single highest-value question this phase asks.
+        # Plex 1.43.4; whether the SEARCH field answers is unprobed, the
+        # single highest-value question left open here.
         search_field="show.network", show_search_field="show.network",
         search_kinds=("show",), filterable=True,
     ),
@@ -1306,8 +1305,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "`if is_date_filter(getattr(item, 'lastViewedAt'), ...): return "
         "False`, and `is_date_filter` opens `if value is None: return True` "
         "(util.py:598-600) BEFORE it looks at the modifier. Kometa drops the "
-        "never-played item from `last_played.not: 30` too. The verbatim "
-        "transcription is in `.superpowers/oracle/9a/kometa_oracle.py`, and "
+        "never-played item from `last_played.not: 30` too. "
         "`tests/test_collection_filter_values.py` pins the behaviour. "
         "What an operator should take from it: this attribute means \"played, "
         "and when\", never \"never played\" -- for that, write `plays.lt: 1`, "
@@ -1418,7 +1416,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "reason ``plays`` carries that tier: 9a never asked whether "
         "``<Role>`` reaches the section listing completely, so there is no "
         "verdict to cite. Re-scoped to ``show.actor`` on a show library by "
-        "``show_translation`` (plex.py:168-193) -- an entry this task's brief "
+        "``show_translation`` (plex.py:168-193) -- an entry earlier notes "
         "said did not exist and the repo's own verbatim transcription of that "
         "table (``tests/oracle/9b/kometa_build_filter.py``) shows it does; "
         "``None`` here would have sent a show library the bare ``actor`` "
@@ -1619,10 +1617,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "listing carries `<Media>` in full and un-truncated (9a's probe "
         "measured the per-item histogram {1: 1905, 2: 46, 3: 4}, recorded on "
         "the `resolution` row above), which is the same read that row "
-        "already relies on. Adjudication A14: raised by C1's plan (the "
-        "`versions` overlay family cannot select on `duplicate`, which is "
-        "search-only), ruled here by sub-phase C2a -- the one row this "
-        "sub-phase's own Global Constraint 2 permits, additive-only.",
+        "already relies on. This row exists because the `versions` overlay "
+        "family cannot select on `duplicate`, which is search-only.",
         search_field=None, show_search_field=None,
         search_kinds=(), filterable=True,
     ),
@@ -2106,7 +2102,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "gates the music branch alone (modules/builder.py:4200-4203) and no "
         "music libtype is reachable here. ``search-only``: Kometa has no "
         "``folder_location`` FILTER -- row 96's own 29-name list names it. "
-        "REFUSED on the ``smart_filter`` builder (row 176 ruling C5): a smart "
+        "REFUSED on the ``smart_filter`` builder (row 176): a smart "
         "collection's stored URI is hashed into ``smart_definition_hash`` "
         "(collections/smart.py:225), and a discovered field would make that "
         "hash a function of the server as well as the config, so a Plex-side "
@@ -2152,7 +2148,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "than left to be discovered. MISSING VALUE: an item with no "
         "`item_facts` row, or with the column NULL, is EXCLUDED under every "
         "operator INCLUDING `.not` and the four `.count_*` -- roadmap row "
-        "156's ruling C3, which is a DIVERGENCE from every other `tag` row in "
+        "156's own rule, which is a DIVERGENCE from every other `tag` row in "
         "this table and is enforced in `_matches` by name. The reason is "
         "sparsity: `render/pipeline.py:1653-1656` is the only writer, the "
         "drift sweep visits `scheduler.drift_batch_size` (default 500) items "
@@ -2231,7 +2227,7 @@ class ItemView(Protocol):
     item has no value, which is the missing-value rule's input.
 
     Duration is the exact quotient of Plex's milliseconds and 60000, NOT
-    rounded (SETTLED-BY-ORACLE; this said ``int``, ROUNDED, until Task 4).
+    rounded (SETTLED-BY-ORACLE; this said ``int``, ROUNDED, until the oracle).
     Rounding does keep ``duration.eq`` off float equality, but it moves every
     range comparison for a runtime within half a minute of the threshold, and
     Kometa rounds nothing. The trap it was avoiding is real and is Kometa's
@@ -2324,7 +2320,7 @@ def _as_regex(value: object, field: str) -> re.Pattern:
     comparison (``re.compile(reg).search(name)``, plex.py:2961) -- so
     ``studio.regex: pictures$`` matches nothing at all in Kometa while our
     version matched every Universal/Columbia/Paramount title in the library.
-    The oracle caught exactly that (six members ours-only, Task 4's report).
+    The oracle caught exactly that (six members ours-only).
     An operator who wants the old behaviour writes ``(?i)`` in the pattern,
     which means the same thing in both.
     """
@@ -2408,7 +2404,7 @@ class _Today:
     The run's moment, not the run's midnight: Kometa resolves the same word as
     ``datetime.now() if data == "today"`` (builder.py:4443), so
     ``release.before: today`` keeps something released earlier today. Ours
-    agrees since Task 4's oracle."""
+    agrees since the oracle."""
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
         return "today"
@@ -3063,7 +3059,7 @@ def _vocabulary_checked(predicate: "FilterPredicate") -> bool:
     """Row 158's rule -- a written TAG value, under ``eq``/``not`` -- spelled
     ONCE and consulted by both ``tag_predicates`` and ``without_values`` below,
     so which predicates get READ and which predicates may get PRUNED cannot
-    drift apart (Task 2 review, Important 2). See ``tag_predicates`` for why
+    drift apart. See ``tag_predicates`` for why
     exactly these two exclusions.
     """
     return predicate.attribute.type == "tag" and predicate.operator in ("eq", "not")
@@ -3142,7 +3138,7 @@ def _as_moment(value: object, attribute: str) -> dt.datetime:
     midnight (util.py:299-307), and against ``current_time``, which is
     ``datetime.now()`` (builder.py:1165). So ``added.after: 2026-06-01`` keeps
     an item added at 09:15 THAT DAY in Kometa and dropped it here, and the
-    oracle found three such items in a 120-item library (Task 4's report). A
+    oracle found three such items in a 120-item library. A
     date value (``release``, which Plex sends as a bare date) reads as that
     day's midnight, which is what plexapi produces for it anyway, so nothing
     about the absolute operators on ``release`` changed.
@@ -3233,7 +3229,7 @@ def language_fold_key(value: str) -> str:
     check, ``LibraryTagResolver.known`` -- folds a written value and a
     library's own vocabulary through exactly the reduction the evaluator uses
     below, by calling this rather than re-spelling ``casefold`` then
-    ``base_language_code`` a second time (Task 2 review, Important 1).
+    ``base_language_code`` a second time.
     """
     return base_language_code(str(value).casefold())
 
@@ -3280,8 +3276,8 @@ def _matches_one(
         if operator == "eq":
             # "in the last N days": at or after (now - N days), with NO upper
             # bound, so a value in the FUTURE passes (SETTLED-BY-ORACLE). The
-            # lower edge alone shipped first; a fix round then added an upper
-            # bound at today, citing Kometa's comparison as
+            # lower edge alone shipped first; an upper bound at today was
+            # then added, citing Kometa's comparison as
             # ``value < data or value > current_time``. That citation was a
             # recollection and it is wrong. Kometa's blank-modifier branch is
             # ``value < current_time - timedelta(days=data)`` and nothing else
@@ -3363,7 +3359,7 @@ def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bo
       EVERY operator, including ``.not``. See the module docstring for the
       transcription note on this split. A ``FACTS_FILTER_ROWS`` row is the one
       exception to the split itself: it is excluded by every operator
-      regardless of its declared type, ``tag`` included, per RULING C3 below;
+      regardless of its declared type, ``tag`` included, per the rule below;
     - **a list means any-of**: the predicate holds if ANY written value
       matches, and a negative operator is the negation of that -- so
       ``genre.not: [Horror, Comedy]`` means "neither", not "not Horror".
@@ -3372,7 +3368,7 @@ def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bo
     negative = predicate.operator in _NEGATES
     have = view.get(attribute.name)
     if attribute.name in FACTS_FILTER_ROWS and _is_missing(have, attribute.type):
-        # RULING C3, and it is ABOVE the count branch and above the type split
+        # The facts-row exception, ABOVE the count branch and above the type split
         # below on purpose -- both of those would answer this case, and both
         # would answer it wrong.
         #
@@ -3430,8 +3426,7 @@ def _matches(predicate: FilterPredicate, view: ItemView, now: dt.datetime) -> bo
         # (SETTLED against the fetched transcription, roadmap row 159):
         # Kometa's ``check_filter`` routes them through its set-intersection
         # branch -- the condition opens ``filter_attr != "year"``
-        # (.superpowers/oracle/9a/kometa_oracle.py:190, transcribing
-        # modules/plex.py:2895) -- so a missing year is dropped by ``year:``
+        # (modules/plex.py:2895) -- so a missing year is dropped by ``year:``
         # and KEPT by ``year.not:``, while the four range modifiers stay on
         # the number branch and its unconditional exclusion. The split is
         # emergent (it exists so ``year: [1990, 1991]`` works as membership),
@@ -3463,11 +3458,11 @@ def evaluate(
     ``now`` is the run's MOMENT, which the relative date operators and the
     literal ``today`` measure against; it defaults to the current time so a
     caller with no run moment still gets the documented behaviour. It is a
-    keyword so the signature the plan fixed -- ``evaluate(group, view) ->
+    keyword so the published signature -- ``evaluate(group, view) ->
     bool`` -- is the one that stays. A ``date`` is accepted and read as that
     day's midnight, which is what a caller that only has a run date means.
 
-    It was called ``today`` and typed ``date`` until Task 4's oracle showed
+    It was called ``today`` and typed ``date`` until the oracle showed
     that Kometa compares at the moment rather than the calendar date
     (``current_time = datetime.now()``, builder.py:1165; see ``_as_moment``).
     The name changed with the type so a caller cannot keep passing a date
@@ -3476,7 +3471,7 @@ def evaluate(
     A view whose value has the wrong *type* raises rather than counting as
     missing: that is a bug in the accessor, and swallowing it would hide it
     behind a full, plausible, wrong collection. The engine stage contains the
-    exception (Task 3); this layer's job is to be loud.
+    exception; this layer's job is to be loud.
     """
     if now is None:
         when = dt.datetime.now()

@@ -13,7 +13,7 @@ abandoned try. What must not be inherited from an abandoned attempt is its PIN,
 and that is ``plex_pin_id``'s job, not the identifier's: the pin id is what
 binds a poll to a PIN and it is overwritten on every mint.
 
-Row 213, and the documented exception (facts C6). The PIN CODE and the
+Row 213, and the documented exception to it. The PIN CODE and the
 ``app.plex.tv`` auth URL ARE served -- they are minted by plex.tv, are public
 by design, and there is no flow without showing them. That is a fourth
 category beside "given to us", "held" and "minted by us", and it is written
@@ -33,8 +33,8 @@ logs to a setting made elsewhere. httpx emits one INFO line per request with
 the FULL url, and the POLL url carries the PIN id -- so every call below runs
 inside ``setup_checks.no_httpx_request_log``, the local filter that module
 wrote for exactly this shape. ``boot.main``'s process-wide clamp (boot.py:151)
-stays the second line of defence, not the first: C6 is a property of this
-module and should not depend on another file's level.
+stays the second line of defence, not the first: not logging these values is
+a property of this module and should not depend on another file's level.
 """
 
 import asyncio

@@ -132,10 +132,9 @@ def _definitions_digest(definitions: list[OverlayDefinition]) -> str:
     ``None`` over a non-``None`` default, which this digest DOES need to
     notice. So each additive field earns one explicit line instead: popped
     when the dump's value for it equals the field's unset default, left in
-    otherwise. Skipping this for ``condition`` (overlay era sub-phase C1)
-    would have moved this digest for every definition that never touches the
-    field at all -- see this function's call site's Step for the measured
-    before/after hashes. Every future additive ``OverlayDefinition`` field
+    otherwise. Skipping this for ``condition`` would have moved this digest
+    for every definition that never touches the
+    field at all. Every future additive ``OverlayDefinition`` field
     owes the same one-line exclusion, or existing digests move on schema
     growth alone.
     """
@@ -230,8 +229,8 @@ def badge_fingerprint(
     invalidated ~18k rows in one run); the fix is the same one: don't
     perturb the hash for the case that has nothing to say.
 
-    ``outcomes`` folds in this ITEM's own match results (adjudication A4,
-    overlay era sub-phase C1). Without it the gate is config-only, so an item
+    ``outcomes`` folds in this ITEM's own match results. Without it the gate
+    is config-only, so an item
     whose resolution or aspect changed keeps its old badge forever -- the
     config did not move, and the fingerprint could not tell. It is guarded
     exactly the way ``definitions`` is, and the guard is what makes the

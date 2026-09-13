@@ -44,8 +44,7 @@ def test_the_other_collection_is_held_to_the_same_collision_rule():
     """Upstream writes the ``other`` collection unguarded (meta.py:1455), which
     is exactly how Kometa's ``other_name: Not Rated <<library_typeU>>s`` lands
     on the Common Sense family's own 'Not Rated Movies'
-    (``collections/buckets.py:66``) -- predicted in
-    ``p4c-task-5-review.md:131-134`` and refused here (decision C6)."""
+    (``collections/buckets.py:66``) -- refused here (decision C6)."""
     derived = _derived(("NR", "NR"), other=["Unrated"])
     with pytest.raises(DuplicateFamilyTitle):
         family_titles(
@@ -107,7 +106,7 @@ def test_a_title_format_that_names_no_key_is_recognised_as_such():
 
 
 def test_a_literal_none_key_is_the_absent_case_and_gets_no_collection():
-    """The Task 2 live probe found the DVR section (an "Other videos" library
+    """A live probe found the DVR section (an "Other videos" library
     the Plex API types as movie) answering ``content_rating`` with two choices:
     ``16=16`` and ``None=None``. ``None`` is Plex saying "the items with no
     content rating", not a rating -- upstream would title a collection "Top

@@ -736,8 +736,8 @@ async def apply_local_posters_to_unmanaged(
     signature so the call site reads like every other poster call and so a
     later hosted-fallback change needs no signature churn.
 
-    The hash ledger is a ``ManagedCollection`` row with
-    ``kind=LOCAL_ASSET_KIND``. That is a LEDGER, not an ownership claim: the
+    The hash record is a ``ManagedCollection`` row with
+    ``kind=LOCAL_ASSET_KIND``. That is BOOKKEEPING, not an ownership claim: the
     ownership label is never applied, and ``engine._sweep`` skips this kind
     the same way it already skips ``"operator"``. Reusing the row means no
     migration and no second definition of "what poster did we last set".

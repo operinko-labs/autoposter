@@ -154,7 +154,7 @@ async def collections_catalog(
     config = request.app.state.config_holder.current
     return {
         "categories": catalog_listing(config),
-        # The group-order panel's enumeration (group-order UI phase, C2):
+        # The group-order panel's enumeration:
         # served rather than transcribed, so the eleven keys exist in exactly
         # one language. Effective order, not canonical -- the panel shows
         # the tab as the running config orders it.

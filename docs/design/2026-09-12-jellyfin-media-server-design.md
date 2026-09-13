@@ -369,7 +369,7 @@ A Plex-less app boots; `run_library` skips with its log line; each Plex-only rou
 ### 10.7 Wizard and frontend
 Jellyfin-only and dual paths through the wizard's real routes to `POST /finish`. Vitest: servers pane, Jellyfin card, finish summary, per-server ids on the item page, capability-hidden pages, and the moved assertions in §8.
 
-## 11. Verification items (resolve on the throwaway instance before the plan's Jellyfin client task)
+## 11. Verification items (resolve on the throwaway instance before the Jellyfin client is built)
 
 | # | Question | Why it matters |
 |---|---|---|
@@ -397,7 +397,7 @@ Jellyfin-only and dual paths through the wizard's real routes to `POST /finish`.
 - Row for the sort-order feature (TMDB collection order → sort titles): a builder feeding `apply_facts` with `sort_title`, server-agnostic by construction. **Coordination:** it must write through `apply_facts` and never touch `plexapi` directly, or it will conflict with §3.3.
 - Rename the residual `rating_key` in webhook payloads to a server-neutral shape in a future major, once consumers are known.
 
-## 14. Suggested implementation phases (for the plan, not binding)
+## 14. Suggested implementation phases (not binding)
 
 1. Protocol, `ServerItemRef`, capabilities, `FakeMediaServer`; `PlexClient` conforms; call sites take refs. No behaviour change; full suite green.
 2. Identity migration: refs, identity key, deliveries, collision merge, `migrate-preview`; `RenderIntent.refs`; the fourteen dispositions. Full suite green; up/down/up proven.
@@ -420,13 +420,13 @@ landed on the branch.
 - **2026-09-12, §6.5.** The collision merge re-points **every** child table of `media_items` — `item_facts`, `item_credits`, `item_metadata_overrides`, `action_dismissals`, `renders` — deduping on each table's own real unique key rather than on `item_id` alone. §6.5's enumeration omitted `action_dismissals`, and its "overrides re-pointed" was not what the migration actually does.
 - **2026-09-12, §4.2.** A show or season with no provider id keys on the path branch with the file slot filled by its root folder (`show:path:::<root_folder>`, `season:path::s2:<root_folder>`): the folder is shared storage and therefore server-neutral. The legacy key stays migration-only, and the raise remains for an item with truly nothing to key on.
 - **2026-09-12, §4.2.** `adopt/walk._resolved_episode` fills `file_path` from the plexapi episode's media parts exactly as the resolver does, so an adopted episode and a resolved one key identically.
-- **2026-09-12, §4.2 ("Episode parents").** The parent model is unchanged: an episode's `parent_id` is its **season** row and a season's is its show. `parent_identity_key_for(episode)` returns the season's key (the show's provider ids plus `s{n}`), and `adopt/walk._resolved_season` takes the show's guids so adopted and resolved seasons key identically. The plan's "episode parents to the show" test was a slip, not a design change.
+- **2026-09-12, §4.2 ("Episode parents").** The parent model is unchanged: an episode's `parent_id` is its **season** row and a season's is its show. `parent_identity_key_for(episode)` returns the season's key (the show's provider ids plus `s{n}`), and `adopt/walk._resolved_season` takes the show's guids so adopted and resolved seasons key identically. An earlier "episode parents to the show" test was a slip, not a design change.
 - **2026-09-12, §4.2 (second amendment, superseding the first).** The file slot is the basename of `file_path` for a **movie only**; it is empty for show, season and episode, because no producer supplies an episode file — one Plex episode is one item. A provider-less episode therefore keys as `episode:path::s2e3:<root_folder>`. Adopted episodes revert to `file_path=None`; adopted seasons and episodes carry the show's guids as their parent ids. The bare-key promotion introduced above is removed (nothing produces the shape it caught); the legacy-key promotion is kept and gated on `server == "plex"`.
 - **2026-09-13, §4.1.** **One ref per `(item, server)` is an invariant**, not an allowance: `upsert_server_ref` deletes the item's other refs for that server, and `_merge_into` drops the stale row's refs for servers the survivor already has. The "several rows per server" wording is withdrawn.
 - **2026-09-13, §4.2/§4.6.** The same Plex ref plus the same `kind:provider:id:coords` prefix with a **different** file slot is a file replacement: the existing row is re-keyed in place, keeping its overrides, dismissals and renders. A *different* ref with the same prefix stays a separate item — that is the 4K/HD pair. Legacy promotion is this same mechanism's special case.
 - **2026-09-13, §4.4 step 2.** The basename lookup is **deferred**. `RenderIntent` carries no path, so nothing can drive it; the index entries it would have needed are removed. Revisit if intents ever carry a path.
-- **2026-09-13, §4.4 step 6.** `LibraryIndex` auto-invalidates once `built_at` is `max_age_seconds=3600` old (monotonic), and `JellyfinClient` exposes `invalidate()`. The full pass invalidates at pass start — iterating every server in the registry and duck-typing the method (`getattr(server, "invalidate", None)`) rather than naming Jellyfin, because a server with no index to go stale simply has nothing to call. The ledger's `servers.jellyfin.invalidate()` was the shape, not the call.
-- **2026-09-13, §4.7.** `migrate_preview.preview()` selects `root_folder` and passes it to `identity_key`, so its report matches what the migration computes. The plan's "run it against the dev database before the migration" step was not performed here: the lane's databases are per-worker scratch, and the operator's production database is the real target — the command is named in the Phase 2 PR body instead.
+- **2026-09-13, §4.4 step 6.** `LibraryIndex` auto-invalidates once `built_at` is `max_age_seconds=3600` old (monotonic), and `JellyfinClient` exposes `invalidate()`. The full pass invalidates at pass start — iterating every server in the registry and duck-typing the method (`getattr(server, "invalidate", None)`) rather than naming Jellyfin, because a server with no index to go stale simply has nothing to call. An earlier note's `servers.jellyfin.invalidate()` was the shape, not the call.
+- **2026-09-13, §4.7.** `migrate_preview.preview()` selects `root_folder` and passes it to `identity_key`, so its report matches what the migration computes. The planned "run it against the dev database before the migration" step was not performed here: the development databases are per-worker scratch, and the operator's production database is the real target — the command is named in the Phase 2 PR body instead.
 
 ### The Jellyfin client (§1.1, §11)
 

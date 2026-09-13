@@ -246,7 +246,7 @@ async def test_a_value_written_in_another_case_is_not_dropped(session):
 
 
 async def test_a_hyphenated_rating_written_in_another_case_is_known(session):
-    """M2 (branch review): ``LibraryTagResolver.known``'s non-language branch
+    """``LibraryTagResolver.known``'s non-language branch
     now compares ``.casefold()`` against the raw choices rather than
     delegating to ``__call__``'s ``.lower()``. A ``content_rating`` value is
     the realistic case where that distinction matters -- ratings carry
@@ -342,7 +342,7 @@ async def test_a_filter_naming_no_tag_attribute_reads_no_vocabulary_at_all(sessi
 
 
 async def test_one_warning_per_definition_attribute_and_value_per_pass(session):
-    """Facts C2's rate: one per (definition, attribute, value). The filter
+    """The rate is one per (definition, attribute, value). The filter
     below names `PG-133` TWICE, in two predicates of one definition, and gets
     one line -- an operator reading a run summary is looking for which
     definition is wrong, not for how many places they wrote one word."""
@@ -441,7 +441,7 @@ async def test_the_shipped_content_rating_and_resolution_presets_still_run(sessi
     assert "1080 Movies" in section._existing
 
 
-# --- Fix round 1, Important 1: language rows fold to the base code ----------
+# --- language rows fold to the base code -------------------------------------
 
 
 async def test_a_regional_audio_language_value_matches_its_base_and_is_not_dropped(
@@ -454,7 +454,7 @@ async def test_a_regional_audio_language_value_matches_its_base_and_is_not_dropp
     Before this fix ``_known_tag_values`` asked ``LibraryTagResolver.__call__``'s
     SEARCH semantics instead -- which accepts a regional value only under its
     own exact spelling -- and dropped this one, narrowing a collection a
-    correctly-spelled filter would have built (Task 2 review, Important 1)."""
+    correctly-spelled filter would have built."""
     section = FakeSection(
         [FakeItem("101")],
         vocabulary={"audioLanguage": ["pt"]},
@@ -503,7 +503,7 @@ async def test_an_audio_language_value_with_no_matching_base_is_still_dropped(se
     assert len(dropped) == 1 and "xx-YY" in dropped[0]
 
 
-# --- Fix round 1, Important 2: one predicate for "is this row checkable" ----
+# --- one predicate for "is this row checkable" -------------------------------
 
 
 def test_tag_predicates_and_without_values_agree_on_which_rows_are_checkable():
@@ -514,8 +514,7 @@ def test_tag_predicates_and_without_values_agree_on_which_rows_are_checkable():
     the rule itself: for every predicate in a filter with one eligible row
     (``content_rating``, tag/eq) and one ineligible row (``year.gte``,
     int/gte), asking ``without_values`` to drop everything changes exactly
-    the predicates ``tag_predicates`` names, and none of the others
-    (Task 2 review, Important 2)."""
+    the predicates ``tag_predicates`` names, and none of the others."""
     parsed = parse_filters({"content_rating": "R", "year.gte": 1990})
     every_predicate = tuple(predicates(parsed))
     assert len(every_predicate) == 2

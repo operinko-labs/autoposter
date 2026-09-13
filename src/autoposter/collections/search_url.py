@@ -8,7 +8,7 @@ correct collection of different titles. So two things are true of this module
 and both are load-bearing:
 
 **It is pure.** No plexapi, no HTTP, no clock, no config. Its inputs are a
-``FilterGroup`` (Task 1's parser), a library type, a sort list, a limit, and a
+``FilterGroup`` (the filter parser's own type), a library type, a sort list, a limit, and a
 ``resolve_tag`` CALLABLE. That purity is what lets
 ``tests/test_collection_search_oracle.py`` compare its output, byte for byte,
 against strings produced by Kometa's own ``build_filter`` running standalone --
@@ -72,7 +72,7 @@ class TagResolver(Protocol):
     Returns the Plex KEYS one written value resolves to -- empty when the
     library has no such value, and SEVERAL when the value expands (a language
     code covering every locale variant the library carries). Injected rather
-    than imported so this module stays pure; Task 4's builder passes the
+    than imported so this module stays pure; the builder passes the
     Plex-backed, run-cached one and the tests pass a dict.
 
     ``choices`` (roadmap row 178) is the enumeration half, used only for a
@@ -118,7 +118,7 @@ class SearchAttributeNotAvailable(Exception):
     ``LibraryTypeMismatch``, builders/base.py:237-243); or this service will not
     answer it on this BUILDER -- ``folder_location`` under ``smart_filter``,
     whose stored query would otherwise carry a run-time-discovered field into a
-    definition hash (roadmap row 176, ruling C5). Its own class so the engine's
+    definition hash (roadmap row 176). Its own class so the engine's
     class-name-only log line says so."""
 
 
@@ -171,8 +171,8 @@ def build_search_url(
     # search type's table directly, so a sort that is real for another search
     # level -- ``episode_added.desc`` against a movie library -- would
     # otherwise reach it as a bare ``KeyError``, which the engine reports as a
-    # dead source with no explanation. One site rather than two (Task 4
-    # review, ruling on Minor 1): this function is public and pure, so it has
+    # dead source with no explanation. One site rather than two: this
+    # function is public and pure, so it has
     # to hold for every caller, not only ``PlexSearchBuilder``; and hoisting it
     # above the body means a wrong-libtype sort refuses before this call
     # resolves a single tag value, which used to require a second, earlier

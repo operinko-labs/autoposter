@@ -8,8 +8,8 @@ Parsing here is deliberately LENIENT, unlike `collections/imdb_graphql.py`'s
 raise-on-drift posture: that module's wrong answer empties a whole live
 collection, so it fails loudly. This module's wrong answer is "one item
 keeps no parental labels this pass" across a 16k-item library where most
-titles have no guide votes at all (`categories: null` is the *common* case,
-facts C1.3) -- raising on every shape surprise here would instead crash
+titles have no guide votes at all (`categories: null` is the *common* case)
+-- raising on every shape surprise here would instead crash
 metadata operations for the whole item.
 """
 import json
@@ -60,7 +60,7 @@ async def test_severity_id_never_appears_in_the_result():
 
 async def test_none_and_mild_categories_are_both_returned():
     """The client itself does not decide which severities become labels --
-    that policy lives in Task 2's writer, not the fetch layer."""
+    that policy lives in the writer, not the fetch layer."""
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda r: httpx.Response(200, json=load("imdb_parental_paddington.json")))
     ) as http:
@@ -71,7 +71,7 @@ async def test_none_and_mild_categories_are_both_returned():
 
 
 async def test_categories_null_returns_none():
-    """Facts C1.3: categories: null is the common case (no guide votes), not
+    """categories: null is the common case (no guide votes), not
     a fault -- skip silently, never raise."""
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda r: httpx.Response(200, json=load("imdb_parental_null.json")))

@@ -54,7 +54,7 @@ describe("visibleSteps", () => {
   });
 
   it("keeps the URL step whether or not a document already resolves", () => {
-    // Facts C1: the address is asked for on every deployment shape -- the
+    // The address is asked for on every deployment shape -- the
     // registration needs it even where it cannot be persisted.
     expect(visibleSteps({ ...BASE, config_source: "configured" })).toContain<StepId>("url");
   });

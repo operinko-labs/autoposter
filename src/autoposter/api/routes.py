@@ -535,7 +535,7 @@ async def item_detail(
 
         # One query for every render's deliveries, not one per render: the
         # page shows every art kind at once, and a render can have one row
-        # per configured server. Ordered by server (fix round 3, M5) so the
+        # per configured server. Ordered by server so the
         # chips do not reorder between page loads.
         deliveries_by_render: dict[int, list[RenderDelivery]] = {}
         if renders:

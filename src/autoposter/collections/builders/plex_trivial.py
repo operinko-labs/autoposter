@@ -80,7 +80,7 @@ class PlexAllBuilder:
         # first value is the bucket's own key -- ``("4k", "8k")`` is "4k, with
         # 8k folded in", upstream's own addon merge -- and it is one of the
         # four labels ``Default-Images/resolution/`` names its files by
-        # (``.superpowers/sdd/p-defimg-probe.md`` §5). Any other filter, and a
+        # (measured against that repository). Any other filter, and a
         # bare ``plex_all``, keep no default artwork: this builder is "every
         # item the library owns", which upstream has no picture of.
         values = (getattr(ctx.definition, "filters", None) or {}).get("resolution")

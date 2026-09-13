@@ -42,7 +42,7 @@ const HELD = "***REDACTED***";
  * server at all. `POST /api/setup/config` is refused there, so `configured`
  * can never become true and the step can never be finished from this page --
  * the only way out is the document itself, and nothing else on the pane says
- * so (branch review I1).
+ * so.
  *
  * One card opens: the one the document names and holds no credential for --
  * the one shape on this step an operator MUST act on -- or, on a deployment
@@ -81,13 +81,13 @@ export function SetupServersPane({
   // it opens is Plex's: that is where the Plex-only operator used to land --
   // the token was a required provider key, so its accordion came up expanded
   // with the sign-in inside it -- and two closed cards under a disabled
-  // Continue is the one visible thing this step changed about that walk
-  // (review M3). A deployment the document already names keeps the split
+  // Continue is the one visible thing this step changed about that walk.
+  // A deployment the document already names keeps the split
   // below: the card that opens is the one missing its credential.
   const noServerConfigured = SERVER_CARDS.every((card) => !servers[card.name]?.configured);
   // A document the wizard cannot write to, naming no server: the one state on
   // this step that neither card can answer, and the only one the pane speaks
-  // for itself about (branch review I1).
+  // for itself about.
   const documentNamesNone =
     noServerConfigured &&
     (progress.config_source === "configured" || progress.config_source === "state");
@@ -129,7 +129,7 @@ export function SetupServersPane({
             // The gate's second clause, rendered: a server the document names
             // is one the next boot demands a credential for, so that card's
             // credential is required -- and required-and-missing is what opens
-            // a card (facts C8).
+            // a card.
             required={state.configured}
             system={card.name}
             onSave={(credential, value) => onSave({ [credential]: value })}

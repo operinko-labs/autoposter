@@ -40,10 +40,9 @@ the upstream behaviour is a setting that reads as applied and is not:
   upstream (:1251-1257) -- a ``RuntimeError`` in CPython 3, not a graceful skip;
 - a duplicate generated title is warned and skipped upstream (:1417-1418), and
   the ``other`` collection bypasses the check entirely (:1455). The second is
-  the collision ``p4c-task-5-review.md:131-134`` predicted against
-  ``buckets.py:66`` -- "Not Rated Movies" from an ``other_name`` landing on the
-  Common Sense family's own catch-all -- so it is refused here rather than
-  reproduced (decision C6).
+  the collision predicted against ``buckets.py:66`` -- "Not Rated Movies"
+  from an ``other_name`` landing on the Common Sense family's own catch-all
+  -- so it is refused here rather than reproduced.
 
 The first two refuse at CONFIG LOAD, in the builder's params model, where an
 operator learns at the moment of the edit; the third can only be known once the
@@ -52,7 +51,7 @@ keys.
 
 **And one place this DROPS where upstream would build.** A key that is the
 literal string ``"None"`` is Plex's way of saying "the items with no value for
-this field", not a value -- the live probe behind Task 2 caught the DVR section
+this field", not a value -- the live probe caught the DVR section
 answering ``content_rating`` with ``16=16, None=None``. Upstream would title a
 collection "Top None Movies" from it. Here it is the absent case and gets no
 collection at all, whatever the override tables say: naming the absence is what
@@ -189,7 +188,7 @@ def _substitute_call_vars(
     auto_type: str | None,
 ) -> str:
     """meta.py:1366 and :1402-1404 -- the pass the oracle driver's docstring
-    wrongly called a no-op until the Task 4 review.
+    once wrongly called a no-op.
 
     ``og_call`` is built at :1366 with or without a template, and the loop at
     :1402-1404 is unconditional, so a ``title_format`` carrying ``<<value>>``,
@@ -284,7 +283,7 @@ def family_titles(
 
     Raises ``DuplicateFamilyTitle`` if two keys name one collection, the
     ``other`` bucket included -- upstream warns and skips, and exempts ``other``
-    from even that (decision C6, and the module docstring says why).
+    from even that (the module docstring says why).
     """
     overrides = _strdict(title_override)
     titled: list[TitledKey] = []

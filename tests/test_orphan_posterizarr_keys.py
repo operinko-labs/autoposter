@@ -79,7 +79,7 @@ def test_the_four_orphan_keys_are_no_longer_schema_fields(model, field):
 
 
 def test_a_document_still_carrying_all_four_keys_loads_and_drops_them():
-    """C3, proved rather than asserted in prose.
+    """Proved rather than asserted in prose.
 
     The row's premise was that removing these fields would reject any operator
     config still carrying them -- "a breaking parse error". It does not.
@@ -112,7 +112,7 @@ def test_a_document_still_carrying_all_four_keys_loads_and_drops_them():
 
 
 def test_removing_the_two_min_keys_moved_every_render_fingerprint():
-    """The storm, pinned as a MOVE rather than hidden (facts C2).
+    """The storm, pinned as a MOVE rather than hidden.
 
     Every other absolute pin in this suite says "this value did not change".
     This one says the opposite on purpose, because the opposite is what

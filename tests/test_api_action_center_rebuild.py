@@ -112,8 +112,8 @@ async def test_the_rebuild_requires_a_session(client):
 async def test_one_row_rebuild_clears_that_rows_fingerprints_and_queues_its_item(
     client, auth_headers, session
 ):
-    """C1's whole substance. BOTH fingerprints, because the pipeline's
-    short-circuit is the fingerprint and the badge compositor has its own --
+    """Clears BOTH fingerprints, because the pipeline's short-circuit is the
+    fingerprint and the badge compositor has its own --
     /items/{id}/renders/{kind}/clear-override clears both for the same
     reason."""
     pressed, pressed_render = await _seed(session, rating_key="1")
@@ -141,7 +141,7 @@ async def test_one_row_rebuild_clears_that_rows_fingerprints_and_queues_its_item
 async def test_a_second_rebuild_of_the_same_row_clears_nothing_and_still_reports(
     client, auth_headers, session
 ):
-    """C2's idempotence. The state the operator asked for is the state the row
+    """Idempotence: the state the operator asked for is the state the row
     is in, so this is a 200 with `cleared: 0` -- never a 409, which would
     teach them to press again."""
     item, render = await _seed(session, rating_key="1")
@@ -216,9 +216,9 @@ async def test_the_bulk_dry_run_counts_and_writes_nothing(client, auth_headers, 
 async def test_the_bulk_apply_reports_the_whole_shape_and_records_one_event(
     client, auth_headers, session
 ):
-    """The whole-dict assertion C5 asks for. A key added later has to be added
-    here too, which is the point: this response is a contract the page and
-    row 213 both read."""
+    """A whole-dict assertion. A key added later has to be added here too,
+    which is the point: this response is a contract the page and row 213
+    both read."""
     item, _ = await _seed(session, rating_key="7")
 
     body = (
@@ -301,7 +301,7 @@ async def test_the_bulk_rebuild_collapses_two_flagged_kinds_of_one_item_into_one
 async def test_the_response_and_the_event_carry_no_path_and_no_free_text(
     client, auth_headers, session
 ):
-    """C2 under row 213. The seeded asset_path is `/assets/1.jpg`; if any
+    """Under row 213. The seeded asset_path is `/assets/1.jpg`; if any
     served string carried it -- or any other absolute path -- this fails. The
     events_log `outcome` IS served (`/api/events`), so it is checked too;
     `payload` is not (api/snapshots.py never selects it) but is counts-only
@@ -386,13 +386,13 @@ async def test_the_bulk_rebuild_skips_a_dismissed_row_unless_it_is_asked_for(
     assert await _fingerprints_of(session, render_id) == (None, None)
 
 
-# --- task-1 review I2: four mutants that survived the tests above ------------
+# --- four mutants that survived the tests above ------------------------------
 
 
 async def test_a_row_press_in_an_excluded_library_matches_nothing_and_clears_nothing(
     client, auth_headers, session
 ):
-    """I2#1: the row branch's own `flags.excluded_library_predicate(config)`
+    """Covers the row branch's own `flags.excluded_library_predicate(config)`
     term. Nothing above seeds an excluded library and presses the row form,
     so the guarantee that a row in an excluded library is not stranded
     cleared -- nothing can re-render it once cleared -- was unpinned. The
@@ -417,8 +417,8 @@ async def test_a_row_press_in_an_excluded_library_matches_nothing_and_clears_not
 async def test_the_cleared_count_counts_a_row_whose_badge_fingerprint_alone_is_set(
     client, auth_headers, session
 ):
-    """I2#2: `cleared` is `fingerprint is not None or badge_fingerprint is
-    not None`. Every seed above sets both columns together, so the two halves
+    """Covers that `cleared` is `fingerprint is not None or badge_fingerprint
+    is not None`. Every seed above sets both columns together, so the two halves
     of that `or` are indistinguishable. `backfill_trigger` clears only
     `fingerprint`, so a row with `fingerprint IS NULL` and `badge_fingerprint`
     still set is reachable in production, and a rebuild over it really does
@@ -443,7 +443,7 @@ async def test_the_cleared_count_counts_a_row_whose_badge_fingerprint_alone_is_s
 async def test_a_bulk_rebuild_with_no_matches_writes_no_event_log_row(
     client, auth_headers, session
 ):
-    """I2#3: the `if batch:` guard on the `EventLog` insert. The dry-run test
+    """Covers the `if batch:` guard on the `EventLog` insert. The dry-run test
     above returns before this line is ever reached, and the "row that is
     gone" test asserts nothing about `events_log` -- so writing an audit row
     for a zero-row `apply: True` press would go unnoticed. Nothing is seeded
@@ -462,7 +462,7 @@ async def test_a_bulk_rebuild_with_no_matches_writes_no_event_log_row(
 async def test_items_detail_is_sorted_by_plex_ref_lexicographically(
     client, auth_headers, session
 ):
-    """I2#4: `sorted(...)` on the Plex refs. Every assertion above is over a
+    """Covers `sorted(...)` on the Plex refs. Every assertion above is over a
     one-element list, which cannot tell a sort from a pass-through. Seeding
     "9" before "2" gives them ascending `Render.id`s, so an unsorted
     (insertion-order) return would read `["9", "2"]`; the endpoint's own

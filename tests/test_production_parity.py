@@ -62,7 +62,7 @@ def test_provenance_stamp_matches_production_plus_the_resolution_bound(config):
 
     Posterizarr's own stamp is ``magick <img> -set comment <c> <img>`` and
     nothing else, which is what this pinned until the production OOM
-    (``.superpowers/sdd/p-oom-investigation.md``): the stamp is the first
+    investigation: the stamp is the first
     magick call on a freshly downloaded source and decoded it at whatever
     resolution the provider served, at 16 bytes per pixel under Q16-HDRI,
     across five concurrent workers.

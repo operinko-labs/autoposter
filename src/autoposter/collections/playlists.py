@@ -63,15 +63,15 @@ definition to build.
 - **``filters:``** is refused on a playlist definition by name
   (``_REFUSED_PLAYLIST_FIELDS``). The post-builder filter stage lives inside
   ``engine._run_one`` with its tier-2 prefetch, and a second copy of an
-  oracle-proven stage was judged worse than the gap. Roadmap row 98's ledger
-  records it.
+  oracle-proven stage was judged worse than the gap. Roadmap row 98 records
+  it.
 - **``BuilderResult.summary`` is ignored.** A builder may derive its own
   summary -- ``builders/base.py`` calls it "only used when the definition does
   not set one" -- and ``engine._run_one`` resolves it through ``_summary_for``.
   This pass reads ``result.ids`` and ``result.level`` and nothing else, so a
   chart or award builder feeding a playlist contributes no summary and a
   playlist's summary is whatever its definition writes, or none. That is the
-  second declared gap, and it is in the ledger beside the first.
+  second declared gap, and it is recorded beside the first.
 - **Cross-library twins both enter.** Deduplication is by Plex item
   (``resolve._identity`` is ``str(item.ratingKey)``), so a film held in both a
   4K and an HD section can appear twice if the source names a guid each section
@@ -623,7 +623,7 @@ async def _reconcile_one(
     # Recorded BEFORE the hash short-circuit below, deliberately: a definition
     # whose admin playlist is already current still has to reach a user who has
     # no copy yet. That is exactly why the resolved user set does not enter the
-    # members hash (C13 A5) -- the gate that matters for a user is their own
+    # members hash -- the gate that matters for a user is their own
     # row, and a new user has none.
     resolved_out[definition.title] = list(items)
     hashes[definition.title] = wanted
@@ -937,8 +937,8 @@ def _user_swept(
     did not happen, with ``failed`` carrying that it was attempted.
 
     This is the only place in this service that writes
-    ``PlaylistUserResult.deleting``, which is why T2 pins it here and T3 pins
-    it served.
+    ``PlaylistUserResult.deleting``, which is why the tests pin it here and
+    pin it served.
     """
     return [PlaylistUserResult(
         title=target.title,
@@ -1017,10 +1017,10 @@ async def _sweep_playlists(
     needed: a playlist with no row of ours is never a candidate in the first
     place, which is the same outcome by a different route.
 
-    **Widened in 98c to user copies, through ONE gate and ONE cap.** C13 A2: a
+    **Widened to user copies, through ONE gate and ONE cap.** A
     user dropped from ``sync_to_users``, a definition deleted outright, and
     ``delete_unconfigured`` are three events with one predicate, and making
-    them three postures is exactly the mistake that rule forbids. A user's copy
+    them three postures is exactly the mistake to avoid. A user's copy
     is a candidate on the same rule as an admin playlist with the listing
     scoped to that user (``playlist_users.user_sweep_candidates``),
     ``delete_unconfigured`` authorises it, and ``max_deletes`` counts admin

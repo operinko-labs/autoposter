@@ -8,11 +8,10 @@ answers it for the families whose members are enumerated rather than curated:
 one row per family we BUILD, naming the ``Kometa-Team/Default-Images``
 directory its art lives in and the key scheme that directory is named by.
 
-**The table is DATA, and the data was listed rather than recalled.**
-``.superpowers/sdd/p-defimg-probe.md`` records the live listings -- §1 through
-§5 from the phase's first probe, §6 from this task's supplementary capture --
-and every directory, every key scheme and every code in the three lookup
-tables below is transcribed from those listings. Upstream keys by *name*, never
+**The table is DATA, and the data was listed rather than recalled.** Every
+directory, every key scheme and every code in the three lookup
+tables below is transcribed from live listings of that repository, taken in
+two captures. Upstream keys by *name*, never
 by id: the probe found no TMDb-collection-id naming anywhere in the repository,
 so a franchise is ``franchise/Jurassic Park.jpg`` and not
 ``franchise/1241.jpg``.
@@ -35,7 +34,7 @@ index image, with the full poster under ``<dir>/color/`` (probe §4,
 "Pattern B"). Each row spells its directory in full for that reason.
 ``logos/``, ``overlays/``, ``white/``, ``best/`` and ``standards/`` are never
 read: they are logo cutouts, name-stamped overlays and rendering variants, out
-of scope by the phase's own C1.6, and the probe measured that their casing and
+of scope here, and the listing measured that their casing and
 membership do not even match the base set.
 
 **A miss is the common case, and it is silent.** Upstream curates 116
@@ -238,17 +237,16 @@ UNIVERSE_CODES: dict[str, str] = {
     "ls4102351575": "fast",       # Fast & Furious
     "ls539646485": "mcu",         # Marvel Cinematic Universe
     "8642250": "dcu",             # DC Universe (TMDb list)
-    "ls547463722": "trek",        # Star Trek (§6 `universe/`: `trek.jpg`)
-    "ls501373412": "star",        # Star Wars Universe (§6: `star.jpg`)
-    "ls567618635": "xmen",        # X-Men Universe (§6: `xmen.jpg`)
-    # DC Extended Universe reuses DC Universe's `dcu`. §6's full `universe/`
-    # listing holds only `dca` (DC Animated) and `dcu`, no third DC entry, and
-    # T1 of the posters phase therefore left this ref out under its own
+    "ls547463722": "trek",        # Star Trek (`universe/trek.jpg`)
+    "ls501373412": "star",        # Star Wars Universe (`universe/star.jpg`)
+    "ls567618635": "xmen",        # X-Men Universe (`universe/xmen.jpg`)
+    # DC Extended Universe reuses DC Universe's `dcu`. The full `universe/`
+    # listing holds only `dca` (DC Animated) and `dcu`, no third DC entry, so
+    # this ref was first left out under the
     # "a code the listing does not show is LEFT OUT, not guessed" rule. This
     # entry is not a guess overturning that rule -- it is an operator
-    # RATIFICATION (2026-09-01) of the reuse, recorded in p-defimg-probe.md §6
-    # beside the original finding. 'In Association With DC' is NOT ratified
-    # and stays out.
+    # RATIFICATION (2026-09-01) of the reuse. 'In Association With DC' is NOT
+    # ratified and stays out.
     "fa11en82/dc-extended-universe": "dcu",
 }
 

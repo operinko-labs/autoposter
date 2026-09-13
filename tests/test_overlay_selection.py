@@ -8,9 +8,9 @@ time `apply_badges` builds this view, `media_info_from_plex` has already
 called `reload()` and walked `part.streams`, and `facts` and `plex_item` are
 handed in directly. So the four attributes the collections table defers or
 scopes for that reason (`audio_language`, `resolution`'s movie-only kind,
-`duplicate`, `network`) do not bind here -- the recon's own table, adjudication
-A3b answered by construction rather than by relaxing a column. That is a
-`kinds`-column fact only, not an accessor one (T1 review finding L-2):
+`duplicate`, `network`) do not bind here -- the recon's own table answered
+this by construction rather than by relaxing a column. That is a
+`kinds`-column fact only, not an accessor one:
 `duplicate` and `network` still have no accessor on this view and are
 refused the same way they always were. `versions` (sub-phase C2a) was the
 first attribute this view genuinely gained since C1; sub-phase C2b added
@@ -75,8 +75,8 @@ class _Item:
 
     `aspects`, `audio` and `subtitles` are per-VERSION lists so a
     multi-version item can be shaped: `_Item(resolutions=("1080", "4k"),
-    aspects=(None, 2.35))` is the unanalysed-first-version case adjudication
-    A-2's rule answers."""
+    aspects=(None, 2.35))` is the unanalysed-first-version case this view's
+    fallback rule answers."""
 
     def __init__(
         self, resolutions=("1080",), content_rating="PG-13",
@@ -382,8 +382,8 @@ def test_an_item_with_no_streams_answers_empty_tuples_not_none():
 
 
 def test_the_two_views_agree_by_verdict_on_distinct_languages_and_diverge_on_repeats():
-    """**L-1, met here** (roadmap row 100's C2b sentence, reworded per the C1
-    branch review). The two views source these from genuinely different
+    """**Met here** (roadmap row 100's C2b sentence). The two views source
+    these from genuinely different
     reads -- this one from the `MediaInfo` the badge pass built off
     `part.streams`, the collections one from the batched metadata endpoint's
     `ItemTags` -- so they cannot share a function object the way `aspect`
@@ -486,7 +486,7 @@ def test_an_attribute_still_outside_the_vocabulary_is_refused_naming_the_eight()
 class _StatusFacts:
     """An `ItemFacts`-shaped stand-in carrying the two C2c columns. The real
     object `apply_badges` hands the view is either an `ItemFacts` row or a
-    bare `GatheredFacts()`; both carry these attributes after T1, and both
+    bare `GatheredFacts()`; both carry these attributes, and both
     read the same way here."""
 
     critic_rating = 4.9

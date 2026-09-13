@@ -124,12 +124,11 @@ def test_a_text_override_equal_to_plex_and_already_locked_writes_nothing():
 
 
 def test_a_text_override_equal_to_plex_but_unlocked_still_writes_the_lock():
-    """Task-2 fix round 1, ruling on I-1: supersedes the brief's ``== {}``
-    expectation for this case. The value already matches, but the field is
-    NOT locked -- exactly the state Plex's own agent is free to rewrite on
-    its next refresh, clobbering the value the operator pinned before a
-    later pass would notice the drift and write-and-lock it. So the write
-    still happens, carrying the lock alone and no value key."""
+    """The value already matches, but the field is NOT locked -- exactly the
+    state Plex's own agent is free to rewrite on its next refresh, clobbering
+    the value the operator pinned before a later pass would notice the drift
+    and write-and-lock it. So the write still happens, carrying the lock
+    alone and no value key."""
     item = LockableItem(tagline="Same", locks=[])
     assert override_edits(item, {"tagline": "Same"}) == {"tagline.locked": 1}
 
@@ -256,8 +255,8 @@ def test_a_second_pass_over_an_applied_override_writes_nothing():
     """Steady state through the real planner, not just through
     ``override_edits`` -- on an item Plex already reports BOTH fields
     locked, i.e. the state the first pass's write would have left behind
-    (I-1's lock-ensure fix; a second pass over an unlocked-but-equal item is
-    pinned separately, above, on ``override_edits`` directly)."""
+    (a second pass over an unlocked-but-equal item is pinned separately,
+    above, on ``override_edits`` directly)."""
     item = LockableItem(
         tagline="x", rating=8.7, locks=[("tagline", True), ("rating", True)],
     )

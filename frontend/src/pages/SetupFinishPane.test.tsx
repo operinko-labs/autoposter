@@ -129,7 +129,7 @@ describe("SetupFinishPane", () => {
   });
 
   it("reports the server the wizard set up, and says the check was a setup-time one", () => {
-    // Review M1: "a check passed during setup" and never "this address was
+    // "a check passed during setup" and never "this address was
     // checked" -- `checked` is a session fact the server forgets, so the page
     // must not report it as a property of the address.
     renderPane();
@@ -214,7 +214,7 @@ describe("SetupFinishPane", () => {
   });
 
   it("says what a resolving document did and did not keep from the media-server card", () => {
-    // Facts C1 and the Task 3 review's third point. Three separate facts, and
+    // Three separate facts, and
     // the operator leaves believing the tick-list took effect unless all three
     // are said: `public_url` was used and not written; the address and the
     // ticked libraries were recorded NOWHERE (`base_urls` dies with the setup
@@ -222,7 +222,7 @@ describe("SetupFinishPane", () => {
     //
     // Neither server is named: the block above already says which one this
     // deployment was set up with, and on the Jellyfin-only walk a paragraph
-    // about Plex contradicts it on screen (review I1).
+    // about Plex contradicts it on screen.
     renderPane({ progress: { ...PROGRESS, config_source: "configured" } });
 
     const skipped = screen.getByTestId("skipped-list");

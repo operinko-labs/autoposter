@@ -168,7 +168,7 @@ def generated_titles(run_cache: dict, definition) -> set[str] | None:
 
 class CreditsFamilyParams(BaseModel):
     """``data: {depth, limit}`` is upstream's own vocabulary for these packs
-    (all four transcribed in .superpowers/sdd/p10c-upstream-person.md 2.1); the
+    (all four transcribed from the pinned upstream tree); the
     narrowing/titling knobs are the shared family vocabulary ``DynamicParams``/
     ``FactsFamilyParams`` already teach, so an operator who has learned one
     family's knobs has learned this one's.

@@ -1,6 +1,6 @@
 # Collection sort titles and separator artwork — the live read-only probe
 
-Roadmap row 49, Task 1. Run against the operator's production Plex on
+Roadmap row 49. Run against the operator's production Plex on
 2026-08-29, **read-only throughout** — the script issues `GET`s only, and
 nothing in it writes, edits, creates or deletes anything on the server. The
 server address and the token are scrubbed from every line here and from the
@@ -54,16 +54,16 @@ No `edit`, no `editSortTitle`, no `addLabel`, no `createCollection`, no
 
 ## 2. What it exists to decide
 
-**(a) The unrecorded prefix.** Adjudication C5 says ~35 shipped collections
+**(a) The unrecorded prefix.** The dividers decision says ~35 shipped collections
 "each take ONE `editSortTitle` PUT on first pass post-deploy, including
 REPLACING adopted Kometa prefixes on managed collections". Nothing in this
 codebase has ever written a family sort title — the operator's tidy blocks are
 adopted-Kometa inheritance — so what those prefixes actually *are* was never on
 record. Until this probe the migration claim rested on inference. It now rests
 on a count: **49 collections carry an adopted Kometa prefix today.** That is
-not C5's churn figure. 49 counts collections *carrying a prefix*, whether or
-not this service manages them; the churn count C5's PR body needs is the
-*managed* set, derived separately (T4/T5), and can differ from 49 in either
+not that churn figure. 49 counts collections *carrying a prefix*, whether or
+not this service manages them; the churn count the PR body needs is the
+*managed* set, derived separately, and can differ from 49 in either
 direction — a managed collection with no prefix still takes a PUT, and a
 prefixed collection under a switched-off preset takes none.
 
@@ -385,7 +385,7 @@ evidence that something else manages the collection.
 ## 4. The script, verbatim
 
 ```python
-"""Row 49 Task 1: three read-only measurements. Nothing is written to Plex."""
+"""Row 49: three read-only measurements. Nothing is written to Plex."""
 import os
 from urllib.parse import urlsplit
 
@@ -543,9 +543,9 @@ export PROBE_PLEX_URL=...       # read from the operator's config, never echoed
 export PROBE_PLEX_TOKEN=...     # read from .env's AUTOPOSTER_PLEX_TOKEN
 export MSYS_NO_PATHCONV=1       # Git Bash would otherwise rewrite /app/...
 
-docker compose -p p49t1 -f docker-compose.yml -f .superpowers/isolated-db.yml \
+docker compose -p p49t1 -f docker-compose.yml -f scratch/isolated-db.yml \
     run --rm --no-deps -e PROBE_PLEX_URL -e PROBE_PLEX_TOKEN \
-    test python /app/probe_sort.py > .superpowers/p49-probe.log 2>&1
+    test python /app/probe_sort.py > scratch/p49-probe.log 2>&1
 docker compose -p p49t1 down
 ```
 
@@ -554,7 +554,7 @@ counting occurrences of each needle — the counts are printed, the needles
 never are:
 
 ```
-file=.superpowers/p49-probe.log url_hits=0 host_hits=0 token_hits=0
+file=scratch/p49-probe.log url_hits=0 host_hits=0 token_hits=0
 file=probe_sort.py              url_hits=0 host_hits=0 token_hits=0
 ```
 

@@ -1,4 +1,4 @@
-"""``filter_values``: the item view -- Task 1's predicate model over real items.
+"""``filter_values``: the item view -- the predicate model over real items.
 
 ``filters.evaluate`` reads an ``ItemView``, a mapping-like accessor keyed on the
 table's attribute names. This module is the one implementation of that protocol
@@ -14,7 +14,7 @@ reloads such an object -- one synchronous HTTP GET -- whenever an attribute
 reads back as ``None`` or ``[]``, because it cannot tell "absent" from "not
 fetched yet". An accessor written the obvious way (``item.year``) is therefore
 fine on every item that HAS a year and one request per item on every item that
-does not. That is the silent N+1 the plan forbids, and it hides perfectly: the
+does not. That is the silent N+1 this rule forbids, and it hides perfectly: the
 suite's hand-written fakes have no such behaviour, and a real library shows it
 only as a run that got slow.
 
@@ -29,9 +29,8 @@ Two things make the rule structural rather than a convention:
   rest refuse -- see ``AttributeNotInListing``.
 
 **The probe** (read-only, production server ``ShadowPlex``, Plex
-1.43.4.10903-e5521bd8c, 1955 movies / 284 shows; full log in
-``.superpowers/sdd/task-2-report.md``) resolved the table's seven ``probe``
-cells. One shipped and six deferred, which is close to the reverse of what the
+1.43.4.10903-e5521bd8c, 1955 movies / 284 shows) resolved the table's seven
+``probe`` cells. One shipped and six deferred, which is close to the reverse of what the
 table expected:
 
 - ``resolution`` SHIPS. ``<Media videoResolution=...>`` is on all 1955 movies
@@ -113,7 +112,7 @@ __all__ = [
 class AttributeNotInListing(LookupError):
     """Asked for a value tier 1 deliberately cannot read.
 
-    Raised, never returned as missing. Task 3 refuses these at config load, so
+    Raised, never returned as missing. Config load refuses these, so
     reaching this exception at run time means a filter got past that check.
     """
 
@@ -175,7 +174,7 @@ def _duration_minutes(item: object) -> float | None:
     true and it is still the wrong call, because rounding moves the RANGE
     operators: Kometa's own conversion is ``test_number /= 60000`` with nothing
     after it (plex.py:2923-2926), so a 149.7-minute film passes
-    ``duration.lt: 150`` there and failed here. Task 4's oracle found exactly
+    ``duration.lt: 150`` there and failed here. The oracle found exactly
     that item. Every runtime within half a minute of a threshold was answered
     wrongly -- roughly one item in a hundred and twenty for an integer
     threshold, always at the boundary, which is the least visible place to be
@@ -377,7 +376,7 @@ class PlexItemView:
                 )
             # None here is "this item has no value", which is the answer for a
             # NULL column, for an item with no facts row and for an item the
-            # sync has not seen -- three states ruling C3 treats identically.
+            # sync has not seen -- three states the missing rule treats identically.
             # The NOT-LOADED case is the branch above; the two must never
             # collapse.
             return getattr(self._facts, field)

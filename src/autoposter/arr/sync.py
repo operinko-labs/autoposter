@@ -353,11 +353,11 @@ async def _stale_rows_by_key(
 
     Same ``kind``, same ``library``, and a non-empty external-id
     intersection -- as wide as this sweep's own guess needs to be and no
-    wider. Library-blind was tried and overturned (C6): a wrong guess does
-    not cost what today's (pre-phase) code costs -- it enqueues the OTHER
+    wider. Library-blind was tried and overturned: a wrong guess does
+    not cost what the earlier code costs -- it enqueues the OTHER
     library's row's intent and the discovered item is never enqueued at all,
     forever, which is a real regression against the 4K/HD dual-library
-    population this phase treats as first-class. The season/episode columns
+    population this sweep treats as first-class. The season/episode columns
     are pinned NULL because this sweep only ever walks movie and show
     sections.
 

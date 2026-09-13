@@ -16,7 +16,7 @@ def test_every_badge_is_defined_as_an_overlay():
 
 
 def test_the_image_only_badges_keep_badgespecs_default_font_size():
-    """A3 claims `BADGES` (derived from these definitions -- T2 Step 7) is
+    """`BADGES` (derived from these definitions) is
     unchanged in shape AND value. `resolution` and `audio_codec` name no
     font_size (they draw no text), so without stating it explicitly here the
     schema's own default (36) would silently replace `BadgeSpec.font_size`'s

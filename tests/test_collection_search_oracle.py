@@ -1,4 +1,4 @@
-"""THE KOMETA-STRING ORACLE -- phase 9b's acceptance.
+"""THE KOMETA-STRING ORACLE -- the transcription's acceptance test.
 
 ``src/autoposter/collections/search_url.py`` is a *transcription* of Kometa's
 ``build_filter``, and the module's own docstring names why that is the
@@ -22,11 +22,9 @@ byte.
 | The version | ``VERSION`` -- 2.4.8 |
 
 All from ``https://raw.githubusercontent.com/Kometa-Team/Kometa/v2.4.8``. The
-driver is ``tests/oracle/9b/kometa_build_filter.py`` -- under ``tests/``, not
-beside 9a's under ``.superpowers/``, because this test READS it and
-``.superpowers/`` is gitignored; a file an assertion depends on has to be in
-the checkout that runs the assertion. Its raw run is in
-``.superpowers/sdd/task-3-report.md``. It imports **nothing** from this
+driver is ``tests/oracle/9b/kometa_build_filter.py`` -- it lives under
+``tests/`` because this test READS it, and a gitignored location would be
+absent from the checkout that runs the assertion. It imports **nothing** from this
 repository -- and, unlike 9a's oracle, nothing from plexapi either: this half of
 Kometa reads a config dict and a tag vocabulary and writes a string, and there
 is no Plex object anywhere in it. Every removal it makes is marked
@@ -49,12 +47,12 @@ TRANSLATION rather than about one server's contents -- and it is also why
 Green, in all thirteen, on the first run -- and the six configs the plan had
 also hand-derived from the source (1, 2, 3, 5, 7 and 12) agree with the driver
 exactly, so there is no adjudication to record. That is a weaker result than
-9a's four-way disagreement only in the sense that nothing had to be fixed; the
-falsifiability proof in the Task 3 report is what shows the gate can fail.
+9a's four-way disagreement only in the sense that nothing had to be fixed; a
+separate falsifiability proof shows the gate can fail.
 
 ## The fourteenth config
 
-Added after the Task 3 review, which found the one coverage hole in the
+Added after finding the one coverage hole in the
 original thirteen: configs 1 and 13 pin a multi-term join under ``all`` and no
 config pinned one under ``any``, so a renderer hard-coding ``and=1&`` between
 the terms of a single written key passed every oracle case. Config 14 is that
@@ -85,7 +83,7 @@ so".
 
 ## The sixteenth and seventeenth configs
 
-Phase 10a added two rows to the table -- ``decade`` (roadmap row 171) and
+Two rows were added to the table -- ``decade`` (roadmap row 171) and
 ``country`` (row 174) -- and
 ``test_the_configs_cover_every_shipped_value_type`` only asserts that every
 value TYPE is exercised, which both rows' types already were. So neither row
@@ -156,7 +154,7 @@ rather than a golden.
 Roadmap row 176 -- `folder_location`, the one attribute in Kometa's search
 grammar whose Plex FIELD is a run-time answer rather than a table entry
 (`get_search_key`, `modules/plex.py:1286-1297`), restored in the driver's
-call site for `get_search_key` at `kometa_build_filter.py:904-907` after being removed by name in 9b's D3. The
+call site for `get_search_key` at `kometa_build_filter.py:904-907` after previously being removed by name. The
 driver therefore grows a SECOND shared-by-value fixture, `FILTERS`, standing in
 for `LibrarySection.listFilters` the way `CHOICES` stands in for
 `get_search_choices`: `CHOICES` says what a filter's values are, `FILTERS` says
@@ -171,7 +169,7 @@ error.
 ## `current_year`, row 171's other half
 
 Row 171 had two halves: the ``decade`` table row (configs 16/17, above) and
-the ``current_year``/``current_year-N`` value grammar. Search-tails-2 Task 2
+the ``current_year``/``current_year-N`` value grammar. Search-tails-2
 shipped the grammar in the ``filters:`` engine (``evaluate`` /
 ``_matches_one`` in ``filters.py``), citing this driver's own transcription
 of Kometa's algorithm (``validate_attribute``'s year-attribute branch,
@@ -409,18 +407,11 @@ CONFIGS = [
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
 # ``tests/oracle/9b/kometa_build_filter.py`` -- Kometa v2.4.8's
 # ``build_filter``, transcribed standalone, importing nothing from this
-# repository. The raw run is in the Task 3 report (thirteen), the Task 4
-# report (the fourteenth), the Task 7 report (the fifteenth) and the Task 1
-# report of phase 10a-1 (sixteen and seventeen, `decade` and `country` --
-# predicted at Step 6 before the driver ran, then confirmed by it, same as the
-# fifteen before them), search-tails-1's plan (eighteen and nineteen,
-# predicted from the transcription, then confirmed by the driver) and
-# search-tails-1's Task 2 report (twenty and twenty-one, the same way),
-# search-tail E-1's plan (twenty-two, predicted from the transcription, then
-# confirmed by the driver), and search-tail E-2's Task 2 (twenty-three and
-# twenty-four, the season and episode levels, predicted then confirmed the
-# same way). Do not edit a string here to make a test pass: if ours differs,
-# ours is wrong.
+# repository. Configs sixteen and seventeen (`decade` and `country`),
+# eighteen and nineteen, twenty and twenty-one, twenty-two, and twenty-three
+# and twenty-four (the season and episode levels) were each predicted from
+# the transcription first, then confirmed by running the driver. Do not
+# edit a string here to make a test pass: if ours differs, ours is wrong.
 KOMETA = {
     "1-multi-value-tag": "?type=1&sort=titleSort&contentRating=5&and=1&contentRating=7",
     "2-any-base": "?type=1&limit=25&sort=rating%3Adesc&push=1&studio=A24&or=1&year%3E=2020&pop=1",
@@ -481,9 +472,9 @@ def test_the_oracles_vocabulary_fixtures_match_this_files_copies():
     test guarantees is only worth having if it cannot quietly stop applying,
     and a CWD-relative path turns "run pytest from somewhere else" into a
     vanished assertion. It is also why the driver lives under ``tests/`` at all
-    -- ``.superpowers/`` is gitignored, so a driver there would be absent from
-    a fresh clone and this test would fail (or, worse, be made to skip) for a
-    reason that has nothing to do with the transcription.
+    -- a gitignored location would be absent from a fresh clone and this test
+    would fail (or, worse, be made to skip) for a reason that has nothing to
+    do with the transcription.
 
     TWO fixtures since roadmap row 176, checked the same way and in one pass:
     ``CHOICES`` (what a filter's values are) and ``FILTERS`` (which filters the
@@ -604,14 +595,14 @@ def test_current_year_matches_kometas_own_transcribed_algorithm():
 
 
 def test_the_driver_defaults_its_library_kind_to_its_sort_type():
-    """Search-tail E-2 (facts C4). The driver conflated two things Kometa keeps
+    """The driver conflated two things Kometa keeps
     apart: ``is_show = sort_type == "show"`` (kometa_build_filter.py:858) drove
     ``show_translation`` and the kind gates, which Kometa derives from
     ``self.library.is_show`` (modules/builder.py:4176-4181) and NOT from the
     search level. Un-conflating them is a signature change to a vendored
     transcription, so the first thing pinned is that it changed nothing: with
     ``library_kind`` left at its default every config produces the byte it
-    produced before -- Task 2's added 23/24 too, trivially: passing
+    produced before -- configs 23/24 too, trivially: passing
     ``library_kind=sort_type`` explicitly is definitionally the same as
     omitting it, whatever the config's OWN (possibly different) library_kind
     is. That the two can differ is what
@@ -638,7 +629,7 @@ def test_the_driver_types_by_the_sort_type_and_scopes_by_the_library_kind():
     through ``search_translation``, which is kind-independent -- so a driver
     that kept the conflation (``is_show = sort_type == "show"``) answers the
     original version of this test identically whether ``library_kind`` is
-    honoured or ignored (Task 1 review, Important I-1). ``title.begins`` is
+    honoured or ignored. ``title.begins`` is
     the discriminating case: ``title`` is bare in ``search_translation`` and
     reachable through ``show_translation`` only (kometa_build_filter.py:909),
     so it renders ``show.title`` under ``library_kind="show"`` and bare

@@ -330,7 +330,7 @@ def test_the_owner_is_never_a_sync_target():
 
 
 def test_a_pin_protected_user_is_skipped_before_any_plex_tv_call():
-    """C13 A8. ``switchHomeUser`` without a PIN simply omits the parameter and
+    """``switchHomeUser`` without a PIN simply omits the parameter and
     leaves plex.tv to answer with a failure the pass would have to interpret;
     the flag check makes that unreachable. Proved by the counters: zero token
     reads, zero switches, zero connections."""
@@ -399,7 +399,7 @@ def test_an_excluded_name_written_explicitly_is_skipped_by_name():
 
 
 def test_a_non_owner_token_refuses_the_whole_fan_out():
-    """C13 A9. "An account token" is not "this server's owner's account
+    """"An account token" is not "this server's owner's account
     token", and without this the difference surfaces as a 401 partway through
     a fan-out that has already written to somebody."""
     sync, account = _sync([FakeUser(1, "alice", token=TOKEN)], owned=False)
@@ -467,7 +467,7 @@ def test_a_share_token_is_preferred_over_the_home_switch():
 
 
 def test_a_home_user_without_a_share_token_is_switched_to_instead():
-    """The fallback C13 A8 names, kept because an account whose Home users
+    """The fallback this rule names, kept because an account whose Home users
     have no share entries is exactly the shape the ruling was written for."""
     connector = Connector()
     sync, account = _sync(
@@ -1074,7 +1074,7 @@ async def test_past_the_user_cap_nothing_is_minted_at_all(session):
     before it has minted two hundred tokens and issued two hundred PMS
     listings. Nothing would have been WRITTEN either way -- but the recon's
     cost model is what the caps were written against, and spending most of it
-    and then refusing keeps the letter of C13 A6 while losing its point. So
+    and then refusing keeps the letter of the rule while losing its point. So
     ``max_users`` is evaluated against the union of every definition's targets,
     resolved from the cached ``account.users()`` list alone, before a single
     ``get_token`` call.
@@ -1221,7 +1221,7 @@ async def test_no_user_token_is_ever_persisted(session):
 async def test_a_row_no_configuration_asks_for_whose_object_is_live_is_a_candidate(
     session,
 ):
-    """C13 A2's one predicate. This exercises the "user dropped from
+    """The one predicate this exercises: the "user dropped from
     sync_to_users" event; the definition still exists and still syncs, just
     not to this person."""
     copy = FakeUserPlaylist(7001, "Timeline", [ITEM_A])

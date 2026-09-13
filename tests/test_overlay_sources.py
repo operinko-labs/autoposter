@@ -29,11 +29,11 @@ def _client(handler):
 def _tiny_png() -> bytes:
     """A genuinely decodable PNG body.
 
-    Deviation from the brief: its own fixture (a PNG signature followed by
+    Deviation from the original ladder tests: its own fixture (a PNG signature followed by
     64 zero bytes) has no valid IHDR chunk and never decoded -- it only
-    passed because the brief's ladder predates render/pipeline.py's #131
+    passed because those tests predate render/pipeline.py's #131
     full-decode validation (see `resolve_image_path`'s
-    `_validate_overlay_image` step, now run on every rung -- M1). A real
+    `_validate_overlay_image` step, now run on every rung). A real
     image is needed here so this test still proves what it says it proves: a
     cache hit that skips the second request, not a decode refusal that
     happens to also skip it.
@@ -44,7 +44,7 @@ def _tiny_png() -> bytes:
 
 
 async def test_a_file_source_resolves_under_overlays_root(overlays_root):
-    """M1: `file:` now full-decode validates like the `url:` rung, so this
+    """`file:` now full-decode validates like the `url:` rung, so this
     needs a genuinely decodable image -- see `_tiny_png`'s own docstring for
     why `b"x"` used to pass here."""
     (overlays_root / "mine.png").write_bytes(_tiny_png())
@@ -56,7 +56,7 @@ async def test_a_file_source_resolves_under_overlays_root(overlays_root):
 
 
 async def test_a_file_source_that_is_not_a_decodable_image_is_refused(overlays_root):
-    """M1: the `file:` rung used to hand a path straight to `compose.py`'s
+    """The `file:` rung used to hand a path straight to `compose.py`'s
     `_load` undecoded -- a truncated upload, a saved HTML error page, a
     `.png` that is really something else -- raising deep inside the compose
     worker thread instead of a clean per-definition refusal here."""
@@ -120,7 +120,7 @@ async def test_a_missing_builtin_is_an_error_not_a_silent_skip(overlays_root):
 async def test_a_builtin_source_that_is_not_a_decodable_image_is_refused(
     overlays_root, monkeypatch, tmp_path
 ):
-    """M1: the `builtin:` rung had the same gap as `file:` -- no decode check
+    """The `builtin:` rung had the same gap as `file:` -- no decode check
     before the path reaches compose.py's `_load`. The bundled tree is source,
     not a fixture, so the tree itself is monkeypatched to a scratch directory
     carrying an undecodable stub, the same shape `_confined`'s own tests use
@@ -212,7 +212,7 @@ async def test_a_url_pointing_at_a_private_address_is_never_requested(overlays_r
 
 
 async def test_no_source_falls_back_to_the_name_keyed_file(overlays_root):
-    """Probe section 1.2 step 6. M1: the fallback rung is now decode-validated
+    """Probe section 1.2 step 6. The fallback rung is now decode-validated
     too, so this needs a real image the same way the `file:` rung's own test
     does."""
     (overlays_root / "mystamp.png").write_bytes(_tiny_png())
@@ -232,8 +232,8 @@ async def test_a_text_overlay_with_no_source_and_no_file_resolves_to_nothing(ove
 
 
 async def test_a_downloaded_image_that_fails_to_decode_is_refused(overlays_root, monkeypatch):
-    """Deviation from the brief: the plan predates render/pipeline.py's #131
-    full-decode validation, and its ladder steps only checked Content-Type.
+    """This ladder predates render/pipeline.py's #131
+    full-decode validation, and its steps only checked Content-Type.
     A PNG-signed body whose IDAT stream is nonsense passes that check and
     would otherwise reach badges/compose.py's `_load` -- straight into
     Pillow, since overlay images never go through magick at all -- so this

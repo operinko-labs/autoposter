@@ -1088,7 +1088,7 @@ async def test_title_card_gate_off_when_a_provider_has_art(session, tmp_path, mo
 
 async def test_title_card_falls_back_to_plexs_generated_frame(session, tmp_path, monkeypatch):
     """No provider has a title card; Plex's own derived frame (the media://
-    entry, never the agent guess -- C5) becomes the base."""
+    entry, never the agent guess) becomes the base."""
     config = _logo_test_config(tmp_path)
     _stub_out_imagemagick(monkeypatch)
     provider = _TitleCardAwareProvider(has_art=False)
@@ -1193,7 +1193,7 @@ async def test_title_card_losing_its_generated_frame_clears_stale_source_mode(
 async def test_title_card_fingerprint_is_stable_across_a_bumped_plex_thumb_epoch(
     session, tmp_path, monkeypatch
 ):
-    """The stability pin (C1.3): the key Plex serves the frame from can
+    """The stability pin: the key Plex serves the frame from can
     change (our own lockPoster bumps its epoch every pass) without moving the
     fingerprint -- only the BYTES (base_sha256) decide re-render, because
     source_url is the stable synthetic key, never the live URL."""
@@ -1253,7 +1253,7 @@ def test_library_language_overrides_are_per_library_and_per_art_kind():
     )
 
 
-# Task 19, spec §10.6: process_item resolves on every configured server,
+# Spec §10.6: process_item resolves on every configured server,
 # renders once, and delivers per server. `render_artifact` and
 # `compose_badged_bytes` are both faked here -- neither ImageMagick nor a
 # real provider fetch is what these tests are about, and a fake
@@ -1361,7 +1361,7 @@ async def test_a_path_mismatch_on_one_server_fails_that_delivery_only(
 
     poster = next(r for r in renders if r.art_kind == "poster")
     assert poster.upload_status == "failed" and plex.uploads
-    # M4: category plus class name, never the exception's own message -- which
+    # Category plus class name, never the exception's own message -- which
     # for a PathMismatch is a filesystem path (spec §5.2).
     detail = (
         await session.execute(
@@ -1385,12 +1385,12 @@ async def test_no_server_resolving_still_defers_the_job(session, config_with_bad
 async def test_a_transport_error_from_one_server_resolve_does_not_abort_the_others(
     session, config_with_badges, monkeypatch, caplog,
 ):
-    """I4 (fix round 2): a transport error resolving on ONE server must not
+    """A transport error resolving on ONE server must not
     abort the item for the others -- logged (class name only, never a URL),
     treated as a miss (that server gets `pending`), and the loop continues
     to deliver everything else normally.
 
-    `upload_to_jellyfin` is turned on explicitly (fix round 3, I1): the
+    `upload_to_jellyfin` is turned on explicitly: the
     toggle now gates the MISSED half of `deliver` as well as the resolved
     one, so with it off this server's honest outcome would be `skipped` and
     the assertion below would stop testing what this test is named for."""
@@ -1421,13 +1421,10 @@ async def test_a_transport_error_from_one_server_resolve_does_not_abort_the_othe
     assert not any("jellyfin.internal" in m for m in messages), "the URL must never reach the log"
 
 
-# Fix round 1 (controller review of Task 19).
-
-
 async def test_metadata_fan_out_reaches_every_resolved_server_with_its_own_ref(
     session, monkeypatch,
 ):
-    """I5: apply_metadata's write loop (ruling 4) must reach EVERY resolved
+    """apply_metadata's write loop (ruling 4) must reach EVERY resolved
     server, each with its OWN ref -- and one server's exempting label must
     never leak into another server's own exemption check."""
     config = load_config(EXAMPLE)
@@ -1462,7 +1459,7 @@ async def test_metadata_fan_out_reaches_every_resolved_server_with_its_own_ref(
 async def test_an_unresolved_jellyfin_delivers_from_a_pending_row_once_it_resolves(
     session, config_with_badges, monkeypatch,
 ):
-    """I1: a server added late (or one whose upload_to_<name> was only just
+    """A server added late (or one whose upload_to_<name> was only just
     turned on) must not wait for the NEXT fingerprint change to get its
     first delivery -- an unchanged compose (``data is None``) still catches
     a resolved, upload-enabled server with no delivery row up with a
@@ -1506,8 +1503,8 @@ async def test_an_unresolved_jellyfin_delivers_from_a_pending_row_once_it_resolv
 async def test_an_upload_disabled_server_gets_no_catchup_row(
     session, config_with_badges, monkeypatch,
 ):
-    """NB3 (fix round 2): the per-library toggle is checked BEFORE I1's
-    catch-up -- an upload-disabled server must never get a `pending` row
+    """The per-library toggle is checked BEFORE the catch-up behavior above
+    -- an upload-disabled server must never get a `pending` row
     only for the very next retry pass to immediately rewrite it `skipped`.
     With `upload_to_jellyfin` off and an unchanged fingerprint, jellyfin
     gets no row at all; plex, already `uploaded`, is untouched."""
@@ -1544,7 +1541,7 @@ async def test_an_upload_disabled_server_gets_no_catchup_row(
 async def test_a_single_upload_enabled_server_skips_compose_on_matching_provenance(
     session, config_with_badges, monkeypatch,
 ):
-    """I2: with exactly one resolved, upload-enabled server, adoption is
+    """With exactly one resolved, upload-enabled server, adoption is
     checked BEFORE any image work -- cutover (a whole library with no
     badge_fingerprint yet, every render already carrying its own EXIF
     fingerprint) must not recompose bytes already sitting on that server.
@@ -1634,7 +1631,7 @@ async def test_a_single_upload_enabled_server_skips_compose_on_matching_provenan
 async def test_a_failed_compose_after_a_provenance_mismatch_leaves_the_fingerprint_untouched(
     session, config_with_badges, monkeypatch,
 ):
-    """NB2 (fix round 2): the solo-adoption check must never write
+    """The solo-adoption check must never write
     ``render.badge_fingerprint`` before compose actually succeeds. Provenance
     does NOT match here, so the shortcut falls through to a real compose --
     which then raises. The column must stay exactly as it was (``None``),
@@ -1698,9 +1695,6 @@ async def test_a_failed_compose_after_a_provenance_mismatch_leaves_the_fingerpri
     assert calls == [1], "the second pass must retry compose, not skip on a stale gate"
 
 
-# Fix round 3 (Phase 5 branch review).
-
-
 async def _refs_for_the_intent(session) -> set[str]:
     """Which servers hold a ref for the item ``INTENT`` resolves to."""
     return set((await session.execute(select(MediaItemServerRef.server))).scalars())
@@ -1709,7 +1703,7 @@ async def _refs_for_the_intent(session) -> set[str]:
 async def test_a_refused_art_kind_keeps_every_resolved_servers_ref(
     session, config_with_badges, monkeypatch,
 ):
-    """C1: the refusal handler rolls back while the non-primary refs written
+    """The refusal handler rolls back while the non-primary refs written
     at the top of `process_item` are still uncommitted, and then re-establishes
     the item -- re-upserting the PRIMARY ref alone, silently dropping
     jellyfin's, and committing that loss. Worst for a season or an episode,
@@ -1743,9 +1737,9 @@ async def test_a_refused_art_kind_keeps_every_resolved_servers_ref(
 async def test_a_metadata_failure_keeps_every_resolved_servers_ref(
     session, config_with_badges, monkeypatch,
 ):
-    """C1, the other rollback: the metadata-operations containment. It needs
+    """The other rollback: the metadata-operations containment. It needs
     no refusal at all -- a TMDb hiccup, or one server's `apply_facts` failing
-    (I4) -- and the only thing that re-established the item afterwards was
+    -- and the only thing that re-established the item afterwards was
     `render_artifact`'s own `_upsert_media_item`, which knows nothing about
     the other servers."""
     config_with_badges.badges.enabled = False
@@ -1768,7 +1762,7 @@ async def test_a_metadata_failure_keeps_every_resolved_servers_ref(
 async def test_an_upload_disabled_server_that_missed_gets_no_pending_row(
     session, config_with_badges, monkeypatch,
 ):
-    """I1: NB3's toggle check sat inside `deliver`'s RESOLVED half, so a
+    """The toggle check sat inside `deliver`'s RESOLVED half, so a
     server the pass could not resolve still got a `pending` catch-up row with
     its upload toggle off. `upload_to_jellyfin` defaults to off, so that is
     every item Jellyfin has not scanned yet on a dual deployment's first
@@ -1797,10 +1791,10 @@ async def test_an_upload_disabled_server_that_missed_gets_no_pending_row(
 async def test_one_servers_metadata_write_failure_does_not_cost_the_other_its_write(
     session, monkeypatch, caplog,
 ):
-    """I4: `_write` was awaited in sequence with no `try`, so Plex's
+    """`_write` was awaited in sequence with no `try`, so Plex's
     `apply_facts` failing aborted before Jellyfin was attempted at all and
     propagated into `process_item`'s containment -- whose rollback discards
-    this item's `persist_facts` and, before C1, its refs with it (spec
+    this item's `persist_facts` and its refs with it (spec
     §6.1: every server call is caught at the ref it belongs to)."""
     config = load_config(EXAMPLE)
     config.operations.write_to_plex = True
@@ -1840,7 +1834,7 @@ async def test_one_servers_metadata_write_failure_does_not_cost_the_other_its_wr
 async def test_a_migration_backfilled_delivery_row_does_not_block_adoption(
     session, config_with_badges, monkeypatch,
 ):
-    """I5: the Phase-2 migration backfills one `plex` delivery row for EVERY
+    """The Phase-2 migration backfills one `plex` delivery row for EVERY
     pre-existing render, with no `attempted_at`. `_already_delivered`
     answered False as soon as any row existed, so on the production database
     the provenance probe could never run again -- for exactly the population
@@ -1909,7 +1903,7 @@ async def test_a_migration_backfilled_delivery_row_does_not_block_adoption(
 async def test_one_permanently_pending_server_does_not_recompose_every_pass(
     session, config_with_badges, monkeypatch,
 ):
-    """I7: the unchanged-work gate was inherited from the single-server code
+    """The unchanged-work gate was inherited from the single-server code
     (`fingerprint` unchanged AND `upload_status == "uploaded"`), but
     `upload_status` is now the roll-up, whose precedence puts `pending` above
     `uploaded`. So one server that has not scanned the item -- the normal
@@ -1965,20 +1959,17 @@ async def test_one_permanently_pending_server_does_not_recompose_every_pass(
         ).scalars()
     }
     assert rows == {("plex", "uploaded"), ("jellyfin", "pending")}
-    # N4: the horizon is NOT pushed forward by a pass that learned nothing
+    # The horizon is NOT pushed forward by a pass that learned nothing
     # new. RETRY_SECONDS is 6h and the measured full pass is ~3.5h, so
     # re-stamping it every pass meant the row could never mature and the
     # retry pass never saw the population it was written for.
     assert await _jellyfin_horizon() == horizon, "a miss must not defer the row again"
 
 
-# Fix round 3, round 2 (controller rulings R1 and R2).
-
-
 async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     session, config_with_badges, monkeypatch,
 ):
-    """R1: with the unchanged-work gate on the fingerprint alone (I7), a
+    """With the unchanged-work gate on the fingerprint alone, a
     `failed` delivery row would never be retried again -- the single-server
     code retried one on every full pass, because its gate also required
     `upload_status == "uploaded"`, and `retry_pending_deliveries` only
@@ -2065,7 +2056,7 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
 async def test_a_server_missing_a_metadata_method_propagates_rather_than_being_contained(
     session, monkeypatch,
 ):
-    """R2: I4's per-server containment must not swallow an `AttributeError`.
+    """The per-server containment must not swallow an `AttributeError`.
     A server missing `item_labels`/`apply_facts` is a wiring bug -- a
     programming error, not the runtime server failure that `except` is for --
     and both of `process_item`'s own containments already re-raise it."""
@@ -2094,9 +2085,6 @@ async def test_a_server_missing_a_metadata_method_propagates_rather_than_being_c
         )
 
 
-# Fix round 3, round 3 (re-review findings N2).
-
-
 def _identity_plex():
     """A Plex double `compose_badged_bytes` can sample live media info from.
 
@@ -2117,7 +2105,7 @@ def _identity_plex():
 async def test_a_retry_composes_from_the_identity_server_and_leaves_the_fingerprint(
     session, config_with_badges, monkeypatch,
 ):
-    """N2: the retry pass composed with neither ``server`` nor ``ref``, so
+    """The retry pass composed with neither ``server`` nor ``ref``, so
     `plex_item` was `None` -- an empty `MediaInfo`, no native ratings, and a
     digest that differs from the full pass's. The retried server got a poster
     missing the resolution/format overlays every other server already has,
@@ -2189,7 +2177,7 @@ async def test_a_retry_composes_from_the_identity_server_and_leaves_the_fingerpr
 async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
     session, config_with_badges, monkeypatch,
 ):
-    """N2's other half: if the identity server cannot be resolved this pass,
+    """The other half of retrying via the identity server: if the identity server cannot be resolved this pass,
     the retry must WAIT rather than deliver overlay-less bytes. The row keeps
     its normal horizon and is reported still pending; nothing is uploaded."""
     from datetime import datetime, timezone

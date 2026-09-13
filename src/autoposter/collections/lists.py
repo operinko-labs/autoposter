@@ -269,7 +269,7 @@ async def reconcile_list_collection(
         existing = {c.title: c for c in section.collections()}
     collection = existing.get(title)
 
-    # C11, the list half. Checked BEFORE ``resolve_collision`` because a smart
+    # The shape check, list half. Checked BEFORE ``resolve_collision`` because a smart
     # collection this service already owns would otherwise pass the ownership
     # check and go on to ``addItems``, which Plex answers for a smart collection
     # by doing nothing useful and reporting success.

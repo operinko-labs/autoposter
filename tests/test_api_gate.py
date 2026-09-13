@@ -5,7 +5,7 @@ untouched, and registers none of the Plex-only scheduled jobs.
 Every route here is exercised through ``create_app`` + ``ASGITransport`` --
 no mock of ``require_plex`` or of ``app.state.servers`` -- because the thing
 under test is the wiring itself: whether ``Depends(require_plex)`` actually
-sits on the route Task 11's report says it does.
+sits on the route it should.
 """
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -19,13 +19,10 @@ from conftest import EXAMPLE_CONFIG
 
 PASSWORD = "correct horse battery staple"
 
-# Task 11's report, "Gated routes" table (15 routes across 5 files) -- the
-# addendum's own transcription of it dropped two rows (the artwork backup and
-# the metadata backup), and the addendum says to include anything the report
-# names that its table does not: this is the full 15, matching the report
-# exactly. Each entry is (method, path, body-or-None) -- a body only for the
-# routes whose Pydantic model has no field that defaults, so a POST with no
-# body would 422 before the dependency even runs.
+# The full set of gated routes: 15 routes across 5 files. Each entry is
+# (method, path, body-or-None) -- a body only for the routes whose Pydantic
+# model has no field that defaults, so a POST with no body would 422 before
+# the dependency even runs.
 PLEX_ONLY_ROUTES: list[tuple[str, str, dict | None]] = [
     ("POST", "/api/artwork-modes/backup", None),
     ("POST", "/api/metadata-backup", None),
@@ -47,12 +44,11 @@ PLEX_ONLY_ROUTES: list[tuple[str, str, dict | None]] = [
     ("DELETE", "/api/items/1/metadata-overrides/title", None),
 ]
 
-# spec §9's "deliberately not gated" list (Task 11's report) -- every route
-# the addendum names except the `/api/setup/plex/*` group, which is not
-# included: those routes are not even mounted on this application (they
-# belong to the separate first-start-wizard app `boot.py` builds, which has
-# no `app.state.setup` here at all -- see the report), so there is nothing
-# on THIS app for that group to assert against.
+# spec §9's "deliberately not gated" list, except the `/api/setup/plex/*`
+# group, which is not included: those routes are not even mounted on this
+# application (they belong to the separate first-start-wizard app `boot.py`
+# builds, which has no `app.state.setup` here at all), so there is nothing on
+# THIS app for that group to assert against.
 NOT_GATED_ROUTES: list[tuple[str, str, dict | None]] = [
     ("GET", "/api/collections/catalog", None),
     ("GET", "/api/collections/definitions", None),
@@ -61,7 +57,7 @@ NOT_GATED_ROUTES: list[tuple[str, str, dict | None]] = [
     ("GET", "/api/items/999999/metadata-overrides", None),  # 404, not 409: not gated
 ]
 
-# The six jobs Task 11 skips registering when Plex is not configured, by the
+# The six jobs skipped from registration when Plex is not configured, by the
 # exact names api/routes.py's SCHEDULED_JOB_NAMES serves.
 PLEX_ONLY_JOB_NAMES = (
     "collections_reconcile", "credits_scan", "plex_maintenance",
@@ -72,7 +68,7 @@ PLEX_ONLY_JOB_NAMES = (
 @pytest.fixture
 async def plexless(session_factory):
     """A fully-booted app for a config with a ``jellyfin:`` block and no
-    ``plex:`` block -- Task 11's ruling 2 shape, copied from
+    ``plex:`` block, copied from
     ``tests/test_app.py::test_a_plex_less_app_boots_and_serves_status``
     (there is no ``secrets_factory`` fixture anywhere in this suite; that
     test builds ``Secrets`` directly, and this fixture does the same).

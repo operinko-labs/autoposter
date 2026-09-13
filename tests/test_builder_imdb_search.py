@@ -6,8 +6,7 @@ Never touches the real API -- MockTransport only. The fixtures under
 ``src/autoposter/collections/imdb_graphql.py`` as ``SEARCH_QUERY``, and
 ``RECORDED_CONSTRAINTS``/``RECORDED_SORT`` below are the variables that produced
 them. Introspection is refused on this endpoint, so the whole constraint schema
-was walked through the GraphQL validator's own error messages -- the walk log is
-in ``.superpowers/sdd/task-3-report.md``.
+was walked through the GraphQL validator's own error messages.
 
 Two things that walk found are worth stating here, because they are what most of
 this file exists to hold in place:
@@ -770,7 +769,7 @@ def test_the_builder_is_registered_under_its_own_name():
 
 # --- rows 258-265: the eight probe-gated families -----------------------------
 #
-# Session 4 of ``.superpowers/sdd/p258_imdb_probe.log`` (2026-09-08) is the only
+# Session 4 of the probe log (2026-09-08) is the only
 # evidence here: sessions 1-3 are the probe script's own wrapper bug and are
 # void. Each ``PROBED_*`` literal below is the exact constraint object session 4
 # put on the wire, beside the total IMDb answered with. A sibling field the
@@ -924,7 +923,7 @@ async def test_a_content_rating_region_other_than_us_is_sent_as_written():
 async def test_a_malformed_content_rating_is_refused_without_echoing_it(
     value, sentence, echo
 ):
-    """Config-LOAD refusals with fixed sentences (C1/row 213): the sentence names
+    """Config-LOAD refusals with fixed sentences (row 213): the sentence names
     the key and the shape, and the operator's own text never appears in it."""
     with pytest.raises(ValidationError) as caught:
         await _build(None, content_rating=value)
@@ -1101,7 +1100,7 @@ async def test_a_bare_string_where_the_list_belongs_is_refused_not_iterated(
     """A ``str`` is iterable too: unguarded, ``country: US`` would walk its
     characters and build ``["U", "S"]`` rather than refusing the shape -- the
     same trap ``_must_be_a_rating_or_a_region_and_rating`` guards against for
-    ``content_rating`` (Task 2's fix round). Row 213: the sentence names the
+    ``content_rating``. Row 213: the sentence names the
     key, never the operator's value."""
     with pytest.raises(ValidationError) as caught:
         await _build(None, **{param: value})
@@ -1111,7 +1110,7 @@ async def test_a_bare_string_where_the_list_belongs_is_refused_not_iterated(
     assert not any(value in m for m in messages)
 
 
-# --- fix round 1: non-string elements, country whitespace, the registry -------
+# --- non-string elements, country whitespace, the registry -------
 
 
 @pytest.mark.parametrize(
@@ -1132,7 +1131,7 @@ async def test_a_bare_string_where_the_list_belongs_is_refused_not_iterated(
 async def test_a_non_string_element_is_refused_not_matched_or_stripped(
     param, value, sentence, forbidden
 ):
-    """Task 3 review, Important: a non-``str`` element inside an otherwise
+    """A non-``str`` element inside an otherwise
     list-shaped value escaped as a raw traceback rather than a ValidationError,
     because it reached ``re.match``/``.strip()`` before any type check. Row 213:
     the family's existing fixed sentence, never the operator's value."""
@@ -1145,7 +1144,7 @@ async def test_a_non_string_element_is_refused_not_matched_or_stripped(
 
 
 async def test_a_trailing_newline_in_a_country_code_is_stripped_before_matching():
-    """Task 3 review, Minor: `us\\n` (a YAML block scalar) matched
+    """`us\\n` (a YAML block scalar) matched
     `^[A-Za-z]{2}$` because `$` also matches just before a trailing newline --
     the exact silent-empty failure the module's docstring exists to prevent, so
     this asserts the exact byte reaching the wire rather than just that the
@@ -1157,7 +1156,7 @@ async def test_a_trailing_newline_in_a_country_code_is_stripped_before_matching(
 
 
 def test_the_list_constraints_table_matches_the_family_params_on_the_model():
-    """Task 3 review, Minor: the table was never checked against the model or
+    """The table was never checked against the model or
     against what the parametrised family tests above cover, so a typo'd row
     would stay invisible until ``search_constraints``'s ``getattr`` raised at
     build time for every collection using that family."""
@@ -1172,7 +1171,7 @@ def test_the_list_constraints_table_matches_the_family_params_on_the_model():
 
 
 async def test_two_params_in_the_same_family_are_merged_not_overwritten():
-    """Task 3 review, mutation gap: replacing the ``setdefault`` merge in
+    """Replacing the ``setdefault`` merge in
     ``search_constraints`` with a plain overwrite (``constraints[obj] = ...``)
     passes every other test in this file -- none of them writes two params of
     the SAME family together, only across families -- and would silently drop
@@ -1187,7 +1186,7 @@ async def test_two_params_in_the_same_family_are_merged_not_overwritten():
     }
 
 
-# --- Task 4: cast, event and list ----------------------------------------------
+# --- cast, event and list ----------------------------------------------
 
 PROBED_CAST = {"titleCreditsConstraint": {"anyCredits": [{"nameId": "nm0000138"}]}}
 PROBED_EVENT = {"awardConstraint": {"allEventNominations": [{"eventId": "ev0000003"}]}}
@@ -1204,7 +1203,7 @@ async def test_the_probed_cast_shape_reaches_the_wire():
 
 
 async def test_two_cast_ids_stay_in_order_both_wrapped():
-    """Task 4 review: ``cast``'s elements are wrapped ``{nameId: ...}`` objects,
+    """``cast``'s elements are wrapped ``{nameId: ...}`` objects,
     and the probed shape above only ever passed one -- so a wrapper applied to
     the first element and dropped for the rest would still pass it. Two ids,
     order preserved, both wrapped."""
@@ -1292,7 +1291,7 @@ async def test_event_and_event_winning_merge_into_one_nomination_list():
 
 
 async def test_the_same_ceremony_named_twice_produces_two_distinct_nominations():
-    """Task 4 review: ``event`` and ``event_winning`` naming the SAME ceremony
+    """``event`` and ``event_winning`` naming the SAME ceremony
     must still produce two list entries, one plain and one with
     ``winnerFilter`` -- a merge keyed on the event id rather than appended
     would silently drop one of them. The id is derived from the registry, not
@@ -1365,7 +1364,7 @@ async def test_a_list_value_that_is_not_a_list_id_is_refused(param):
 async def test_a_value_with_the_right_prefix_but_no_digits_is_still_refused(
     param, value, sentence
 ):
-    """Task 4 review: ``nmBogart`` and ``lsabc`` both start with the family's
+    """``nmBogart`` and ``lsabc`` both start with the family's
     prefix, so a validator that only checked ``str.startswith`` would let them
     through. ``_NAME_ID``/``_LIST_ID`` require digits after the prefix, and this
     is what proves it rather than a value with no prefix at all."""
@@ -1400,7 +1399,7 @@ async def test_an_unknown_ceremony_is_refused_naming_the_known_ones(param):
 async def test_each_of_the_new_families_alone_satisfies_the_one_constraint_guard(
     param, value
 ):
-    """Named distinctly from Task 3's same-purpose test above: reusing that
+    """Named distinctly from the same-purpose test above: reusing that
     name would silently shadow it in the module namespace and drop its eleven
     cases from collection rather than adding these eight."""
     async with httpx.AsyncClient(transport=_paged()) as http:
@@ -1470,7 +1469,7 @@ def test_the_four_shipped_families_build_exactly_what_they_always_did():
     assert search_constraints(params, ("movie",)) == RECORDED_CONSTRAINTS
 
 
-def test_a_definition_that_names_no_new_family_adds_no_key(): # C4
+def test_a_definition_that_names_no_new_family_adds_no_key():
     """The storm guard. ``definition_hash`` folds the BUILT constraints, and no
     config that loads today can name a key that did not parse yesterday -- so
     the only way a stored hash could move is a new family emitting something

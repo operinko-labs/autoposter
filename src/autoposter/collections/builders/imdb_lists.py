@@ -165,7 +165,7 @@ class ImdbListBuilder:
         # Eight of Kometa's universes are public IMDb lists whose ids this
         # catalog transcribes (``catalog._UNIVERSE_LISTS``), and upstream names
         # its universe art by a short code rather than a display name
-        # (``.superpowers/sdd/p-defimg-probe.md`` §5/§6) -- so the list id is
+        # (measured against the upstream art repository) -- so the list id is
         # both the only thing on this generic builder that names the universe
         # and the only stable join to that code. Every other IMDb list
         # definition, of which there are many, is not in the table and keeps no

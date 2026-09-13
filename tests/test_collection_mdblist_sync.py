@@ -1,6 +1,6 @@
 """Row 31 -- push a collection's resolved membership to an MDBList list.
 
-MockTransport only: no test here opens a socket (facts C1.4). Two gates, both
+MockTransport only: no test here opens a socket. Two gates, both
 of which must be open before anything leaves the process -- the definition
 names a list AND the deployment sets collections.mdblist_sync_apply.
 """
@@ -138,7 +138,7 @@ async def test_apply_on_pushes_and_reports_the_count():
 
 @pytest.mark.asyncio
 async def test_a_failed_push_reports_the_class_name_and_never_the_message():
-    # facts C1.4: an httpx error's str() carries the request URL, and the URL
+    # An httpx error's str() carries the request URL, and the URL
     # carries apikey= as a query parameter. The served action string gets the
     # exception CLASS NAME and a fixed sentence; the detail goes to the log.
     item = FakeItem("1")

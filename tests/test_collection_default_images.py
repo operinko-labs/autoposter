@@ -1,8 +1,7 @@
 """Which upstream file, if any, is a collection's default poster.
 
-The table this pins is DATA, transcribed from the live listings recorded in
-``.superpowers/sdd/p-defimg-probe.md`` -- one sample per key scheme, cited by
-that file's own section names. Nothing here reaches the network: the fetch
+The table this pins is DATA, transcribed from the live upstream listings --
+one sample per key scheme. Nothing here reaches the network: the fetch
 tests drive ``httpx.MockTransport``.
 """
 import httpx
@@ -285,7 +284,7 @@ def test_every_family_row_names_a_real_directory_shape():
     """The table's own integrity: a directory is either flat (`genre`) or one
     level deep for a Pattern B family (`network/color`), never deeper and never
     a logos/overlays/white/best/standards path -- those are overlay-phase
-    material and are out of scope by C1.6."""
+    material and are out of scope here."""
     for name, family in FAMILIES.items():
         assert family.directory.count("/") <= 1, name
         for banned in ("logos", "overlays", "white", "best", "standards"):
@@ -293,7 +292,7 @@ def test_every_family_row_names_a_real_directory_shape():
 
 
 def test_the_universe_codes_are_short_codes_not_display_names():
-    """p-defimg-probe.md §5 `universe/` and §6's full listing: this family and
+    """The `universe/` directory and its full listing: this family and
     `seasonal/` are the two that depart from display-name naming. Our universe
     collections are built by three DIFFERENT generic list builders, so the LIST
     REF is the only thing on a definition that names the universe -- which is
@@ -304,15 +303,13 @@ def test_the_universe_codes_are_short_codes_not_display_names():
     assert UNIVERSE_CODES["ls566667558"] == "arrow"    # Arrowverse
     assert UNIVERSE_CODES["ls543971628"] == "avp"      # Alien / Predator
     assert UNIVERSE_CODES["8642250"] == "dcu"          # DC Universe (TMDb list)
-    # The DCEU wears `dcu`. p-defimg-probe.md §6's full `universe/` listing
-    # holds no third DC code, and T1 of the posters phase therefore left this
-    # ref OUT rather than guess one. The operator has since RATIFIED the reuse
-    # (2026-09-01) -- an explicit call to share DC Universe's art, not an
-    # inference -- and §6 of the probe doc records the ratification beside its
-    # original finding.
+    # The DCEU wears `dcu`. The full `universe/` listing holds no third DC
+    # code, so this ref was left OUT rather than guess one. The operator has
+    # since RATIFIED the reuse (2026-09-01) -- an explicit call to share DC
+    # Universe's art, not an inference.
     assert UNIVERSE_CODES["fa11en82/dc-extended-universe"] == "dcu"
     # 'In Association With DC' still has no entry and must not borrow one:
-    # §5 names `dca` as DC ANIMATED, a different continuity, and the operator
+    # `dca` names DC ANIMATED, a different continuity, and the operator
     # ratified the DCEU alone.
     assert "fa11en82/in-association-with-dc" not in UNIVERSE_CODES
     for code in UNIVERSE_CODES.values():

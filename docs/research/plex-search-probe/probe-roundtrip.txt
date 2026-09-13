@@ -73,10 +73,10 @@ studio            str           43     43      0      0  AGREE
   server   : 43   client: 43   verdict: AGREE
 
 ========================================================================
-PART A ADDENDUM -- the two predicates the brief's values could not decide
+PART A FOLLOW-UP -- the two predicates the spec's values could not decide
 ========================================================================
 contentRating in the listing: 22 distinct; top five [('17', 291), ('16', 236), ('13', 235), ('15', 226), ('14', 164)]
-  written  : {'content_rating': '17'}  (the library's most common, replacing the brief's 'PG-13')
+  written  : {'content_rating': '17'}  (the library's most common, replacing the spec's 'PG-13')
   query    : /library/sections/1/all?type=1&sort=titleSort&contentRating=17
   server   : 291   client: 291   |s-c|=0 |c-s|=0   verdict: AGREE
 
@@ -167,7 +167,7 @@ RESULT: 5/5
 ========================================================================
 PART C -- the six removed spellings, as bare server queries
 ========================================================================
-These six are refusals in this build because Kometa's `searches` list has no such key (T1 corrections A and B). The question here is only what PLEX does with them -- evidence for the narrowing, not a change.
+These six are refusals in this build because Kometa's `searches` list has no such key (corrections A and B). The question here is only what PLEX does with them -- evidence for the narrowing, not a change.
 library total (movie listing walk): 1960
 search_field per row: {'critic_rating': 'rating', 'audience_rating': 'audienceRating', 'plays': 'viewCount'}
   critic_rating:      (bare eq)      rating=8                     ->    21  a proper subset (answered)

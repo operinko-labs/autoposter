@@ -38,11 +38,9 @@ where it is applied; the transcribed tables themselves are untouched by it.
 
 **Provenance.** Every file cited here was fetched from
 github.com/Kometa-Team/Kometa at tag ``v2.4.8`` and read while these tables
-were written; the fetch record, with byte counts and the full extracted tables,
-is the transcribing phase's own document, whose section and line numbers each
-table below cites -- ``.superpowers/sdd/p10b-upstream-packs.md`` for the seven
-dynamic packs, and ``.superpowers/sdd/p-prefetch-upstream.md`` §4 for the
-franchise pack the prefetch phase added. The ids, keys, names and filter values
+were written, and each table below names the upstream file and the block it
+came from. The ``record §`` markers are sections of the fetch record kept
+with that transcription. The ids, keys, names and filter values
 below are transcriptions of those files, not recollections of them -- the
 discipline ``catalog.py``'s provenance section states for the whole catalog.
 
@@ -112,7 +110,7 @@ _TEMPLATE_NO_LIMIT = 0
 # into Biopic, "Film-Noir" into Film Noir).
 
 # Transcribed from `defaults/both/genre.yml`, `addons:`, in file order --
-# record §1.1 (`.superpowers/sdd/p10b-upstream-packs.md:333-375`).
+# record §1.1.
 #
 # One shape note: upstream writes `Film Noir:` with a bare scalar `Film-Noir`
 # beneath it rather than a list item, and Kometa's own `_dictliststr` coerces a
@@ -181,7 +179,7 @@ GENRE_PARAMS: tuple[tuple[str, object], ...] = (
 
 DECADE_PARAMS: tuple[tuple[str, object], ...] = (
     ("type", "decade"),
-    # Record §1.2 (`.superpowers/sdd/p10b-upstream-packs.md:377-423`).
+    # Record §1.2.
     ("title_format", "Best of <<key_name>>"),
     ("sort_by", ("critic_rating.desc",)),
     ("limit", 100),
@@ -233,7 +231,7 @@ YEAR_PARAMS: tuple[tuple[str, object], ...] = (
 # it.
 
 # Transcribed from `defaults/both/audio_language.yml`, `include:`, in file
-# order -- record §1.3 (`.superpowers/sdd/p10b-upstream-packs.md:484-675`).
+# order -- record §1.3.
 #
 # Norwegian is written `"no"`, quoted, and that is load-bearing: upstream's
 # line is an unquoted `- no`, which a YAML 1.1 loader (PyYAML) parses as the
@@ -268,7 +266,7 @@ _LANGUAGE_INCLUDE: tuple[str, ...] = (
 )
 
 # Transcribed from `defaults/both/audio_language.yml`, `key_name_override:` --
-# record §1.3 (`.superpowers/sdd/p10b-upstream-packs.md:477-482`) and §3.
+# record §1.3 and §3.
 #
 # The whole table, and it is one entry. Upstream names a language bucket from
 # TMDb's `_iso_639_1` lookup at run time (`meta.py:928`), so there is no
@@ -302,7 +300,7 @@ AUDIO_LANGUAGE_PARAMS: tuple[tuple[str, object], ...] = (
 )
 SUBTITLE_LANGUAGE_PARAMS: tuple[tuple[str, object], ...] = (
     ("type", "subtitle_language"),
-    # Record §1.4 (`.superpowers/sdd/p10b-upstream-packs.md:677-729`). The whole
+    # Record §1.4. The whole
     # of the difference between this pack and the audio one above: a different
     # type, a different format, a different leftovers name. Everything that
     # NARROWS the family is the shared table, because upstream's two files carry
@@ -344,7 +342,7 @@ SUBTITLE_LANGUAGE_PARAMS: tuple[tuple[str, object], ...] = (
 # "Venezuela". Without the addons that title would fall into "Other Countries".
 
 # Transcribed from `defaults/movie/country.yml`, `include:`, in file order --
-# record §1.6 (`.superpowers/sdd/p10b-upstream-packs.md:1769-2051`). Upstream
+# record §1.6. Upstream
 # groups the list under commented region headings (Northern Africa, Eastern
 # Africa, ...); the headings are comments and not data, so the order is kept
 # and the groupings are not.
@@ -437,7 +435,7 @@ _COUNTRY_INCLUDE: tuple[str, ...] = (
 )
 
 # Transcribed from `defaults/movie/country.yml`, `addons:`, in file order --
-# record §1.6 (`.superpowers/sdd/p10b-upstream-packs.md:2053-2175`).
+# record §1.6.
 #
 # Both spellings of Côte d'Ivoire are upstream's: the first uses U+2019 (the
 # curly apostrophe) and the key uses U+0027, and a transcription that
@@ -589,8 +587,7 @@ def _with_tmdb_spellings(addons: dict[str, list[str]]) -> dict[str, list[str]]:
 # falls into `Other Regions`, upstream's own leftovers rule.
 
 # Transcribed from `defaults/movie/region.yml`, `include:`, in file order --
-# fetched bytes at `.superpowers/kometa-v2.4.8/region.yml`, sha256
-# 9409fee72b78ddfe… (provenance: p-prefetch-upstream.md §4).
+# from fetched bytes with sha256 9409fee72b78ddfe… (record §4).
 _REGION_INCLUDE: tuple[str, ...] = (
     "Northern Africa", "Eastern Africa", "Central Africa", "Southern Africa",
     "Western Africa", "Caribbean", "Central America", "South America",
@@ -775,8 +772,7 @@ REGION_PARAMS: tuple[tuple[str, object], ...] = (
 # same join, same measured-first discipline as `_REGION_ADDONS` above.
 
 # Transcribed from `defaults/movie/continent.yml`, `include:`, in file order --
-# fetched bytes at `.superpowers/kometa-v2.4.8/continent.yml`, sha256
-# fbc20666618fdd67… (provenance: p-prefetch-upstream.md §4).
+# from fetched bytes with sha256 fbc20666618fdd67… (record §4).
 _CONTINENT_INCLUDE: tuple[str, ...] = (
     "Africa", "Americas", "Antarctica", "Asia", "Europe", "Oceania",
 )
@@ -919,7 +915,7 @@ CONTINENT_PARAMS: tuple[tuple[str, object], ...] = (
 # upstream, and the only one.
 
 # Transcribed from `defaults/both/studio.yml`, `include:`, in file order --
-# record §1.5 (`.superpowers/sdd/p10b-upstream-packs.md:992-1485`). Upstream
+# record §1.5. Upstream
 # groups the list under two commented headings; the headings are comments and
 # not data, so the order is kept and the grouping is kept as comments.
 _STUDIO_INCLUDE: tuple[str, ...] = (
@@ -1051,7 +1047,7 @@ _STUDIO_INCLUDE: tuple[str, ...] = (
 )
 
 # Transcribed from `defaults/both/studio.yml`, `addons:`, in file order --
-# record §1.5 (`.superpowers/sdd/p10b-upstream-packs.md:1487-1701`). Every one
+# record §1.5. Every one
 # of the 85 merge keys is itself an `include` name, which is what makes them
 # merges rather than additions: `Toei` folds into `Toei Animation`, `MGM` into
 # `Metro-Goldwyn-Mayer`, the three 20th Century spellings into one bucket.
@@ -1176,8 +1172,8 @@ STUDIO_PARAMS: tuple[tuple[str, object], ...] = (
     # `content_genres`' `<<key_name>> <<library_typeU>>s` on both library types.
     # The row states the divergence in words. Record §4, §5 row 1.
     #
-    # A THIRD shape is on file as a deferred rename candidate, from the T4
-    # review and deliberately not taken here: `<<library_typeU>>s from
+    # A THIRD shape is on file as a deferred rename candidate, deliberately
+    # not taken here: `<<library_typeU>>s from
     # <<key_name>>` ("Movies from Studio Ghibli"). It clears the same two
     # collisions and is the more accurate of the two, because "Top" promises a
     # ranking nothing backs -- this pack transcribes upstream's `release.desc`
@@ -1229,7 +1225,7 @@ STUDIO_PARAMS: tuple[tuple[str, object], ...] = (
 # there is nothing to port it into. Not ported.
 
 # Transcribed from `defaults/show/network.yml`, `include:`, in file order --
-# record §1.7 (`.superpowers/sdd/p10b-upstream-packs.md:2255-2531`).
+# record §1.7.
 _NETWORK_INCLUDE: tuple[str, ...] = (
     "#0", "5", "7mate", "ABC", "ABC Family", "ABC Kids", "ABC TV", "ABS-CBN",
     "Acorn TV", "Adult Swim", "AHC", "ALTBalaji", "Amazon Kids+", "AMC", "AMC+",
@@ -1275,7 +1271,7 @@ _NETWORK_INCLUDE: tuple[str, ...] = (
 )
 
 # Transcribed from `defaults/show/network.yml`, `addons:`, in file order --
-# record §1.7 (`.superpowers/sdd/p10b-upstream-packs.md:2533-2748`).
+# record §1.7.
 #
 # Unlike `studio`'s 85 merge keys, two of these 46 are NOT themselves
 # `include` names: `Network Ten` (member `Network 10`) and `ReelzChannel`
@@ -1421,7 +1417,7 @@ NETWORK_PARAMS: tuple[tuple[str, object], ...] = (
 # here is the value actually compared rather than one relying on a coercion.
 
 # Transcribed from `defaults/movie/franchise.yml`, `addons:`, in file order --
-# record §4.1 (`.superpowers/sdd/p-prefetch-upstream.md:449-473`), counted at
+# record §4.1, counted at
 # §4.4: 12 keys, 12 merged members.
 #
 # What an addon merge MEANS for this family, said here because it is not what it

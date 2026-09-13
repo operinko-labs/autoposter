@@ -577,7 +577,7 @@ async def run_library(
                 label=label, dry_run=dry_run, http=http, config=config,
                 owned_index=owned_index, listing=listing, preview=preview,
                 summaries=summaries,
-                # ``unit``, not ``definition`` -- the whole of the C3 expansion
+                # ``unit``, not ``definition`` -- the whole of the expansion
                 # trap. An expanded unit carries the ceremony's own builder
                 # (``imdb_award_years``), its own title ("Oscars Winners 2026")
                 # and its own year, so it resolves its own group and its own
@@ -851,7 +851,7 @@ async def _run_one(
                 )
                 fetched = None
             if fetched is None or any(key not in fetched for key in keys):
-                # The refusal law (facts C3): an item the batch did not
+                # The refusal law: an item the batch did not
                 # answer for must never evaluate as "has no tags" -- that
                 # is a full, plausible, wrong membership. Same containment
                 # as a filter that could not run.
@@ -867,17 +867,17 @@ async def _run_one(
                 )
             else:
                 tags = fetched
-        # The facts pre-step (roadmap row 156), phase 2's sibling and
+        # The facts pre-step (roadmap row 156), the tier-2 pre-step's sibling and
         # deliberately after it: the tier-2 refusal is a HARD failure, and
         # querying our own database for a definition that is not going to
         # evaluate is work nobody reads.
         #
-        # It is NOT the same law as phase 2 above. That one refuses the
+        # It is NOT the same law as that pre-step. That one refuses the
         # definition when the batch did not answer for every item, because a
         # key Plex skipped is UNKNOWN and evaluating it as "has no tags" would
         # build a full, plausible, wrong collection. Here the database is
         # authoritative about its own rows: an item with no facts row is an
-        # ANSWER, excluded by ruling C3's missing rule, and refusing the whole
+        # ANSWER, excluded by the facts rows' own missing rule, and refusing the whole
         # definition over it would refuse every definition on a cold library
         # -- roughly thirty-two weeks of them at the drift sweep's defaults.
         # Only a failed READ refuses.
@@ -889,7 +889,7 @@ async def _run_one(
         if facts_needed and not filter_failed:
             facts_keys = [str(getattr(item, "ratingKey", "")) for item in items]
             try:
-                # ``ctx.run_cache`` -- the PASS's dict, as phase 2 uses it, so
+                # ``ctx.run_cache`` -- the PASS's dict, as the pre-step above uses it, so
                 # two definitions over overlapping sets cost one query for the
                 # union rather than two for the parts.
                 facts = await ensure_facts(
@@ -992,7 +992,7 @@ async def _run_one(
         elif items:
             # Row 142(b): the same ownership rule the pass applies, read-only.
             # A collision-blocked collection must not preview a write the pass
-            # will refuse. And its fix round: nor may the reverse happen --
+            # will refuse -- and nor may the reverse happen:
             # gating on ``resolve_collision``'s ``ok`` previewed 0/0 for an
             # eligible adoption, which is a write the pass DOES perform, so the
             # question asked here is ``would_proceed``'s "will the pass
@@ -1139,7 +1139,7 @@ def _known_tag_values(parsed, ctx, section, library, definition):
     key runs against EVERY library in the pass, so which vocabulary applies is
     not known until now -- the same argument ``require_library_type`` makes.
 
-    **Why warn-and-drop rather than Kometa's refusal** (facts C2). Kometa
+    **Why warn-and-drop rather than Kometa's refusal.** Kometa
     raises (``Plex Error: {attribute}: {value} not found``,
     builder.py:4433-4437) and can afford to, because its own regional defaults
     ENUMERATE the library's vocabulary rather than naming values
@@ -1196,7 +1196,7 @@ def _known_tag_values(parsed, ctx, section, library, definition):
         # which raises rather than guessing. Skipped explicitly here so it
         # never reaches the blanket ``except Exception`` below, which would
         # otherwise fold it into a "could not be checked" action instead of
-        # the real bug it is (Task 2 review, Minor 5). No shipped row reaches
+        # the real bug it is. No shipped row reaches
         # this today: all seven evaluable tag rows are searchable on both
         # libtypes, and the other seven refuse at config load.
         if not row.searchable or libtype not in row.search_kinds:
@@ -1273,8 +1273,7 @@ def _known_tag_values(parsed, ctx, section, library, definition):
     # Deduped by (attribute, its written values) -- not by predicate identity
     # -- so the same values named twice (``any: [{content_rating: X}, {content_
     # rating: X}]``) get one line rather than two substantively identical ones
-    # differing only in which ``filters.any[i]`` wrote them (Task 2 review,
-    # Minor 1).
+    # differing only in which ``filters.any[i]`` wrote them.
     emptied: set[tuple[str, tuple[str, ...]]] = set()
     for predicate in checkable:
         name = predicate.attribute.name
@@ -1376,7 +1375,7 @@ def _passing(
         #
         # A datetime, not a date: Kometa's own ``current_time`` is
         # ``datetime.now()`` and its date filters compare against it with the
-        # time of day intact (Task 4's oracle). Passing midnight here would
+        # time of day intact (the oracle). Passing midnight here would
         # widen every relative window by up to a day against Kometa's.
         now = datetime.now()
         return [
@@ -1626,7 +1625,7 @@ async def _sweep(
             # ``delete_unconfigured``: that setting decides what an
             # unattended pass may delete, and this was never such a
             # candidate in the first place.
-            # ...and a LOCAL_ASSET_KIND row is a poster-hash ledger for a
+            # ...and a LOCAL_ASSET_KIND row is a poster-hash record for a
             # collection this service never owned (row 37) -- deleting it
             # would delete somebody else's collection over a bookkeeping row.
             results.append(_swept(title, library, (
@@ -1888,7 +1887,7 @@ def definition_titles(
             # ``titles`` method that handed the definition's own title back to
             # the caller that already has it would be ceremony, not
             # information. Falling through is the smaller diff and keeps the
-            # engine's smart dispatch the single seam (9c decision C6).
+            # engine's smart dispatch the single seam.
             lister = getattr(builder, "titles", None)
             titles |= lister(library_type, config) if lister else {definition.title}
             continue

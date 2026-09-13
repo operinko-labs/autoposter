@@ -31,7 +31,7 @@ def _config(tmp_path, config_factory):
 def test_the_vendored_face_is_the_one_the_verification_used():
     """The face is upstream's, TRANSCRIBED, and these are the exact bytes that
     reproduced upstream's own ``separators/orig/genre.jpg`` to within JPEG
-    noise (``.superpowers/sdd/p-div-font.md`` §1/§4). Any other copy of
+    noise. Any other copy of
     Comfortaa -- Google's variable ``Comfortaa[wght].ttf`` instanced down, a
     different release -- throws that verification away, and under OFL's
     Reserved Font Name clause an instanced copy is a Modified Version besides.

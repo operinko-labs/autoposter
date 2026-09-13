@@ -3,8 +3,8 @@
 The table is Kometa's ``auto`` type map (meta.py:15-22), its
 ``auto_type_translation`` (meta.py:24-34), its per-type ``default_template``
 (meta.py:947-959) and its per-type ``title_format`` defaults (meta.py:868,
-:898, :948-959), reduced to the types phase 10a ships (adjudication C3). These
-tests are what a reviewer checks the transcription against.
+:898, :948-959), reduced to the types phase 10a ships. These
+tests are what the transcription is checked against.
 """
 import dataclasses
 import pathlib
@@ -38,7 +38,7 @@ SOME_VALUE = "1980"
 
 
 def test_the_table_holds_exactly_the_types_c3_scoped():
-    """C3's IN list, and nothing else. Every absence is a decision with a
+    """This table's IN list, and nothing else. Every absence is a decision with a
     reason: ``edition`` waits on roadmap row 170; ``original_language`` and
     ``origin_country`` are PLAIN collections upstream, built from a
     full-library TMDb walk (meta.py:36-37), which is the metadata-prefetch
@@ -128,7 +128,7 @@ def test_the_general_default_is_upstreams_and_resolution_is_the_exception():
 
 @pytest.mark.parametrize("name", ["year", "content_rating", "studio", "network"])
 def test_every_type_row_carries_a_sort_and_a_limit_that_exist(name):
-    """T2 review, deferred minor: ``limit``/``sort_by`` were pinned only for
+    """``limit``/``sort_by`` were pinned only for
     genre and resolution and only transitively. Every row, directly."""
     row = DYNAMIC_TYPES[name]
     assert row.sort_by, name
@@ -171,7 +171,7 @@ def test_studio_is_the_one_row_whose_query_key_carries_a_modifier():
 
 
 def test_decade_emits_the_bare_form_and_says_so():
-    """T1 carry, binding. ``decade``'s operator subtraction is held by ONE
+    """``decade``'s operator subtraction is held by ONE
     table test and no oracle config can cover it, because Kometa refuses
     ``decade.gte`` outright (``no_not_mods``, plex.py:593, :597-599). So every
     downstream emitter -- this table, and eventually the dynamic builder --
@@ -232,8 +232,8 @@ def test_the_probe_parse_finds_the_recorded_run_and_not_an_empty_file():
 
 
 def test_no_row_ships_on_a_library_type_the_probe_did_not_measure():
-    """T2 ⚠️3, the authoring rule this wrap owes as enforcement rather than as
-    prose: C3's scope is "the types ``listFilterChoices`` can enumerate TODAY"
+    """The authoring rule this wrap owes as enforcement rather than as
+    prose: this table's scope is "the types ``listFilterChoices`` can enumerate TODAY"
     and it is fail-closed, but until now nothing stopped a future
     ``DYNAMIC_TYPES`` row shipping on an inference. Every row, on every library
     type its ``kinds`` claims, must have a recorded non-zero verdict in the
@@ -259,7 +259,7 @@ def test_no_row_ships_on_a_library_type_the_probe_did_not_measure():
 
 
 def test_the_two_probed_rows_ship_because_the_probe_answered():
-    """C3's fail-closed rule, pinned as a test rather than left as prose:
+    """This table's fail-closed rule, pinned as a test rather than left as prose:
     ``network`` and ``country`` ship ONLY because the phase's read-only probe
     measured their ``listFilterChoices`` enumerability (91 and 63 values, see
     ``docs/research/plex-dynamic-probe/README.md`` §0). If a future edit drops

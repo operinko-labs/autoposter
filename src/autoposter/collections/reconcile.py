@@ -73,7 +73,7 @@ def separator_hash(
     desired state had not changed, because the hash is what a pass
     short-circuits on.
 
-    ``poster_key`` joined the payload with the style select (C4): the key
+    ``poster_key`` joined the payload with the style select: the key
     carries the style ("orig:chart", "sand:@content"), so a style change makes
     ``definition_current`` false, the pass rewrites the summary and sort title
     (idempotent no-ops), reaches ``apply_poster``, finds new bytes, uploads
@@ -400,7 +400,7 @@ def would_proceed(
 
 
 def shape_conflict(collection, title: str, want_smart: bool) -> str | None:
-    """Roadmap 9c / C11: an existing collection whose SHAPE the definition changed.
+    """An existing collection whose SHAPE the definition changed.
 
     A Plex collection is either smart -- Plex evaluates a stored filter and owns
     the membership -- or it is a list, whose membership this service maintains

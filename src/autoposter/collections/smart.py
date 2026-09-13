@@ -12,13 +12,13 @@ siblings:
 - here -- ONE smart collection per definition, whose filter is the operator's
   own ``smart_filter`` query, written as a RAW POST.
 
-**Why a raw POST rather than plexapi's ``filters=`` (9c decision C1).** The
-phase chain made exactly one grammar byte-provable: 9b's ``build_search_url``,
-gated by an oracle against Kometa's own ``build_filter``, and 9c's
+**Why a raw POST rather than plexapi's ``filters=``.** Exactly one grammar
+here is byte-provable: ``build_search_url``, gated by an oracle against
+Kometa's own ``build_filter``, and
 ``tests/test_smart_collection_oracle.py`` extends that gate through the
 envelope. Handing plexapi a ``filters`` dict instead would add a second
 translation layer with its own correctness surface AND different semantics --
-plexapi comma-joins a multi-value tag, which Plex reads as OR, where 9b's
+plexapi comma-joins a multi-value tag, which Plex reads as OR, where that
 grammar emits one term per value joined by the block's own conjunction, which
 under ``all:`` is an AND. The same config would build a different collection.
 So the URI this module sends is the oracle-proven string, and plexapi is used
@@ -28,7 +28,7 @@ display mode, the summary.
 **What is deliberately NOT here.**
 
 - No comparison against the ``content`` attribute Plex echoes back on a smart
-  collection (C10) -- spelled without the leading dot here on purpose, because
+  collection -- spelled without the leading dot here on purpose, because
   ``test_no_reconciler_reads_a_collections_content_echo`` greps this file for
   exactly that read. Drift is detected the way the Common Sense family does --
   a ``definition_hash`` over the DESIRED state, stored in
@@ -36,10 +36,10 @@ display mode, the summary.
   filter goes undetected, exactly as it does for that family today. That is a
   documented consequence, not an oversight: hashing the echo would make every
   pass depend on a byte-for-byte round trip nobody has verified.
-- No ``ignore_blank_results`` (C8). Kometa's switch downgrades "this filter
+- No ``ignore_blank_results``. Kometa's switch downgrades "this filter
   matches nothing" from an error to a log line; an error-downgrade switch is the
-  ``validate:`` class 9b refused.
-- No delete-and-recreate on a shape change (C11). See
+  ``validate:`` class this catalog refuses.
+- No delete-and-recreate on a shape change. See
   ``reconcile.shape_conflict``.
 """
 import hashlib
@@ -80,7 +80,7 @@ __all__ = [
 
 
 class SmartFilterMatchedNothing(Exception):
-    """The query answered with zero items, at create or at update (C8).
+    """The query answered with zero items, at create or at update.
 
     Its own class so the caller can turn it into one definition's refusal rather
     than a dead pass -- and so the engine's class-name-only log line says which
@@ -154,7 +154,8 @@ def count_matches(section, url: str) -> int:
 
 
 def require_matches(section, url: str) -> int:
-    """Kometa's ``test_smart_filter`` (modules/plex.py:1580-1584), C8's half.
+    """Kometa's ``test_smart_filter`` (modules/plex.py:1580-1584), the
+    refuse-at-zero half.
 
     Returns how many items the filter matches right now, and refuses at zero.
     The count is not stored anywhere -- a smart collection's membership is
@@ -225,7 +226,7 @@ def update_smart_collection(section, collection, url: str) -> None:
 def smart_definition_hash(url: str, summary: str | None, settings=None, config=None) -> str:
     """The desired state, hashed -- what an unchanged pass short-circuits on.
 
-    Over the BUILT URI (C10), never over the ``content`` attribute Plex echoes
+    Over the BUILT URI, never over the ``content`` attribute Plex echoes
     back -- spelled without the leading dot for the reason the module docstring
     above gives, since the same grep reaches here too. Three parts,
     and each is in it because a pass that skipped on this hash would otherwise
@@ -256,8 +257,8 @@ def smart_definition_hash(url: str, summary: str | None, settings=None, config=N
 
 
 def _level_conflict(collection, title: str, want_level: str) -> str | None:
-    """Task 3 review I-1: an existing smart collection whose Plex-side LEVEL
-    the definition's ``builder_level`` changed.
+    """An existing smart collection whose Plex-side LEVEL the definition's
+    ``builder_level`` changed.
 
     Mirrors ``reconcile.shape_conflict`` for the level axis, one door down in
     this same file, in both what it checks and how it is worded:
@@ -273,7 +274,7 @@ def _level_conflict(collection, title: str, want_level: str) -> str | None:
     as its sibling -- no unconditional delete advice either, because the
     collection under this title may belong to another tool entirely.
 
-    Task 4 review I-1: a plexapi change that drops ``subtype`` must not read
+    A plexapi change that drops ``subtype`` must not read
     as agreement. ``Collection._loadData`` sets it with no default (pinned in
     ``tests/test_plexapi_collection_contract.py``), so it is ``None`` only
     when the running plexapi no longer has it -- not a "no level recorded"
@@ -388,7 +389,7 @@ async def reconcile_smart_collection(
     carries its own ``type=``, built by ``build_search_url`` from the same
     field, and ``update_smart_collection`` sends no type at all. On the update
     path it is instead compared against the EXISTING collection's own level
-    (``_level_conflict``, Task 3 review I-1) -- Plex has no PUT that re-levels
+    (``_level_conflict``) -- Plex has no PUT that re-levels
     a smart collection, so a definition whose ``builder_level`` changed after
     the collection was created refuses rather than writing the new level's
     filter onto the old level's collection.
@@ -425,7 +426,8 @@ async def reconcile_smart_collection(
     actions: list[str] = []
 
     if collection is not None:
-        # C11 first: a list collection under a smart definition must never reach
+        # The shape check first: a list collection under a smart definition
+        # must never reach
         # the ownership check, because passing it would send the pass on to an
         # update route that cannot mean anything for that collection.
         conflict = shape_conflict(collection, title, want_smart=True)
@@ -468,7 +470,8 @@ async def reconcile_smart_collection(
         return actions
 
     if not definition_current:
-        # C8, before anything is written, on BOTH paths and under dry_run too:
+        # The zero-match probe, before anything is written, on BOTH paths
+        # and under dry_run too:
         # the probe is a read, and an operator previewing a pass should learn
         # that their filter matches nothing then rather than on the first
         # applied one.
@@ -497,9 +500,9 @@ async def reconcile_smart_collection(
                 update_smart_collection(section, collection, url)
                 # Not "updated the smart filter": a summary-only or
                 # settings-only edit reaches here too and re-PUTs a
-                # byte-identical uri (the C8 probe's re-run), and the pass
+                # byte-identical uri (the match probe's re-run), and the pass
                 # cannot tell which part of the definition changed -- so the
-                # string claims the whole and nothing more (row 187, M-A).
+                # string claims the whole and nothing more (row 187).
                 actions.append(
                     "updated %r from its definition (%d item(s) match now)"
                     % (title, matched)

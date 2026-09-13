@@ -2,7 +2,7 @@
 
 The law this file exists for: a gated feature gets ONE test through the path
 production actually takes, because a helper test can pass while the wired path
-differs. This ledger has earned that three times.
+differs. This project has earned that three times.
 
 The compositor is stubbed -- ``compositor.run`` and ``fit_point_size`` both,
 exactly as ``tests/test_pipeline.py`` stubs them -- so nothing shells out to

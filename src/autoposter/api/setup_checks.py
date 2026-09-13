@@ -357,6 +357,6 @@ async def run_check(
     except Exception as exc:
         # The CLASS NAME and nothing else, on every arm. httpx embeds the full
         # URL in its own messages, and a URL here can carry a query-string key.
-        # The log line names the SYSTEM only -- api/setup.py's C9 rule.
+        # The log line names the SYSTEM only -- api/setup.py's step-name rule.
         logger.info("first-start setup: a connection check did not succeed (%s)", system)
         return CheckOutcome(ok=False, refused=False, failure=type(exc).__name__)

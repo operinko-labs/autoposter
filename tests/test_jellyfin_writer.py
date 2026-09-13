@@ -1,4 +1,4 @@
-"""Task 16: jellyfin/writer.py -- read-modify-write apply_facts, locks only
+"""jellyfin/writer.py -- read-modify-write apply_facts, locks only
 where the captured MetadataField enum allows.
 
 Every GET/POST below cites docs/reference/2026-09-jellyfin-openapi-12.md,
@@ -135,7 +135,7 @@ async def test_the_genre_plans_add_and_remove_keys_become_one_replaced_list():
 
 @pytest.mark.asyncio
 async def test_an_override_on_title_and_summary_writes_and_locks_both():
-    # Review finding I1: title/summary are real DTO properties an override can
+    # title/summary are real DTO properties an override can
     # set (WRITABLE_BY_KIND permits it), and dropping the value while still
     # honouring its paired lock would lock Name/Overview to a STALE value.
     dto = {

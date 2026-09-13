@@ -386,7 +386,7 @@ class TMDBFactsClient:
     Separate from the artwork client because it asks different endpoints for
     different reasons; they share only the bearer token.
 
-    Every request goes through the Phase 1 cache seam. That matters most for
+    Every request goes through the shared provider cache seam. That matters most for
     episodes: one season-pack import asks for the same season's ratings once
     per episode, and without the cache that is one API call each. With it, the
     first episode pays and the rest are free until the TTL expires.

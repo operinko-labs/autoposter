@@ -369,7 +369,7 @@ def test_removing_a_definition_reverts_the_fingerprint():
 # keeps the digest the PRE-SEAM five-argument call produced; and an item
 # whose matched set moved re-renders. ------------------------------------
 
-# Captured on the freshly cut branch BEFORE `outcomes` existed (T1 Step 3),
+# Captured on the freshly cut branch BEFORE `outcomes` existed,
 # by calling badge_fingerprint with exactly five arguments. Pinned as a
 # literal rather than re-derived, for the same reason the gate-off literal
 # above is: a re-derivation passes even when the formula and the pin move
@@ -590,7 +590,7 @@ async def apply_badges(
     *, http=None, mdblist=None,
 ):
     """Back-compat shim, local to this suite: ``compose_badged_bytes`` then
-    ``deliver`` (Task 19), under the exact old ``apply_badges`` positional
+    ``deliver``, under the exact old ``apply_badges`` positional
     shape so none of this file's ~30 entry-point calls need to change.
     ``probe`` is accepted and ignored -- every ``FakeServer`` here lacks
     ``CAP_ARTWORK_PROVENANCE``, so ``deliver``'s ``_already_delivered`` always
@@ -717,7 +717,7 @@ async def test_apply_badges_draws_a_backdrop_definition_through_the_real_entry_p
 async def test_apply_badges_threads_http_through_to_a_url_sourced_definition(
     session, config_with_badges, tmp_path, monkeypatch
 ):
-    """Completeness gap the T3 review named: every proof of `http=` threading
+    """A completeness gap: every proof of `http=` threading
     elsewhere stops one level down, at `resolve_image_path` -- this is the
     one at `apply_badges` level, through the real entry point, for a `url:`
     source. Transport mocked and `guard.resolve_host` patched per
@@ -1107,7 +1107,7 @@ async def test_no_mdblist_client_is_a_no_op_not_an_error(session, config_with_ba
 async def test_a_used_rating_value_changing_moves_the_fingerprint_through_the_real_entry_point(
     session, config_with_badges
 ):
-    """M-1, fix round 1: the three digest pins in test_badge_compose.py call
+    """The three digest pins in test_badge_compose.py call
     `badge_fingerprint` directly -- nothing pinned the WIRING at
     `pipeline.py:1398` (`ratings=ratings`), which is the single argument that
     actually closes the staleness gap. Deleting it leaves the whole suite

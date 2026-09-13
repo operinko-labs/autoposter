@@ -35,7 +35,7 @@ from autoposter.config.schema import Secrets, resolve_secret_values
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
-# Distinctive so the T6 grep gate can prove none of them entered src/ or the
+# Distinctive so a grep gate can prove none of them entered src/ or the
 # frontend bundle.
 MASTER_PASSWORD = "row-121-master-passphrase-e41b"
 # A DSN whose password half is a string of its own, so the no-echo tests can
@@ -148,7 +148,7 @@ async def test_the_setup_app_reports_that_setup_is_required(setup_client):
 
 
 async def test_the_normal_app_reports_that_it_is_not(normal_client):
-    """C6: served by BOTH applications, so the SPA's one probe on load has an
+    """Served by BOTH applications, so the SPA's one probe on load has an
     answer either way and never has to treat a 404 as data."""
     response = await normal_client.get("/api/setup/state")
 
@@ -441,7 +441,7 @@ async def test_the_minted_token_is_accepted_by_the_route_it_guards(setup_client)
     """The positive half, without which every other token test passes against a
     `require_setup_token` that raises 401 unconditionally -- a wrong `alias` on
     the Header, a compare over the wrong pair, or the non-ASCII TypeError
-    below. Task 3 builds every step on this dependency."""
+    below. Every step from here on builds on this dependency."""
     token = await _authenticate(setup_client)
 
     response = await setup_client.get("/api/setup/progress", headers=_headers(token))
@@ -492,7 +492,7 @@ async def test_a_non_ascii_setup_token_is_a_401_and_never_a_500(setup_client):
 def test_the_admin_hash_and_the_api_key_are_not_provider_credentials():
     """The admin hash is step 1's output and the API key is row 51's operator
     choice; neither is a third party's credential. If either stayed in
-    _PROVIDER_ENV, Task 3's provider form -- specified to iterate this tuple --
+    _PROVIDER_ENV, the provider form -- specified to iterate this tuple --
     would accept a caller-chosen AUTOPOSTER_ADMIN_PASSWORD_HASH and let a
     token-holder re-key or permanently lock out the deployment's admin."""
     assert "AUTOPOSTER_ADMIN_PASSWORD_HASH" not in setup_api._PROVIDER_ENV
@@ -511,7 +511,7 @@ def test_the_admin_hash_and_the_api_key_are_not_provider_credentials():
 
 
 async def test_progress_reports_presence_and_never_a_value(setup_client):
-    """C8/C9 for this application's only reporting surface: booleans, NAMES,
+    """For this application's only reporting surface: booleans, NAMES,
     and ***REDACTED***/null -- nothing else, and no value of any kind."""
     token = await _authenticate(setup_client)
     stored = state_module.read_secrets_file(state_module.secrets_file_path())[
@@ -660,7 +660,7 @@ async def test_a_second_configuration_submit_replaces_the_one_the_wizard_holds(
 async def test_an_empty_configuration_submit_keeps_the_document_the_wizard_holds(
     setup_client, setup_state
 ):
-    """Facts C7 at the third one-field pane, for the reason the other two have
+    """At the third one-field pane, for the reason the other two have
     it: the staged document is never served back, so a step navigated into
     again shows an empty field, and an empty submit means keep. Empty with
     nothing staged still falls through to a refusal -- the media-server step's
@@ -1359,7 +1359,7 @@ PUBLIC_URL = "https://autoposter.example.test"
 async def test_the_deployment_url_step_stages_an_address(setup_client):
     """Step 2 of the v2 flow. Staged, never persisted here: it lands in the
     config document at the finish step, or nowhere at all on a deployment whose
-    document already resolves (facts C1)."""
+    document already resolves."""
     token = await _authenticate(setup_client)
 
     response = await setup_client.post(
@@ -1428,7 +1428,7 @@ async def test_the_deployment_url_step_refuses_a_scheme_that_is_not_http(setup_c
 
 async def test_the_deployment_url_step_refuses_userinfo_in_the_authority(setup_client):
     """The guard's second half, and the one that matters for the check endpoint
-    Task 2 reuses it in: `http://user:pass@host` puts a credential in a string
+    that reuses it: `http://user:pass@host` puts a credential in a string
     that ends up in an *arr's database, its UI and its logs."""
     token = await _authenticate(setup_client)
 
@@ -1451,7 +1451,7 @@ async def test_the_deployment_url_step_refuses_userinfo_in_the_authority(setup_c
     ],
 )
 async def test_the_deployment_url_step_refuses_a_query_string_or_a_fragment(setup_client, value):
-    """Facts C2: the registration URL never carries one -- and this address is
+    """The registration URL never carries one -- and this address is
     what the callback is BUILT from. `<public_url>/webhook/sonarr` over an
     address ending in `?x=1` yields `...?x=1/webhook/sonarr`, a string written
     into the *arr's database, its UI and its logs. The guard four callers share
@@ -1487,7 +1487,7 @@ async def test_the_deployment_url_keeps_a_path_prefix_and_drops_its_trailing_sla
 
 
 async def test_an_empty_deployment_url_keeps_the_one_already_staged(setup_client, setup_state):
-    """Facts C7's "empty means keep", which until now only the provider step
+    """The "empty means keep" rule, which until now only the provider step
     kept. Back navigation re-renders this pane with a `Stored` pill and an
     empty field -- the value is never sent back to the page -- so an empty
     submit has to mean "leave it as it is" or the operator's only way forward
@@ -1589,10 +1589,10 @@ async def test_the_staged_document_is_restamped_with_a_url_staged_after_the_conf
 async def test_a_document_that_already_resolves_never_receives_the_deployment_url(
     setup_client, setup_state, monkeypatch, tmp_path
 ):
-    """Facts C1: on a deployment whose document is supplied (a mounted
+    """On a deployment whose document is supplied (a mounted
     ConfigMap), the wizard stages the URL and USES it for registration but
-    persists nothing -- POST /api/setup/config still refuses outright
-    (Amendment 6), and that refusal is unchanged by v2."""
+    persists nothing -- POST /api/setup/config still refuses outright,
+    and that refusal is unchanged by v2."""
     mounted = tmp_path / "mounted.yaml"
     mounted.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setenv("AUTOPOSTER_CONFIG", str(mounted))
@@ -1812,7 +1812,7 @@ async def test_finish_writes_no_state_document_when_the_deployment_has_one(
 
 
 async def test_an_unwritable_state_directory_answers_a_fixed_503(setup_client):
-    """The deployment shape T5 creates: a pod whose PVC is missing or misowned
+    """A deployment shape: a pod whose PVC is missing or misowned
     reaches setup mode, passes /healthz, is routed by the Ingress -- and its
     very first POST is an UNAUTHENTICATED route that writes. Unhandled that is
     a bare 500 with FastAPI's generic body, from which an operator cannot tell

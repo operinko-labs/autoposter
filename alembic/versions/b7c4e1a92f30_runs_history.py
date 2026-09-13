@@ -42,7 +42,7 @@ def upgrade() -> None:
     # `name` and `kind` are deliberately unindexed: the retention clause holds
     # each recorded name to 500 rows, which is not a size that pays for two
     # more indexes to maintain. That bound is trimmed by two different
-    # callers for the table's two kinds of row (fix round 1, I-2). A
+    # callers for the table's two kinds of row. A
     # scheduled row's bound holds while `scheduler.enabled`, because every
     # such recording job is registered behind that switch alongside the
     # cleanup pass's trim, except `stale_job_reclaim` -- the one job

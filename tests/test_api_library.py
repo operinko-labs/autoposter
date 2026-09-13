@@ -264,7 +264,7 @@ async def test_item_detail_nests_each_render_own_deliveries(client, auth_headers
     response = await client.get(f"/api/items/{item_id}", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()["renders"][0]["deliveries"]
-    # M5: ordered by server, so the chips cannot reorder between page loads.
+    # Ordered by server, so the chips cannot reorder between page loads.
     # The two rows above are inserted plex-first, so insertion order would
     # read the other way round.
     assert [d["server"] for d in payload] == ["jellyfin", "plex"]

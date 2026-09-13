@@ -307,7 +307,7 @@ async def test_a_typed_system_without_an_address_is_refused(setup_client):
     ],
 )
 async def test_the_endpoint_refuses_a_scheme_or_userinfo_the_guard_rejects(setup_client, value):
-    """Task 1's shared guard, reused verbatim -- one spelling for the URL step,
+    """The shared guard, reused verbatim -- one spelling for the URL step,
     the check and the registration."""
     token = await _authenticate(setup_client)
 
@@ -591,7 +591,7 @@ async def test_a_checked_plex_address_updates_a_document_but_never_adds_a_server
     `url` rather than `base_url` -- which nothing asserted, and which the test
     below turns off.
 
-    It UPDATES and does not ADD (Phase 6 review I2). A checked address
+    It UPDATES and does not ADD. A checked address
     correcting the server a document already names is the back navigation this
     map exists for; a checked address CREATING a `plex:` block would make
     "Check connection", the one control on that pane framed as a test, write a

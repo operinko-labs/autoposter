@@ -106,7 +106,7 @@ def test_the_two_stream_read_catch_tuples_cannot_drift_apart():
     the discovered ``folder_location`` field, beside ``listFilterChoices``'s --
     so the helper below asserts every stream-read catch in a module names the
     SAME set and returns that one set. That is a LOOSENING of the one-per-
-    module rule it replaces, not a strengthening (Task 2 review, Minor 1): the
+    module rule it replaces, not a strengthening: the
     old rule forbade a module having a second handler at all, and every
     program it accepted this one accepts too (one handler is trivially "all
     equal"), so the accepted set only grows. What is traded is a COUNT
@@ -157,7 +157,7 @@ async def test_a_fully_cached_ask_survives_an_earlier_failure_in_the_pass():
 async def test_caller_bug_propagates_rather_than_being_memoised():
     # A non-numeric key is a CALLER bug, not a fact about the library: it must
     # reach the caller intact, and must not refuse every later definition this
-    # pass (review round 1; plex_search.py:459-497 is the standing precedent).
+    # pass (plex_search.py:459-497 is the standing precedent).
     section = _section("1")
     run_cache = {}
     with pytest.raises(ValueError):

@@ -345,9 +345,8 @@ class TmdbCollectionBuilder(_TmdbBuilder):
     The one builder here that carries a poster key, and it is the collection's
     own TITLE rather than its id. ``Kometa-Team/Default-Images`` keys franchise
     art by display name -- ``franchise/Jurassic Park.jpg`` -- and holds no
-    id-based naming anywhere in the repository
-    (``.superpowers/sdd/p-defimg-probe.md`` §1, and its "Confirmed
-    non-findings" section). For a unit the ``content_franchises`` pack expanded,
+    id-based naming anywhere in the repository (confirmed by a full search
+    of it). For a unit the ``content_franchises`` pack expanded,
     the definition's title IS TMDb's own collection name with the pack's
     ``remove_suffix: [' Collection']`` applied and any ``title_override``
     honoured, so it is both the best name we have and the one an operator can

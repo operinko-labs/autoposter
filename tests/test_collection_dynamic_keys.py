@@ -98,7 +98,7 @@ def test_a_synthetic_bucket_with_no_present_member_builds_nothing():
 
 
 def test_a_bare_scalar_include_is_one_key_not_its_characters():
-    """T3 review, deferred minor: ``_strlist``'s non-iterable branch
+    """``_strlist``'s non-iterable branch
     (util.py:933) was reachable from a YAML scalar and untested. ``include:
     Horror`` is one key -- not six -- and the params model's ``list[str]``
     coercion is not what makes that true, because ``derive_keys`` is public and

@@ -361,7 +361,7 @@ _PROJECTED_FIELDS = {"library_language_overrides"}
 # The mutation half of `_PROJECTED_FIELDS`, kept separately because "which
 # kinds move" isn't a single answer for this field -- see
 # `test_a_library_language_override_moves_only_the_kind_it_names`. Reused by
-# the superset test below (M3) so that test's SUPERSET claim isn't checked
+# the superset test below so that test's SUPERSET claim isn't checked
 # for `_PARTITION` alone.
 _PROJECTED_MUTATIONS = {
     "library_language_overrides": lambda c: setattr(
@@ -425,7 +425,7 @@ def test_a_global_render_input_moves_every_kind(name):
 
 
 def test_render_version_reconstructs_from_shared_inputs_and_wholesale_artwork():
-    """I1's drift guard.
+    """Drift guard.
 
     `_shared_render_inputs` hand-duplicates `render_version`'s non-artwork
     inputs (the four roots, `library_folders`) as a literal list of five
@@ -467,7 +467,7 @@ def test_render_version_reconstructs_from_shared_inputs_and_wholesale_artwork():
 
 
 def test_render_version_for_is_stable_across_two_loads_of_identical_content(tmp_path):
-    """C7's no-behaviour-change guard. If any kind's value were derived from
+    """The no-behaviour-change guard. If any kind's value were derived from
     anything but the validated model -- a dict iteration order, a `str(Path)`
     that differed by platform, an `id()` -- every fingerprint in the library
     would move on a restart that changed nothing."""
@@ -546,17 +546,17 @@ def test_render_version_for_refuses_an_unknown_art_kind():
 
 
 def test_the_wholesale_version_still_moves_for_every_partitioned_edit():
-    """C1, pinned rather than assumed.
+    """Pinned rather than assumed.
 
     `config.version` stays the wholesale hash and stays a strict SUPERSET of
     every per-kind payload -- which is what lets `_render_affecting` keep its
-    cheap short-circuit in Task 2 (`if after.version == before.version:
+    cheap short-circuit (`if after.version == before.version:
     return False`). If an edit could move a kind's version without moving the
     wholesale one, that short-circuit would swallow a real re-render.
 
-    M3: folded in are the projected field (`_PROJECTED_MUTATIONS`,
+    Folded in are the projected field (`_PROJECTED_MUTATIONS`,
     `library_language_overrides`) and the five `_GLOBAL_INPUTS` roots -- both
-    hold the same SUPERSET claim, and Task 2's short-circuit would swallow a
+    hold the same SUPERSET claim, and that short-circuit would swallow a
     real re-render just as badly if either stopped holding.
     """
     mutations: dict = dict(_PARTITION)
@@ -585,7 +585,7 @@ def test_public_url_defaults_to_empty_and_round_trips():
 
 
 def test_the_actionable_digest_knob_does_not_move_the_render_version():
-    """Storm-guard for roadmap row 236 (facts C8). `render_version` hashes
+    """Storm-guard for roadmap row 236. `render_version` hashes
     `config.artwork` wholesale plus `library_folders` and the four roots, and
     a stored fingerprint carries `render_version_for`'s per-kind projection of
     the same inputs. A notification switch is in neither payload, so turning
@@ -601,7 +601,7 @@ def test_the_actionable_digest_knob_does_not_move_the_render_version():
         assert render_version_for(kind, after) == render_version_for(kind, before), kind
 
 
-# --- plex becomes optional, jellyfin arrives (roadmap row 267 / Task 10) ----
+# --- plex becomes optional, jellyfin arrives (roadmap row 267) --------------
 
 
 def test_plex_token_left_the_hard_list_and_joined_the_server_list():

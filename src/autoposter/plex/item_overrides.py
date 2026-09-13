@@ -274,7 +274,7 @@ class _OverlaidFacts:
 def overlaid_badge_facts(facts, overrides: dict) -> object:
     """``facts`` with any overridden badge value laid on top.
 
-    Roadmap row 99's C4, at the seam that actually reads facts for the badge.
+    Roadmap row 99, at the seam that actually reads facts for the badge.
     ``persist_facts`` has already stored the PROVIDER's record untouched; this
     layers on top of the READ, so Plex and the badge show the same number and
     the item re-badges once. Nothing here writes.

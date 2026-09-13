@@ -390,7 +390,7 @@ async def delete_playlist(
     removed. The whole observable effect is the listing, which stops lying.
 
     **The user copies this service holds are NOT deleted here, and the response
-    says so.** C13 A2 names three removal events -- a user dropped from
+    says so.** There are three removal events -- a user dropped from
     ``sync_to_users``, a definition deleted, and ``delete_unconfigured`` -- and
     routes all three through ONE sweep, one gate and one cap. This endpoint is
     not among them, deliberately: deleting the copies here would mean a plex.tv

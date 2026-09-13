@@ -216,7 +216,7 @@ async def test_metadata_failure_does_not_block_artwork(session, monkeypatch, cap
 
     monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
     config = load_config(EXAMPLE)
-    # This test is about metadata containment, not badges -- and (Task 19)
+    # This test is about metadata containment, not badges -- and
     # compose_badged_bytes now loads facts per-render itself rather than
     # process_item pre-selecting them, so there is no longer an earlier,
     # unrelated expired-`media_item` failure to deflect the badge loop's own
@@ -317,7 +317,7 @@ async def test_metadata_runs_before_the_artifact_loop(session, monkeypatch):
     # This test is about metadata-vs-artifact ordering, not badges -- and
     # unlike the metadata failure above, nothing here rolls the session back
     # first, so `render_artifact`'s bare `object()` stand-in now reaches the
-    # badge stage's real (fail-fast, see I1) attribute reads instead of being
+    # badge stage's real (fail-fast) attribute reads instead of being
     # deflected by an unrelated expired-object error first.
     config.badges.enabled = False
     intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
@@ -335,9 +335,9 @@ async def test_a_plex_without_fetch_item_is_not_swallowed(session, monkeypatch):
     the badge stage contains: it must propagate rather than become a WARNING
     that resurfaces later as an unrelated error.
 
-    Fix round 1 (controller ruling I1): Task 4 moved the raw-item read behind
-    ``apply_badges`` itself (``server.fetch_item(ref.native_id)``, still
-    Plex-only), inside the badge block's own ``try``, which briefly lost this
+    The raw-item read moved behind ``apply_badges`` itself
+    (``server.fetch_item(ref.native_id)``, still Plex-only), inside the
+    badge block's own ``try``, which briefly lost this
     guarantee -- a missing method would have been logged as an ordinary
     "badge stage failed" WARNING instead of propagating. The badge (and
     metadata) blocks now re-raise ``AttributeError`` ahead of their generic
@@ -546,7 +546,7 @@ async def test_title_card_refusal_is_contained_and_carries_no_token(session, cap
 async def test_title_card_non_2xx_from_plex_records_no_art_through_process_item(
     session, caplog,
 ):
-    """M1: a non-2xx from Plex (a rotated token's 401, here) must not fail
+    """A non-2xx from Plex (a rotated token's 401, here) must not fail
     the whole job the way a bad-frame refusal does above -- it is Plex's own
     status, not a bad frame, so ``fetch_plex_generated_base`` swallows it and
     the row records the same ``no_art`` outcome a listing with no media://

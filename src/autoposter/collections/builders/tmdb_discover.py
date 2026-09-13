@@ -1,4 +1,4 @@
-"""``tmdb_discover``: TMDb's whole query surface, as a table a reviewer can read.
+"""``tmdb_discover``: TMDb's whole query surface, as a table a reader can check.
 
 The five existing TMDb "by id" builders each send exactly one discover filter
 (``with_companies``, ``with_networks``, ``with_keywords``) and take one param.
@@ -22,7 +22,7 @@ from or checked against that table:
 Generating the model rather than hand-writing forty-eight fields and checking
 them against the table is a deliberate choice. A hand-written model duplicates
 every row, and the duplicate is the thing that rots: the table would become
-documentation *about* the model instead of the model's source, and a reviewer
+documentation *about* the model instead of the model's source, and a reader
 checking the table would be checking the wrong artifact. The cost is that the
 model's fields are not statically typed -- acceptable here because nothing
 reads them by name. The model is validated and dumped, never attribute-accessed.
@@ -540,8 +540,7 @@ class TmdbDiscoverBuilder(_TmdbBuilder):
         # the watch-provider id. That id is what names the service, so it is
         # what resolves the poster; a discover definition that carries no
         # provider is not a streaming collection and keeps no default artwork.
-        # Upstream keys the files by service NAME
-        # (``.superpowers/sdd/p-defimg-probe.md`` §6), which the table
+        # Upstream keys the files by service NAME, which the table
         # translates, and a provider the table does not name gets None rather
         # than a URL built from a number upstream never used.
         service = STREAMING_NAMES.get(str(ctx.config.get("with_watch_providers", "")))

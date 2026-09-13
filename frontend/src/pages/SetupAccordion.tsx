@@ -43,7 +43,7 @@ export function SetupAccordion({
    * Plex-only operator used to land on the sign-in already expanded. Not
    * `required`, which would badge a card the deployment may never need. */
   defaultOpen?: boolean;
-  /** The Plex accordion's extra body (Task 3); absent elsewhere.
+  /** The Plex accordion's extra body; absent elsewhere.
    *
    * A render prop over this form's own two fields rather than a plain node,
    * and both directions are needed. `setAddress`, because the Plex pane picks

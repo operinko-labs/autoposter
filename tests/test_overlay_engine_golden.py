@@ -1,11 +1,10 @@
 """The byte-identity gate for the row-97 engine swap.
 
-`badges/compose.py` renders with Pillow, not ImageMagick, so this phase's
-parity oracle is the composed image itself rather than an argv list (see the
-plan's adjudication A1). Both hashes below were MEASURED on the pre-swap
-code at Task 1 and are never recomputed by a later task: re-deriving the
-expected value from the code under test is how a byte-identity gate becomes
-a tautology.
+`badges/compose.py` renders with Pillow, not ImageMagick, so the parity
+oracle here is the composed image itself rather than an argv list. Both
+hashes below were MEASURED on the pre-swap code and are never recomputed
+later: re-deriving the expected value from the code under test is how a
+byte-identity gate becomes a tautology.
 
 The hash is taken over the DECODED RGB pixels, not over the encoded WebP
 bytes, so a libwebp container-level difference (metadata ordering, say)
@@ -29,8 +28,8 @@ from autoposter.badges.values import MediaInfo
 ORACLE = Path("tests/fixtures/oracle")
 
 # The same two input sets tests/test_badge_parity.py uses, repeated here
-# rather than imported: this file must keep measuring what it measured at
-# Task 1 even if that file's fixtures are ever re-tuned.
+# rather than imported: this file must keep measuring what it originally
+# measured even if that file's fixtures are ever re-tuned.
 ALL_SOULS = BadgeInputs(
     media=MediaInfo(("1080",), ("English (EAC3 5.1)",), 6, 4845912, ("en",),
                    frozenset(), None, None),
@@ -42,7 +41,7 @@ EPISODE = BadgeInputs(
     critic_rating=None, audience_rating=10.0, content_rating=None, video_format="SDTV",
 )
 
-# MEASURED at Task 1 Step 4 on the pre-swap code. Do not recompute.
+# MEASURED on the pre-swap code. Do not recompute.
 POSTER_PIXELS_SHA = "fc8793c7a67610e47afe6b70d46dfa556e2480f3c6f44739acec8e920e65ce92"
 TITLE_CARD_PIXELS_SHA = "e786e74c935fb449505c9a8e00390bb5d1ce2a96a7ced2cfa36e83a84eb9ef81"
 

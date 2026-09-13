@@ -33,7 +33,7 @@ async def test_the_job_is_named_and_reads_its_cadence_live(session):
 
 def test_the_cadence_floors_at_sixty_seconds():
     """A pending-deliveries cadence of under a minute is still one poll a
-    minute, not sub-minute hammering -- the same floor the brief rules on."""
+    minute, not sub-minute hammering -- the same floor other cadences are held to."""
     holder = ConfigHolder(_config(minutes=0))
     job = make_pending_deliveries_job(holder, lambda: {}, http=None, mdblist=None)
 
@@ -41,7 +41,7 @@ def test_the_cadence_floors_at_sixty_seconds():
 
 
 async def test_the_job_records_a_scheduled_run_through_the_real_scheduler(session_factory):
-    """Gap 5 (fix round 3): the addendum's "its runs ARE recorded" half.
+    """Proves the job's runs ARE recorded, not just that it is registered.
 
     ``tests/test_app.py`` proves the job is registered and the assertion
     ``"pending_deliveries" not in UNRECORDED`` is a naming check; this drives

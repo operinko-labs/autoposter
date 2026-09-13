@@ -1,6 +1,6 @@
 """The identity upsert -- the pipeline never mints a second row for one item.
 
-Phase 2 keys ``media_items`` on the item's identity (``identity_key_for``,
+It keys ``media_items`` on the item's identity (``identity_key_for``,
 servers/identity.py), never on any one server's own id. A server id is a
 ``MediaItemServerRef`` row instead, and a native id that moves -- a Plex
 re-match, a library rebuild, a second server resolving the same item under

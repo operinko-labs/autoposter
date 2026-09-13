@@ -291,8 +291,8 @@ class Scheduler:
         # pass it would have recorded. `run_id` stays None in that case and
         # the completion write below simply has nothing to close.
         #
-        # `UNRECORDED` is consulted here, before `open_run` is even called
-        # (fix round 1, Critical): `stale_job_reclaim` is registered
+        # `UNRECORDED` is consulted here, before `open_run` is even called:
+        # `stale_job_reclaim` is registered
         # unconditionally and runs every five minutes regardless of
         # `scheduler.enabled`, while the retention trim only ever runs from
         # inside the (conditionally-registered) cleanup pass -- recording

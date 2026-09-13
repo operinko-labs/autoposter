@@ -240,7 +240,7 @@ def test_render_affecting_still_fires_on_skip_tba_alone():
 
 
 def test_render_affecting_short_circuits_on_the_wholesale_version():
-    """C1's reason for keeping `config.version`: it covers a strict superset
+    """The reason for keeping `config.version`: it covers a strict superset
     of every per-kind payload, so an edit that does not move it cannot move
     any kind's version, and the eight per-kind hashes are skipped."""
     before = load_config(EXAMPLE)

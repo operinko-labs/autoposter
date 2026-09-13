@@ -7,13 +7,12 @@ the code that shipped them, *before* any of it moved onto the builder engine
 The port has to reproduce that file byte for byte. Anything else is a behaviour
 change to 305 live collections, whether or not it looks like an improvement.
 
-**One deliberate amendment, phase 10a-2.** The Common Sense family's write path
+**One deliberate amendment.** The Common Sense family's write path
 moved from plexapi's ``createCollection(smart=True, filters=...)`` onto the
 raw-POST 9b grammar (roadmap row 185), so the ``filters`` cell -- which recorded
 a plexapi CALL SHAPE and not an outcome -- changed for every Common Sense
 collection in every scenario, from ``{"contentRating": ["G"]}`` to the POSTed
-``uri``. That amendment was adjudicated in advance
-(`.superpowers/sdd/p10a-facts.md`, Addendum 2, a user decision), it is the ONLY
+``uri``. That amendment was a deliberate, reviewed decision, it is the ONLY
 cell that moved, it landed as its own reviewed commit, and it is graded by
 something this fixture cannot reach: ``tests/test_collection_cs_equivalence.py``
 proves the two grammars select the same items. Every other cell -- every action
@@ -27,9 +26,9 @@ path did not move.
 than from inside the Common Sense reconciler. So the charts and awards families
 gained headings of their own, the Ratings heading moved to the end of the
 pass's actions with them, and its own sort title took the content-ratings
-group's section number (`!110_!` -> `!030_!`) -- ours, not Kometa's, and stated
-as such in `.superpowers/sdd/p49-facts.md` C2. Adjudicated in advance (C4), the
-ONLY cells that moved are separator ones, it landed as its own reviewed commit,
+group's section number (`!110_!` -> `!030_!`) -- ours, not Kometa's. Adjudicated
+in advance, the ONLY cells that moved are separator ones, it landed as its own
+reviewed commit,
 and `tests/test_collection_group_separators.py` grades the behaviour this
 fixture can only witness.
 
@@ -37,24 +36,23 @@ fixture can only witness.
 service manages now derives its group's `!<NNN>_` sort-title prefix, so the
 `sort_title` cell moved from null to a derived string for every collection in
 every APPLIED scenario, and the pass that wrote it reports one
-`set the sort title of ...` action apiece. Adjudicated in advance
-(`.superpowers/sdd/p49-facts.md` C5), and nothing else moved: every removed
+`set the sort title of ...` action apiece. Adjudicated in advance,
+and nothing else moved: every removed
 line is a `"sort_title": null` cell, every added line is either that cell's
 derived replacement or the action that wrote it, and no other cell -- summary,
 sort, label, member list, filters, poster count -- differs in any scenario. It
 landed as its own reviewed commit. The migration settling is visible here too:
 `movies_apply_again`, the second unchanged pass, carries all twenty derived
-cells and produces NOT ONE of those actions, which is C3's "exactly once" as
-recorded behaviour rather than an assertion. What this fixture cannot reach --
+cells and produces NOT ONE of those actions, which is the "exactly once" rule
+captured as recorded behaviour rather than an assertion. What this fixture cannot reach --
 that the value gets in out of band, that an explicit `sort_title` still wins,
 and that expansion never inherits a derived one -- is graded by
 `tests/test_collection_groups.py`.
 
-**Fourth deliberate amendment, the divider-polish phase (fence).** Every
+**Fourth deliberate amendment (fence).** Every
 scenario with separators on gained exactly one new collection: the closing
 "Other Collections" fence divider (`!999_!Other Collections`), created after
-the group dividers -- C5 of `.superpowers/sdd/p-dividers-facts.md`,
-adjudicated in advance. Its generated poster art is deliberately unreachable
+the group dividers, adjudicated in advance. Its generated poster art is deliberately unreachable
 here (the handler 404s the `@base` layer so generation fails before its
 ImageMagick step, keeping this fixture environment-independent), so the
 posters-on scenarios record `no poster source for 'Other Collections'`. The
@@ -68,9 +66,8 @@ reviewed commit.
 ``default_images`` family, so a proven-missing chart poster no longer reaches
 ``hosted_poster_url`` at all -- it fails inside ``ensure_default_image`` and
 reports the same ``no poster source for`` sentence every other family kind
-already used, with no URL attached. Adjudicated in advance
-(`docs/superpowers/plans/2026-09-08-chart-default-images-and-summary-precedence.md`
-C1: "the sticky-miss semantics the family entry implies... is accepted"). Three
+already used, with no URL attached. Adjudicated in advance -- "the sticky-miss
+semantics the family entry implies... is accepted." Three
 things moved, all consequences of the one cache. ``movies_posters_missing``'s
 three chart lines (``IMDb Popular``, ``IMDb Top 250``, ``IMDb Lowest Rated``)
 lost their URL, because every other kind in that scenario still carries its
@@ -102,7 +99,7 @@ Re-capture (only ever on the pre-port commit, or under a written adjudication
 like the one above). It writes the fixture and then *fails*, so a capture run
 can never be mistaken for a passing gate::
 
-    docker compose -p 8at3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
+    docker compose -p 8at3 -f docker-compose.yml \
         run --rm -e AUTOPOSTER_GOLDEN_CAPTURE=1 test \
         pytest -q tests/test_builder_port_golden.py
 
@@ -280,9 +277,8 @@ class FakeSection(PlexSection):
     """The shared Plex double plus this file's own capture.
 
     A SMART create's ``uri`` is recorded into ``updated_filters``
-    DELIBERATELY, and that is the one amendment to this harness the phase's
-    adjudication licensed (``.superpowers/sdd/p10a-facts.md``, Addendum 2
-    point 1): the cell used to hold a plexapi call shape and now holds the
+    DELIBERATELY, and that is the one deliberate amendment to this harness:
+    the cell used to hold a plexapi call shape and now holds the
     raw-POST evidence that replaced it. Same cell, same question ("what
     filter was this collection given"), different grammar. ``smart=0`` --
     the separator's blank POST -- is deliberately NOT recorded: its write

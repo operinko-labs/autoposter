@@ -1,10 +1,10 @@
 """Where an overlay's image comes from.
 
-Kometa's precedence is banked in `.superpowers/sdd/p-overlay-grammar-probe.md`
+Kometa's precedence, banked by the overlay grammar probe
 section 1.2: `file` > `default`/`pmm` > `git` > `repo` > `url` > a name-keyed
 fallback. Two of those rungs do not exist for this service and are not
 invented -- there is no Kometa Configs-repo mirror (`git`) and no custom-repo
-setting (`repo`). The plan's ladder table states each rung and why.
+setting (`repo`).
 
 The `builtin` rung resolves against THIS service's bundled overlay-stamp tree,
 which is the same shape as Kometa's own `defaults/overlays/images/` -- probe
@@ -138,7 +138,7 @@ def _validate_overlay_image(path: Path, name: str) -> None:
     came from.
 
     Originally only the `url:` rung's own downloaded bytes (hence the name
-    this had before M1); `file:`, `builtin:` and the name-keyed fallback
+    this used to have); `file:`, `builtin:` and the name-keyed fallback
     handed their paths to `badges/compose.py`'s `_load` -- straight into
     Pillow, since overlay images never go through magick -- fully undecoded.
     A file under `overlays_root` that is not a decodable image (a truncated
@@ -154,8 +154,8 @@ def _validate_overlay_image(path: Path, name: str) -> None:
     it.
 
     Call-time import, the same trick `overlays/schema.py::_as_rgba` uses for
-    Pillow: `render/pipeline.py` imports this module at its own top level
-    (Task 3 Step 12), so a module-level import back here would be the real
+    Pillow: `render/pipeline.py` imports this module at its own top level,
+    so a module-level import back here would be the real
     cycle. A call-time one is not -- by the time this function actually
     runs both modules have already finished loading, which is the same
     reasoning `api/candidates.py:47` already relies on to import

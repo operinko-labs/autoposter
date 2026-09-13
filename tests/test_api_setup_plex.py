@@ -1,8 +1,8 @@
 """The Plex PIN flow, the owned-server filter, and the both-names ruling.
 
 Two things here are unusual and both are deliberate. First, the PIN CODE and
-the app.plex.tv auth URL ARE served -- a documented row 213 exception (facts
-C6): they are minted by plex.tv, are public by design, and the flow is
+the app.plex.tv auth URL ARE served -- a documented row 213 exception:
+they are minted by plex.tv, are public by design, and the flow is
 impossible without showing them. Second, the account token is stored under
 BOTH `AUTOPOSTER_PLEX_TOKEN` and `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` with no
 exchange, because probe 1 established that the OWNED server's `accessToken`
@@ -371,8 +371,8 @@ async def test_no_plex_call_logs_the_token_the_pin_or_the_identifier(caplog):
 
     `caplog.set_level(logging.DEBUG)` deliberately DEFEATS `boot.main`'s
     process-wide clamp, which is the point: httpx logs one INFO line per
-    request with the FULL url and the poll url carries the PIN id, so if C6
-    rested on that clamp alone the last assertion here would fail. It passes
+    request with the FULL url and the poll url carries the PIN id, so if that
+    exception rested on that clamp alone the last assertion here would fail. It passes
     because every call runs inside `setup_checks.no_httpx_request_log` -- the
     property is this module's own, not another file's setting.
     """
@@ -602,7 +602,7 @@ async def test_the_libraries_route_applies_the_shared_address_guard(
 async def test_the_libraries_route_needs_a_signed_in_account(setup_client, monkeypatch):
     """The address guard runs first and this second: an operator who reached a
     pick-list has a token, so this is the direct-POST shape, and it is a step
-    to complete rather than a credential to supply. Since review I1 the
+    to complete rather than a credential to supply. The
     sentence is the typed-address one -- neither typed nor staged is the only
     way to arrive here with nothing to read with."""
     _install(monkeypatch, authorised=True)

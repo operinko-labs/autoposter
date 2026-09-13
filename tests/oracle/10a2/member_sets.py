@@ -7,7 +7,7 @@ same items, which is a question about SEMANTICS and not about bytes.
 
 This module answers it by decoding both query strings into the same predicate
 tree and evaluating the trees over a fixture library. Five premises, each cited,
-so a reviewer can reject one rather than re-derive the module:
+so any one of them can be rejected on its own rather than re-deriving the module:
 
 P1. ``field=a,b`` (a comma-joined multi-value tag) is OR over the values.
     plexapi constructs exactly that -- ``','.join(result)``, plexapi 4.18.2
@@ -77,7 +77,7 @@ from dataclasses import dataclass
 from urllib.parse import unquote_plus
 
 # Parameters dropped before the tree is built, for two DIFFERENT reasons, and
-# this comment once ran them together (T3 review, M1).
+# this comment once ran them together.
 #
 # ``sort``, ``limit`` and ``includeGuids`` are premise P3: they decide what is
 # RETURNED and in what order, never what matches. Dropping them is what stops

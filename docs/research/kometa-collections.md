@@ -22,10 +22,10 @@ label `Kometa`.** The 18 Common Sense buckets additionally carry
 carry `Oscars Winners Awards`. Anything without the `Kometa` label (269
 `<Name> Collection` franchise collections from the Plex/TMDB agent,
 Maintainerr's `Deleted Soon`, 5 hand-made collections) must never be touched,
-listed, or considered by Phase 3. This is the single fact an implementer
-must get right before anything else.
+listed, or considered by Phase 3. This is the single fact to get
+right before anything else.
 
-Production enables, per the brief:
+Production enables, per the operator's config:
 
 - Movies: `default: oscars`, `default: imdb`, `default: content_rating_cs`
 - TV Shows: `default: imdb`, `default: content_rating_cs`
@@ -132,8 +132,8 @@ regenerate" — Kometa's equivalent of this service's own `_sweep` /
 unconditionally (`append_label: str(map_name)`, `:1421`/`:1450`), independent
 of `sync`. Matching is `casefold()`-insensitive, so a title that changes only
 in case survives and any other title change makes the old collection a delete
-target. (Phase 10a-1, `.superpowers/sdd/p10a-upstream-dynamic.md` §6, the
-`sync:` finding.)
+target. (Phase 10a-1's upstream reading of `sync:`, transcribed from Kometa's
+own source.)
 
 Do not read §6 as this claim's home either: the `sync_mode: sync` membership
 diff §6.1 describes is set by the `custom` **template**, a different knob that
@@ -495,7 +495,7 @@ if builder.build_collection and not builder.blank_collection and final_collectio
 Key facts:
 
 - `minimum_items` defaults to **1** globally (`config.py:838`,
-  `check_for_attribute(..., default=1)`), matching the production brief's
+  `check_for_attribute(..., default=1)`), matching the production
   expectation. Falling below it just means the collection isn't
   created/updated **this run** (`valid = False` skips
   `builder.load_collection()`) — poster/summary/sort are simply not
@@ -573,8 +573,8 @@ run.
   `false` unless the top-level `radarr:`/`sonarr:` block or a
   per-library override sets it).
 - **Production does not configure `add_existing` anywhere in the visible
-  settings** (per the brief), and no Radarr/Sonarr connection block was
-  supplied in the ground-truth materials for this task — so under the
+  settings** (per the operator's config), and no Radarr/Sonarr connection block was
+  supplied in the ground-truth materials — so under the
   library defaults, `add_existing` resolves to `false` for all three
   collection families. **This feature currently does nothing in
   production.** If "Kometa `add_existing` parity" is a stated Phase-3 goal,

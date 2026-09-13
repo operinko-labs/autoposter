@@ -1269,10 +1269,9 @@ async def test_an_unrelated_save_is_untouched_while_the_file_lists_definitions(
     assert response.status_code == 200
 
 
-# --- A token-bearing `smart_url` PUT is refused end to end (filter-parity
-#     branch review, I2) ---------------------------------------------------
+# --- A token-bearing `smart_url` PUT is refused end to end -------------------
 #
-# The branch's whole security posture for a pasted Plex Web URL rests on
+# The whole security posture for a pasted Plex Web URL rests on
 # `_validated_generation` (routes.py) projecting only `_dotted(e["loc"])` and
 # `e["msg"]` from the `ValidationError` `build_config` raises, never `input`.
 # `tests/test_builder_smart_url.py` pins that at the model; this pins it
@@ -1354,7 +1353,7 @@ THREE_DEFINITIONS = {
 async def test_editing_one_definition_does_not_perturb_its_siblings(
     client, auth_headers
 ):
-    """The negative assertion (facts C2). A whole-list write that changed
+    """The negative assertion. A whole-list write that changed
     ONLY the entry the operator edited is the whole contract; entries either
     side must come back byte-identical -- the WHOLE dict, not just the two
     fields this test used to sample, since a sibling also carries `builder`
@@ -1435,7 +1434,7 @@ async def test_the_served_config_round_trips_a_definition_the_editor_reads_back(
 
 # --- Config safety: the shape guard and the destructiveness guards -------
 #
-# These reproduce the 2026-09-01 incident (.superpowers/sdd/progress.md:3851).
+# These reproduce the 2026-09-01 incident.
 # Defect D1: a PUT whose JSON body is a well-formed object that does NOT carry
 # a top-level `document` key was silently read as "the operator's complete set
 # of deltas is now empty" -- pydantic v2's default extra="ignore" matched it
@@ -1534,7 +1533,7 @@ async def test_the_preview_refuses_the_unwrapped_body_the_same_way(
     assert response.status_code == 422
 
 
-# --- the request-body 422 does not echo the body back (C1) ------------------
+# --- the request-body 422 does not echo the body back ------------------------
 #
 # FastAPI's default handler returns `jsonable_encoder(exc.errors())`, and
 # pydantic puts the rejected `input` in every entry -- for the `missing` arm
@@ -1832,7 +1831,7 @@ async def test_the_apply_arm_records_reason_apply_on_the_same_audit_row(
 
 # --- Config safety: the revision token and the loud 409 ------------------
 #
-# Defect D2 (.superpowers/sdd/progress.md:3853): four pages each seed the WHOLE
+# Defect D2: four pages each seed the WHOLE
 # document at mount and PUT the whole result. The seed is refreshed only by
 # that page's own save, so a page holding a mount-time seed writes its stale
 # document over everything a different page added since -- with a 200. That is
@@ -1850,11 +1849,11 @@ async def _revision(client, auth_headers) -> str:
 async def test_the_two_page_stale_save_is_refused_instead_of_clobbering(
     client, auth_headers, session
 ):
-    """T0 page A mounts. T1 page B saves separator_style. T2 page A saves.
+    """Page A mounts. Page B saves separator_style. Page A saves again.
 
-    Before the fix, T2 answered 200 and separator_style was gone -- and not
-    even listed in overridden_paths, so the page had nothing to show the
-    operator. It must now be a 409 that says what happened.
+    Before the fix, page A's second save answered 200 and separator_style was
+    gone -- and not even listed in overridden_paths, so the page had nothing
+    to show the operator. It must now be a 409 that says what happened.
     """
     # The store as both pages find it: the incident document WITHOUT the
     # separator style, because that is the setting the operator was about to
@@ -1865,11 +1864,11 @@ async def test_the_two_page_stale_save_is_refused_instead_of_clobbering(
     del seed["collections"]["separator_style"]
     await _put_document(client, auth_headers, seed)
 
-    # T0: page A mounts and seeds. It is now holding the document as of now.
+    # Page A mounts and seeds. It is now holding the document as of now.
     page_a_seed = deepcopy(seed)
     page_a_revision = await _revision(client, auth_headers)
 
-    # T1: page B, mounted from the same state, saves one field.
+    # Page B, mounted from the same state, saves one field.
     page_b = deepcopy(seed)
     page_b["collections"]["separator_style"] = "sand"
     response = await client.put(
@@ -1879,8 +1878,8 @@ async def test_the_two_page_stale_save_is_refused_instead_of_clobbering(
     )
     assert response.status_code == 200, response.text
 
-    # T2: page A saves anything at all, against the seed it took at T0. It
-    # drops exactly one path, which is inside OVERRIDE_DROP_CAP -- so Task 1's
+    # Page A saves anything at all, against the seed it took when it mounted.
+    # It drops exactly one path, which is inside OVERRIDE_DROP_CAP -- so the
     # destructiveness guard does not fire here and cannot be what refuses it.
     page_a_seed["workers"] = 11
     response = await client.put(
@@ -1897,7 +1896,7 @@ async def test_the_two_page_stale_save_is_refused_instead_of_clobbering(
     assert detail["current_revision"] == await _revision(client, auth_headers)
     assert "collections.separator_style" in detail["changed_paths"]
 
-    # T3: and the field is still there, which is the whole point.
+    # And the field is still there, which is the whole point.
     stored = (await session.execute(select(ConfigOverride))).scalar_one().document
     assert stored["collections"]["separator_style"] == "sand"
 

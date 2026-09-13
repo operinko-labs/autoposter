@@ -473,10 +473,10 @@ async def _plan_merges(
 async def find_mergeable(session: AsyncSession) -> MergeScan:
     """Every twin pair, elected and planned, with no Plex probe at all.
 
-    Probe-free on purpose (A5): the operator can read this report during an
+    Probe-free on purpose: the operator can read this report during an
     outage, size the population, and only then decide. The election is the
     row with the later ``updated_at`` (ties broken by the higher ``id``) --
-    since Task 6's identity-keyed upsert, two rows sharing one identity can
+    since the identity-keyed upsert, two rows sharing one identity can
     no longer be minted going forward (``identity_key`` is unique), so this
     election only ever meets a pair a migration or a restore left behind, and
     the APPLIED pass verifies it against Plex before it deletes anything,
@@ -816,7 +816,7 @@ async def merge(session: AsyncSession, plans: list[MergePlan]) -> MergeOutcome:
             .execution_options(synchronize_session=False)
         )
 
-        # Roadmap row 99's C2 carry rule. Read AFTER the lock rather than off
+        # Roadmap row 99's carry rule. Read AFTER the lock rather than off
         # the plan, for the reason the dismissal block above states: the PUT
         # endpoint writes an override row without touching ``media_items``,
         # so the (id, updated_at) guard cannot see one that arrived in the

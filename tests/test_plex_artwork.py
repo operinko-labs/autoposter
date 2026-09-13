@@ -133,7 +133,7 @@ def test_generated_artwork_prefix_is_media():
 
 
 def test_generated_default_picks_the_media_prefixed_entry():
-    """C5: the media:// entry, never the agent's own guess or an upload."""
+    """The media:// entry, never the agent's own guess or an upload."""
     listing = [
         FakePosterEntry("upload://abc", "/x"),
         FakePosterEntry("com.plexapp.agents.themoviedb://1", "/y"),
@@ -161,9 +161,9 @@ def test_generated_default_skips_an_entry_with_no_rating_key():
 
 def test_neither_selector_ever_returns_a_selected_upload_entry():
     """Regression pin for the selection safety law's clause 2
-    (.superpowers/sdd/p-upload-cleanup-recon.md Q3: "Never delete -- or
-    re-select -- the selected entry" if it is an ``upload://`` one, the
-    wrong-title-Jaws-poster case). This already holds on ``main``:
+    ("Never delete -- or re-select -- the selected entry" if it is an
+    ``upload://`` one, the wrong-title-Jaws-poster case). This already holds
+    on ``main``:
     ``_agent_default`` skips every ``upload://``-prefixed ratingKey
     regardless of ``selected`` (plex/artwork.py:195, which never reads
     ``.selected`` at all) and ``_generated_default`` only ever returns a

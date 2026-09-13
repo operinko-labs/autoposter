@@ -46,7 +46,7 @@ async def test_the_library_property_is_evaluated_inside_the_worker_thread():
 async def test_the_cli_refuses_before_touching_plex_when_it_is_not_configured(
     monkeypatch, caplog
 ):
-    """I1: ``config.plex`` is optional now (a Jellyfin-only deployment). This
+    """``config.plex`` is optional now (a Jellyfin-only deployment). This
     CLI builds a real ``PlexServer(config.plex.url, ...)`` with no
     lazy-connect wrapper, so a missing ``plex:`` block must be refused loudly
     before that read, not crash on ``None.url``."""

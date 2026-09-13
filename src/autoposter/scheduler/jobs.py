@@ -901,7 +901,7 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
     setting, an allowlist entry and a dashboard row to do one DELETE a week --
     and because this pass is already the tree's housekeeping pass. The trim
     runs FIRST, ahead of every refusal below, and commits in its OWN
-    transaction (fix round 1, Important 1) rather than riding the rest of the
+    transaction rather than riding the rest of the
     pass's session: the orphan walk below is documented as "minutes of wall
     time" against an NFS mount, and a DELETE left uncommitted across it would
     hold a write XID (pinning autovacuum's cleanup horizon and `runs` row

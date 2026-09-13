@@ -528,7 +528,7 @@ The instance at capture time: **one** Plex server, 17 users, 11,079 sessions
 (v1 `meta.total`), 3 libraries (movies 1,955 · TV 12,971 items / 284 shows ·
 a second movie library 143), ~31 TB total.
 
-### The seven things that will bite an implementer
+### The seven things that will bite you
 
 These are the places where the live payload and the OpenAPI contract disagree,
 or where the contract is technically satisfied but misleading. Every one is

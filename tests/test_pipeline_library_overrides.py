@@ -168,9 +168,9 @@ async def test_apply_badges_uses_the_library_value(session, monkeypatch):
         badge_fingerprint = None
         asset_path = "/tmp/nothing.jpg"
         # `badge_fingerprint()`'s own first positional argument -- not the
-        # gate's `.badge_fingerprint` above -- and missing from the brief's
-        # literal fixture; the RED run's still-open gate reaches this line,
-        # so the double needs it too.
+        # gate's `.badge_fingerprint` above -- and missing from the
+        # literal fixture; the still-open gate reaches this line before the
+        # feature lands, so the double needs it too.
         fingerprint = None
 
     class _Row:
@@ -190,7 +190,7 @@ async def test_apply_badges_uses_the_library_value(session, monkeypatch):
 async def test_process_item_uses_the_library_value_for_operations(
     session, offline_http,
 ):
-    """THE entry-point test for operations (C4).
+    """THE entry-point test for operations.
 
     Through ``process_item``, the function the queue worker calls, because a
     seam nothing calls is a seam that does not exist. Three assertions in one:
@@ -227,7 +227,7 @@ async def test_process_item_uses_the_library_value_for_operations(
 async def test_process_item_uses_the_library_value_for_badges(
     session, offline_http, monkeypatch,
 ):
-    """THE entry-point test for badges (C4). Same three assertions, at the
+    """THE entry-point test for badges. Same three assertions, at the
     other gate.
 
     ``tmdb_facts`` is deliberately NOT passed: the operations block is then
@@ -239,7 +239,7 @@ async def test_process_item_uses_the_library_value_for_badges(
     config = _config({"Movies": {"badges": {"enabled": False}}})
     badged: list[str] = []
 
-    # Task 19: process_item calls compose_badged_bytes (never a function
+    # process_item calls compose_badged_bytes (never a function
     # named apply_badges) inside its own `if library_config.badges.enabled:`
     # gate -- so THAT gate is what this test is actually pinning; the fake
     # itself no longer needs to care about the library at all.
@@ -290,8 +290,7 @@ def test_a_library_with_no_block_is_byte_identical():
 async def test_a_per_library_badges_override_moves_only_that_librarys_fingerprint(
     session,
 ):
-    """Roadmap row 92 review, Task 2 round 2: the storm proof's other half,
-    which that review named as belonging to THIS task rather than T2's --
+    """Roadmap row 92: the storm proof's other half --
     "`badges.families` IS overridable and feeds
     `BadgesConfig.all_definitions()`, so the definitions list handed to
     `badge_fingerprint` will differ for the overriding library and for it
@@ -307,7 +306,7 @@ async def test_a_per_library_badges_override_moves_only_that_librarys_fingerprin
     and TV Shows' must not.
 
     The other half of the same proof: ``render_version_for`` and
-    ``config.version`` cannot see ``badges`` at all (T1's storm guard), so
+    ``config.version`` cannot see ``badges`` at all (the storm guard), so
     they stay byte-identical between the baseline and the overridden config
     even though a real fingerprint moved -- the invalidation this row causes
     is scoped to badges alone.

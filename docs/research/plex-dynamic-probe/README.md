@@ -1,6 +1,6 @@
 # Plex dynamic types — the live read-only probe
 
-Phase 10a-1 Task 2. Run against the operator's production Plex on 2026-08-27,
+Phase 10a-1. Run against the operator's production Plex on 2026-08-27,
 **read-only throughout**. The server address and the token are scrubbed from
 every line here and from the captured output; the placeholder is `<plex-host>`.
 The script itself contains no literal URL and no literal token — both arrive
@@ -11,11 +11,11 @@ from the environment for the duration of the run and are gone with it.
 (movie), 2 `TV Shows` (show), 5 `DVR` (movie, 2 items). Photo sections are
 skipped by the script.
 
-**What it exists to decide.** Adjudication C3 scopes phase 10a to "the types
+**What it exists to decide.** Phase 10a is scoped to "the types
 `listFilterChoices` can enumerate TODAY", and named two rows whose choices
 listing was *unproven*: `network` — 9b proved the SEARCH field answers with 91
 networks, and the CHOICES listing is the same family, but that is an inference,
-not a measurement — and `country` (T1 review ⚠️2: the row shipped as a search
+not a measurement — and `country` (⚠️ the row shipped as a search
 attribute without its enumerability ever being asked). Both are **fail-closed**:
 an attribute that refuses, answers zero, or cannot be probed at all does not
 ship a dynamic type row.
@@ -30,8 +30,8 @@ The script is reproduced verbatim in §4 — it is the authority for what was se
 | --- | --- | --- |
 | **`network`** (TV Shows, show) | **ANSWERS — 91 values** | ships as written, the count in the row's `note` |
 | **`country`** (Movies, movie) | **ANSWERS — 63 values** | ships as written, movie-only per upstream |
-| the other eight C3 rows | answer on every library type their `search_kinds` claims | ship as written |
-| `decade` on a show library | **not asked** | show-decade is OUT of the phase (C3); the probe's table carries no show field for it, which is `FilterAttribute.show_search_field=None` spelled by value |
+| the other eight scoped rows | answer on every library type their `search_kinds` claims | ship as written |
+| `decade` on a show library | **not asked** | show-decade is OUT of the phase; the probe's table carries no show field for it, which is `FilterAttribute.show_search_field=None` spelled by value |
 
 Neither fail-closed branch fired. Ten rows ship.
 
@@ -47,7 +47,7 @@ library.sections                  GET /library/sections
 LibrarySection.listFilterChoices  GET /library/sections/{k}/{field}
 ```
 
-**The brief's own script docstring named only the third**, and the shipped one
+**The probe script's own docstring named only the third**, and the shipped one
 names all three: the connect and the section listing are what reaching
 `listFilterChoices` requires, and a read-only claim that omits two of its three
 requests is a claim a reader cannot check. Corrected in place rather than left
@@ -84,7 +84,7 @@ scheme, and any live `X-Plex-Token` parameter:
 host_hits=0   netloc_hits=0   livetoken_hits=0
 ```
 
-One precaution beyond the brief: the `PlexServer` connect is itself wrapped
+One precaution beyond the spec: the `PlexServer` connect is itself wrapped
 class-name-only. An unhandled failure there would put plexapi's own message —
 which quotes the tokenised URL — into the traceback, and the traceback is the
 captured log. That wrap is what produced the first run's single line
@@ -138,7 +138,7 @@ container-progress lines the capture's `tee` also caught.
 
 ## 3. What it decides, beyond the two verdicts
 
-**Both fail-closed rows answer, so `DYNAMIC_TYPES` ships all ten C3 rows.**
+**Both fail-closed rows answer, so `DYNAMIC_TYPES` ships all ten scoped rows.**
 `network` answers with 91 values on the show library — the same 91 the 9b search
 probe found, which is the two halves of the family agreeing rather than one
 half being assumed from the other. `country` answers with 63 on the movie
@@ -177,7 +177,7 @@ would build a collection named after nothing. Nothing in this task acts on it;
 it is recorded because the fan-out cap and the empty-enumeration refusal (Tasks
 4/5) now have a real example to be tested against rather than a hypothetical.
 
-**Fan-out, measured** — the number Task 5's cap is chosen against, per library:
+**Fan-out, measured** — the number the collection cap is chosen against, per library:
 
 | Type | Movies | TV Shows |
 | --- | --- | --- |
@@ -196,7 +196,7 @@ it is recorded because the fan-out cap and the empty-enumeration refusal (Tasks
 would create eight hundred and twenty-four collections in one pass. The
 roadmap's fan-out risk note names `year` (87 here) as its example; the real
 worst case is an order of magnitude worse, and `subtitle_language` (115/104) is
-the second. Task 5's `max_collections` floor should be chosen against 824, not
+the second. The `max_collections` floor should be chosen against 824, not
 against 87.
 
 ---
@@ -204,10 +204,10 @@ against 87.
 ## 4. The script, verbatim
 
 ```python
-"""Phase 10a Task 2 -- the read-only live probe.
+"""Phase 10a -- the read-only live probe.
 
 READ-ONLY. The plexapi surface this script touches is three calls, every one a
-GET -- the brief's text named only the third, and the other two are the connect
+GET -- the spec's text named only the third, and the other two are the connect
 and the section listing that reaching it requires, so they are named here rather
 than left for a reader to discover:
 
@@ -296,9 +296,9 @@ if __name__ == "__main__":
 appears on a command line:
 
 ```bash
-docker compose -p p10at2 -f docker-compose.yml -f .superpowers/isolated-db.yml \
+docker compose -p p10at2 -f docker-compose.yml -f scratch/isolated-db.yml \
     run --rm --no-deps -e PROBE_PLEX_URL -e PROBE_PLEX_TOKEN \
-    test python p10a_probe.py 2>&1 | tee .superpowers/run-t2-probe.log
+    test python p10a_probe.py 2>&1 | tee scratch/run-probe.log
 ```
 
 The script is not committed: it exists for the length of the probe and this file
@@ -307,7 +307,7 @@ is the artefact that ships, the same arrangement
 
 ---
 
-## 5. Addendum — phase 10a-2 Task 3, the two decoder GETs (2026-08-27)
+## 5. Follow-up — phase 10a-2, the two decoder GETs (2026-08-27)
 
 Run against the same production instance, **read-only, two GETs and nothing
 else**. Both settle a premise the Common Sense equivalence proof

@@ -129,7 +129,7 @@ async def _rotate(client, auth):
     return await client.post("/api/config/webhook-secret/rotate", headers=auth)
 
 
-# --- the C5 refusal ---------------------------------------------------------
+# --- the refusal --------------------------------------------------------------
 
 
 async def test_an_env_configured_deployment_is_refused_by_a_fixed_sentence(
@@ -152,7 +152,7 @@ async def test_an_env_configured_deployment_is_refused_by_a_fixed_sentence(
 
 
 def test_the_refusal_names_the_variable_and_nothing_else():
-    """Row 213 / C5: a variable name is what an operator must act on; a path,
+    """Row 213: a variable name is what an operator must act on; a path,
     a host or a value is not theirs to be told here."""
     sentence = secret_rotation.ENV_CONFIGURED_REFUSAL
 
@@ -357,7 +357,7 @@ async def test_an_empty_public_url_rotates_and_names_public_url(session_factory,
 async def test_a_refused_registration_is_a_200_with_the_secret_still_rotated(
     app, client, auth, monkeypatch
 ):
-    """C3. The rotation SUCCEEDED: the secret is rotated and this deployment
+    """The rotation SUCCEEDED: the secret is rotated and this deployment
     now expects the new value. What failed is a courtesy the operator finishes
     with a paste, and a 500 or a rollback would trade that paste for a
     half-written state directory."""

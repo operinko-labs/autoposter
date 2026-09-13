@@ -1,7 +1,7 @@
 """The same behavioural questions, asked of every MediaServer (spec §10.2).
 
 ``impl`` yields ``(server, seed)`` where ``seed(intent, native_id)`` makes the
-server hold that item. Task 3 adds the Plex arm; Task 14 adds Jellyfin.
+server hold that item. The Plex arm came first; the Jellyfin arm followed.
 """
 import base64
 

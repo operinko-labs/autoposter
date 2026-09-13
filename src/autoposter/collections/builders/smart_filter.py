@@ -9,7 +9,7 @@ membership again. A new item that matches appears in the collection with no pass
 in between, which is the whole point and is also the acceptance criterion the
 roadmap wrote for this phase.
 
-**One builder, one behaviour (C5).** ``params_model`` is ``PlexSearchParams``
+**One builder, one behaviour.** ``params_model`` is ``PlexSearchParams``
 ITSELF -- not a copy, not a subclass -- so the vocabulary, the refusals and the
 messages cannot drift between the two builders. Two deltas are parameterised
 inside that shared model rather than duplicated beside it:
@@ -17,7 +17,7 @@ inside that shared model rather than duplicated beside it:
 - the default sort is ``random`` when the config names none, which is Kometa's
   for this builder and only this builder (``default_sort="random"``,
   modules/builder.py:1478), against ``plex_search``'s ``title.asc``;
-- the definition's own ``sort`` is refused (C7) -- see
+- the definition's own ``sort`` is refused -- see
   ``refused_definition_fields`` below.
 
 A consequence, stated here because an operator will meet it: the shared model's
@@ -98,7 +98,7 @@ class SmartFilterBuilder:
     smart = True
     params_model = PlexSearchParams
 
-    # C7, and the closing half of roadmap row 140: which definition fields this
+    # The closing half of roadmap row 140: which definition fields this
     # builder cannot apply, and why. Read at config load
     # (``config/schema.py``), so an operator learns at the moment of the edit
     # rather than from a setting that reads as applied and never is.
@@ -155,7 +155,7 @@ class SmartFilterBuilder:
         require_library_type(
             "the 'smart_filter' builder", ctx.library_type, ("Movie", "Show")
         )
-        # Roadmap row 176, ruling C5. ``smart_definition_hash``
+        # Roadmap row 176. ``smart_definition_hash``
         # (collections/smart.py:225) hashes the URL this method returns, and for
         # every other attribute that URL is a pure function of the config.
         # ``folder_location``'s Plex field is discovered from the SERVER at run
@@ -164,8 +164,8 @@ class SmartFilterBuilder:
         # would re-PUT the filter of every smart collection naming it, with
         # nothing in the config having changed. Refused rather than disclosed:
         # a definition hash that is a function of the config alone is a property
-        # worth keeping whole. AFTER ``require_library_type`` (Task 2 review,
-        # Minor 6): a Music library naming this attribute is told it needs a
+        # worth keeping whole. AFTER ``require_library_type``:
+        # a Music library naming this attribute is told it needs a
         # Movie or Show library, the more useful refusal for that operator,
         # rather than being told about an attribute it could never reach anyway.
         if any(one.attribute.name == "folder_location" for one in predicates(params.group)):

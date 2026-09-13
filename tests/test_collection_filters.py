@@ -7,18 +7,18 @@ are being pinned here, and they are not the same kind of thing:
   documented filter semantics, so what it gets checked for is shape and
   self-consistency -- counts as the transcription's own checksum, every row
   typed and sourced from the fixed vocabularies, every non-obvious cell carrying
-  a note. Fidelity to Kometa itself is Task 4's oracle, not these tests;
-- **the operator semantics** are the roadmap's named risk: phase 9b translates
-  this same vocabulary into a Plex search, so every operator's meaning is pinned
+  a note. Fidelity to Kometa itself is a separate oracle test, not these tests;
+- **the operator semantics** are the roadmap's named risk: this same vocabulary
+  is translated into a Plex search, so every operator's meaning is pinned
   here as data. ``OPERATOR_CASES`` below is one case-set per ``(value type,
   operator)`` pair, and ``test_every_operator_has_a_case_set_including_a_missing_value``
   is what makes that claim structural rather than aspirational: a pair with no
   cases, or a case-set that forgot the missing-value rule, fails there;
-- **the refusals** are the load-time surface Task 3 hooks into. A filter that
+- **the refusals** are the load-time surface exposed to callers. A filter that
   cannot mean anything must say which field it is, because an operator with
   twenty definitions needs that to fix one.
 
-The view is a plain ``dict`` throughout. Task 2 supplies the real one over
+The view is a plain ``dict`` throughout. Production code supplies the real one over
 resolved plexapi items; the model never imports plexapi, and neither does most
 of this file -- the single exception is the operator-mapping test, which reads
 plexapi's own ``OPERATORS`` table to prove 9b's translation is a mapping.
@@ -54,7 +54,7 @@ from autoposter.collections.filters import (
 # ``datetime.now()`` so the "in the last N days" boundaries below are
 # arithmetic a reader can check, and so the suite does not change meaning
 # overnight. Midnight, so that the case table below reads as whole days: the
-# comparisons are made at the moment (``filters._as_moment``, Task 4's oracle),
+# comparisons are made at the moment (``filters._as_moment``),
 # and a run moment with a time of day would put every window's lower edge
 # part-way through a day, which is correct and unreadable.
 NOW = dt.datetime(2026, 8, 25, 0, 0)
@@ -193,8 +193,8 @@ def test_every_row_is_typed_sourced_and_scoped_from_the_fixed_vocabularies():
 
 
 def test_the_column_totals_are_the_transcriptions_checksum():
-    """Each column's distribution, spelled out. These are the numbers a
-    reviewer checks the table against, and the numbers Task 2's probe moved:
+    """Each column's distribution, spelled out. These are the numbers the
+    table is checked against, and the numbers the probe moved:
     the seven ``probe`` rows were exactly the ones whose data might not be in
     the listing, and the read-only production probe turned each into ``listing``
     (resolution, alone) or ``tier2-deferred`` (the other six). Each moved row
@@ -353,7 +353,7 @@ def test_batched_attributes_sees_through_a_nested_group():
     assert batched_attributes(parsed) == ("genre",)
 
 
-# --- fix round 1 (review I-2): `facts_attributes` pinned on `batched_attributes`'s
+# --- `facts_attributes` pinned on `batched_attributes`'s
 # own three tests, one tier along -----------------------------------------------
 
 
@@ -361,8 +361,8 @@ def test_facts_attributes_reports_only_the_coined_facts_predicates():
     """``test_batched_attributes_reports_only_tier2_batched_predicates`` one
     tier along. ``tmdb_status`` sits on the same ``source == 'facts'`` tier as
     the three coined rows but is NOT one of them -- ``facts_attributes`` is
-    keyed on ``FACTS_FILTER_ROWS``, not on the tier (Task 2 needs exactly the
-    rows it will ask ``ensure_facts`` for, and a Kometa-named facts row is
+    keyed on ``FACTS_FILTER_ROWS``, not on the tier (the production code needs
+    exactly the rows it will ask ``ensure_facts`` for, and a Kometa-named facts row is
     refused at config load before a definition can ever reach the engine with
     one). A filter naming neither must produce an empty tuple -- the "make no
     facts query at all" signal."""
@@ -426,20 +426,20 @@ def test_item_kinds_are_movie_show_or_both():
     ]
     # 22 -> 23 with search tail H's ``folder_location``: neither of Kometa's
     # kind lists names it, so it is both-kinds in this column too. 23 -> 26
-    # with row 156's three coined facts rows, each both-kinds by ruling C1.
+    # with row 156's three coined facts rows, each both-kinds.
     assert len([r for r in FILTER_ATTRIBUTES if r.kinds == ("movie", "show")]) == 26
 
 
 def test_versions_is_filterable_with_the_int_operators():
-    """Dialect 1 of A14's both-dialect pin: `versions.gt` in a `filters:`
-    block, the way the versions overlay family (T2) will select on it."""
+    """Dialect 1 of the both-dialect pin: `versions.gt` in a `filters:`
+    block, the way the versions overlay family will select on it."""
     assert evaluate(parse_filters({"versions.gt": 1}), _view("versions", 2)) is True
     assert evaluate(parse_filters({"versions.gt": 1}), _view("versions", 1)) is False
     assert evaluate(parse_filters({"versions.gt": 1}), _view("versions", None)) is False
 
 
 def test_versions_is_not_searchable_and_the_refusal_says_where_it_lives():
-    """Dialect 2 of A14's both-dialect pin: `versions` is filterable but has
+    """Dialect 2 of the both-dialect pin: `versions` is filterable but has
     no Plex search field, so a `plex_search:` use of it is the FIRST REAL
     (non-synthetic) row to reach `_split_key`'s `searching and not
     attribute.searchable` branch -- written and proven with a synthetic row
@@ -455,8 +455,8 @@ def test_versions_is_not_searchable_and_the_refusal_says_where_it_lives():
 
 
 def test_aspect_is_filterable_with_the_float_operators():
-    """Dialect 1 of A11's both-dialect pin: `aspect.gt`/`aspect.lt` in a
-    `filters:` block, the way the aspect overlay family (T2) selects on it.
+    """Dialect 1 of the both-dialect pin: `aspect.gt`/`aspect.lt` in a
+    `filters:` block, the way the aspect overlay family selects on it.
     The bands are open at BOTH ends upstream (`.gt`/`.lt`, never the
     inclusive forms), which is why the family transcribes 1.32/1.34 around a
     nominal 1.33 rather than 1.325/1.335."""
@@ -477,7 +477,7 @@ def test_an_item_with_no_aspect_is_excluded_by_every_operator():
 
 
 def test_aspect_is_not_searchable_and_the_refusal_says_where_it_lives():
-    """Dialect 2 of A11's both-dialect pin, the same shape `versions` already
+    """Dialect 2 of the both-dialect pin, the same shape `versions` already
     has: `aspect` is one of the 44 Kometa filter names with no Plex search
     field at all -- `builder.py:474` puts it in `float_attributes`, a
     CLIENT-SIDE comparison, and `plex.searches` has no entry for it -- so a
@@ -520,7 +520,7 @@ def test_every_operator_maps_onto_plexapis_own_operator_table():
 
 def test_every_negative_operators_plexapi_mapping_equals_its_positive_counterparts():
     """The stated convention, pinned structurally rather than left to a
-    reviewer rereading 34 rows: a negative operator's ``PLEXAPI_EQUIVALENT``
+    manual reread of 34 rows: a negative operator's ``PLEXAPI_EQUIVALENT``
     entry is the SAME key as the positive operator it negates (``_NEGATES``
     names it, or ``None`` to mean "the type's default"). ``_matches`` runs the
     positive comparison and inverts the boolean -- the negation never touches
@@ -556,7 +556,7 @@ def test_every_type_has_a_default_operator_that_is_one_of_its_operators():
         assert default in OPERATORS_BY_TYPE[value_type]
 
 
-# --- the search half of the table (phase 9b Task 1) ---------------------------
+# --- the search half of the table (phase 9b) ---------------------------
 
 
 def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
@@ -591,8 +591,8 @@ def test_the_search_kinds_column_is_its_own_and_differs_from_kinds():
 
 
 def test_seven_rows_are_unsearchable_and_thirtytwo_are_filterable():
-    """`versions` (C2a, A14) was the table's first filterable-but-not-
-    searchable row; `aspect` (C2b, A11) is the second, and for the same
+    """`versions` (C2a) was the table's first filterable-but-not-
+    searchable row; `aspect` (C2b) is the second, and for the same
     reason -- Kometa's own `aspect` filter is a client-side `float_attributes`
     comparison (`builder.py:474`) and `plex.searches` spells no search field
     for it. Row 156's three coined rows join the same bucket for a different
@@ -707,9 +707,9 @@ def test_the_people_rows_are_searchable_and_libtype_gated():
     ``movie_only_searches`` (plex.py:430-436) -- so a show library asking for
     one refuses BY NAME rather than being sent a query Plex answers with the
     wrong set. ``actor`` answers for both, re-scoped to ``show.actor`` by
-    ``show_translation`` (plex.py:168-193): the brief for this task said that
-    entry did not exist, and the repo's own verbatim transcription of that
-    table (``tests/oracle/9b/kometa_build_filter.py``) says it does.
+    ``show_translation`` (plex.py:168-193): that entry was thought not to
+    exist, but the repo's own verbatim transcription of that
+    table (``tests/oracle/9b/kometa_build_filter.py``) shows it does.
 
     All four are ``unprobed``, which is a SOURCE tier and not an accessor: a
     ``filters:`` block naming one refuses saying exactly that, and this task
@@ -984,7 +984,7 @@ def test_duration_ships_only_its_range_operators_as_a_search():
 
 
 def test_a_rating_and_a_play_count_search_take_their_ranges_only():
-    """Task 1's transcription CORRECTION, pinned so it cannot drift back.
+    """A transcription CORRECTION, pinned so it cannot drift back.
 
     The plan's text gave ``float`` the bare form and ``.not`` as searches. A
     live fetch of Kometa v2.4.8 says otherwise: ``float_attributes`` take
@@ -1168,7 +1168,7 @@ def test_each_type_refuses_the_operators_it_does_not_have(key):
     """All four range modifiers on a date in particular: ``.before``/``.after``
     are Kometa's spellings, and accepting a second one for the same meaning is
     how two vocabularies start. ``.gte``/``.lte`` shipped here as INCLUSIVE
-    forms until Task 4's oracle read Kometa's ``split`` -- which accepts all
+    forms until the oracle read Kometa's ``split`` -- which accepts all
     four and rewrites every one to the strict form -- so the same spelling
     meant two different things in the two systems."""
     with pytest.raises(ValueError, match=re.escape(f"filters.{key}")):
@@ -1414,7 +1414,7 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (["Horror"], ["^Doc", "^Sci"], False),
         (None, ".", False),
     ],
-    # `.count_*` (roadmap row 100, sub-phase C2b, adjudication A-1): Kometa's
+    # `.count_*` (roadmap row 100, sub-phase C2b): Kometa's
     # own modifier for "how many tags does this item have"
     # (`builder.py:419` declares the four, `builder.py:4350` parses their
     # value as an int), legal on every tag row. The written value is an int.
@@ -1732,8 +1732,7 @@ def test_operator_semantics(value_type, operator, have, written, expected):
 # recollection: Kometa 2.4.8 routes a BARE or ``.not`` ``year`` through its
 # tag/set-intersection branch, not its number branch -- ``check_filter``'s
 # condition opens ``filter_attr != "year"``
-# (.superpowers/oracle/9a/kometa_oracle.py:190, transcribing
-# modules/plex.py:2895) -- so an item with no year is KEPT by ``year.not:``
+# (modules/plex.py:2895) -- so an item with no year is KEPT by ``year.not:``
 # (empty intersection, negated) and dropped by the bare form, while the four
 # range modifiers stay on the number branch and drop it unconditionally.
 YEAR_MISSING_CASES = [
@@ -1955,8 +1954,8 @@ def test_plain_year_numbers_still_parse_as_before():
 #
 # ``evaluate``/``_matches_one`` resolve ``_CurrentYear``/``_Today`` at compare
 # time; a ``plex_search`` has no compare step, so ``build_search_url`` needs a
-# concrete value handed to it. Controller ruling (search-tails-2 Task 3
-# review): before this function existed, a ``plex_search:`` config writing
+# concrete value handed to it. Before this function existed, a
+# ``plex_search:`` config writing
 # ``year: current_year`` parsed without error -- ``year`` is searchable and
 # ``_as_current_year`` is not gated by ``searching`` -- and then reached
 # ``search_url``'s plain ``str(value)`` int/float fallback carrying the
@@ -2164,7 +2163,7 @@ def test_filters_module_never_imports_plexapi():
     assert "plexapi" not in imported_roots
 
 
-# --- the parser's search mode (phase 9b Task 1) -------------------------------
+# --- the parser's search mode (phase 9b) -------------------------------
 
 
 def _only(group):
@@ -2434,16 +2433,16 @@ def test_the_refusal_gets_the_article_right_for_an_int_attribute():
     assert "a str attribute" in str(error.value)
 
 
-# --- Concern D: Kometa's .count_* tag modifiers (adjudication A-1) ----------
+# --- Kometa's .count_* tag modifiers ----------
 
 
 def test_the_tag_type_carries_kometas_own_count_modifiers():
-    """C7's adjudication A-1. Kometa spells "how many tags does this item
+    """Kometa spells "how many tags does this item
     have" as a MODIFIER on the tag attribute itself (`builder.py:4350`), not
     as a separate `*_count` attribute -- so a Kometa config ports verbatim
     and this table's `name` column keeps its promise (every name is Kometa's
-    own). This reverses the phase-C recon's A8 recommendation, which is
-    recorded on the operator table's own comment rather than left implicit."""
+    own). This reverses an earlier recommendation, recorded
+    on the operator table's own comment rather than left implicit."""
     assert OPERATORS_BY_TYPE["tag"] == (
         "eq", "not", "regex", "count_gt", "count_gte", "count_lt", "count_lte",
     )
@@ -2512,7 +2511,7 @@ def test_a_bare_string_tag_value_counts_as_one():
 
 
 def test_the_dual_band_is_expressible_as_one_two_key_condition():
-    """The exact shape `language_count`'s Dual overlay uses (T2): a two-key
+    """The exact shape `language_count`'s Dual overlay uses: a two-key
     mapping is already an AND, because `parse_filters`' `base` defaults to
     `all`. `.count_gte: 2` with `.count_lt: 3` is "exactly two"."""
     dual = {"audio_language.count_gte": 2, "audio_language.count_lt": 3}
@@ -2591,7 +2590,7 @@ def test_tmdb_status_is_a_show_only_tag_row_on_the_facts_tier():
     libtype does (`/modules/builder.py:334-345`). TMDb, never TVDb:
     `tmdb_filters` lists it (`:371`) and `tvdb_status` is a separate name in
     `tvdb_filters` (`:375`) this service does not ship -- roadmap row 100's
-    A12 correction, re-confirmed by direct read of the pinned image."""
+    correction, re-confirmed by direct read of the pinned image."""
     row = BY_NAME["tmdb_status"]
     assert (row.type, row.kinds, row.source) == ("tag", ("show",), "facts")
     assert row.filterable is True
@@ -2674,11 +2673,11 @@ def test_neither_status_row_is_searchable_and_the_refusal_says_where_it_lives():
 
 
 def test_a_collection_filtering_on_a_facts_row_is_refused_only_for_kometa_named_rows():
-    """ADJUDICATION A-2, as roadmap row 156 leaves it. The fence this test
+    """As roadmap row 156 leaves it: the fence this test
     used to pin -- "no collection may filter on a `facts` row" -- is the fence
     row 156 opened, and it opened it for exactly the rows whose names this
     service COINED, each of which carries its own sparsity note. The two C2c
-    rows carry KOMETA'S own names and were never re-adjudicated for
+    rows carry KOMETA'S own names and were never reconsidered for
     collections, so they stay refused, and the refusal still has to say where
     the value is, that an overlay condition CAN use it, and which row owns the
     question."""
@@ -2722,7 +2721,7 @@ def test_a_collection_filtering_on_a_facts_row_is_refused_only_for_kometa_named_
 # ``episode_plays`` is number (kometa_build_filter.py:409).
 # ``episode_critic_rating`` is float (kometa_build_filter.py:411).
 # ``episode_label`` is tag (kometa_build_filter.py:414-435).
-# One tuple per row so a reviewer checks the TABLE against the TRANSCRIPTION
+# One tuple per row so the TABLE is checked against the TRANSCRIPTION
 # rather than against this file's prose. The order is roadmap row 173's,
 # which is also the table's.
 FAMILY_E = [
@@ -2867,7 +2866,7 @@ def test_field_for_refuses_a_discovered_row_by_naming_the_resolver():
 
 
 def test_the_three_coined_facts_rows_are_shaped_as_the_ruling_says():
-    """C1's shape, cell by cell. `filterable=True` because an operator writes
+    """The shape, cell by cell. `filterable=True` because an operator writes
     these in a `filters:` block; `search_field=None` and `search_kinds=()`
     because Plex has never seen the value -- it is in this service's own
     `item_facts` row -- so no `plex_search.py` or `search_url.py` edit is owed
@@ -2958,7 +2957,7 @@ def test_the_two_c2c_rows_still_refuse_a_plex_search_the_same_way():
     ("tmdb_rating.lte", 9.9),
 ])
 def test_a_missing_facts_value_is_excluded_under_every_operator(key, written):
-    """RULING C3, pinned per operator, and the two halves are different claims.
+    """Pinned per operator, and the two halves are different claims.
 
     A `float` row would already exclude under every operator through
     `_MISSING_ALWAYS_EXCLUDES` -- those nine cases are a regression guard. The
@@ -2983,13 +2982,13 @@ def test_the_c2c_rows_keep_their_declared_missing_value_gap():
     Kometa-named row whose `.not` widening is a DECLARED gap in its own note
     and whose collections use is still refused at load; changing its rule here
     would silently move overlay `condition:` membership -- a badge change --
-    for a row this row was not asked to re-adjudicate."""
+    for a row this row was not asked to reconsider."""
     group = parse_filters({"tmdb_status.not": "ended"})
     assert evaluate(group, _view("tmdb_status", None), now=NOW) is True
 
 
 def test_a_coined_facts_row_is_refused_in_an_overlay_condition():
-    """C7's storm guard, pinned rather than asserted in prose. The three names
+    """The storm guard, pinned rather than asserted in prose. The three names
     are NOT in `overlays/selection.py::OVERLAY_ATTRIBUTES`, so
     `parse_condition`'s narrowing refuses them at config load and no badge
     definition can name one -- which is why `badges/compose.py::
@@ -3004,11 +3003,11 @@ def test_a_coined_facts_row_is_refused_in_an_overlay_condition():
         assert name in str(caught.value), name
 
 
-# --- fix round 1 (review I-1): a PRESENT facts value is a positive control ----
+# --- a PRESENT facts value is a positive control ----
 
 
 def test_a_present_facts_value_matches_or_fails_the_predicate_normally():
-    """The C3 branch at ``filters.py``'s ``_matches`` (`have = view.get(...)`
+    """The facts-missing-value branch at ``filters.py``'s ``_matches`` (`have = view.get(...)`
     then `if attribute.name in FACTS_FILTER_ROWS and _is_missing(...)`) is
     guarded by ``_is_missing`` for a reason: it must answer for the MISSING
     case only and let a PRESENT value fall through to the ordinary type-split

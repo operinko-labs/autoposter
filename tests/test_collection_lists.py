@@ -543,7 +543,7 @@ async def _stats(session):
 
 
 async def test_taking_over_a_smart_row_stamps_it_manual_and_fills_its_stamps(session):
-    """The mirror of the operator take-over above, and the C11 remediation path
+    """The mirror of the operator take-over above, and the remediation path
     in the smart -> list direction.
 
     ``reconcile.shape_conflict`` tells an operator switching a definition from

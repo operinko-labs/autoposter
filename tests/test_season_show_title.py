@@ -141,7 +141,7 @@ def test_the_example_config_ships_the_upstream_values_with_the_gate_off():
 
 
 def test_only_the_season_posters_version_moves(config):
-    """The storm proof (facts C2), against the other three kinds' render
+    """The storm proof, against the other three kinds' render
     versions.
 
     Roadmap row 111 confines a render version to the art kind whose settings
@@ -194,7 +194,7 @@ def test_the_wholesale_render_version_moves_and_that_is_expected(config):
     )
     # The wholesale hash, pinned absolutely rather than merely proven to
     # differ. It has now moved three times: by row 78's show_title block, by
-    # the task-2 fix round's I2 correction (e987fc3d42d6bac9 ->
+    # a later correction (e987fc3d42d6bac9 ->
     # 386ea7cf4844f52e, the example's show_title.text_offset changing from
     # "+300" to "+120" so the seam test can tell which block's offset the
     # stacking rule actually reads), and on 2026-09-08 by roadmap row 219's
@@ -308,8 +308,8 @@ async def test_the_gate_on_draws_the_show_title_as_a_second_block(
     # drop the `model_copy` override from the loop and every other test in
     # this plan stays green while the show title composites at its own
     # configured +0+120 instead of the derived +0+430 -- the exact
-    # helper-passes-but-the-wiring-differs class this ledger has been burned
-    # by three times. Before the fix round's I2 correction the example gave
+    # helper-passes-but-the-wiring-differs class of bug this suite has been burned
+    # by three times. Before an earlier correction, the example gave
     # both blocks the same "+300", so this drop would have silently landed
     # the two blocks on top of each other (300 == 300) rather than reddening
     # this assertion; shipping "+120" here is what makes the wiring bug
@@ -322,7 +322,7 @@ async def test_the_gate_on_draws_the_show_title_as_a_second_block(
 async def test_the_gate_on_draws_the_show_title_at_the_season_blocks_gravity(
     config, tmp_path, monkeypatch,
 ):
-    """I1 (branch review): the derived offset's SIGN comes from the season
+    """The derived offset's SIGN comes from the season
     block's gravity (``stacked_above``), so the drawn caption's ANCHOR must
     come from the same place or the sign and the anchor disagree -- an
     operator who moves the season text to a non-bottom gravity without
@@ -430,7 +430,7 @@ def test_stacked_above_treats_gravity_case_insensitively(config):
 async def test_the_show_title_is_not_drawn_when_draw_text_is_off(
     config, tmp_path, monkeypatch,
 ):
-    """Facts C6: the block obeys the EXISTING draw_text flag and gains no
+    """The block obeys the EXISTING draw_text flag and gains no
     precedence logic of its own. draw_text is already False for a local source
     with skip_local_text_add on (row 39), for a suppressed-styling candidate
     (row 41), and -- for posters -- when a logo took the text's place. Sitting
@@ -520,7 +520,7 @@ def test_show_title_for_refuses_wrong_kind_missing_style_and_gate_off(config):
     assert show_title_for("season_poster", season, config) == "Severance"
 
 
-# --- row 43's gap, co-delivered (facts C7) ----------------------------------
+# --- row 43's gap, co-delivered ----------------------------------
 
 
 def test_a_season_name_override_renames_the_season_posters_own_text(config):

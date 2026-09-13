@@ -213,8 +213,8 @@ async def test_post_enqueues_a_batch_and_reports_progress_from_the_live_count(
     body = response.json()
     assert body["status"] == "enqueued"
     assert body["enqueued"] == 2
-    # Live count of THIS database's movie/show parents -- never the row's
-    # measured 2252 (facts C2).
+    # Live count of THIS database's movie/show parents -- never the
+    # measured 2252 from production.
     assert (body["done"], body["total"]) == (2, 3)
     assert await _titles(session) == ["A", "B"]
     audit = (await session.execute(select(EventLog))).scalars().all()
@@ -242,7 +242,7 @@ async def test_a_completed_walk_answers_complete_and_enqueues_nothing(
 
 
 async def test_a_blocked_tmdb_budget_parks_the_trigger(session, session_factory):
-    """C2's parks-not-loses: an open 429 window means the batch would gather
+    """Parks, not loses: an open 429 window means the batch would gather
     with TMDb skipped and stamp ``fetched_at`` anyway -- the columns this
     sweep exists to fill would be silently lost until the drift sweep aged
     the items back in. So the trigger refuses and the cursor does not move."""

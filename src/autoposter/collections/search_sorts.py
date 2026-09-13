@@ -291,10 +291,10 @@ def require_sort_for_libtype(libtype: str, sort_by: Sequence[str]) -> None:
     episode the answer is about the LEVEL and the sort is the fix.
     """
     table = SORT_TYPES[libtype].sorts
-    # "a season sort" / "an episode sort" -- the brief's own C6 text hardcodes
-    # "a {libtype} sort", which reads as "a episode sort" and disagrees with
-    # its own test's "needs an episode sort" assertion. Fixed here with the
-    # article picked from the level's own spelling, since the closed set is
+    # "a season sort" / "an episode sort" -- a hardcoded "a {libtype} sort"
+    # reads as "a episode sort" and disagrees with the test's "needs an
+    # episode sort" assertion. The
+    # article is picked from the level's own spelling instead, since the closed set is
     # exactly {"season", "episode"} (test_the_sort_tables_cover_exactly_the_
     # library_types_the_table_knows) and only one of the two needs "an".
     article = "an" if libtype[:1] in "aeiou" else "a"
@@ -305,7 +305,7 @@ def require_sort_for_libtype(libtype: str, sort_by: Sequence[str]) -> None:
             other for other, spec in SORT_TYPES.items() if name in spec.sorts
         )
         if libtype in ("season", "episode"):
-            # Facts C6, and it is the message an operator actually hits: the
+            # This is the message an operator actually hits: the
             # first thing that happens after adding ``builder_level: episode``
             # to a working definition is that its ``sort_by`` -- typically
             # ``episode_added.desc``, a SHOW sort -- stops being available.

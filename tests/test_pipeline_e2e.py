@@ -216,7 +216,7 @@ async def test_a_stale_plex_hint_is_not_a_fork_the_resolved_key_becomes_the_ref(
 
 async def test_a_refused_kind_does_not_abort_its_sibling(config, session):
     """render/pipeline.py's per-kind containment (roadmap: the
-    unscorable-floor investigation, mechanism M2): a source that raises
+    unscorable-floor investigation): a source that raises
     SourceRefused (job 40478's "Inside Out 2" clearlogo incident, or here a
     poster source that will not decode) used to abort the whole artifact
     loop, costing the item its background too. It must not: the background
@@ -256,7 +256,7 @@ async def test_a_refused_kind_does_not_abort_its_sibling(config, session):
 
 
 async def test_a_non_first_kind_refusing_still_badges_the_earlier_kind(config, session):
-    """The discriminating test roadmap review flags as M2: SQLAlchemy's
+    """The discriminating case: SQLAlchemy's
     `rollback()` expires the ENTIRE identity map (`dirty_only=False`,
     independent of `expire_on_commit`, which this app sets False) -- not just
     the just-refused kind's own row. Refusing a NON-FIRST kind (poster
@@ -330,7 +330,7 @@ async def test_a_last_kind_refusing_with_facts_enabled_still_writes_facts(config
     `test_a_non_first_kind_refusing_still_badges_the_earlier_kind` above,
     which never supplies `tmdb_facts`.
 
-    A re-review flagged this combination as a hypothesized second victim of
+    This combination is a hypothesized second victim of
     the containment's `session.rollback()`: since `rollback()` expires the
     entire identity map, and no LATER `render_artifact` call follows a
     last-kind refusal to revive `media_item` as a side effect of its own

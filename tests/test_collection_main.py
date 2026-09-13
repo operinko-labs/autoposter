@@ -216,7 +216,7 @@ async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
 async def test_the_cli_refuses_before_touching_plex_when_it_is_not_configured(
     monkeypatch, caplog
 ):
-    """I1: ``config.plex`` is optional now (a Jellyfin-only deployment). This
+    """``config.plex`` is optional now (a Jellyfin-only deployment). This
     CLI builds a real ``PlexServer(config.plex.url, ...)`` with no lazy-connect
     wrapper, so a missing ``plex:`` block must be refused loudly before that
     read, not crash on ``None.url``."""
@@ -307,7 +307,7 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey="", 
     loading, the Plex connection, the engine and the reconcile itself. What
     is under test here is only what ``main()`` does with the summary.
 
-    ``plex`` defaults to a configured stand-in block; the I1 refusal test
+    ``plex`` defaults to a configured stand-in block; the refusal test above
     passes ``plex=None`` explicitly to mean "no ``plex:`` block at all",
     which is a real, distinct state from the default -- not the same as
     "not supplied".

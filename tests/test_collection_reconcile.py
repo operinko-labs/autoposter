@@ -322,7 +322,7 @@ async def test_smart_collection_rows_never_get_reconcile_stats(session):
         assert row.last_reconciled_at is None
 
 
-# --- fix round: the smart hash carries the ride-along settings too ---------
+# --- the smart hash carries the ride-along settings too --------------------
 #
 # ``lists.py``'s members hash already folds in the ride-along settings
 # (labels, sort title, mode, hub visibility) so a settings-only edit is not
@@ -610,7 +610,7 @@ async def test_a_dead_filter_lookup_refuses_the_whole_family_rather_than_raising
     assert section.queries == []
 
 
-# --- C11: a definition that changes shape under an existing collection -------
+# --- a definition that changes shape under an existing collection -----------
 
 
 def test_shape_conflict_is_silent_when_the_shapes_agree():

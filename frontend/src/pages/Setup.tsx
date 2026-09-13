@@ -132,7 +132,7 @@ export function Setup() {
   // a server surface: a registration is an EVENT, the server keeps no record of
   // one, and the finish page reports what happened during THIS wizard.
   const [registrations, setRegistrations] = useState<Record<string, ArrRegistration>>({});
-  // Which services have a registration call in flight right now (review I1).
+  // Which services have a registration call in flight right now.
   // `onRegister` does not go through `run()` -- it must not advance the step
   // or block on the page's own error banner -- so it needs its own busy flag,
   // and a per-service SET rather than one boolean because Sonarr and Radarr's
@@ -304,14 +304,14 @@ export function Setup() {
             onRegister={async (service) => {
               // Not through `run`: that advances the step and reports a
               // failure as the page's own error, and a registration is neither
-              // -- it never blocks the finish (facts C3), and its result is
+              // -- it never blocks the finish, and its result is
               // reported per service on the last pane. The route answers 200
               // with `ok: false` for every failure it has, so the only reject
               // reachable here is the fetch itself.
               // `registering` is what disables the button for the DURATION of
-              // this call (review I1): a double press before the first call
+              // this call: a double press before the first call
               // lands is what let two overlapping registrations create the
-              // duplicate C2a exists to prevent.
+              // duplicate this guards against.
               setRegistering((previous) => new Set(previous).add(service));
               try {
                 const result = await registerArrWebhook(service);
@@ -496,7 +496,7 @@ function OneFieldPane({
   /** Whether the SERVER already holds a value for this step -- presence, which
    * is all `/progress` reports and all this needs. Absent for the password
    * pane, whose own label says which of set/prove it is asking for. It drives
-   * both halves of facts C7: the pill that says the step is answered, and an
+   * both halves of the step's status: the pill that says the step is answered, and an
    * empty submit staying live, which the endpoints read as "keep what you
    * have". The value itself is never sent back to the page, so a step
    * navigated back into always shows an empty field. */
@@ -674,7 +674,7 @@ function accordionBody(
 ) {
   if (SYSTEMS_WITH_A_WEBHOOK.has(system)) {
     // Disabled for the duration of the call, and the result rendered right
-    // beside it (review I1): the check button two lines below already answers
+    // beside it: the check button two lines below already answers
     // into a pill in the accordion's own header, and this was the one control
     // on the pane that wrote to a third party and answered silently.
     const inFlight = registering.has(system);
@@ -707,7 +707,7 @@ function accordionBody(
 /** The systems step: one collapsible per credential.
  *
  * The flat form this replaces rendered eleven inputs and two headings in one
- * column, which was already the longest pane in the wizard. Facts C8: required
+ * column, which was already the longest pane in the wizard. Required
  * open, optional collapsed, and the header carries both pills -- what the
  * deployment holds, and what the last check answered. The media servers are
  * not among these credentials: each is asked for on the step before this one,
@@ -727,7 +727,7 @@ function SystemsPane({
 }: {
   busy: boolean;
   progress: SetupProgress;
-  /** Services with a registration call in flight right now (review I1) --
+  /** Services with a registration call in flight right now --
    * disables that service's own button and no other. */
   registering: Set<string>;
   /** What each *arr answered, keyed by service -- rendered beside the button

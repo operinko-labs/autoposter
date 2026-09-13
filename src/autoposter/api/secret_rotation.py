@@ -16,7 +16,7 @@ state-directory guard below are therefore duplicated from `api/setup.py`'s
 `fastapi.HTTPException` into a module that is deliberately framework-free and
 is imported by `config/schema.py`.
 
-ORDER OF OPERATIONS, and it is load-bearing (facts C1): write the state file
+ORDER OF OPERATIONS, and it is load-bearing: write the state file
 -> rebind `app.state.secrets` -> re-register both *arrs -> report. The write
 is the only step whose failure changes nothing (`write_state_file` is atomic
 and unlinks its partial), so it goes first. Registration goes last because a
@@ -84,7 +84,7 @@ WEBHOOK_SECRET_ENV = "AUTOPOSTER_WEBHOOK_SECRET"
 # there is nothing here to validate against it.
 ARR_SERVICES = ("radarr", "sonarr")
 
-# Facts C5. The variable NAME is what an operator must act on, and naming a
+# The variable NAME is what an operator must act on, and naming a
 # variable is what `missing_hard_secret_names` and `Secrets.load` already
 # establish as both safe and required to say. No value, no path, no host.
 ENV_CONFIGURED_REFUSAL = (

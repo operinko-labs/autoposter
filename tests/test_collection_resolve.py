@@ -145,9 +145,8 @@ def test_resolving_no_ids_yields_nothing():
 #
 # A Show library's ``section.all()`` returns Shows only, and a Show carries no
 # per-episode guid, so an episode-level definition has nothing to resolve
-# against. The traversal answer was banked by 8b Task 5
-# (``.superpowers/sdd/task-5-report.md``): ``section.search(libtype="episode")``
-# returns episodes in one call. What was missing is the CONTRACT, not the query.
+# against. ``section.search(libtype="episode")`` returns episodes in one call.
+# What was missing is the CONTRACT, not the query.
 
 
 class FakeSearchSection(FakeSection):

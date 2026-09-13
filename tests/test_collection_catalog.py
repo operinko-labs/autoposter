@@ -163,8 +163,8 @@ def test_the_titles_helper_answers_for_a_smart_builder_that_lists_nothing(
     test below is the one that would have raised.
 
     A double rather than a shipped row, because at this commit no shipped
-    preset builds with ``dynamic`` yet; Task 3's packs are what make this
-    branch load-bearing.
+    preset builds with ``dynamic`` yet; future dynamic packs are what make
+    this branch load-bearing.
     """
     double = Preset(
         key="content_dynamic_double",
@@ -192,7 +192,7 @@ def test_the_titles_helper_answers_for_a_smart_builder_that_lists_nothing(
 def test_the_titles_helper_still_refuses_a_family_builder_that_lost_its_flag(
     monkeypatch,
 ):
-    """The guard beside the branch Task 2 changed, pinned.
+    """The guard beside the branch above, pinned.
 
     Both reads in the helper have a default, so a builder that owns a family of
     titles and has lost its ``smart`` flag would be probed as a single title
@@ -273,7 +273,7 @@ CATALOG_CHECKSUM: dict[str, tuple[int, int, int]] = {
     "awards": (15, 0, 1),
     "charts": (10, 0, 1),
     # 4/1/0 until the divider-polish phase: `content_franchises` moved to the
-    # tenth category, `franchises`, when C2 gave the franchises block its own
+    # tenth category, `franchises`, when the franchises block got its own
     # group and divider. The row itself did not change -- only its tab.
     # 3/1/0 until the franchise-grouping phase: `content_universes` and
     # `content_dc` followed `content_franchises` into the `franchises` tab on
@@ -751,9 +751,9 @@ def _table_checksum(entries) -> str:
 
 
 def test_the_big_pack_tables_have_not_drifted_by_one_entry():
-    """Minor 1, extended to every big table this catalog ships. The record
-    these eight tables transcribe is gitignored (``.gitignore:23
-    .superpowers/``), so ``packs.py`` is the only in-repo copy of them -- and,
+    """Extended to every big table this catalog ships. The record
+    these eight tables transcribe is gitignored (``.gitignore:23``),
+    so ``packs.py`` is the only in-repo copy of them -- and,
     for ``_LANGUAGE_INCLUDE``, a checksum closes a gap the existing
     187+Norwegian pin does not: a same-length substitution (one code swapped
     for a typo) moves neither the count nor the Norwegian membership check.
@@ -819,7 +819,7 @@ def test_the_big_pack_tables_have_not_drifted_by_one_entry():
 
 
 def test_a_packs_placeholder_title_is_listed_and_reserved():
-    """The pair C3 asks to read honestly.
+    """The pair reads honestly.
 
     ``titles()`` reports the placeholder -- which IS a title this service
     manages, because the engine reserves ``{definition.title}`` for a smart
@@ -860,7 +860,7 @@ def test_a_packs_shape_line_comes_from_the_renderer_the_builder_uses():
 
 
 def test_a_packs_placeholder_reaches_the_managed_titles_helper():
-    """Task 2's fix, exercised by a shipped row rather than a double: the
+    """The fix, exercised by a shipped row rather than a double: the
     placeholder is what the collision test counts for this family, and it is
     what the engine reserves on a real pass."""
     keys = [preset.key for preset, _, _ in _dynamic_rows()]
@@ -1226,8 +1226,8 @@ def test_the_collision_test_can_actually_fail():
 # (`catalog.py`'s own description promises an operator who already has the
 # collection gets it back "under the same title"); renaming
 # `production_network`'s include list would stop it being a transcription of
-# Kometa's own `defaults/show/network.yml`. Neither is this row's fix (recon
-# `.superpowers/sdd/p-row-135-recon.md` §7, §12.2) -- at run time the two
+# Kometa's own `defaults/show/network.yml`. Neither is this row's fix --
+# at run time the two
 # definitions build different SHAPES (smart vs list), so
 # `reconcile.shape_conflict` refuses the loser LOUDLY every pass rather than
 # flapping membership: this costs a refused pass, never data loss. A pair NOT
@@ -1411,7 +1411,7 @@ def test_every_facts_pack_opens_with_what_the_operator_gets():
 
 
 def test_a_facts_packs_placeholder_title_is_listed_and_reserved():
-    """The same pair C3 asks to read honestly for a dynamic pack. The
+    """The same pair reads honestly for a dynamic pack. The
     placeholder IS a title this service manages -- ``facts_family`` declares no
     ``titles``, so ``engine.definition_titles`` falls through to the
     definition's own -- and ``years_title()`` reports the SHAPE of what the
@@ -1722,7 +1722,7 @@ def test_the_four_people_packs_are_one_counted_credits_definition_each():
 
 
 def test_a_credits_packs_placeholder_title_is_listed_and_reserved():
-    """The same pair C3 asks to read honestly for the other two families:
+    """The same pair reads honestly for the other two families:
     ``titles()`` reports the placeholder, which IS a title this service manages
     (the engine reserves ``{definition.title}`` for a smart builder that lists
     none), and ``years_title()`` reports the SHAPE of what the family really
@@ -2323,7 +2323,7 @@ def test_the_aspect_transcription():
         assert all(isinstance(value, float) for _title, value in catalog._ASPECTS)
 
     # The bare key really is the equality operator, and the explicit spelling
-    # really is refused -- the two halves of C1's correction, proven rather
+    # really is refused -- the two halves of the fix, proven rather
     # than asserted in a comment.
     parsed = parse_filters(preset.definitions("Movie")[0].filters)
     predicate, = predicates(parsed)
@@ -2393,8 +2393,8 @@ def test_the_dc_source_refs_have_not_drifted_by_one_entry():
     ``test_the_universe_ids_have_not_drifted_by_one_entry`` states it for the
     universe ids: editing a source ref is a deliberate two-site change --
     table plus this digest -- never a silent one. Recomputing after a
-    DELIBERATE edit: verify the new ref against its LIVE list first (the T1
-    probe pattern -- fetched through the shipped client, never assumed), then
+    DELIBERATE edit: verify the new ref against its LIVE list first (fetched
+    through the shipped client, never assumed), then
     regenerate with ``_table_checksum`` over the stringified refs in table
     order and paste the new hex string in below. Never adjust it just to turn
     a red test green.
@@ -3000,7 +3000,7 @@ async def test_the_catalog_endpoint_reports_which_presets_are_active(
 async def test_the_catalog_endpoint_serves_the_groups_in_effective_order(
     client, auth_headers
 ):
-    """The Groups panel's enumeration source (group-order UI phase, C2): the
+    """The Groups panel's enumeration source: the
     server serves the groups so the frontend never transcribes the eleven keys.
     The example config leaves `group_order` unset, so this is canonical."""
     body = (await client.get("/api/collections/catalog", headers=auth_headers)).json()
@@ -3146,7 +3146,7 @@ def test_the_catalog_has_a_franchises_category_and_the_preset_moved():
 # Read off ``CATALOG`` rather than a list written here: a preset added later is
 # held to this contract on the day it lands, not on the day somebody remembers
 # to add it.
-_BANNED_IN_COPY = ("`", "--", "—", "–", ".yml", ".py", ".superpowers", "defaults/")
+_BANNED_IN_COPY = ("`", "--", "—", "–", ".yml", ".py","defaults/")
 _ROW_OR_PHASE = re.compile(r"\b(?:rows?|phases?)\b[^.\n]{0,8}?\d", re.IGNORECASE)
 # A full stop that is not followed by whitespace or the end of the string: a
 # file name, a dotted config path, a decimal, or an abbreviation. Forbidding

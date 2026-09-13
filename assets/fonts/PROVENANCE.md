@@ -57,8 +57,8 @@ Face, casing, colour, caption box, point-size clamp and composition are
 (line 1453). That repository is MIT licensed, `Copyright (c) 2025 Kometa Team`,
 read from its own `LICENSE` file.
 
-`.superpowers/sdd/p-div-font.md` records the transcription and the render that
-verified it: upstream's own shipped `separators/orig/genre.jpg`, reproduced from
+The transcription was verified by a render of
+upstream's own shipped `separators/orig/genre.jpg`, reproduced from
 upstream's own `@base/orig.png` with this font at point size 203, RMSE 0.000158
 normalised — JPEG quantisation noise.
 
