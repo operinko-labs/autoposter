@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from autoposter.config.loader import load_config, render_version_for
 from autoposter.db.models import MediaItem, Render, RenderDelivery
+from autoposter.db.refs import item_id_for
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
@@ -1371,6 +1372,39 @@ async def test_no_server_resolving_still_defers_the_job(session, config_with_bad
         await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
 
 
+async def test_a_transport_error_from_one_server_resolve_does_not_abort_the_others(
+    session, config_with_badges, monkeypatch, caplog,
+):
+    """I4 (fix round 2): a transport error resolving on ONE server must not
+    abort the item for the others -- logged (class name only, never a URL),
+    treated as a miss (that server gets `pending`), and the loop continues
+    to deliver everything else normally."""
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers()
+    jf.raise_on_resolve = httpx.ConnectError("https://jellyfin.internal/Items")
+
+    with caplog.at_level("WARNING"):
+        renders = await pipeline_module.process_item(
+            session, config_with_badges, None, servers, [], INTENT,
+        )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert plex.uploads
+    rows = {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    }
+    assert ("jellyfin", "pending") in rows
+
+    messages = [r.message for r in caplog.records if "jellyfin" in r.message]
+    assert messages, "no warning was logged for the failed resolve"
+    assert any("ConnectError" in m for m in messages)
+    assert not any("jellyfin.internal" in m for m in messages), "the URL must never reach the log"
+
+
 # Fix round 1 (controller review of Task 19).
 
 
@@ -1451,6 +1485,44 @@ async def test_an_unresolved_jellyfin_delivers_from_a_pending_row_once_it_resolv
     }
     assert rows == {("plex", "uploaded"), ("jellyfin", "pending")}
     assert plex.uploads == [], "the already-uploaded plex row must not be touched"
+
+
+async def test_an_upload_disabled_server_gets_no_catchup_row(
+    session, config_with_badges, monkeypatch,
+):
+    """NB3 (fix round 2): the per-library toggle is checked BEFORE I1's
+    catch-up -- an upload-disabled server must never get a `pending` row
+    only for the very next retry pass to immediately rewrite it `skipped`.
+    With `upload_to_jellyfin` off and an unchanged fingerprint, jellyfin
+    gets no row at all; plex, already `uploaded`, is untouched."""
+    from autoposter import deliveries
+
+    config_with_badges.badges.upload_to_jellyfin = False
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    servers, plex, jf = _two_servers()
+
+    async def _fake_compose_none(*args, **kwargs):
+        return None  # an unchanged fingerprint, from a previous pass
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose_none)
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+    await deliveries.record(session, poster.id, "plex", "uploaded")
+    await deliveries.rollup(session, poster.id)
+    await session.commit()
+
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    rows = {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    }
+    assert rows == {("plex", "uploaded")}, "an upload-disabled server must get no row at all"
 
 
 async def test_a_single_upload_enabled_server_skips_compose_on_matching_provenance(
@@ -1541,3 +1613,70 @@ async def test_a_single_upload_enabled_server_skips_compose_on_matching_provenan
     assert poster.upload_status == "uploaded"
     assert poster.badge_fingerprint == fingerprint
     assert plex.uploads == [], "the real upload must not run either -- this is adoption, not a copy"
+
+
+async def test_a_failed_compose_after_a_provenance_mismatch_leaves_the_fingerprint_untouched(
+    session, config_with_badges, monkeypatch,
+):
+    """NB2 (fix round 2): the solo-adoption check must never write
+    ``render.badge_fingerprint`` before compose actually succeeds. Provenance
+    does NOT match here, so the shortcut falls through to a real compose --
+    which then raises. The column must stay exactly as it was (``None``),
+    or the next pass's unchanged-check (``fingerprint == render.badge_
+    fingerprint``) would read a fingerprint no image ever actually matched
+    and skip forever. A second pass, with compose no longer raising, must
+    retry it rather than skip."""
+    config_with_badges.badges.adopt_from_plex = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    class _FakePlexItem:
+        def __init__(self):
+            self.media = [type("M", (), {
+                "parts": [], "videoResolution": "1080",
+                "audioCodec": "eac3", "audioChannels": 6,
+            })()]
+            self.duration = 4845912
+            self.seasonNumber = None
+            self.episodeNumber = None
+
+    class _MismatchProvenanceServer(FakeMediaServer):
+        async def fetch_item(self, native_id):
+            return _FakePlexItem()
+
+        async def artwork_provenance(self, ref, art_kind):
+            return "not-the-real-fingerprint"
+
+    plex = _MismatchProvenanceServer(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    servers = Servers({"plex": plex})
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("compose_badges exploded")
+
+    monkeypatch.setattr(pipeline_module, "compose_badges", _boom)
+
+    # process_item's own "badge stage failed" containment rolls back on the
+    # way out, expiring every object already in `results` -- read the row
+    # back through a fresh query keyed on the resolved ref instead of the
+    # returned renders, which a plain synchronous attribute access on an
+    # expired ORM instance cannot survive here (MissingGreenlet).
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+    item_id = await item_id_for(session, "plex", "p1")
+    stored = (
+        await session.execute(
+            select(Render.badge_fingerprint).where(
+                Render.item_id == item_id, Render.art_kind == "poster",
+            )
+        )
+    ).scalar_one()
+    assert stored is None, "a failed compose must never strand a fingerprint on the row"
+
+    calls: list[int] = []
+
+    def _spy(*args, **kwargs):
+        calls.append(1)
+        return b"badged"
+
+    monkeypatch.setattr(pipeline_module, "compose_badges", _spy)
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+    assert calls == [1], "the second pass must retry compose, not skip on a stale gate"

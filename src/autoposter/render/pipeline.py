@@ -1679,7 +1679,7 @@ async def apply_metadata(
     return facts
 
 
-async def _already_delivered(session, config, server, name, ref, render) -> bool:
+async def _already_delivered(session, config, server, name, ref, render, fingerprint) -> bool:
     """Whether ``server`` is already serving exactly the badged image we
     would upload (Task 19's server-neutral successor to the old, Plex-only
     ``_already_in_plex``).
@@ -1702,11 +1702,22 @@ async def _already_delivered(session, config, server, name, ref, render) -> bool
     for free from its own last recorded outcome, and asking again would be a
     request per item, every ordinary re-badge. `render.badge_fingerprint`
     itself cannot carry this any more -- `compose_badged_bytes` overwrites it
-    with the NEW fingerprint before `deliver` ever runs, once for every
+    with the NEW fingerprint once a compose actually succeeds, once for every
     server, so a per-server delivery-row check is what a per-render column
     used to be. A server added to an already-badged library's config still
     gets its own adoption check, having no history of its own yet, even
     though Plex (say) does.
+
+    ``fingerprint`` is passed explicitly rather than read off
+    ``render.badge_fingerprint`` (fix round 2, NB2): the single-server
+    adoption shortcut in ``compose_badged_bytes`` asks this BEFORE compose
+    has run at all, and writing the new fingerprint to the column ahead of a
+    successful compose would commit it even when ``compose_badges`` then
+    raises -- stranding the render on a fingerprint no image on disk (or on
+    any server) actually matches, and the next pass's unchanged-check would
+    skip it forever. Passing the value directly means the column is
+    touched only where it always was: after compose (or here, after a
+    genuine adoption match) actually succeeds.
 
     Best-effort by construction otherwise. Anything at all going wrong -- the
     capability absent, a transport error, a stranger's EXIF -- answers False,
@@ -1737,7 +1748,7 @@ async def _already_delivered(session, config, server, name, ref, render) -> bool
     except Exception:
         logger.debug("could not read artwork provenance from %s", server.name, exc_info=True)
         return False
-    return recorded is not None and recorded == render.badge_fingerprint
+    return recorded is not None and recorded == fingerprint
 
 
 async def compose_badged_bytes(
@@ -1938,16 +1949,20 @@ async def compose_badged_bytes(
 
     # Fix round 1, I2: the single-server adoption shortcut, checked BEFORE
     # any image work -- see this function's own docstring on `solo_delivery`.
-    # `render.badge_fingerprint` is set to the freshly-computed value FIRST:
-    # `_already_delivered` compares the server's recorded provenance against
-    # this same column, and the whole point is to compare it against the
-    # fingerprint THIS pass just computed, not whatever stale value (or
-    # `None`) predates it. Harmless when adoption does not match too -- the
-    # normal compose path below sets the exact same value again at the end.
+    # Fix round 2, NB2: the just-computed `fingerprint` is passed to
+    # `_already_delivered` as an argument rather than written to
+    # `render.badge_fingerprint` first -- writing the column ahead of a
+    # successful compose would commit a fingerprint no actual image matches
+    # if `compose_badges` below then raised, stranding the render on a
+    # stale badge the next pass's unchanged-check would skip forever. The
+    # column is set only on an actual adoption match (this IS the
+    # successful outcome) or, on the normal path, after compose succeeds.
     if solo_delivery is not None:
         solo_name, solo_server, solo_ref = solo_delivery
-        render.badge_fingerprint = fingerprint
-        if await _already_delivered(session, config, solo_server, solo_name, solo_ref, render):
+        if await _already_delivered(
+            session, config, solo_server, solo_name, solo_ref, render, fingerprint,
+        ):
+            render.badge_fingerprint = fingerprint
             await deliveries.record(session, render.id, solo_name, "uploaded")
             await session.flush()
             return None
@@ -2059,19 +2074,39 @@ async def deliver(
     for name, server in servers.items():
         ref = refs.get(name)
         if ref is not None:
+            # Fix round 2, NB3: the per-library toggle is evaluated BEFORE
+            # the catch-up below -- an upload-disabled server must never get
+            # a `pending` catch-up row, only for the very next retry pass to
+            # immediately overwrite it with `skipped`. When there is
+            # genuinely nothing new this pass (`data is None`) an
+            # upload-disabled server gets no row at all, not even `skipped`.
+            if not getattr(library_config.badges, f"upload_to_{name}", False):
+                if data is not None:
+                    # I3: `skipped` is stamped only the FIRST time a server
+                    # is considered -- an already-recorded outcome (most of
+                    # all `uploaded`) must not be rewritten just because the
+                    # toggle is off this particular pass.
+                    already_recorded = (
+                        await session.execute(
+                            select(RenderDelivery.id).where(
+                                RenderDelivery.render_id == render.id,
+                                RenderDelivery.server == name,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if already_recorded is None:
+                        await deliveries.record(session, render.id, name, "skipped")
+                continue
             if data is None:
-                # Fix round 1, I1/I3: checked BEFORE the `upload_to_<name>`
-                # gate below, and never falling through to it -- an
-                # unchanged fingerprint (nothing new composed) must never
-                # overwrite an already-`uploaded` row with `skipped` just
-                # because the toggle happens to be off this pass. A server
-                # with no row yet, or one still `pending`, gets a fresh
-                # `pending` row with NO delay (`retry_in=0`), so the very
-                # next `retry_pending_deliveries` pass delivers it straight
-                # from the already-badged asset -- the catch-up a server
-                # whose `upload_to_<name>` was only just turned on, or one
-                # newly added to the config, needs for a render whose
-                # fingerprint had already settled.
+                # Fix round 1, I1/I3: an unchanged fingerprint (nothing new
+                # composed) must never overwrite an already-`uploaded` row
+                # with `skipped`. A server with no row yet, or one still
+                # `pending`, gets a fresh `pending` row with NO delay
+                # (`retry_in=0`), so the very next `retry_pending_deliveries`
+                # pass delivers it straight from the already-badged asset --
+                # the catch-up a server whose `upload_to_<name>` was only
+                # just turned ON, or one newly added to the config, needs
+                # for a render whose fingerprint had already settled.
                 existing_status = (
                     await session.execute(
                         select(RenderDelivery.status).where(
@@ -2083,23 +2118,9 @@ async def deliver(
                 if existing_status is None or existing_status == "pending":
                     await deliveries.record(session, render.id, name, "pending", retry_in=0)
                 continue
-            if not getattr(library_config.badges, f"upload_to_{name}", False):
-                # I3: `skipped` is stamped only the FIRST time a server is
-                # considered -- an already-recorded outcome (most of all
-                # `uploaded`) must not be rewritten just because the toggle
-                # is off this particular pass.
-                already_recorded = (
-                    await session.execute(
-                        select(RenderDelivery.id).where(
-                            RenderDelivery.render_id == render.id,
-                            RenderDelivery.server == name,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if already_recorded is None:
-                    await deliveries.record(session, render.id, name, "skipped")
-                continue
-            if await _already_delivered(session, library_config, server, name, ref, render):
+            if await _already_delivered(
+                session, library_config, server, name, ref, render, render.badge_fingerprint,
+            ):
                 await deliveries.record(session, render.id, name, "uploaded")
                 continue
             lock = library_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities

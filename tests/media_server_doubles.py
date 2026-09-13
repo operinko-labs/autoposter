@@ -43,6 +43,10 @@ class FakeMediaServer:
     not_found: set[str] = field(default_factory=set)
     path_mismatch: set[str] = field(default_factory=set)
     raise_on_upload: Exception | None = None
+    #: fix round 2, I4: a transport (or any other) error from resolve()
+    #: itself, mirroring raise_on_upload -- distinct from ItemNotFound/
+    #: PathMismatch, which are answered by not_found/path_mismatch above.
+    raise_on_resolve: Exception | None = None
     healthy: bool = True
     uploads: list[tuple[ServerItemRef, bytes, str, bool]] = field(default_factory=list)
     logo_uploads: list[tuple[ServerItemRef, bytes]] = field(default_factory=list)
@@ -59,6 +63,8 @@ class FakeMediaServer:
 
     async def resolve(self, intent) -> ResolvedItem:
         self.resolve_calls += 1
+        if self.raise_on_resolve is not None:
+            raise self.raise_on_resolve
         key = intent.dedupe_key
         if key in self.path_mismatch:
             raise PathMismatch(f"{self.name}: {intent.title!r} is outside every library root")

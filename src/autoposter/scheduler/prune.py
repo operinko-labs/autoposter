@@ -440,12 +440,23 @@ async def find_prunable(
     # ref rows (nothing has been deleted; C1), so a ref on a server this
     # pass never touched at all (not in `servers`) still counts as live,
     # same as before.
-    stale_ref_ids = {ref.id for ref in stale_refs}
+    #
+    # Fix round 2, NB1: matched on (id, updated_at), not id alone. A ref
+    # re-upserted between the scan above and this read -- `retry_pending_
+    # deliveries` calls `upsert_server_ref` on its own, unrelated to this
+    # sweep, and bumps only the ref's own `updated_at` -- must not still
+    # read as the same stale observation; the id is unchanged but the row
+    # is not the one that was found gone.
+    stale_ref_keys = {(ref.id, ref.updated_at) for ref in stale_refs}
     all_refs = (
-        await session.execute(select(MediaItemServerRef.item_id, MediaItemServerRef.id))
+        await session.execute(
+            select(MediaItemServerRef.item_id, MediaItemServerRef.id, MediaItemServerRef.updated_at)
+        )
     ).all()
     remaining_ids = {
-        item_id for item_id, ref_id in all_refs if ref_id not in stale_ref_ids
+        item_id
+        for item_id, ref_id, updated_at in all_refs
+        if (ref_id, updated_at) not in stale_ref_keys
     }
     by_id = {candidate.id: candidate for candidate in candidates}
     reachable = [candidate.id in remaining_ids for candidate in candidates]

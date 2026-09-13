@@ -751,6 +751,54 @@ class _ReupsertingPlex(FakePlex):
         return flags
 
 
+class _ReupsertingRefOnlyPlex(FakePlex):
+    """Fix round 2, NB1: the genuine ``retry_pending_deliveries`` shape --
+    it calls ``upsert_server_ref`` entirely on its own, unrelated to this
+    sweep, which re-touches ONLY the ref's own ``updated_at`` and never
+    ``media_items.updated_at`` at all (unlike ``_ReupsertingPlex`` above,
+    which stands in for a worker re-upserting the WHOLE item). Reachability
+    has to key its match on ``(id, updated_at)``, not the ref's id alone, or
+    this concurrent re-upsert is invisible to it and the whole row is
+    deleted out from under it on the strength of the scan's now-stale
+    observation."""
+
+    def __init__(self, session, native_id, *, live=()):
+        super().__init__(live)
+        self._session = session
+        self._native_id = native_id
+
+    async def exists_many(self, intents):
+        flags = await super().exists_many(intents)
+        await self._session.execute(
+            update(MediaItemServerRef)
+            .where(
+                MediaItemServerRef.server == "plex",
+                MediaItemServerRef.native_id == self._native_id,
+            )
+            .values(updated_at=func.now())
+        )
+        await self._session.commit()
+        return flags
+
+
+async def test_a_ref_only_reupsert_between_scan_and_apply_is_never_a_candidate(session):
+    """Fix round 2, NB1: a ref re-upserted between the scan and the apply --
+    ``retry_pending_deliveries``'s own ``upsert_server_ref`` call, which
+    never touches ``media_items.updated_at`` -- must survive, and so must
+    the row it belongs to. Before the fix, reachability matched on the
+    ref's id alone, so this concurrent re-upsert read as the same stale ref
+    the scan observed and the whole item was pruned anyway."""
+    await _add_item(session, "10")
+
+    plex = _ReupsertingRefOnlyPlex(session, "10", live=set())
+    summary = await _job(_config(apply=True), plex).run(session)
+
+    assert "pruned 0 of 1" in summary
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
+    assert len((await session.execute(select(MediaItemServerRef))).scalars().all()) == 1
+
+
 async def test_the_job_is_named_and_paced_off_the_holder():
     """The cadence is a deref, not a captured number, so an edit to
     ``scheduler.prune_days`` is live the way every other job's is."""
