@@ -416,7 +416,11 @@ def test_a_source_declaring_more_than_the_pixel_ceiling_is_refused(tmp_path):
     source = tmp_path / "huge.png"
     source.write_bytes(_oversized_declared_png(10_000, 10_000))
 
-    with pytest.raises(SourceRefused) as caught:
+    # Pillow's own tripwire fires first: above 89,478,485 declared pixels
+    # ``Image.open`` warns (it raises only above twice that), and our ceiling
+    # then refuses by name. Expecting the warning keeps the suite's summary
+    # clean and pins that the tripwire still sits below our ceiling.
+    with pytest.warns(Image.DecompressionBombWarning), pytest.raises(SourceRefused) as caught:
         pipeline_module._validate_image(source, "the poster source")
 
     assert "10000x10000" in str(caught.value)
@@ -440,7 +444,7 @@ def test_the_pixel_ceiling_is_checked_before_load(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Image.Image, "load", explode)
 
-    with pytest.raises(SourceRefused):
+    with pytest.warns(Image.DecompressionBombWarning), pytest.raises(SourceRefused):
         pipeline_module._validate_image(source, "the poster source")
 
 
