@@ -7,8 +7,8 @@ SSRF shape, and it is bounded by being a TABLE rather than a fetcher:
 * the caller names a SYSTEM KEY from an allowlist, never a URL on its own;
 * the PATH, the METHOD, the HEADER NAMES and which credential authenticates are
   compiled in, per system;
-* six of the ten have a compiled-in HOST as well; the four that do not (Plex,
-  Radarr, Sonarr, Tracearr) take a base address that must pass
+* five of the ten have a compiled-in HOST as well; the five that do not (Plex,
+  Jellyfin, Radarr, Sonarr, Tracearr) take a base address that must pass
   ``api/setup._require_http_url`` -- http/https, a host, no userinfo;
 * the whole probe is bounded by ``asyncio.wait_for`` at five seconds, the value
   and the idiom ``db/base.database_answers`` chose for the same reason;
@@ -28,7 +28,7 @@ network this pod sits in, it is not closed by anything in this module, and it
 is written here rather than papered over.
 
 **What is NOT in that residual, because a rule above this module closes it.**
-The probe carries a credential, and for the four systems whose address the
+The probe carries a credential, and for the five systems whose address the
 caller also supplies that credential must have come from the caller: the value
 typed into the same request, or one this WIZARD staged. It is never one the
 BOOT RESOLVER answered with -- the environment or the state file -- because
@@ -76,6 +76,12 @@ CHECK_TIMEOUT_SECONDS = 5.0
 # bound list that would otherwise be absent rather than argued.
 CHECK_BODY_LIMIT_BYTES = 64 * 1024
 
+# What Jellyfin records as this client's version on the device it lists for the
+# API key. The wizard has no running application to ask, and the field is
+# cosmetic -- the token half of the header is what authenticates -- so it says
+# which half of this service is calling rather than a number it cannot know.
+SETUP_VERSION = "setup"
+
 
 class _DropEveryRecord(logging.Filter):
     """Attached to the ``httpx`` logger for the length of one probe."""
@@ -91,7 +97,7 @@ def no_httpx_request_log():
     ``boot.main`` already clamps that logger to WARNING for the whole process,
     and this is the same clamp held locally, because this is the module that
     puts a credential IN a url: Fanart's and MDBList's keys ride the query
-    string (``providers/fanart.py``, ``providers/mdblist.py``), and the four
+    string (``providers/fanart.py``, ``providers/mdblist.py``), and the five
     typed addresses are operator URLs. A property row 213 depends on is not
     left to a setting made in another file.
 
@@ -116,7 +122,7 @@ class TracearrDidNotAnswer(Exception):
 
 @dataclass(frozen=True)
 class Check:
-    """One system's probe, entirely compiled in except ``host`` for four.
+    """One system's probe, entirely compiled in except ``host`` for five.
 
     ``label`` is the word every sentence about this system uses: one of this
     module's own strings, never the caller's key, which is what keeps a
@@ -124,7 +130,7 @@ class Check:
     """
 
     label: str
-    #: ``None`` for the four systems whose base address the operator supplies.
+    #: ``None`` for the five systems whose base address the operator supplies.
     host: str | None
     #: Fixed. A caller can never name a path.
     path: str
@@ -159,6 +165,21 @@ CHECK_SYSTEMS: dict[str, Check] = {
         path="/api/v2/resources?includeHttps=1&includeRelay=0",
         credential="AUTOPOSTER_PLEX_ACCOUNT_TOKEN",
         auth="x-plex-token",
+    ),
+    # The second media server. Its credential is the one this module does not
+    # spell itself: the value format is `MediaBrowser Token="..."`, written in
+    # jellyfin/client.py, so the probe borrows that builder rather than keeping
+    # a second copy of a header a typo makes indistinguishable from a wrong key
+    # (X-Emby-Token is refused with a 401 on 12.0). /System/Info and not the
+    # unauthenticated /System/Info/Public, for the reason Plex reads
+    # /library/sections: this probe has to prove the API KEY and not just
+    # reachability (docs/reference/2026-09-jellyfin-openapi-12.md).
+    "jellyfin": Check(
+        label="Jellyfin",
+        host=None,
+        path="/System/Info",
+        credential="AUTOPOSTER_JELLYFIN_APIKEY",
+        auth="mediabrowser",
     ),
     # providers/tmdb.py:131 -- the configured token is a v4 read access token,
     # carried as a bearer. /3/configuration is the cheapest authenticated read.
@@ -255,6 +276,16 @@ async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) 
         headers["X-Api-Key"] = value
     elif check.auth == "bearer":
         headers["Authorization"] = f"Bearer {value}"
+    elif check.auth == "mediabrowser":
+        # Imported here and not at module scope: jellyfin/client.py pulls the
+        # index and the writer in behind it, and a setup process that never
+        # checks Jellyfin should not pay for them. The Authorization value
+        # alone -- the builder's `Accept` is the one this probe already set.
+        from autoposter.jellyfin.client import JellyfinApi
+
+        headers["Authorization"] = JellyfinApi(None, "", value, SETUP_VERSION).headers()[
+            "Authorization"
+        ]
     elif check.auth == "query-api_key":
         params["api_key"] = value
     elif check.auth == "query-apikey":

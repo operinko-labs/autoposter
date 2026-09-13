@@ -25,7 +25,7 @@ presence map, ``***REDACTED***`` per set name, the same idiom
 One thing this module does that v1 did not: it makes outbound requests, to
 addresses a caller partly supplies. ``api/setup_checks.py`` holds that surface
 and its bound -- an allowlisted system key, a fixed path and method per system,
-a scheme/userinfo guard on the four typed addresses, and a five-second ceiling.
+a scheme/userinfo guard on the five typed addresses, and a five-second ceiling.
 No private-IP denylist, because every correct target on every shipped
 deployment IS a private address. What remains, said plainly rather than papered
 over: a holder of the setup token can learn whether an arbitrary host answers
@@ -40,6 +40,7 @@ and the value goes straight into `staged`.
 """
 
 import asyncio
+import copy
 import logging
 import os
 import secrets as secrets_module
@@ -64,6 +65,7 @@ from autoposter.api.auth import LoginRateLimiter, hash_password, verify_password
 from autoposter.api.errors import validation_error_without_input
 from autoposter.api import setup_arr
 from autoposter.api import setup_checks
+from autoposter.api import setup_jellyfin
 from autoposter.api import setup_plex
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.config.loader import (
@@ -73,8 +75,10 @@ from autoposter.config.loader import (
 )
 from autoposter.config.schema import (
     _SECRET_ENV,
+    _SERVER_SECRET_ENV,
     _SOFT_SECRET_ENV,
     missing_hard_secret_names,
+    missing_server_setup,
     resolve_secret_values,
 )
 from autoposter.config.state import (
@@ -218,7 +222,7 @@ CHECK_NEEDS_AN_ADDRESS = "this system needs its own address before it can be che
 CHECK_TAKES_NO_ADDRESS = "this system's address is built in and cannot be supplied"
 # The typed-address rule (final review I1). Setup mode is entered when ANY ONE
 # hard secret fails to resolve, so a pod in it still holds every OTHER
-# credential from its environment or its state file -- and for the four systems
+# credential from its environment or its state file -- and for the five systems
 # whose HOST the caller supplies too, "empty means keep" meant those held
 # values went to an address the caller named. A boolean port scan is the
 # residual this surface accepts; exfiltrating the deployment's own credentials
@@ -289,6 +293,12 @@ RESOLVED_SECRET_ADDRESS_MISMATCH = (
 STEP_DATABASE = "setup is not complete: the database step has not been finished"
 STEP_PROVIDERS = "setup is not complete: the provider keys step has not been finished"
 STEP_CONFIG = "setup is not complete: the configuration step has not been finished"
+# The media-server step (spec 8). A deployment is finishable with EITHER
+# server and with both, and not with neither: `config/schema.missing_server_setup`
+# is the question -- an address in the document AND that server's own credential
+# -- and `boot.is_configured` asks it of the next boot, so this surface asks the
+# same function rather than a second expression that happens to agree today.
+STEP_SERVERS = "setup is not complete: the media server step has not been finished"
 STEP_DATABASE_UNREACHABLE = (
     "setup is not complete: the database this deployment was given did not answer"
 )
@@ -332,6 +342,32 @@ _PROVIDER_ENV = tuple(
     for name in (*_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
     if name not in _NOT_A_PROVIDER
 )
+
+# The two credentials the SERVERS step collects, and the reason they are not on
+# the list above. Neither is a provider key and neither is unconditionally
+# required: each is required exactly when ITS server is configured
+# (config/schema._SERVER_SECRET_ENV, missing_server_setup), so the wizard asks
+# for it where the server's address is asked for -- one card per server -- and
+# reports it there too, as /progress's `servers`. Keeping them out of
+# `_PROVIDER_ENV` is what keeps them out of the presence map the systems step
+# renders an accordion from, which would otherwise ask for the same credential
+# on two steps.
+# Keyed by the name the config document, the check table and /progress all use
+# for the server; `config/schema._SERVER_SECRET_ENV` keys the same two by the
+# MODEL FIELD instead, which is the one spelling this module never wants.
+_SERVER_CREDENTIAL = {
+    "plex": _SERVER_SECRET_ENV["plex_token"],
+    "jellyfin": _SERVER_SECRET_ENV["jellyfin_api_key"],
+}
+_SERVERS = tuple(_SERVER_CREDENTIAL)
+_SERVER_ENV = tuple(_SERVER_CREDENTIAL.values())
+
+# Every name a credential submit may carry: the provider step's own, plus the
+# two above. One staging route for both steps, because `SetupState.staged` has
+# one writer and `is_storable` is checked in one place -- what differs between
+# the two steps is which pane renders which name, and that is the frontend's
+# question, not this allowlist's.
+_STAGEABLE_ENV = (*_PROVIDER_ENV, *_SERVER_ENV)
 
 # The one provider credential this deployment CHOOSES rather than is given.
 # Sonarr and Radarr sign their webhooks with a secret the receiver picks, so
@@ -394,6 +430,14 @@ class SetupState:
         # Same lifecycle as public_url: staged, stamped onto the document, or
         # used-and-not-persisted when a document already resolves.
         self.base_urls: dict[str, str] = {}
+        # Which systems answered a successful check in this session. Nearly
+        # `base_urls`' key set, and deliberately not the same thing: that map is
+        # the ADDRESS the document will carry, and the config step is a second
+        # writer of it -- an operator who types the address it typed on the same
+        # step drops the staged entry (see `stage_config_document`). "The check
+        # passed" is a fact about the session that the config step does not
+        # un-make, and it is what the media-server step reports per server.
+        self.checks_passed: set[str] = set()
         # This deployment's Plex client identifier, and the PIN currently
         # outstanding. The identifier must be the SAME string on the mint, the
         # auth link and every poll -- plex.tv 404s a poll whose identifier
@@ -642,6 +686,60 @@ def _config_source(request: Request) -> str | None:
     return "staged" if request.app.state.setup.config_document is not None else None
 
 
+def _document_for_boot(request: Request) -> dict | None:
+    """The configuration document the NEXT BOOT will read, or None.
+
+    The one this wizard staged -- with the staged addresses applied, which is
+    what ``finish`` writes -- or, when it staged none, the one that already
+    resolves. Deep-copied because ``_apply_staged_urls`` mutates what it is
+    given and this is called from a reporting surface: /progress must not be
+    able to edit the document the operator staged by being polled.
+
+    ``read_config_document`` can raise on a document an operator wrote by hand;
+    a reporting surface answers "no document" for that, the way
+    ``_config_source`` does, and the real load is where that is an error.
+    """
+    state = request.app.state.setup
+    if state.config_document is not None:
+        return _apply_staged_urls(copy.deepcopy(state.config_document), state)
+    path = config_document_path()
+    if path is None:
+        return None
+    try:
+        return read_config_document(path)
+    except Exception:
+        return None
+
+
+def _servers_progress(request: Request) -> dict:
+    """Per media server: is it configured, is its credential held, was it
+    checked. Three booleans each, and no address and no value.
+
+    ``configured`` is read off the document ``_document_for_boot`` answers with
+    rather than off ``base_urls`` alone, because both panes on the step write
+    an address and only the document holds the answer of both. ``credential``
+    is ``_effective``'s, so a token ExternalSecrets supplies and one the
+    operator just typed read the same. ``checked`` is the session fact
+    ``checks_passed`` records.
+
+    This is the step gate's own input, reported: ``_unmet_step`` refuses the
+    finish step with ``STEP_SERVERS`` exactly when no server has both of the
+    first two, so the page can say WHICH half is missing without the finish
+    step and the page disagreeing.
+    """
+    state = request.app.state.setup
+    document = _document_for_boot(request) or {}
+    resolved = _effective(request)
+    return {
+        name: {
+            "configured": bool((document.get(name) or {}).get("url")),
+            "credential": bool(resolved.get(env)),
+            "checked": name in state.checks_passed,
+        }
+        for name, env in _SERVER_CREDENTIAL.items()
+    }
+
+
 def _config_ready(request: Request) -> bool:
     """Whether the config step is met: a document the next boot will read, or
     one staged for the finish step to write."""
@@ -753,6 +851,13 @@ async def setup_progress(request: Request) -> dict:
     first. Without it a step's own submit deleted the step, and neither its
     ``Stored`` pill nor its empty-means-keep was reachable from the page.
 
+    ``servers`` is the media-server step's own line (spec 8): per server,
+    whether the document about to be written names an address for it, whether
+    its credential resolves or is staged, and whether a check passed this
+    session. Three booleans each -- the step is met when one server has the
+    first two, which is what ``_unmet_step`` refuses the finish step over, so
+    the page and the finish step read the same fact.
+
     ``checked_systems`` is ``public_url``'s idiom applied to the other half of
     the *arr registration's precondition: WHICH systems have a successfully
     checked address, never the address itself. The finish page reads it beside
@@ -785,6 +890,9 @@ async def setup_progress(request: Request) -> dict:
         # NAMES only -- which systems a successful check staged an address
         # for, never the address itself.
         "checked_systems": sorted(request.app.state.setup.base_urls),
+        # The media-server step (spec 8). Three booleans per server, never an
+        # address and never a credential.
+        "servers": _servers_progress(request),
     }
 
 
@@ -908,9 +1016,9 @@ async def check_connection(body: CheckRequest, request: Request) -> dict:
 
     "Already holds" means two different things for the two halves of the table,
     and the difference is review I1 (``CHECK_NEEDS_A_TYPED_CREDENTIAL``). For
-    the six systems with a compiled-in host it means ``_effective`` -- the
+    the five systems with a compiled-in host it means ``_effective`` -- the
     environment, the state file and ``staged`` alike, since the caller cannot
-    move where the value goes. For the four whose host the caller supplies it
+    move where the value goes. For the five whose host the caller supplies it
     means ``staged`` ALONE: a credential the boot resolver answered with is
     this deployment's own, and sending it to an address a request named is
     exfiltration rather than a probe.
@@ -961,8 +1069,9 @@ async def check_connection(body: CheckRequest, request: Request) -> dict:
     outcome = await setup_checks.run_check(body.system, base_url, credentials)
 
     if outcome.ok:
-        if base_url is not None:
-            async with request.app.state.setup.lock:
+        async with request.app.state.setup.lock:
+            request.app.state.setup.checks_passed.add(body.system)
+            if base_url is not None:
                 request.app.state.setup.base_urls[body.system] = base_url
         return {"ok": True, "detail": CHECK_ANSWERED.format(system=check.label)}
     if outcome.refused:
@@ -1138,6 +1247,45 @@ async def list_plex_libraries(body: PlexLibrariesRequest, request: Request) -> d
     return {"libraries": libraries}
 
 
+class JellyfinLibrariesRequest(BaseModel):
+    base_url: str
+    #: ``PlexLibrariesRequest``'s field and its semantics exactly: the API key
+    #: typed beside the address when one was, used for THIS read and staged
+    #: nowhere; absent or empty means "keep", so an untouched field reads with
+    #: the key the wizard already holds.
+    credential_value: str | None = None
+
+
+@router.post("/jellyfin/libraries", dependencies=[RequireSetupToken])
+async def list_jellyfin_libraries(body: JellyfinLibrariesRequest, request: Request) -> dict:
+    """The Jellyfin server's libraries, for the tick-list beside its address.
+
+    ``/plex/libraries`` for the other server, with the one arrival Jellyfin
+    has: there is no account sign-in to arrive from, so the address and the key
+    are always the operator's own -- which is the shape review I1's rule was
+    written for. The key is read the same way: typed into this request, or one
+    this WIZARD staged. Never ``_effective``, whose resolver half is the live
+    key of a deployment that is in setup mode because some OTHER credential is
+    blank, and whose destination this request would then be choosing.
+
+    The library listing is ``id``/``name``/``type`` per entry
+    (``setup_jellyfin.library_list``); the server's own paths are not in it.
+    """
+    base_url = _require_http_url(body.base_url, PUBLIC_URL_NOT_AN_ADDRESS)
+    state = request.app.state.setup
+    api_key = body.credential_value or state.staged.get(_SERVER_CREDENTIAL["jellyfin"], "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail=CHECK_NEEDS_A_TYPED_CREDENTIAL)
+    try:
+        libraries = await setup_jellyfin.library_list(base_url, api_key)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=CHECK_UNREACHABLE.format(system="Jellyfin", failure=type(exc).__name__),
+        ) from None
+    return {"libraries": libraries}
+
+
 class ArrWebhookRequest(BaseModel):
     #: ``radarr`` or ``sonarr``. Validated against ``setup_arr.NAMES`` and never
     #: rendered back: the refusal names the surface, not the string it was given.
@@ -1288,8 +1436,16 @@ async def set_provider_keys(body: ProvidersRequest, request: Request) -> dict:
     between lose it for good -- the next save has nothing left to mint -- and
     the finish step would persist a secret the operator never saw. It is
     staged here and served by ``GET /webhook-secret`` below, once.
+
+    The two SERVER credentials are staged by this route as well, and are the
+    one thing it takes that it does not report: they belong to the media-server
+    step, whose card asked for them beside that server's address, and
+    /progress's ``servers`` is where their presence is answered. So a submit
+    naming one is accepted (``_STAGEABLE_ENV``) and the presence map that comes
+    back -- ``_PROVIDER_ENV``, the systems step's own names -- does not carry
+    it. One staging route for both steps, because ``staged`` has one writer.
     """
-    if set(body.values) - set(_PROVIDER_ENV):
+    if set(body.values) - set(_STAGEABLE_ENV):
         # A fixed sentence: the submitted keys are caller-chosen strings.
         raise HTTPException(
             status_code=400, detail=NOT_A_CREDENTIAL_THIS_SERVICE_READS
@@ -1352,7 +1508,12 @@ async def get_webhook_secret(request: Request) -> dict:
 
 
 class ConfigRequest(BaseModel):
-    plex_url: str
+    # Both addresses optional, and at least one server required between them
+    # (spec 8): a deployment runs on Plex, on Jellyfin, or on both. Absent is
+    # "this server is not configured" and the block is left out of the document
+    # written for it -- which is what makes a Jellyfin-only deployment
+    # expressible at all, since the example ships a `plex:` block.
+    plex_url: str | None = None
     # The tick-list's COMPLEMENT: the schema's field is `excluded_libraries`,
     # and the example's own two entries belong to one deployment. Absent means
     # "unchanged" -- the provider step's "empty means keep" rule, for the same
@@ -1360,21 +1521,35 @@ class ConfigRequest(BaseModel):
     # An EMPTY LIST is a different answer and is applied: it is what an
     # operator who ticked every library said.
     excluded_libraries: list[str] | None = None
+    jellyfin_url: str | None = None
+    #: `excluded_libraries` for the other server, and the same "absent means
+    #: unchanged" rule. Named apart rather than nested so the submit stays the
+    #: flat body every other step in this wizard takes.
+    jellyfin_excluded_libraries: list[str] | None = None
 
 
 @router.post("/config", dependencies=[RequireSetupToken])
 async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     """Step 4: the config document a fresh deployment does not have.
 
-    Parsed from the shipped example, given the operator's ``plex.url``,
-    VALIDATED, and only then staged -- a document that does not load would
-    leave the next boot crashing inside ``load_config`` with the wizard already
-    gone, which is the one failure this whole row exists to prevent.
+    Parsed from the shipped example, given the operator's media-server
+    addresses, VALIDATED, and only then staged -- a document that does not load
+    would leave the next boot crashing inside ``load_config`` with the wizard
+    already gone, which is the one failure this whole row exists to prevent.
 
-    ``plex.url`` is checked here as well as validated, because
-    ``PlexConfig.url`` is a bare ``str``: an empty or hostless one passes the
-    model and produces a deployment that loads its config and cannot reach
-    Plex. The requirement is reported, never the value that failed it.
+    EITHER server, or both, and never neither (spec 8). A submit that names no
+    address and follows no successful check is refused with ``STEP_SERVERS``,
+    which is the same sentence the finish step refuses on -- there is no shape
+    in which this step accepts a document the next boot then rejects. The
+    blocks that survive are the ones the operator actually configured: the
+    example ships a ``plex:`` block with a placeholder address, and a
+    Jellyfin-only deployment must not inherit it, or ``missing_server_setup``
+    would demand a Plex token forever.
+
+    Each address is checked here as well as validated, because ``url`` on both
+    server models is a bare ``str``: an empty or hostless one passes the model
+    and produces a deployment that loads its config and cannot reach its
+    server. The requirement is reported, never the value that failed it.
 
     Re-serialised rather than patched as text, so what lands is exactly what
     validated. The example's comments do not survive that, which is
@@ -1398,14 +1573,23 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     if config_document_path() is not None:
         raise HTTPException(status_code=400, detail=CONFIG_ALREADY_PROVIDED)
 
+    state = request.app.state.setup
+    urls: dict[str, str] = {}
+    if body.plex_url:
+        urls["plex"] = _require_http_url(body.plex_url, PLEX_URL_NOT_AN_ADDRESS)
+    if body.jellyfin_url:
+        urls["jellyfin"] = _require_http_url(body.jellyfin_url, PLEX_URL_NOT_AN_ADDRESS)
+
     # Facts C7, the rule /public-url and /database already hold: a staged
     # document is never served back, so a step navigated into again shows an
     # empty field, and an empty submit there means "keep what you have".
-    # Empty with nothing staged still falls through to the refusal below.
-    if not body.plex_url and request.app.state.setup.config_document is not None:
+    if not urls and state.config_document is not None:
         return {"path": str(state_config_path())}
-
-    body_plex_url = _require_http_url(body.plex_url, PLEX_URL_NOT_AN_ADDRESS)
+    # Empty with nothing staged is the media-server step, unfinished -- unless
+    # a check already staged an address, which is the other way this step is
+    # answered and the one the tick-list arrives by.
+    if not urls and not any(name in state.base_urls for name in _SERVERS):
+        raise HTTPException(status_code=400, detail=STEP_SERVERS)
 
     try:
         document = read_config_document(example_config_path())
@@ -1419,15 +1603,26 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
         ) from None
 
     _apply_staged_urls(document, request.app.state.setup)
-    # AFTER the staged addresses and not before them: the Plex accordion and
-    # this field render on the same step, so an operator who checked
+    # AFTER the staged addresses and not before them: a server's check and its
+    # address field render on the same step, so an operator who checked
     # `http://plex.lan:32400`, realised that is the NAT address and typed the
     # in-cluster one here is one operator correcting one value. The typed
     # document wins, and the staged entry is dropped below so that finish --
     # which applies the staged map a second time -- cannot put it back.
-    document.setdefault("plex", {})["url"] = body_plex_url
-    if body.excluded_libraries is not None:
+    for name, url in urls.items():
+        document.setdefault(name, {})["url"] = url
+    if body.excluded_libraries is not None and "plex" in document:
         document["plex"]["excluded_libraries"] = body.excluded_libraries
+    if body.jellyfin_excluded_libraries is not None and "jellyfin" in document:
+        document["jellyfin"]["excluded_libraries"] = body.jellyfin_excluded_libraries
+    for name in _SERVERS:
+        # A server this submit did not configure, and no check staged an
+        # address for, is not this deployment's -- and the example's own
+        # `plex:` block is exactly that on a Jellyfin-only deployment. Dropped
+        # rather than left with its placeholder address, which `boot` would
+        # read as a Plex deployment missing its token.
+        if name not in urls and name not in state.base_urls:
+            document.pop(name, None)
     try:
         build_config(document)
     except Exception as exc:
@@ -1438,12 +1633,15 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
             detail=f"the configuration document was rejected ({type(exc).__name__})",
         ) from None
 
-    async with request.app.state.setup.lock:
-        request.app.state.setup.config_document = document
+    async with state.lock:
+        state.config_document = document
         # Only once the document validated, so a refusal changes nothing. The
         # three *arr entries stay: each has exactly one writer, and it is the
-        # check. `plex` is the one address two panes can write.
-        request.app.state.setup.base_urls.pop("plex", None)
+        # check. The two servers are the addresses two panes can write, so the
+        # staged one is dropped for whichever was typed here -- `checks_passed`
+        # is what remembers that the check itself succeeded.
+        for name in urls:
+            state.base_urls.pop(name, None)
     logger.info("first-start setup: the configuration step completed")
     return {"path": str(state_config_path())}
 
@@ -1464,26 +1662,39 @@ def _apply_staged_urls(document: dict, state: SetupState) -> dict:
     if state.public_url is not None:
         document["public_url"] = state.public_url
     for system, base_url in state.base_urls.items():
-        # `plex` is the one whose config key is `url` rather than `base_url` --
-        # PlexConfig predates the three *arr-shaped sections -- and the one an
-        # explicit config submit DROPS from this map, because it is the one
-        # address two panes on the same step can write. `plex_account`
-        # and the six built-in hosts never reach here: only the four typed
-        # systems are ever staged, and the account has no address of its own.
-        if system == "plex":
-            document.setdefault("plex", {})["url"] = base_url
+        # The two SERVERS are the ones whose config key is `url` rather than
+        # `base_url` -- PlexConfig predates the three *arr-shaped sections and
+        # JellyfinConfig follows it -- and the ones an explicit config submit
+        # DROPS from this map, because theirs are the addresses two panes on
+        # the same step can write. `plex_account` and the five built-in hosts
+        # never reach here: only the five typed systems are ever staged, and
+        # the account has no address of its own.
+        if system in _SERVERS:
+            document.setdefault(system, {})["url"] = base_url
         elif system in ("radarr", "sonarr", "tracearr"):
             document.setdefault(system, {})["base_url"] = base_url
     return document
 
 
-def _unmet_step(resolved: dict[str, str], config_ready: bool) -> str | None:
+def _unmet_step(
+    resolved: dict[str, str], config_ready: bool, document: dict | None
+) -> str | None:
+    """Which step is unmet, as one of this module's fixed sentences.
+
+    ``document`` is the one the next boot will read, because the last question
+    is asked of the document and the credentials TOGETHER:
+    ``missing_server_setup`` is what ``boot.is_configured`` gates on, so asking
+    it here is what keeps "the wizard says it is done" and "the next boot
+    agrees" from being two expressions that happen to agree today.
+    """
     if not resolved.get("AUTOPOSTER_DATABASE_URL"):
         return STEP_DATABASE
     if missing_hard_secret_names(resolved):
         return STEP_PROVIDERS
     if not config_ready:
         return STEP_CONFIG
+    if missing_server_setup(document, resolved):
+        return STEP_SERVERS
     return None
 
 
@@ -1521,7 +1732,7 @@ async def finish(request: Request) -> JSONResponse:
     """
     state = request.app.state.setup
     effective = _effective(request)
-    unmet = _unmet_step(effective, _config_ready(request))
+    unmet = _unmet_step(effective, _config_ready(request), _document_for_boot(request))
     if unmet is not None:
         # Nothing is written: an incomplete wizard leaves the state directory
         # exactly as it found it.
@@ -1551,7 +1762,9 @@ async def finish(request: Request) -> JSONResponse:
     if not boot.is_configured(persisted):
         raise HTTPException(
             status_code=400,
-            detail=_unmet_step(persisted, config_document_path() is not None)
+            detail=_unmet_step(
+                persisted, config_document_path() is not None, _document_for_boot(request)
+            )
             or STEP_NOT_CONFIRMED,
         )
     logger.info("first-start setup: complete; restarting into the application")
