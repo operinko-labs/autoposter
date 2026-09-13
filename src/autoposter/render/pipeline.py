@@ -27,7 +27,9 @@ from autoposter.badges.values import (
 from autoposter.config.loader import config_for_library, render_version_for
 from autoposter.config.schema import Config, TextStyle
 from autoposter import deliveries
-from autoposter.db.models import ItemFacts, MediaItem, MediaItemServerRef, Render, RenderDelivery
+from autoposter.db.models import (
+    ItemFacts, MediaItem, MediaItemServerRef, MetadataWrite, Render, RenderDelivery,
+)
 from autoposter.db.refs import item_id_for
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
@@ -1646,7 +1648,31 @@ async def apply_metadata(
         # write. `ref_item`'s OWN native_id/imdb_id/ref/labels, never
         # `item`'s: a Jellyfin ref is not a Plex one, even for the
         # same media_items row.
-        if target_server is None or not getattr(config.operations, f"write_to_{name}", False):
+        if target_server is None:
+            # Nothing is owed to a server this deployment does not have, so
+            # there is no row to write -- unlike the toggle below, which IS a
+            # deliberate decision about a server that exists (spec §1).
+            return
+        # `presence.apply_presence` (servers/presence.py) has already
+        # stamped `absent` for a library this server does not carry, and
+        # spec §1 is explicit that such an item is "never resolved there,
+        # and never retried" -- checked before the toggle below, because
+        # absent overrides even a write turned on: there is still nothing to
+        # write to. Without this, a resolve that finds the item anyway (a
+        # cross-library id match, a run that predates this pass's presence
+        # refresh) would flip the row back out of `absent` on the next write.
+        current_status = (await session.execute(
+            select(MetadataWrite.status).where(
+                MetadataWrite.item_id == media_item_id, MetadataWrite.server == name,
+            )
+        )).scalar_one_or_none()
+        if current_status == "absent":
+            return
+        if not getattr(config.operations, f"write_to_{name}", False):
+            await deliveries.record_metadata(
+                session, media_item_id, name, "skipped",
+                detail=f"config: operations.write_to_{name} is off",
+            )
             return
         # Each server's write stands or falls alone (spec §6.1). Without
         # this a Plex `apply_facts` failure aborts before Jellyfin is
@@ -1660,8 +1686,12 @@ async def apply_metadata(
             )
             if exempt is not None:
                 logger.info("%s: skipped writing %s: %s", target_server.name, ref_item.native_id, exempt)
+                await deliveries.record_metadata(
+                    session, media_item_id, name, "skipped", detail=exempt,
+                )
             else:
                 await target_server.apply_facts(ref_item.ref, facts, config.operations, parental_categories, overrides)
+                await deliveries.record_metadata(session, media_item_id, name, "written")
         except AttributeError:
             # The convention both of `process_item`'s containments follow:
             # a server missing `item_labels` or
@@ -1673,6 +1703,13 @@ async def apply_metadata(
             logger.warning(
                 "%s: metadata write failed for %s (%s)",
                 target_server.name, ref_item.native_id, deliveries.failure_detail(exc),
+            )
+            # The whole point of spec §0: a warning in the log and a `done`
+            # job left no row anywhere saying the server still lacks this
+            # item's metadata. Now it does, and the pass in Phase B drains it.
+            await deliveries.record_metadata(
+                session, media_item_id, name, "pending",
+                detail=deliveries.failure_detail(exc), retry_in=deliveries.RETRY_SECONDS,
             )
 
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:

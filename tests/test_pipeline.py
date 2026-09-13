@@ -2242,3 +2242,173 @@ async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
         )
     ).scalar_one()
     assert row == "pending"
+
+
+class _MinimalTMDBFacts:
+    """A ``tmdb_facts`` stub returning one populated field -- just enough for
+    ``apply_metadata``'s write gate (``facts.is_empty()``) to admit the
+    write, matching the fixture classes ``test_pipeline_facts.py`` already
+    uses for the same reason. These tests are about the WRITE's outcome, not
+    what TMDb said, so the value itself is arbitrary."""
+
+    async def movie(self, tmdb_id):
+        return GatheredFacts(audience_rating=6.3, sources={"audience_rating": "tmdb"})
+
+
+async def test_a_failed_metadata_write_is_recorded_pending_with_its_class_name(
+    session, config_with_badges, monkeypatch
+):
+    """spec §1: the per-server write records instead of only logging."""
+    import httpx
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    response = httpx.Response(400, request=httpx.Request("POST", "https://jf.internal/Items/1"))
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.HTTPStatusError("bad", request=response.request, response=response)
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    item = resolved("jellyfin", "j1")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.server == "jellyfin" and row.status == "pending"
+    assert row.detail == "status: HTTPStatusError 400"
+    assert row.next_attempt_at is not None and row.attempts == 1
+    assert "jf.internal" not in (row.detail or "")
+
+
+async def test_a_successful_write_is_recorded_written(session, config_with_badges):
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    item = resolved("jellyfin", "j2")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.status == "written" and row.written_at is not None and row.attempts == 0
+
+
+async def test_the_write_toggle_being_off_still_says_so_on_the_row(session, config_with_badges):
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = False
+    item = resolved("jellyfin", "j3")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.status == "skipped"
+    assert row.detail == "config: operations.write_to_jellyfin is off"
+    assert jf.facts_written == []
+
+
+async def test_an_exemption_is_recorded_skipped_with_its_reason(session, config_with_badges):
+    """Sibling of the toggle-off case: an exemption is a different reason on
+    the same `skipped` status (spec §1), and must not fall through to a write."""
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS, labels=["autoposter-exempt"])
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    config_with_badges.operations.ignore_labels = ["autoposter-exempt"]
+    item = resolved("jellyfin", "j4")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.status == "skipped" and row.detail
+    assert jf.facts_written == []
+
+
+async def test_a_server_absent_from_the_registry_gets_no_row(session, config_with_badges):
+    """`target_server is None`: there is nothing to be owed to a server this
+    deployment does not have (spec §1's closing sentence)."""
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import resolved
+
+    config_with_badges.operations.enabled = True
+    item = resolved("plex", "p1")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, None,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    rows = (await session.execute(select(MetadataWrite))).scalars().all()
+    assert rows == []
+
+
+async def test_an_absent_row_is_left_alone_by_a_later_write(session, config_with_badges):
+    """spec §1: a library `presence.apply_presence` has already stamped
+    `absent` for this item/server owes it nothing, even if this pass's own
+    resolution found the item anyway -- the row must not flip back out of
+    `absent` (Task 3's `presence.py`, `ABSENT_DETAIL`)."""
+    from sqlalchemy import select
+    from autoposter import deliveries
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from autoposter.servers.presence import ABSENT_DETAIL
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    item = resolved("jellyfin", "j5")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await deliveries.record_metadata(session, media_item.id, "jellyfin", "absent", detail=ABSENT_DETAIL)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.status == "absent" and row.detail == ABSENT_DETAIL
+    assert jf.facts_written == [], "an absent row must never be written to"
