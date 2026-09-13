@@ -362,17 +362,7 @@ def create_app(
         # or a second restart's boot reclaim missing what the first restart
         # just orphaned -- and disabling the maintenance passes must not also
         # disable that.
-        scheduler_jobs = [
-            make_stale_reclaim_job(),
-            # Also unconditional, and for the same reason: a pending delivery
-            # can exist against any configured server, so a Jellyfin-only
-            # deployment (scheduler.enabled off, or no Plex at all) still
-            # needs its deliveries retried. See make_pending_deliveries_job's
-            # docstring.
-            make_pending_deliveries_job(
-                holder, lambda: app.state.servers, http, app.state.mdblist
-            ),
-        ]
+        scheduler_jobs = [make_stale_reclaim_job()]
         if config.scheduler.enabled:
             # The playlists pass (roadmap row 98a) rides this job, and it is
             # gated on its OWN switch inside the job body -- so the job has to
@@ -491,6 +481,16 @@ def create_app(
             # tick (each job claims its own row independently), so this is a
             # visible but harmless reordering, not a hidden behaviour change.
             scheduler_jobs.append(make_asset_stats_job(holder))
+            # Not conditioned on config.plex, the same as drift/cleanup/
+            # asset_stats above: a pending delivery can exist against any
+            # configured server, and a Jellyfin-only deployment needs this
+            # retry pass as much as a Plex one does. Still gated on
+            # scheduler.enabled, unlike stale_job_reclaim -- its runs ARE
+            # recorded and trimmed by the cleanup pass above, which only
+            # exists inside this same gate.
+            scheduler_jobs.append(make_pending_deliveries_job(
+                holder, lambda: app.state.servers, http, app.state.mdblist
+            ))
         # Published so config.live.swap_config can recompute the cadences
         # below without rebuilding the jobs -- it has no other way to reach
         # them, and rebuilding would silently change the job set.

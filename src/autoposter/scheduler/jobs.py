@@ -1064,21 +1064,25 @@ def make_pending_deliveries_job(
     spec Sec 5.3): due rows only, each re-resolved on the one server it is
     still owed to.
 
-    Registered unconditionally, beside ``make_stale_reclaim_job`` -- not
-    gated on ``scheduler.enabled`` or on Plex being configured, unlike every
-    job above. A pending delivery can exist against any configured server,
-    and a Jellyfin-only deployment (no Plex block at all) needs this retry
-    pass the most: nothing else ever re-drives a delivery a server could not
-    yet take.
+    Registered beside ``make_cleanup_job``/``make_asset_stats_job``, inside
+    ``scheduler.enabled`` but not conditioned on ``config.plex`` (unlike the
+    collections/credits/maintenance/prune/merge/arr_sync block): a pending
+    delivery can exist against any configured server, and a Jellyfin-only
+    deployment needs this retry pass exactly as much as a Plex one does. Not
+    registered unconditionally like ``make_stale_reclaim_job`` -- this is an
+    operator-tunable maintenance pass, not a queue-correctness sweep, so its
+    runs ARE recorded and trimmed by the cleanup pass, which only exists
+    inside this same ``scheduler.enabled`` gate.
 
     ``servers_ref`` is a zero-argument callable returning the current
-    ``Servers`` registry (``app.state.servers``), read fresh per run rather
-    than closured -- the same reason ``_prune_servers_factory`` in
-    ``app.py`` rebuilds its own registry per run, so a registry rebuilt after
-    a config swap is seen on this pass's very next tick. ``http`` and
-    ``mdblist`` are the process's own, forwarded unchanged: a retry re-runs
-    ``render/pipeline.compose_badged_bytes``, which needs both to composite
-    the badge it re-uploads.
+    ``Servers`` registry (``app.state.servers``) rather than a closured
+    value. Both ``plex`` and ``jellyfin`` are ``FROZEN_SECTIONS`` entries, so
+    ``app.state.servers`` is in practice built once at boot and never
+    replaced -- the deref is a convenience matching the other job factories'
+    own ``servers``/``server_factory`` arguments, not something a config swap
+    requires here. ``http`` and ``mdblist`` are the process's own, forwarded
+    unchanged: a retry re-runs ``render/pipeline.compose_badged_bytes``,
+    which needs both to composite the badge it re-uploads.
 
     Cadence floor at 60 seconds, the same floor every other holder-derived
     interval in this module effectively has by virtue of the scheduler's own

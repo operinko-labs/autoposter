@@ -808,6 +808,36 @@ async def test_stale_job_reclaim_is_registered_even_with_the_scheduler_disabled(
         assert {job.name for job in app.state.scheduler_jobs} <= UNRECORDED
 
 
+async def test_pending_deliveries_is_registered_for_a_jellyfin_only_deployment(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """Unlike ``stale_job_reclaim``, ``pending_deliveries`` sits INSIDE the
+    ``scheduler.enabled`` gate (Task 20 review, Important 1) -- it is an
+    operator-tunable maintenance pass whose runs the cleanup pass's retention
+    trim covers, not a queue-correctness sweep. It must still be registered
+    with no ``plex:`` block at all, since a pending delivery can exist
+    against any configured server and a Jellyfin-only deployment needs the
+    retry pass exactly as much as a Plex one does.
+    """
+    await _store_override(session, {"plex": None, "jellyfin": {"url": "https://jf"}})
+
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
+
+    async with app.router.lifespan_context(app):
+        assert app.state.config.plex is None, (
+            "precondition: the override actually removed the plex block"
+        )
+        assert app.state.config.scheduler.enabled is True, (
+            "precondition: EXAMPLE ships the master switch on"
+        )
+        assert "pending_deliveries" in app.state.scheduler_intervals
+        assert any(job.name == "pending_deliveries" for job in app.state.scheduler_jobs)
+        # Not one of the two jobs registered ahead of the scheduler.enabled
+        # gate: its runs ARE recorded and trimmed by the cleanup pass, which
+        # only exists inside that same gate.
+        assert "pending_deliveries" not in UNRECORDED
+
+
 async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_processes(
     session_factory, secrets, stubbed_background_services, monkeypatch
 ):

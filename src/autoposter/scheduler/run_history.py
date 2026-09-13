@@ -40,19 +40,20 @@ RUN_HISTORY_KEEP = 500
 _DETAIL_WIDTH = 2000
 
 # Job names whose passes must record NO run history (fix round 1, Critical).
-# `stale_job_reclaim` and `pending_deliveries` are the two jobs `app.py`
-# registers unconditionally rather than behind `scheduler.enabled` -- each
-# runs regardless of that switch, while `trim_run_history`'s only
-# *unconditional* caller is the cleanup pass, which IS gated on
-# `scheduler.enabled` (app.py:383) -- the drain watcher's own call, scoped to
-# `kind="full_pass"`, would never bound either row anyway. Recording their
+# `stale_job_reclaim` is the one job `app.py` registers unconditionally
+# (app.py:366) rather than behind `scheduler.enabled` -- it runs every
+# STALE_RECLAIM_INTERVAL_SECONDS (five minutes) regardless of that switch,
+# while `trim_run_history`'s only *unconditional* caller is the cleanup pass,
+# which IS gated on `scheduler.enabled` (app.py:383) -- the drain watcher's
+# own call, scoped to `kind="full_pass"`, would never bound a
+# stale_job_reclaim row anyway. Recording stale_job_reclaim's
 # passes would grow this table forever, untrimmed, in that first-class
-# supported configuration -- exactly what C6 exists to prevent. Neither is an
-# operator-visible pass: nothing serves their history the way the other
+# supported configuration -- exactly what C6 exists to prevent. It is also
+# not an operator-visible pass: nothing serves its history the way the other
 # jobs' rows are meant to be read. Consulted in `scheduler/core.py`'s
 # `_maybe_run`, before `open_run` is even called, so an unrecorded name never
 # gets a `close_run` call either.
-UNRECORDED = frozenset({"stale_job_reclaim", "pending_deliveries"})
+UNRECORDED = frozenset({"stale_job_reclaim"})
 
 
 async def open_run(session: AsyncSession, *, kind: str, name: str) -> int:
