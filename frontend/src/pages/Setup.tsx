@@ -9,15 +9,15 @@ import {
   registerArrWebhook,
   submitDatabaseUrl,
   submitMasterPassword,
-  submitPlexSelection,
   submitProviderKeys,
   submitPublicUrl,
+  submitServerSelection,
   type ArrRegistration,
   type SetupProgress,
 } from "../api/setup";
 import { SetupAccordion } from "./SetupAccordion";
 import { SetupFinishPane } from "./SetupFinishPane";
-import { SetupPlexPane } from "./SetupPlexPane";
+import { SetupServersPane } from "./SetupServersPane";
 import {
   canNavigate,
   farthestStep,
@@ -53,6 +53,7 @@ export function setupErrorMessage(caught: unknown): string {
  */
 const PROVIDER_LABELS: Record<string, string> = {
   AUTOPOSTER_PLEX_TOKEN: "Plex token",
+  AUTOPOSTER_JELLYFIN_APIKEY: "Jellyfin API key",
   AUTOPOSTER_TMDB_TOKEN: "TMDb token",
   AUTOPOSTER_TVDB_APIKEY: "TVDB API key",
   AUTOPOSTER_FANART_APIKEY: "Fanart API key",
@@ -85,7 +86,6 @@ export function providerLabel(name: string): string {
  * is still filed correctly while it is missing.
  */
 const REQUIRED_PROVIDER_NAMES = [
-  "AUTOPOSTER_PLEX_TOKEN",
   "AUTOPOSTER_TMDB_TOKEN",
   "AUTOPOSTER_TVDB_APIKEY",
   "AUTOPOSTER_FANART_APIKEY",
@@ -98,6 +98,7 @@ const REQUIRED_PROVIDER_NAMES = [
  * name, and it stays a status rather than a field. */
 const SYSTEM_FOR_CREDENTIAL: Record<string, string> = {
   AUTOPOSTER_PLEX_TOKEN: "plex",
+  AUTOPOSTER_JELLYFIN_APIKEY: "jellyfin",
   AUTOPOSTER_PLEX_ACCOUNT_TOKEN: "plex_account",
   AUTOPOSTER_TMDB_TOKEN: "tmdb",
   AUTOPOSTER_TVDB_APIKEY: "tvdb",
@@ -108,9 +109,17 @@ const SYSTEM_FOR_CREDENTIAL: Record<string, string> = {
   AUTOPOSTER_TRACEARR_APIKEY: "tracearr",
 };
 
-/** The four whose address the operator supplies -- the check endpoint's own
- * split, and the only four with an SSRF surface at all. */
-const SYSTEMS_WITH_AN_ADDRESS = new Set(["plex", "radarr", "sonarr", "tracearr"]);
+/** The systems whose address the operator supplies -- the check endpoint's own
+ * split, and the only ones with an SSRF surface at all. Exported because the
+ * media-server step renders two of them and must ask the same question the
+ * systems step asks, in one place. */
+export const SYSTEMS_WITH_AN_ADDRESS = new Set([
+  "plex",
+  "jellyfin",
+  "radarr",
+  "sonarr",
+  "tracearr",
+]);
 
 export function Setup() {
   const [progress, setProgress] = useState<SetupProgress | null>(null);
@@ -257,6 +266,33 @@ export function Setup() {
           onSubmit={(url) => run(() => submitDatabaseUrl(url), "database")}
         />
       )}
+      {pane === "servers" && progress !== null && (
+        <>
+          <SetupServersPane
+            busy={busy}
+            progress={progress}
+            onSave={(values) => run(() => submitProviderKeys(values))}
+            onSelect={(plexUrl, excluded, jellyfinUrl, jellyfinExcluded) =>
+              run(() => submitServerSelection(plexUrl, excluded, jellyfinUrl, jellyfinExcluded))
+            }
+          />
+          {/* Its own Continue rather than an advance on the submit, because
+              this step's cards are two and either one may be the last thing
+              answered: an operator who runs both servers saves the second card
+              after the first, and a step that advanced itself would take the
+              pane away mid-way. `canNavigate` is the server's answer to
+              whether the step is finished -- see `farthestStep`'s two
+              clauses. */}
+          <button
+            className="primary"
+            type="button"
+            disabled={busy || !canNavigate("systems", progress)}
+            onClick={() => setCurrent("systems")}
+          >
+            Continue
+          </button>
+        </>
+      )}
       {pane === "systems" && progress !== null && (
         <>
           <SystemsPane
@@ -265,9 +301,6 @@ export function Setup() {
             registering={registering}
             registrations={registrations}
             onSave={(values) => run(() => submitProviderKeys(values))}
-            onSelectPlex={(plexUrl, excluded) =>
-              run(() => submitPlexSelection(plexUrl, excluded))
-            }
             onRegister={async (service) => {
               // Not through `run`: that advances the step and reports a
               // failure as the page's own error, and a registration is neither
@@ -624,31 +657,21 @@ const SYSTEMS_WITH_A_WEBHOOK = new Set(["radarr", "sonarr"]);
 
 /** What goes inside one accordion's body, beneath its two fields, or nothing.
  *
- * A function rather than a ternary chain inline, because there are now two
- * kinds of extra body and a third would have made the JSX unreadable. Every
- * control it returns is `type="button"`: this renders inside the accordion's
- * credential `<form>`, and an unmarked button would submit that form instead of
- * doing its own job.
+ * A function rather than a ternary chain inline, because the JSX it returns is
+ * longer than the map that calls it. Every control it returns is
+ * `type="button"`: this renders inside the accordion's credential `<form>`,
+ * and an unmarked button would submit that form instead of doing its own job.
+ *
+ * The media servers' own bodies are not here: their cards moved to the step
+ * before this one, which is where their addresses and their libraries are
+ * asked for (`SetupServersPane`).
  */
 function accordionBody(
   system: string,
-  progress: SetupProgress,
-  onSelectPlex: (plexUrl: string, excludedLibraries: string[]) => Promise<boolean>,
   onRegister: (service: string) => Promise<void>,
   registering: Set<string>,
   registrations: Record<string, ArrRegistration>,
 ) {
-  if (system === "plex") {
-    return (fields: { address: string; credential: string; setAddress: (v: string) => void }) => (
-      <SetupPlexPane
-        address={fields.address}
-        configSource={progress.config_source}
-        credentialValue={fields.credential}
-        onAddress={fields.setAddress}
-        onSelect={onSelectPlex}
-      />
-    );
-  }
   if (SYSTEMS_WITH_A_WEBHOOK.has(system)) {
     // Disabled for the duration of the call, and the result rendered right
     // beside it (review I1): the check button two lines below already answers
@@ -684,10 +707,11 @@ function accordionBody(
 /** The systems step: one collapsible per credential.
  *
  * The flat form this replaces rendered eleven inputs and two headings in one
- * column, which was already the longest pane in the wizard before Task 3 adds
- * a Plex sign-in flow and a library tick-list to it. Facts C8: required open,
- * optional collapsed, and the header carries both pills -- what the deployment
- * holds, and what the last check answered.
+ * column, which was already the longest pane in the wizard. Facts C8: required
+ * open, optional collapsed, and the header carries both pills -- what the
+ * deployment holds, and what the last check answered. The media servers are
+ * not among these credentials: each is asked for on the step before this one,
+ * beside its own server's address.
  *
  * The server owns the list and its order; the accordions keep the order they
  * were served in, and the Required/Optional headings go with the flat form --
@@ -699,7 +723,6 @@ function SystemsPane({
   registering,
   registrations,
   onSave,
-  onSelectPlex,
   onRegister,
 }: {
   busy: boolean;
@@ -716,14 +739,6 @@ function SystemsPane({
    * staged by an earlier step, which is why the refusals it can answer with are
    * step names. */
   onRegister: (service: string) => Promise<void>;
-  /** The configuration step, which v2 stages from inside the Plex accordion
-   * rather than from a bare "Plex server URL" box beside it: the address is
-   * the one the operator just PICKED from their own account, or the one they
-   * typed into the accordion when no plex.tv sign-in is possible, and the
-   * tick-list that comes with it is the same submit's `excluded_libraries`.
-   * ONE submit, two ways to arrive at it -- and it is the only writer of the
-   * configuration document, which is what the wizard cannot finish without. */
-  onSelectPlex: (plexUrl: string, excludedLibraries: string[]) => Promise<boolean>;
 }) {
   const isRequired = (name: string) =>
     REQUIRED_PROVIDER_NAMES.includes(name) || progress.required.includes(name);
@@ -759,8 +774,6 @@ function SystemsPane({
           >
             {accordionBody(
               SYSTEM_FOR_CREDENTIAL[name] ?? name,
-              progress,
-              onSelectPlex,
               onRegister,
               registering,
               registrations,

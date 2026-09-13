@@ -108,7 +108,11 @@ describe("SetupServersPane", () => {
   });
 
   it("checks a card against the check endpoint's key for that server", async () => {
-    const fetchMock = vi.fn(async () => respond({ ok: true, detail: "Jellyfin answered." }));
+    const fetchMock = vi.fn(async (path: unknown, init?: RequestInit) =>
+      path === "/api/setup/check" && init?.method === "POST"
+        ? respond({ ok: true, detail: "Jellyfin answered." })
+        : respond({ ok: true }),
+    );
     vi.stubGlobal("fetch", fetchMock);
     renderPane();
     fireEvent.click(screen.getByRole("button", { name: /Jellyfin/ }));

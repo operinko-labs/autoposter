@@ -18,8 +18,8 @@ function respond(body: unknown, status = 200): Response {
 }
 
 function transport() {
-  return vi.fn(async (path: unknown) =>
-    path === "/api/setup/jellyfin/libraries"
+  return vi.fn(async (path: unknown, init?: RequestInit) =>
+    path === "/api/setup/jellyfin/libraries" && init?.method === "POST"
       ? respond({ libraries: LIBRARIES })
       : respond({ ok: true }),
   );
