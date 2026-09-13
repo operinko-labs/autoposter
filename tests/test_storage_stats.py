@@ -34,6 +34,7 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
 from autoposter.render import pipeline
 from autoposter.render.textfit import FitResult
+from autoposter.servers.registry import Servers
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -154,7 +155,7 @@ async def test_a_rendered_asset_carries_its_byte_size(session, tmp_path, monkeyp
 
     async with _fake_http() as http:
         await pipeline.process_item(
-            session, _config(tmp_path), http, _FakePlex(_resolved()),
+            session, _config(tmp_path), http, Servers({"plex": _FakePlex(_resolved())}),
             [_Provider()], _intent(),
         )
 
@@ -188,7 +189,7 @@ async def test_a_render_from_a_manual_override_carries_its_byte_size(
 
     async with _fake_http() as http:
         await pipeline.process_item(
-            session, config, http, _FakePlex(_resolved()), [_Provider()], _intent(),
+            session, config, http, Servers({"plex": _FakePlex(_resolved())}), [_Provider()], _intent(),
         )
 
     session.expire_all()

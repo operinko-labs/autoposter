@@ -81,6 +81,7 @@ from autoposter.db.models import (
     ManagedPlaylist,
     MediaItem,
     Render,
+    RenderDelivery,
     ScheduledRun,
 )
 from autoposter.db.models import Session as SessionModel
@@ -113,6 +114,7 @@ SCHEDULED_JOB_NAMES = frozenset({
     "plex_prune",
     "plex_merge",
     "stale_job_reclaim",
+    "pending_deliveries",
 })
 
 DEFAULT_EVENTS_LIMIT = 50
@@ -531,6 +533,22 @@ async def item_detail(
             .all()
         )
 
+        # One query for every render's deliveries, not one per render: the
+        # page shows every art kind at once, and a render can have one row
+        # per configured server. Ordered by server (fix round 3, M5) so the
+        # chips do not reorder between page loads.
+        deliveries_by_render: dict[int, list[RenderDelivery]] = {}
+        if renders:
+            delivery_rows = (
+                await session.execute(
+                    select(RenderDelivery).where(
+                        RenderDelivery.render_id.in_([render.id for render in renders])
+                    ).order_by(RenderDelivery.server)
+                )
+            ).scalars().all()
+            for delivery in delivery_rows:
+                deliveries_by_render.setdefault(delivery.render_id, []).append(delivery)
+
         show = None
         if item.kind in ("season", "episode") and item.parent_id is not None:
             parent = (
@@ -601,6 +619,17 @@ async def item_detail(
                 "textless": render.textless,
                 "rendered_at": render.rendered_at,
                 "uploaded_at": render.uploaded_at,
+                "deliveries": [
+                    {
+                        "server": delivery.server,
+                        "status": delivery.status,
+                        "attempted_at": delivery.attempted_at,
+                        "uploaded_at": delivery.uploaded_at,
+                        "next_attempt_at": delivery.next_attempt_at,
+                        "detail": delivery.detail,
+                    }
+                    for delivery in deliveries_by_render.get(render.id, [])
+                ],
             }
             for render in renders
         ],
@@ -1031,6 +1060,19 @@ async def run_full_pass(
     idempotent (see above); reusing an already-open row instead would mean a
     single row nothing ever closed could suppress every future pass's history.
     """
+    # Spec §4.4 step 6: a Jellyfin index built once and reused between passes
+    # (see jellyfin/index.py) would otherwise answer a full pass with
+    # whatever library shape it happened to hold at the last resolve --
+    # invalidated here so every server that keeps one rebuilds on its next
+    # resolve, in this pass. `getattr(..., None)` rather than a capability
+    # check: only Jellyfin's client currently defines `invalidate`, and a
+    # server with no such concept (Plex resolves live, no index to go stale)
+    # simply has nothing to call.
+    for server in request.app.state.servers.values():
+        invalidate = getattr(server, "invalidate", None)
+        if invalidate is not None:
+            invalidate()
+
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         rows = (

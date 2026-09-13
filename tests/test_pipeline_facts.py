@@ -13,6 +13,7 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.plex.writer import apply_facts as _plex_apply_facts
 from autoposter.render import pipeline
 from autoposter.servers.identity import identity_key_for
+from autoposter.servers.registry import Servers
 
 EXAMPLE = Path("config/autoposter.example.yaml")
 
@@ -215,11 +216,18 @@ async def test_metadata_failure_does_not_block_artwork(session, monkeypatch, cap
 
     monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
     config = load_config(EXAMPLE)
+    # This test is about metadata containment, not badges -- and (Task 19)
+    # compose_badged_bytes now loads facts per-render itself rather than
+    # process_item pre-selecting them, so there is no longer an earlier,
+    # unrelated expired-`media_item` failure to deflect the badge loop's own
+    # `render.art_kind` read before it reaches this test's bare `object()`
+    # stand-in. See test_metadata_runs_before_the_artifact_loop's own note.
+    config.badges.enabled = False
     intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
 
     with caplog.at_level("WARNING"):
         results = await pipeline.process_item(
-            session, config, None, _FakePlex(resolved()), [], intent,
+            session, config, None, Servers({"plex": _FakePlex(resolved())}), [], intent,
             tmdb_facts=BoomTMDBFacts(), mdblist=NullMDBListClient(),
         )
 
@@ -249,11 +257,14 @@ async def test_metadata_db_error_still_lets_artwork_use_the_session(session, mon
 
     monkeypatch.setattr(pipeline, "render_artifact", fake_render_artifact)
     config = load_config(EXAMPLE)
+    # See test_metadata_failure_does_not_block_artwork's own note just above:
+    # this test is about the DB-error rollback, not badges.
+    config.badges.enabled = False
     intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
 
     with caplog.at_level("WARNING"):
         results = await pipeline.process_item(
-            session, config, None, _FakePlex(resolved()), [], intent,
+            session, config, None, Servers({"plex": _FakePlex(resolved())}), [], intent,
             tmdb_facts=BoomTMDBFacts(), mdblist=NullMDBListClient(),
         )
 
@@ -278,7 +289,7 @@ async def test_cancelled_error_during_metadata_still_propagates(session, monkeyp
 
     with pytest.raises(asyncio.CancelledError):
         await pipeline.process_item(
-            session, config, None, _FakePlex(resolved()), [], intent,
+            session, config, None, Servers({"plex": _FakePlex(resolved())}), [], intent,
             tmdb_facts=CancellingTMDBFacts(), mdblist=NullMDBListClient(),
         )
 
@@ -312,7 +323,7 @@ async def test_metadata_runs_before_the_artifact_loop(session, monkeypatch):
     intent = RenderIntent(kind="movie", title="X", tmdb_id=1)
 
     await pipeline.process_item(
-        session, config, None, _FakePlex(resolved()), [], intent,
+        session, config, None, Servers({"plex": _FakePlex(resolved())}), [], intent,
         tmdb_facts=OrderedTMDBFacts(), mdblist=OrderedMDBList(),
     )
 
@@ -352,7 +363,7 @@ async def test_a_plex_without_fetch_item_is_not_swallowed(session, monkeypatch):
 
     with pytest.raises(AttributeError, match="fetch_item"):
         await pipeline.process_item(
-            session, config, None, PlexWithoutFetchItem(), [],
+            session, config, None, Servers({"plex": PlexWithoutFetchItem()}), [],
             RenderIntent(kind="movie", title="X", tmdb_id=1),
         )
 
@@ -432,7 +443,7 @@ async def test_title_card_self_feed_is_refused_through_process_item(session, tmp
             base_url="http://plex.local", headers={"X-Plex-Token": "tok"},
         )
         results = await pipeline.process_item(
-            session, config, http, _FakePlex(), [_NoArtProvider()],
+            session, config, http, Servers({"plex": _FakePlex()}), [_NoArtProvider()],
             RenderIntent(kind="episode", title="Chapter One", season_number=1, episode_number=1),
             plex_generated_base=plex_generated_base,
         )
@@ -507,7 +518,7 @@ async def test_title_card_refusal_is_contained_and_carries_no_token(session, cap
         with caplog.at_level("WARNING"):
             with pytest.raises(SourceRefused) as excinfo:
                 await pipeline.process_item(
-                    session, config, http, _FakePlex(), [_NoArtProvider()],
+                    session, config, http, Servers({"plex": _FakePlex()}), [_NoArtProvider()],
                     RenderIntent(kind="episode", title="Chapter One", season_number=1, episode_number=1),
                     plex_generated_base=plex_generated_base,
                 )
@@ -595,7 +606,7 @@ async def test_title_card_non_2xx_from_plex_records_no_art_through_process_item(
         )
         with caplog.at_level("WARNING"):
             results = await pipeline.process_item(
-                session, config, http, _FakePlex(), [_NoArtProvider()],
+                session, config, http, Servers({"plex": _FakePlex()}), [_NoArtProvider()],
                 RenderIntent(kind="episode", title="Chapter One", season_number=1, episode_number=1),
                 plex_generated_base=plex_generated_base,
             )

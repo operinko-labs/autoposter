@@ -19,13 +19,15 @@ from autoposter.badges.compose import (
     compose as compose_badges,
 )
 from autoposter.badges.values import (
+    MediaInfo,
     media_info_from_plex,
     plex_native_ratings,
     video_format_text,
 )
 from autoposter.config.loader import config_for_library, render_version_for
 from autoposter.config.schema import Config, TextStyle
-from autoposter.db.models import ItemFacts, MediaItem, MediaItemServerRef, Render
+from autoposter import deliveries
+from autoposter.db.models import ItemFacts, MediaItem, MediaItemServerRef, Render, RenderDelivery
 from autoposter.db.refs import item_id_for
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
@@ -61,6 +63,7 @@ from autoposter.render.artwork_fetch import (
 from autoposter.render.textfit import fit_point_size, prepare_text
 from autoposter.servers.base import (
     CAP_ARTWORK_PROVENANCE, CAP_LOCK_ARTWORK, CAP_TITLE_CARD_URL,
+    ItemNotFound, PathMismatch, ServerItemRef,
 )
 from autoposter.servers.identity import identity_key_for, parent_identity_key_for
 
@@ -1544,15 +1547,32 @@ async def apply_metadata(
     mdblist,
     tvdb=None,
     imdb_parental=None,
+    *,
+    servers=None,
+    resolved_on: dict[str, ResolvedItem] | None = None,
 ) -> GatheredFacts:
-    """Gather this item's facts, store them, and write the changed ones to Plex.
+    """Gather this item's facts, store them, and write the changed ones to
+    every configured server that wants them.
 
-    Runs before any badge rendering, because badges read the values from Plex
-    rather than from the providers.
+    Runs before any badge rendering, because badges read the values off the
+    persisted facts rather than the providers.
 
     Every ``operations`` setting read here is this item's LIBRARY's
     (roadmap row 92): a library that states one uses it, and one that states
     nothing uses the global.
+
+    ``server`` is ``item``'s own server (the identity the gather/persist half
+    is keyed on) and is written to exactly as before -- every direct caller
+    that predates Jellyfin (roughly two dozen ``mass_ops_*``/``pipeline_facts``
+    tests) passes only these nine positionals and gets today's single-server
+    write, unchanged.
+
+    ``servers``/``resolved_on`` are Task 19's fan-out: when ``process_item``
+    supplies both (the registry and every OTHER server this pass resolved),
+    the SAME gathered ``facts`` are additionally written to each of them,
+    gated by that server's own ``operations.write_to_<name>`` and exempted by
+    that server's own ``item_labels`` -- never ``item``'s. Both default to
+    ``None`` so every existing caller above is unaffected.
     """
     # Roadmap row 92. The whole function's `config.operations` reads become
     # this library's, in one statement, at the reads rather than at the
@@ -1619,22 +1639,51 @@ async def apply_metadata(
     has_verbs = bool(config.operations.field_verbs)
     has_parental = parental_categories is not None
     has_overrides = bool(overrides)
-    if (
-        config.operations.write_to_plex
-        and server is not None
-        and (not facts.is_empty() or has_verbs or has_parental or has_overrides)
-    ):
+
+    async def _write(name: str, target_server, ref_item: ResolvedItem) -> None:
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
         # facts above are still gathered and persisted for an exempt item,
         # because the badge stage reads the persisted row rather than this
-        # write.
-        exempt = exemption_reason(
-            config.operations, item.native_id, item.imdb_id, await server.item_labels(item.ref),
-        )
-        if exempt is not None:
-            logger.info("%s: skipped writing %s: %s", server.name, item.native_id, exempt)
-        else:
-            await server.apply_facts(item.ref, facts, config.operations, parental_categories, overrides)
+        # write. `ref_item`'s OWN native_id/imdb_id/ref/labels, never
+        # `item`'s -- Task 19: a Jellyfin ref is not a Plex one, even for the
+        # same media_items row.
+        if target_server is None or not getattr(config.operations, f"write_to_{name}", False):
+            return
+        # Fix round 3, I4: each server's write stands or falls alone (spec
+        # §6.1). Without this a Plex `apply_facts` failure aborted before
+        # Jellyfin was attempted at all, and a Jellyfin one propagated out of
+        # this function into `process_item`'s containment -- whose rollback
+        # discards THIS item's `persist_facts` above and, before C1, its refs
+        # with it.
+        try:
+            exempt = exemption_reason(
+                config.operations, ref_item.native_id, ref_item.imdb_id,
+                await target_server.item_labels(ref_item.ref),
+            )
+            if exempt is not None:
+                logger.info("%s: skipped writing %s: %s", target_server.name, ref_item.native_id, exempt)
+            else:
+                await target_server.apply_facts(ref_item.ref, facts, config.operations, parental_categories, overrides)
+        except AttributeError:
+            # The convention both of `process_item`'s containments follow
+            # (fix round 3 round 2, R2): a server missing `item_labels` or
+            # `apply_facts` is a wiring bug -- a programming error, not the
+            # runtime server failure this `except` is for -- and must not be
+            # silently contained as a per-server warning.
+            raise
+        except Exception as exc:
+            logger.warning(
+                "%s: metadata write failed for %s (%s)",
+                target_server.name, ref_item.native_id, deliveries.failure_detail(exc),
+            )
+
+    if not facts.is_empty() or has_verbs or has_parental or has_overrides:
+        await _write(item.server, server, item)
+        if servers is not None and resolved_on is not None:
+            for name, resolved_item in resolved_on.items():
+                if name == item.server:
+                    continue  # already written just above, via `server`
+                await _write(name, servers.get(name), resolved_item)
 
     # Row 269. A released sort position is acted on ONCE: the clear above
     # was sent -- or the item is exempt, row 99's own ruling for its DELETE
@@ -1649,143 +1698,206 @@ async def apply_metadata(
     return facts
 
 
-async def _already_in_plex(config, probe, server, ref, render, fingerprint) -> bool:
-    """Whether Plex is already serving exactly the badged image we would upload.
+async def _already_delivered(session, config, server, name, ref, render, fingerprint) -> bool:
+    """Whether ``server`` is already serving exactly the badged image we
+    would upload (Task 19's server-neutral successor to the old, Plex-only
+    ``_already_in_plex``).
 
-    Only asked when the database has no ``badge_fingerprint`` for this render:
-    after adoption, after a database restore, or for anything this service has
-    never badged. In every other case the stored fingerprint already answers
-    the question for free, and asking Plex would be a request per item.
+    Asked per server, inside ``deliver``, rather than once globally: each
+    server gets its own EXIF-provenance answer, so adopting from Plex never
+    tells another server it already has bytes it has never seen.
 
     The answer comes from the artwork itself -- uploaded images carry their
     fingerprint in EXIF ``ImageDescription`` (see ``plex/exif.py``) -- which
-    makes Plex, not our database, the source of truth about what is in Plex.
-    That is what makes adoption cheap on the badge side: at cutover the whole
-    library has no ``badge_fingerprint``, and without this every item would be
-    re-composed and re-uploaded to produce the bytes already there.
+    makes the server, not our database, the source of truth about what it is
+    serving. That is what makes adoption cheap: at cutover the whole library
+    has no ``badge_fingerprint``, and without this every item would be
+    re-uploaded to produce bytes already there.
 
-    Best-effort by construction. Anything at all going wrong -- no probe
-    wired up, no Plex object, a transport error, a stranger's EXIF -- answers
-    False, and the caller does the normal upload. A wrong False costs one
-    redundant upload; there is no wrong True, because the fingerprint read
-    back has to equal the one just computed.
+    Only worth asking when THIS server has no delivery history for this
+    render at all -- the per-server generalization of the old single-server
+    check (``render.badge_fingerprint is not None`` skipped the probe): a
+    server this render has already been delivered to answers the question
+    for free from its own last recorded outcome, and asking again would be a
+    request per item, every ordinary re-badge. "Delivered" means a row this
+    code actually wrote -- `attempted_at IS NOT NULL` (fix round 3, I5): the
+    Phase-2 migration backfills a `plex` row for EVERY pre-existing render,
+    with no `attempted_at`, so without that term the probe could never run
+    again for a single row already in the database -- exactly the population
+    (`badge_fingerprint IS NULL`) adoption exists for. `render.badge_fingerprint`
+    itself cannot carry this any more -- `compose_badged_bytes` overwrites it
+    with the NEW fingerprint once a compose actually succeeds, once for every
+    server, so a per-server delivery-row check is what a per-render column
+    used to be. A server added to an already-badged library's config still
+    gets its own adoption check, having no history of its own yet, even
+    though Plex (say) does.
 
-    Deliberately not asked when ``upload_to_plex`` is off: with nothing to
-    skip there is nothing to save, and a dry run should not spend ~16,000
-    range requests learning that.
+    ``fingerprint`` is passed explicitly rather than read off
+    ``render.badge_fingerprint`` (fix round 2, NB2): the single-server
+    adoption shortcut in ``compose_badged_bytes`` asks this BEFORE compose
+    has run at all, and writing the new fingerprint to the column ahead of a
+    successful compose would commit it even when ``compose_badges`` then
+    raises -- stranding the render on a fingerprint no image on disk (or on
+    any server) actually matches, and the next pass's unchanged-check would
+    skip it forever. Passing the value directly means the column is
+    touched only where it always was: after compose (or here, after a
+    genuine adoption match) actually succeeds.
+
+    Best-effort by construction otherwise. Anything at all going wrong -- the
+    capability absent, a transport error, a stranger's EXIF -- answers False,
+    and the caller does the normal upload. A wrong False costs one redundant
+    upload; there is no wrong True, because the fingerprint read back has to
+    equal the one just composed.
+
+    Deliberately not asked when ``adopt_from_plex`` is off: with nothing to
+    skip there is nothing to save, and a dry run should not spend a
+    provenance request per item learning that. The caller has already
+    confirmed ``upload_to_<name>`` is on before reaching here.
     """
-    if not (config.badges.adopt_from_plex and config.badges.upload_to_plex):
-        return False
-    if probe is None or ref is None or render.badge_fingerprint is not None:
+    if not config.badges.adopt_from_plex:
         return False
     if CAP_ARTWORK_PROVENANCE not in server.capabilities:
+        return False
+    existing = (
+        await session.execute(
+            select(RenderDelivery.id).where(
+                RenderDelivery.render_id == render.id, RenderDelivery.server == name,
+                RenderDelivery.attempted_at.isnot(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
         return False
     try:
         recorded = await server.artwork_provenance(ref, render.art_kind)
     except Exception:
-        logger.debug("could not read artwork provenance from Plex", exc_info=True)
+        logger.debug("could not read artwork provenance from %s", server.name, exc_info=True)
         return False
     return recorded is not None and recorded == fingerprint
 
 
-async def apply_badges(
-    session, config, render, media_item, server, ref, facts, probe=None,
-    *, http=None, mdblist=None,
-) -> None:
-    """Badge one rendered artifact and upload it, if anything changed.
+async def compose_badged_bytes(
+    session: AsyncSession,
+    config: Config,
+    render: Render,
+    media_item: MediaItem,
+    *,
+    http=None,
+    mdblist=None,
+    server=None,
+    ref: ServerItemRef | None = None,
+    facts=None,
+    solo_delivery: tuple[str, object, ServerItemRef] | None = None,
+    force: bool = False,
+) -> bytes | None:
+    """Compose one render's badged bytes, or ``None`` when there is nothing to
+    compose -- badges off for this library, a background (never badged), a
+    render that never produced a base image, or a fingerprint that has not
+    moved since the last successful delivery (spec §5: "render once").
 
-    The fingerprint gate is the point of this whole stage: an unchanged item
-    costs one hash and no image work at all. It is also what stops uploads
-    accumulating on the Plex server, which is what happens when every run
-    uploads unconditionally.
+    Task 19 extracts this from the old, single-server ``apply_badges``: the
+    COMPOSE half lives here, once per render; ``deliver`` (below) fans the
+    same bytes out to every configured server. ``retry_pending_deliveries``
+    (``deliveries.py``) calls this too, with neither ``server`` nor ``ref`` --
+    it has no live server object for the item, only the persisted row -- so
+    both are optional.
 
-    ``probe`` is no longer a callable: since the artwork/metadata protocol
-    change, ``_already_in_plex`` reads provenance straight off ``server``/
-    ``ref`` itself, and this is now only the non-``None`` sentinel that says
-    the caller has that stage wired up at all (``app.py``'s ``artwork_probe``
-    partial, or ``None`` to skip provenance reads entirely). Kept as its own
-    parameter, rather than folded into a capability check, so every caller
-    that only cares about composing keeps working unchanged; Task 11 deletes
-    it once the seam it stood in for is gone.
+    ``server``/``ref`` are the ONE identity live media info and native
+    ratings are sampled from -- still Plex-only (``media_info_from_plex``,
+    ``plex_native_ratings`` and the overlay view all read plexapi attributes
+    no other ``MediaServer`` exposes yet, spec §5.1). ``process_item`` passes
+    Plex's own resolved ref when this pass resolved one; a Jellyfin-only pass,
+    or a caller with neither, degrades to an empty ``MediaInfo`` and no
+    Plex-native ratings rather than raising -- the persisted ``ItemFacts`` row
+    this function loads itself still drives the badge.
 
-    ``http`` is the client roadmap row 97's operator-defined overlays resolve
-    their ``url:`` sources through (``overlays.sources.resolve_image_path``).
-    Keyword-only with a ``None`` default: ``tests/test_badge_pipeline.py``
-    calls this function positionally at ~30 sites, and this keeps every one
-    of them working. With no client, a definition naming a ``url:`` source
-    simply cannot resolve one -- ``resolve_image_path`` raises
-    ``OverlaySourceError``, which the loop below already turns into a
-    skip-with-a-warning.
+    ``facts`` defaults to ``None``, meaning "load the persisted ``ItemFacts``
+    row" -- exactly what ``process_item``'s old badge block did before
+    calling ``apply_badges``, and what ``retry_pending_deliveries`` (with no
+    gathered facts of its own to hand in) relies on. A caller that already
+    holds a ``GatheredFacts``-shaped object (``tests/test_badge_pipeline.py``,
+    unit-testing compose in isolation from the database) may pass one
+    directly instead.
 
-    ``mdblist`` is roadmap row 100 sub-phase C2a's rating source, optional
-    with a ``None`` default for the same reason ``http`` is: every existing
-    caller keeps working unchanged. With no client, the eleven ``mdb_*``
-    tokens simply do not resolve -- ``UnresolvedVariable`` is caught per
-    definition, same as any other unresolved token.
+    ``http``/``mdblist`` are unchanged from the old ``apply_badges``; see the
+    module's other docstrings for what each is for.
+
+    ``solo_delivery`` (fix round 1, I2) is ``(name, server, ref)`` for the
+    ONE configured server that is both resolved and upload-enabled this
+    pass, when there is exactly one -- ``process_item`` computes and passes
+    it; ``None`` (the multi-server case, or a caller like
+    ``retry_pending_deliveries`` that never supplies it) skips this
+    entirely, and ``deliver`` runs its own per-server ``_already_delivered``
+    check after composing instead. When set, adoption is checked BEFORE the
+    per-definition resolution and ``compose_badges`` itself -- the old
+    single-server ordering -- so a cutover (a whole library with no
+    ``badge_fingerprint`` yet, every render already carrying its own EXIF
+    fingerprint) does not recompose bytes already sitting on the one server
+    that matters. On a match, this function records the delivery itself
+    (there is no ``data`` for ``deliver`` to act on) and returns ``None``;
+    ``deliver`` still runs afterward, sees the row already there, and leaves
+    it alone (its own ``data is None`` catch-up only acts on a MISSING,
+    ``pending`` or ``failed`` row).
+
+    ``force`` (fix round 3 round 2, R1) skips the unchanged-fingerprint gate
+    alone -- never the three "not a badge candidate" checks above it.
+    ``retry_pending_deliveries`` is its only caller: a due row means one
+    server does not have these bytes, so "nothing has changed since the last
+    delivery" is true of every OTHER server and no answer at all for that
+    one. See the gate's own comment for the contract this half of. It also
+    leaves ``render.badge_fingerprint`` alone (fix round 3 round 3, N2): a
+    forced compose delivers, it does not decide -- see the write itself.
     """
-    # Roadmap row 92, and it must be ABOVE the `badges.enabled` gate: that
-    # gate is itself a per-library setting, so resolving after it would make
-    # a library able to override everything except whether badges happen at
-    # all. `_already_in_plex` below reads `config.badges` too and is called
-    # with this rebound object, so the whole stage is one library's.
-    #
-    # `media_item` here is the `media_items` ROW, not the resolved item -- the
-    # badge block re-reads the row before calling this -- and it carries
-    # `.library` for the same reason every other consumer does.
+    # Roadmap row 92, and it must be ABOVE the `badges.enabled` gate: see the
+    # old `apply_badges`' own note, still true here.
     config = config_for_library(config, media_item.library)
     if not config.badges.enabled:
-        return
+        return None
     # Backgrounds are never badged. The tool being replaced overlays posters,
     # season posters and episode title cards only -- a fanart backdrop with a
     # runtime badge stamped on it is not something it produces, and not
     # something we should start producing.
     if render.art_kind == "background":
-        return
+        return None
     # `asset_path` is written when the row is created, before any file exists,
     # so a render that never produced one -- no_art, truncated, skipped,
     # failed -- would send Image.open() at a path that is not there.
     if render.status != "rendered":
-        return
+        return None
 
     # Still Plex-only below this point (media_info_from_plex, the ratings and
     # the overlay view read plexapi attributes no MediaServer method exposes
-    # yet), so the raw item is fetched here rather than passed in.
-    plex_item = await server.fetch_item(ref.native_id)
+    # yet). `server`/`ref` absent -- no Plex this pass, or a caller with
+    # neither -- degrades rather than raising: an empty MediaInfo and no
+    # Plex-native ratings, badging still runs off the persisted facts below.
+    plex_item = await server.fetch_item(ref.native_id) if server is not None and ref is not None else None
 
     # media_info_from_plex() calls item.reload() when `.media` is absent, which
     # is a blocking `requests` GET -- and plexapi Show and Season objects never
     # carry `.media`, so that is not a rare path. On the event loop it stalls
     # the liveness probe and every other worker.
-    media = await asyncio.to_thread(media_info_from_plex, plex_item)
+    media = (
+        await asyncio.to_thread(media_info_from_plex, plex_item) if plex_item is not None
+        else MediaInfo(
+            video_resolutions=(), audio_track_titles=(), audio_channels=None,
+            duration_ms=None, audio_languages=(), hdr_flags=frozenset(),
+            season_number=media_item.season_number, episode_number=media_item.episode_number,
+        )
+    )
 
-    # Row 99's C4, at the single seam that reads facts for a badge. The
-    # placement is code-true rather than assumed: ``process_item`` discards
-    # ``apply_metadata``'s return value and re-reads the PERSISTED
-    # ``ItemFacts`` row before calling this function, so laying the override
-    # on inside ``apply_metadata`` would never reach the badge. Here it
-    # reaches every caller of this function.
-    #
-    # A READ-ONLY view, never a mutation: ``facts`` is usually the ORM row
-    # this session is tracking, and mutating it would be flushed into
-    # ``item_facts`` by the next commit -- the provider's own record poisoned
-    # by accident. With no overrides ``overlaid_badge_facts`` returns the very
-    # object it was handed, so gate-off is indistinguishable from before this
-    # row even by identity.
-    #
-    # What it costs: this item's ``badge_values`` move, so its
-    # ``badge_fingerprint`` moves ONCE and it re-badges ONCE. Nothing here
-    # touches ``_definitions_digest``, ``_outcomes_digest``,
-    # ``_rating_values_digest`` or ``config.version``, so no other item moves
-    # at all.
-    # Task-2 fix round 1, ruling on m-2: an item ``exemption_reason`` excludes
-    # from the Plex write (above, in ``apply_metadata``) must be excluded
-    # from the badge overlay too, or the two visibly disagree -- Plex still
-    # shows the provider's value, the badge shows the operator's. This checks
-    # the same gate ``apply_metadata`` does and, when exempt, skips the
-    # overlay AND the ``load_overrides`` read that would feed it -- the badge
-    # still renders, from the persisted provider facts, exactly as it does
-    # for an exempt item with no override at all.
-    if config.operations.item_overrides_enabled:
+    # The persisted row by default: neither this function's own caller nor
+    # retry_pending_deliveries' holds a fresher GatheredFacts than the
+    # database has. `facts is not None` lets a direct unit test hand one in.
+    if facts is None:
+        facts = (
+            await session.execute(select(ItemFacts).where(ItemFacts.item_id == media_item.id))
+        ).scalar_one_or_none() or GatheredFacts()
+
+    # Row 99's C4, at the single seam that reads facts for a badge. See the
+    # old `apply_badges`' own note on why this must be here and not in
+    # `apply_metadata`. Skipped when there is no live `ref` to check labels
+    # against -- the same degrade as the media read above.
+    if config.operations.item_overrides_enabled and ref is not None:
         exempt = exemption_reason(
             config.operations, ref.native_id, media_item.imdb_id,
             getattr(plex_item, "labels", None),
@@ -1797,7 +1909,7 @@ async def apply_badges(
 
     critic_rating = getattr(facts, "critic_rating", None)
     audience_rating = getattr(facts, "audience_rating", None)
-    ratings: dict[str, float | None] = dict(plex_native_ratings(plex_item))
+    ratings: dict[str, float | None] = dict(plex_native_ratings(plex_item)) if plex_item is not None else {}
     # The imdb_rating/tmdb_rating aliases (roadmap row 100, sub-phase C2a):
     # this service's IMDb/TMDb facts ARE Kometa's imdb_rating/tmdb_rating
     # rating-source values (probe bucket (a)) -- no new fetch, just making
@@ -1808,7 +1920,7 @@ async def apply_badges(
     if audience_rating is not None:
         ratings["tmdb_rating"] = audience_rating
     # MDBList's eleven mdb_* ratings, per-pass, never persisted (adjudication
-    # A7). `item.kind in ("movie", "show")` mirrors `facts/gather.py::
+    # A7). `media_item.kind in ("movie", "show")` mirrors `facts/gather.py::
     # gather_facts`'s own gate for `mdblist.content_rating` exactly -- season
     # and episode badges do not carry mdb_* ratings in this slice. A
     # transient MDBList failure must degrade this one set of values, not the
@@ -1840,17 +1952,11 @@ async def apply_badges(
     # resolution (or, in a later slice, aspect or language count) changed
     # re-renders. If the outcomes were computed after the gate, the gate
     # could never see them and a changed item would keep its old badge
-    # forever -- adjudication A4. The cost is one `json.dumps` of the
-    # condition (ahead of `compiled_condition`'s cache lookup) plus a filter
-    # tree walk, per CONDITIONED definition, on every unchanged item; the
-    # view itself makes no Plex request of its own -- `media_info_from_plex`
-    # above already reloaded the item for `.media`, and the view's own
-    # accessors read `plex_item` the same reload-free way `filter_values.py`
-    # does for everything else.
-    # `all_definitions()`, not `.definitions`: a named family's definitions
-    # are drawn too, and they must be in the list the fingerprint hashes as
-    # well as in the list that gets selected over -- enabling a family has to
-    # re-badge exactly like adding a definition by hand does.
+    # forever -- adjudication A4. `all_definitions()`, not `.definitions`: a
+    # named family's definitions are drawn too, and they must be in the list
+    # the fingerprint hashes as well as in the list that gets selected over --
+    # enabling a family has to re-badge exactly like adding a definition by
+    # hand does.
     definitions = config.badges.all_definitions()
     view = OverlayItemView(media, facts=facts, plex_item=plex_item)
     matched_definitions, outcomes = select_overlay_definitions(definitions, view)
@@ -1866,18 +1972,55 @@ async def apply_badges(
         render.fingerprint or "", render.art_kind, values, manifest_sha(),
         definitions, outcomes, ratings=ratings,
     )
-    if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
-        return
+    # The fingerprint alone, and deliberately NOT `render.upload_status` too
+    # (fix round 3, I7): that column is now the cross-server roll-up, whose
+    # precedence puts `pending` above `uploaded`, so one server that has not
+    # scanned the item yet -- the normal steady state of a newly added
+    # Jellyfin over a large library -- would keep this gate from ever firing
+    # and recompose every render, every pass, then re-upload it to the
+    # servers that already had the bytes. "Render once" is the fingerprint's
+    # question.
+    #
+    # Which servers still need those bytes is `deliver`'s own per-server
+    # bookkeeping, and the contract between the two is this (fix round 3
+    # round 2, R1): on an unchanged fingerprint `deliver` composes nothing
+    # and uploads nothing itself, but re-arms every server whose row is
+    # missing, `pending` or `failed` as `pending` with no delay, leaving
+    # `uploaded` and `skipped` alone. The next `retry_pending_deliveries`
+    # pass is then what actually delivers to that one server -- which is
+    # why it, and only it, passes `force`: it is asking for bytes for a
+    # server that does not have them, so an unchanged fingerprint is no
+    # reason to answer `None`. A failed upload is therefore retried once
+    # per full pass, exactly as the single-server code retried it.
+    if not force and fingerprint == render.badge_fingerprint:
+        return None
 
-    if await _already_in_plex(config, probe, server, ref, render, fingerprint):
-        # The image Plex is serving stamped this exact fingerprint, so it is
-        # byte-for-byte what compose() would produce. Record what is already
-        # true and skip both the composite and the upload.
-        render.badge_fingerprint = fingerprint
-        render.upload_status = "uploaded"
-        render.uploaded_at = func.now()
-        await session.commit()
-        return
+    # Fix round 1, I2: the single-server adoption shortcut, checked BEFORE
+    # any image work -- see this function's own docstring on `solo_delivery`.
+    # Fix round 2, NB2: the just-computed `fingerprint` is passed to
+    # `_already_delivered` as an argument rather than written to
+    # `render.badge_fingerprint` first -- writing the column ahead of a
+    # successful compose would commit a fingerprint no actual image matches
+    # if `compose_badges` below then raised, stranding the render on a
+    # stale badge the next pass's unchanged-check would skip forever. The
+    # column is set only on an actual adoption match (this IS the
+    # successful outcome) or, on the normal path, after compose succeeds.
+    if solo_delivery is not None:
+        solo_name, solo_server, solo_ref = solo_delivery
+        if await _already_delivered(
+            session, config, solo_server, solo_name, solo_ref, render, fingerprint,
+        ):
+            render.badge_fingerprint = fingerprint
+            await deliveries.record(session, render.id, solo_name, "uploaded")
+            # Fix round 3, M7: `deliver` rolls up and commits only what IT
+            # recorded, and this shortcut's `uploaded` is recorded here,
+            # before `deliver` ever sees the render. So the roll-up and the
+            # commit belong beside it -- and an adoption match IS the
+            # successful outcome, the same thing `deliver`'s own commit
+            # protects for an upload that already reached the server.
+            await deliveries.rollup(session, render.id)
+            await session.commit()
+            return None
 
     resolved_images: dict[str, Path] = {}
     usable_definitions = []
@@ -1908,47 +2051,280 @@ async def apply_badges(
         definitions=usable_definitions, resolved_images=resolved_images,
         fonts_root=config.fonts_root,
     )
-    render.badge_fingerprint = fingerprint
-
-    if not config.badges.upload_to_plex:
-        render.upload_status = "skipped"
+    if not force:
+        # Fix round 3 round 3, N2: a forced compose is a compose FOR
+        # DELIVERY -- one server is owed bytes the others already have -- and
+        # the column belongs to the pass that decided what this render should
+        # look like. Writing it here would hand the next full pass a
+        # fingerprint it did not compute, so it would recompose and re-upload
+        # to every server to get back to the one it did.
+        render.badge_fingerprint = fingerprint
         await session.flush()
-        return
+    return data
 
-    try:
-        await server.upload_artwork(
-            ref, data, render.art_kind,
-            config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities,
-        )
-    except Exception:
-        render.upload_status = "failed"
-        await session.flush()
-        logger.warning("badge upload failed for %s", ref.native_id, exc_info=True)
-        return
 
-    render.upload_status = "uploaded"
-    render.uploaded_at = func.now()
-    # Commit, not flush: the badge stage's own error handler rolls back, and a
-    # flushed-but-uncommitted fingerprint for an upload that already reached
-    # Plex would be discarded, re-uploading the identical image next pass.
-    # Preventing exactly that accumulation is the point of this stage.
+async def deliver(
+    session: AsyncSession,
+    config: Config,
+    render: Render,
+    media_item: MediaItem,
+    servers,
+    refs: dict[str, ServerItemRef],
+    data: bytes | None,
+    *,
+    misses: dict[str, Exception] | None = None,
+) -> None:
+    """Fan ``data`` -- ``compose_badged_bytes``'s own output -- out to every
+    configured server, and record what happened to each (spec §5.2/§5.3).
+
+    ``deliveries.record`` (Task 18) is the only writer of per-server status;
+    this function's whole job is deciding, for each of ``servers``, which of
+    its four outcomes applies:
+
+    * this library's ``badges.upload_to_<name>`` is off -- ``skipped``, and
+      only the first time that server is considered; resolved or missed, it
+      is asked for nothing, so no miss of its own is worth a row (fix round
+      3, I1).
+    * not resolved this pass, and the miss was ``ItemNotFound`` (not a
+      ``PathMismatch``) -- ``pending``, retried by the next
+      ``retry_pending_deliveries`` pass (no cap).
+    * not resolved this pass, and the miss WAS a ``PathMismatch`` -- ``failed``
+      with a fixed sentence; no retry fixes a mount mismatch.
+    * resolved and on, and the server already reports this exact fingerprint's
+      provenance (``_already_delivered``, ``adopt_from_plex``) -- ``uploaded``
+      without a redundant upload.
+    * resolved and on, otherwise -- upload; ``uploaded`` on success, ``failed``
+      with ``deliveries.failure_detail(exc)`` on an upload exception.
+
+    ``data is None`` (``compose_badged_bytes`` had nothing new to send -- the
+    render is not a badge candidate at all, or its fingerprint has not moved)
+    composes and uploads nothing here, but it is not silent: a resolved
+    server whose row is missing, ``pending`` or ``failed`` is re-armed
+    ``pending`` with no delay, so the next ``retry_pending_deliveries`` pass
+    delivers to that one server (fix round 3 round 2, R1 -- see the branch's
+    own comment). ``uploaded`` and ``skipped`` rows are left exactly as they
+    are. A server that MISSED this pass still gets its ``pending``/``failed``
+    row regardless -- that outcome depends only on resolution, never on
+    whether new bytes exist.
+
+    A background render, a render that never produced a base image, or a
+    library with badges off entirely is a no-op here TOO -- the exact same
+    three checks ``compose_badged_bytes`` itself opens with. Repeated
+    deliberately rather than folded into one shared gate: ``process_item``
+    calls this function unconditionally, once per render -- the same per-
+    render shape it used to call the single ``apply_badges`` in -- so a test
+    (or a future caller) that monkeypatches either half still observes it
+    running, regardless of that render's own status, rather than being
+    silently skipped by a guard at the call site.
+
+    ``deliveries.rollup`` is called once at the end, and only when this call
+    actually recorded something (fix round 3, M7). It recomputes off whatever
+    rows already exist, so on a pass that recorded nothing it would rewrite
+    the identical status -- an UPDATE and a COMMIT per rendered render per
+    pass, including for every item where nothing changed at all, which the
+    old ``apply_badges`` returned from without a single statement.
+
+    Commits before returning -- the old ``apply_badges``' own discipline for
+    a successful upload ("a flushed-but-uncommitted fingerprint for an
+    upload that already reached [the server] would be discarded,
+    re-uploading the identical image next pass"), generalized to every
+    server and every outcome this function itself decided: `process_item`'s
+    badge loop shares one transaction across every render, and a LATER
+    render's own failure rolls back only what is still uncommitted, never an
+    earlier render's already-delivered servers.
+    """
+    library_config = config_for_library(config, media_item.library)
+    if (
+        not library_config.badges.enabled
+        or render.art_kind == "background"
+        or render.status != "rendered"
+    ):
+        return
+    misses = misses or {}
+    # Fix round 3, M7: whether this call wrote a single delivery row. The
+    # rollup and the commit below hang off it.
+    recorded = False
+    for name, server in servers.items():
+        ref = refs.get(name)
+        # Fix round 2, NB3: the per-library toggle is evaluated BEFORE the
+        # catch-up below -- an upload-disabled server must never get a
+        # `pending` catch-up row, only for the very next retry pass to
+        # immediately overwrite it with `skipped`. When there is genuinely
+        # nothing new this pass (`data is None`) an upload-disabled server
+        # gets no row at all, not even `skipped`.
+        #
+        # Fix round 3, I1: hoisted ABOVE the resolved/missed split, which is
+        # where NB3 left it. A server nothing is being uploaded to is asked
+        # nothing, so its own miss is not worth a `pending` row either --
+        # and `upload_to_jellyfin` defaults to off, so a dual deployment's
+        # very first pass is exactly that case, for every item Jellyfin has
+        # not scanned yet.
+        if not getattr(library_config.badges, f"upload_to_{name}", False):
+            if data is not None:
+                # I3: `skipped` is stamped only the FIRST time a server
+                # is considered -- an already-recorded outcome (most of
+                # all `uploaded`) must not be rewritten just because the
+                # toggle is off this particular pass.
+                already_recorded = (
+                    await session.execute(
+                        select(RenderDelivery.id).where(
+                            RenderDelivery.render_id == render.id,
+                            RenderDelivery.server == name,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if already_recorded is None:
+                    await deliveries.record(session, render.id, name, "skipped")
+                    recorded = True
+            continue
+        if ref is not None:
+            if data is None:
+                # Fix round 1, I1/I3: an unchanged fingerprint (nothing new
+                # composed) must never overwrite an already-`uploaded` row
+                # with `skipped`. A server with no row yet, or one still
+                # `pending`, gets a fresh `pending` row with NO delay
+                # (`retry_in=0`), so the very next `retry_pending_deliveries`
+                # pass delivers it -- the catch-up a server whose
+                # `upload_to_<name>` was only just turned ON, or one newly
+                # added to the config, needs for a render whose fingerprint
+                # had already settled.
+                #
+                # A `failed` row is re-armed the same way (fix round 3 round
+                # 2, R1). The single-server code retried a failed upload on
+                # every full pass, because its gate also required
+                # `upload_status == "uploaded"`; with the gate on the
+                # fingerprint alone (I7) nothing would ever retry one again,
+                # and `retry_pending_deliveries` only selects `pending`. So
+                # the retry stays once per full pass, and it costs no
+                # ImageMagick work for the servers that already have the
+                # bytes. `uploaded` and `skipped` are still left alone.
+                existing_status = (
+                    await session.execute(
+                        select(RenderDelivery.status).where(
+                            RenderDelivery.render_id == render.id,
+                            RenderDelivery.server == name,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing_status in (None, "pending", "failed"):
+                    await deliveries.record(session, render.id, name, "pending", retry_in=0)
+                    recorded = True
+                continue
+            if await _already_delivered(
+                session, library_config, server, name, ref, render, render.badge_fingerprint,
+            ):
+                await deliveries.record(session, render.id, name, "uploaded")
+                recorded = True
+                continue
+            lock = library_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities
+            try:
+                await server.upload_artwork(ref, data, render.art_kind, lock)
+            except Exception as exc:
+                logger.warning("badge upload to %s failed for %s", name, ref.native_id, exc_info=True)
+                await deliveries.record(
+                    session, render.id, name, "failed", detail=deliveries.failure_detail(exc),
+                )
+            else:
+                await deliveries.record(session, render.id, name, "uploaded")
+            recorded = True
+        else:
+            exc = misses.get(name)
+            if exc is None:
+                continue
+            if isinstance(exc, PathMismatch):
+                await deliveries.record(
+                    # Fix round 3, M4: the same `failure_detail` every other
+                    # detail goes through -- category and class name, never
+                    # the message, which names a filesystem path.
+                    session, render.id, name, "failed",
+                    detail=deliveries.failure_detail(exc),
+                )
+                recorded = True
+                continue
+            # Fix round 3 round 3, N4: a row that is ALREADY `pending` with a
+            # horizon keeps it. Re-recording it every full pass pushed
+            # `next_attempt_at` forward by RETRY_SECONDS (6 h) each time, and
+            # the measured full pass is ~3.5 h -- so the row the horizon was
+            # written for, a server that has not scanned this item for many
+            # passes, could never mature and the retry pass never saw it.
+            existing = (
+                await session.execute(
+                    select(RenderDelivery.status, RenderDelivery.next_attempt_at).where(
+                        RenderDelivery.render_id == render.id,
+                        RenderDelivery.server == name,
+                    )
+                )
+            ).one_or_none()
+            if existing is not None and existing.status == "pending" and existing.next_attempt_at is not None:
+                continue
+            await deliveries.record(
+                session, render.id, name, "pending", retry_in=deliveries.RETRY_SECONDS,
+            )
+            recorded = True
+    if not recorded:
+        # Fix round 3, M7: nothing was written for this render, so the
+        # roll-up would recompute the status it already has. Skipping it (and
+        # the commit) is what keeps an unchanged full pass free of an
+        # UPDATE + COMMIT per render, as the old `apply_badges` was.
+        #
+        # Fix round 3 round 3, N3: the commit is still owed when a compose
+        # actually happened. `compose_badged_bytes` set and flushed
+        # `render.badge_fingerprint` before handing the bytes over, and the
+        # badge stage's own `except Exception: await session.rollback()`
+        # would otherwise discard a compose that finished -- costing the next
+        # pass a re-render of bytes this one already produced.
+        if data is not None:
+            await session.commit()
+        return
+    await deliveries.rollup(session, render.id)
     await session.commit()
+
+
+async def _persist_identity(session, item, resolved_on) -> MediaItem:
+    """The item's ``media_items`` row and EVERY resolved server's ref row.
+
+    One intent means one ``media_items`` row and one
+    ``media_item_server_refs`` row per server that resolved it (spec
+    §4.1/§5.1). ``_upsert_media_item`` writes the identity server's own ref
+    and no other, so the two halves belong together everywhere the item is
+    (re-)established -- which, before fix round 3's C1, they were not: the
+    metadata containment and the refusal handler both ``rollback()`` while
+    this work is still uncommitted, and each then re-upserted the item ALONE.
+    Every non-primary server's ref was silently dropped, permanently for a
+    season or an episode (one art kind, so any ``SourceRefused`` is a
+    first-kind refusal) and until a clean pass for everything else.
+
+    Neither call commits, here as before: ``render_artifact`` still owns the
+    transaction boundary this sits inside.
+    """
+    media_item = await _upsert_media_item(session, item)
+    for other in resolved_on.values():
+        if other is not item:
+            await upsert_server_ref(session, media_item.id, other)
+    return media_item
 
 
 async def process_item(
     session: AsyncSession,
     config: Config,
     http: httpx.AsyncClient,
-    plex,
+    servers,
     providers: list,
     intent: RenderIntent,
     tmdb_facts=None,
     mdblist=None,
-    artwork_probe=None,
     imdb_parental=None,
     plex_generated_base=None,
 ) -> list[Render]:
-    """Resolve one intent and build every artifact it implies.
+    """Resolve one intent on EVERY configured server, render once, and
+    deliver per server (Task 19; spec §5.1).
+
+    ``servers`` is the ``Servers`` registry, not one server: every configured
+    server is asked to resolve, independently, and a miss on one never blocks
+    the others -- only when NONE resolves does the old ``ItemNotFound``/
+    ``PathMismatch`` ladder fire, so the worker defers or parks exactly as
+    before. The FIRST success (Plex when present) is the identity the
+    ``media_items`` row keys on; every other success contributes only a ref.
 
     ``tmdb_facts``/``mdblist`` are the metadata-operations clients; they are
     optional (and default to ``None``) so callers that only care about
@@ -1959,8 +2335,9 @@ async def process_item(
     ``app._build_mdblist``), so an unset key degrades only the content
     rating rather than every metadata operation.
 
-    ``artwork_probe`` is passed straight to ``apply_badges``; see
-    ``_already_in_plex`` for what it is for and why it is optional.
+    ``artwork_probe`` is gone (Task 19): ``_already_delivered`` reads
+    provenance straight off each resolved server inside ``deliver``, so there
+    is no longer a single seam for a caller to wire up or skip.
 
     ``imdb_parental`` is row 85's ``IMDbParentalGuideClient``; ``None`` --
     what every direct caller and most tests pass -- means the fetch in
@@ -1974,28 +2351,67 @@ async def process_item(
     ``plex_generated_base`` is passed straight to ``render_artifact``; see
     its own docstring for what it does and why it is optional.
     """
-    item = await plex.resolve(intent)
+    # Resolve on every configured server (spec §5.1). The first success is the
+    # identity the render keys on; every success is a ref; a miss is a pending
+    # delivery, never a held job. Only when NO server resolves does the old
+    # ItemNotFound/PathMismatch ladder fire, so the worker defers or parks
+    # exactly as before.
+    resolved_on: dict[str, ResolvedItem] = {}
+    misses: dict[str, Exception] = {}
+    for name, server in servers.items():
+        try:
+            resolved_on[name] = await server.resolve(intent)
+        except ItemNotFound as exc:      # PathMismatch included
+            misses[name] = exc
+        except Exception as exc:
+            # Fix round 1, I4: a transport error (or any other failure) from
+            # ONE server's resolve must not abort the item for every other
+            # server (spec §6.1) -- logged, never a URL, and treated exactly
+            # like an ItemNotFound miss for delivery purposes: this server
+            # gets a `pending` row (`deliver`'s own misses handling), retried
+            # by the next `retry_pending_deliveries` pass, while the loop
+            # continues to the remaining servers.
+            logger.warning(
+                "%s: resolve failed (%s); treating as a miss",
+                name, deliveries.failure_detail(exc),
+            )
+            misses[name] = exc
+    if not resolved_on:
+        # Fix round 1 minor: `servers` itself can be empty (no media server
+        # configured at all), which used to raise `StopIteration` from
+        # `next(iter(misses.values()))` on an empty dict -- a confusing
+        # crash rather than the ItemNotFound-class signal the worker's
+        # defer/park ladder expects. An ItemNotFound miss (a scan-in-progress
+        # wait) outranks any other exception here: if at least one server
+        # simply has not seen the file yet, that is the honest reason to
+        # report, even when another server failed for a different reason.
+        if not misses:
+            raise ItemNotFound("no media server is configured")
+        not_found = next(
+            (exc for exc in misses.values() if isinstance(exc, ItemNotFound)), None,
+        )
+        raise not_found or next(iter(misses.values()))
+    item = resolved_on.get("plex") or next(iter(resolved_on.values()))
+    media_item = await _persist_identity(session, item, resolved_on)
 
-    media_item = None
     # Roadmap row 92. A separately-named object, and NOT a rebinding of
     # `config`: `render_artifact` below must keep the global one. Today that
     # is a distinction without a difference -- `config_for_library` carries
     # `artwork` through by identity -- but the day the artwork half lands
     # behind row 111 a rebinding here would quietly become a whole-library
     # re-render. The seam is idempotent, so `apply_metadata` and
-    # `apply_badges` resolving again at their own reads costs nothing.
+    # `compose_badged_bytes` resolving again at their own reads costs nothing.
     library_config = config_for_library(config, item.library)
 
     if library_config.operations.enabled and tmdb_facts is not None:
         try:
-            media_item = await _upsert_media_item(session, item)
             # Row 84's tvdb client, if the deployment's provider order builds
             # one -- the same object `providers` already holds, never a new
             # one, so it shares that client's cached token and cache.
             tvdb = next((p for p in providers if getattr(p, "name", None) == "TVDB"), None)
             await apply_metadata(
-                session, config, media_item.id, item, plex, tmdb_facts, mdblist, tvdb,
-                imdb_parental,
+                session, config, media_item.id, item, servers.get(item.server), tmdb_facts, mdblist, tvdb,
+                imdb_parental, servers=servers, resolved_on=resolved_on,
             )
         except AttributeError:
             # A server missing a required method (item_labels/apply_facts) is
@@ -2010,6 +2426,13 @@ async def process_item(
             # containment's whole purpose. Every other error path in this
             # codebase rolls back first (see queue/worker.py).
             await session.rollback()
+            # Fix round 3, C1: that rollback discarded the identity written
+            # above, refs and all -- and the only thing that re-establishes it
+            # further down is `render_artifact`'s own `_upsert_media_item`,
+            # which restores the primary ref and nothing else. Re-established
+            # whole here instead, so a TMDb hiccup or one server's
+            # `apply_facts` failure never costs the item another server's ref.
+            media_item = await _persist_identity(session, item, resolved_on)
             logger.warning(
                 "metadata operations failed for %s; continuing to artwork",
                 item.native_id, exc_info=True,
@@ -2050,7 +2473,7 @@ async def process_item(
             logger.warning(
                 "%s refused for %s: %s", art_kind, item.native_id, exc, exc_info=True,
             )
-            media_item_for_kind = await _upsert_media_item(session, item)
+            media_item_for_kind = await _persist_identity(session, item, resolved_on)
             missing = naming.missing_number(art_kind, item.season_number, item.episode_number)
             target = "" if missing is not None else naming.asset_path(
                 config, item.library, item.root_folder, art_kind,
@@ -2078,32 +2501,72 @@ async def process_item(
             if refused:
                 # A refusal's rollback() above (see the comment on `results`)
                 # expired every `Render` already sitting in `results`, not
-                # just the refused kind's own row. Left alone, the loop
-                # below's first read of an earlier survivor's `.art_kind` is
-                # a plain attribute access outside an awaited call -- a
-                # MissingGreenlet under asyncio -- which this block's own
-                # `except` swallows, silently costing the WHOLE item its
-                # badges rather than just the refused kind's. Refresh every
-                # survivor before touching any of them.
+                # just the refused kind's own row -- AND `media_item` itself
+                # (Task 19: created unconditionally, up front, so it exists
+                # as a Python object through the whole artifact loop and is
+                # just as exposed to that rollback). Left alone, the loop
+                # below's first read of an earlier survivor's `.art_kind`, or
+                # `compose_badged_bytes`' own read of `media_item.library`
+                # (fix round 1: called unconditionally, once per render, so
+                # it is reached even for a render this block used to skip
+                # before ever touching `media_item`), is a plain attribute
+                # access outside an awaited call -- a MissingGreenlet under
+                # asyncio -- which this block's own `except` swallows,
+                # silently costing the WHOLE item its badges rather than
+                # just the refused kind's. Refresh every survivor before
+                # touching any of them.
+                #
+                # `media_item` gets a fresh re-upsert instead of a refresh:
+                # unlike a `Render` row (already committed before this
+                # render's own refusal, by an EARLIER pass or an earlier
+                # sibling kind this same pass), `media_item` was only ever
+                # INSERTed in the transaction the refusal's rollback() just
+                # undid -- a rolled-back INSERT is detached, not merely
+                # expired, so `session.refresh` on this exact Python
+                # reference raises `InvalidRequestError`. `_upsert_media_item`
+                # is idempotent and this is the same re-upsert the refusal
+                # handler above and `render_artifact` both already do for
+                # their own reasons.
                 for render in results:
                     await session.refresh(render)
-            if media_item is None:
-                media_item = await _upsert_media_item(session, item)
-            # The persisted row, not the in-memory GatheredFacts from the
-            # metadata-operations block above: a partial gather this pass
-            # (e.g. only a new critic rating) must not blank out fields a
-            # previous pass already established, and badges must still get
-            # facts when operations.enabled is off entirely.
-            facts = (
-                await session.execute(
-                    select(ItemFacts).where(ItemFacts.item_id == media_item.id)
-                )
-            ).scalar_one_or_none() or GatheredFacts()
+                media_item = await _persist_identity(session, item, resolved_on)
+            # Every resolved server's own ref, for `deliver`'s fan-out.
+            refs = {name: resolved_item.ref for name, resolved_item in resolved_on.items()}
+            # `compose_badged_bytes` still samples live media info and native
+            # ratings off Plex alone (see its own docstring) -- `None` when
+            # this pass never resolved one, which degrades rather than raises.
+            plex_item = resolved_on.get("plex")
+            # Fix round 1, I2: when exactly one resolved server is
+            # upload-enabled this pass, compose_badged_bytes gets to check
+            # adoption for THAT server before doing any image work at all --
+            # see its own docstring. More than one (or zero) leaves `deliver`
+            # to check each server on its own, after composing.
+            upload_enabled_resolved = [
+                (name, servers[name], resolved_item.ref)
+                for name, resolved_item in resolved_on.items()
+                if getattr(library_config.badges, f"upload_to_{name}", False)
+            ]
+            solo_delivery = (
+                upload_enabled_resolved[0] if len(upload_enabled_resolved) == 1 else None
+            )
             for render in results:
-                await apply_badges(
-                    session, config, render, media_item, plex, item.ref, facts,
-                    probe=artwork_probe, http=http, mdblist=mdblist,
+                # Compose once per render, deliver to every server: render
+                # once per art kind, deliver per server (spec §5). Called
+                # unconditionally, once per render -- exactly the shape the
+                # old single `apply_badges` was called in -- and NOT gated
+                # here on `render.art_kind`/`.status`: both
+                # `compose_badged_bytes` and `deliver` already open with that
+                # same check themselves (see their own docstrings), and
+                # `deliver` still has to run for a background/unrendered
+                # render's OTHER servers' misses to be irrelevant here -- it
+                # is only THIS render that is not a badge candidate.
+                data = await compose_badged_bytes(
+                    session, config, render, media_item, http=http, mdblist=mdblist,
+                    server=servers.plex if plex_item is not None else None,
+                    ref=plex_item.ref if plex_item is not None else None,
+                    solo_delivery=solo_delivery,
                 )
+                await deliver(session, config, render, media_item, servers, refs, data, misses=misses)
         except AttributeError:
             # A server missing a required method (fetch_item/upload_artwork)
             # is a wiring bug, not the runtime failure below is for -- it must

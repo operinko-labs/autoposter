@@ -9,6 +9,7 @@ import type {
   ClearOverrideResponse,
   ItemDetailResponse,
   ItemRender,
+  ItemRenderDelivery,
   ManualInstallResponse,
   PickResponse,
   ReprocessResponse,
@@ -329,7 +330,7 @@ function Renders({
   }
 
   return (
-    /* Nine columns, every cell nowrapped: this table is wider than a phone
+    /* Ten columns, every cell nowrapped: this table is wider than a phone
      * viewport by construction. It gets its own horizontal scrollbar so the
      * page around it stays put. */
     <div className="table-scroll">
@@ -343,6 +344,7 @@ function Renders({
             <th>Fingerprint</th>
             <th>Badge fingerprint</th>
             <th>Upload</th>
+            <th>Deliveries</th>
             <th>Rendered</th>
             <th>Uploaded</th>
           </tr>
@@ -373,12 +375,15 @@ function Renders({
                   <Fingerprint value={render.badge_fingerprint} />
                 </td>
                 <td>{render.upload_status}</td>
+                <td>
+                  <Deliveries deliveries={render.deliveries} />
+                </td>
                 <td className="muted cell-time">{formatTime(render.rendered_at)}</td>
                 <td className="muted cell-time">{formatTime(render.uploaded_at)}</td>
               </tr>
               {note !== null && note.artKind === render.art_kind && (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <p className={note.failed ? "render-error" : "render-note"}>
                       {note.message}
                     </p>
@@ -390,6 +395,28 @@ function Renders({
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** One chip per server this render has a delivery row for -- `uploaded` /
+ * `pending` / `failed` / `skipped`, with `detail` as the hover text (the
+ * same failure-detail string `/api/status` shows for a scheduled run). */
+function Deliveries({ deliveries }: { deliveries: ItemRenderDelivery[] | undefined }) {
+  if (!deliveries || deliveries.length === 0) {
+    return <span className="muted">—</span>;
+  }
+  return (
+    <>
+      {deliveries.map((delivery) => (
+        <span
+          key={delivery.server}
+          className={`pill pill-${delivery.status}`}
+          title={delivery.detail ?? undefined}
+        >
+          {delivery.server} {delivery.status}
+        </span>
+      ))}
+    </>
   );
 }
 

@@ -294,6 +294,14 @@
   white-space: nowrap;
 }
 
+/* The one delivery status dashboard.css's shared .pill-* variants do not
+ * already cover (pending/failed/skipped are pill-pending/pill-failed/
+ * pill-skipped there) -- matching .pill-ok/.pill-rendered's own green. */
+.pill-uploaded {
+  background: color-mix(in srgb, var(--ok) 22%, transparent);
+  color: var(--ok);
+}
+
 .fingerprint {
   /* The whole digest is on the title attribute; this is the visible prefix. */
   cursor: help;

@@ -37,6 +37,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
 from autoposter.render import pipeline as pipeline_module
+from autoposter.servers.registry import Servers
 from autoposter.render.pipeline import (
     compute_fingerprint, gather_fingerprint_inputs, render_artifact,
 )
@@ -287,7 +288,7 @@ async def test_the_job_completes_with_a_rendered_poster_through_process_item(
         POSTER_URL: decodable_png(), BAD_LOGO_URL: b"not an image at all",
     }) as http:
         results = await pipeline_module.process_item(
-            session, _config(tmp_path), http, _FakePlex(item()), [provider], intent,
+            session, _config(tmp_path), http, Servers({"plex": _FakePlex(item())}), [provider], intent,
         )
 
     statuses = {render.art_kind: render.status for render in results}

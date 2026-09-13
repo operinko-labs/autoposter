@@ -26,7 +26,7 @@ condition that produced the parked-forever rows. See ``PlexClient.exists_many``.
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import delete, func, or_, select
@@ -34,11 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import SHARE_CHECK_MIN_ITEMS, refuse_if_empty
 from autoposter.config.holder import ConfigHolder
-from autoposter.db.models import EventLog, MediaItem, Render
+from autoposter.db.models import EventLog, MediaItem, MediaItemServerRef, Render
 # Aliased: ``Job`` in this package means the scheduler's dataclass
 # (``scheduler/core.py``), and the queue row of the same name would shadow it.
 from autoposter.db.models import Job as QueuedJob
-from autoposter.db.refs import native_ids as native_ids_for, refs_for
+from autoposter.db.refs import native_ids as native_ids_for, refs_for_items
 from autoposter.intake.arr import RenderIntent
 from autoposter.scheduler.core import Job
 
@@ -87,6 +87,14 @@ class PruneCandidate:
     the library at once, and ``updated_at`` has to survive into the delete as a
     value the session cannot quietly refresh underneath it -- it is half the
     delete's key.
+
+    ``refs`` is a SNAPSHOT of every server ref this row had at SCAN time, not
+    a live read -- Task 19's ``_prune_stale_refs`` deletes an individually
+    stale ref (a survivor whose OTHER server ref still resolves) before
+    ``retire`` ever runs, and a row going away entirely has every ref of its
+    own removed by the cascade the moment ``retire`` deletes it. Either way, a
+    live ``refs_for`` read inside ``retire`` would see less than the row
+    actually had; the audit is written from this snapshot instead.
     """
 
     id: int
@@ -103,6 +111,7 @@ class PruneCandidate:
     episode_number: int | None
     logo_upload_key: str | None
     updated_at: datetime
+    refs: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -127,11 +136,34 @@ class PruneScan:
     held: int
     total: int
     excluded: int = 0
+    # Fix round 1, C1: every ref `_scan_stale_refs` found doomed, collected
+    # but NOT deleted here -- a scheduled DRY RUN must never write, and the
+    # plausibility caps have to see this population before anything is
+    # removed. `make_prune_job`'s apply branch deletes these, guarded on
+    # (id, updated_at), after `implausible_prune_count` passes.
+    stale_refs: "list[StaleRef]" = field(default_factory=list)
 
     @property
     def directories(self) -> int:
         """How many asset directories this prune would orphan -- see ``_directory_count``."""
         return _directory_count(self.prunable)
+
+
+@dataclass(frozen=True)
+class StaleRef:
+    """One ``media_item_server_refs`` row a server no longer resolves (or
+    whose library that server now excludes), found by ``_scan_stale_refs``.
+
+    Deleted, guarded on ``(id, updated_at)``, only in the apply branch --
+    never during the scan itself (C1). ``item_id`` is what lets the caller
+    skip a ref whose item is ALSO being retired this pass: the whole-row
+    cascade removes it, so a separate delete would be redundant.
+    """
+
+    id: int
+    item_id: int
+    server: str
+    updated_at: datetime
 
 
 def _directory_count(candidates: list[PruneCandidate]) -> int:
@@ -146,15 +178,28 @@ def _directory_count(candidates: list[PruneCandidate]) -> int:
     return sum(1 for candidate in candidates if candidate.kind in ("movie", "show"))
 
 
-def intent_for(candidate: PruneCandidate) -> RenderIntent:
+_UNSET = object()
+
+
+def intent_for(candidate, *, server: str = "plex", native_id=_UNSET) -> RenderIntent:
     """The intent the pipeline would build for this row.
 
     Field for field what ``_enqueue_reprocess`` builds (``api/routes.py``),
-    the stored Plex native id included -- that is what lets the probe try the
+    the stored native id included -- that is what lets the probe try the
     stored identity before falling back to a GUID search. The probe has to ask
     exactly what the pipeline asks, or the sweep would decide "gone" on a
     question the pipeline never poses.
+
+    ``server``/``native_id`` default to ``"plex"``/``candidate.native_id``,
+    which is every existing direct caller's shape (a ``PruneCandidate``,
+    unchanged). ``_scan_stale_refs`` (Task 19 fix round 1, reusing this
+    rather than a second inlined copy) passes both explicitly, once per
+    server, against a plain SQL row that carries the same field names but no
+    ``native_id`` attribute of its own -- hence the sentinel default rather
+    than reading ``candidate.native_id`` unconditionally.
     """
+    if native_id is _UNSET:
+        native_id = candidate.native_id if server == "plex" else None
     return RenderIntent(
         kind=candidate.kind,
         title=candidate.title,
@@ -164,7 +209,7 @@ def intent_for(candidate: PruneCandidate) -> RenderIntent:
         year=candidate.year,
         season_number=candidate.season_number,
         episode_number=candidate.episode_number,
-        refs={"plex": candidate.native_id} if candidate.native_id else {},
+        refs={server: native_id} if native_id else {},
     )
 
 
@@ -188,40 +233,141 @@ def _ancestors(candidate: PruneCandidate, by_id: dict[int, PruneCandidate]) -> l
     return chain
 
 
+async def _scan_stale_refs(
+    session: AsyncSession, servers, excluded: dict[str, frozenset[str]],
+) -> list[StaleRef]:
+    """Find every ref a server no longer resolves (Task 19 ruling 6, fix
+    round 1 C1; spec §5.5): per server in ``servers``, ``exists_many`` over
+    the intents of every row that HAS a ref on that server -- built from
+    THAT ref's own native id, never another server's, via ``intent_for``.
+    ``False``, or a row whose own ``library`` that server excludes (the
+    ``_search_sync`` GUID-fallback hazard ``find_prunable`` used to fold in
+    directly, see its old docstring), makes the ref a candidate.
+
+    COLLECTS ONLY -- nothing is deleted here. A scheduled dry run
+    (``config.prune.apply`` off) must never write, and the plausibility caps
+    (``implausible_prune_count``) have to see this population before
+    anything is removed; both were violated when this function deleted
+    inline. The caller (``make_prune_job``'s apply branch) is what deletes
+    the returned refs, guarded on ``(id, updated_at)`` -- the same optimistic
+    guard ``retire`` applies to the ``media_items`` delete, so a ref a worker
+    re-upserted (``upsert_server_ref``'s own ON CONFLICT arm bumps this same
+    column) between this scan and that delete survives rather than being
+    removed on the strength of an observation that stopped being true
+    mid-pass.
+
+    Every server's rows are read, and the whole read transaction released
+    (``session.rollback()``), BEFORE any server is asked to resolve --
+    ``find_prunable``'s own note explains why (13-minute idle transaction,
+    measured) and the same cost applies per server here. Collecting rather
+    than deleting does not change this: no write happens between the reads
+    and the probes either way.
+
+    Nothing is caught: a server that raises takes the whole sweep with it,
+    same as the old single-probe version -- a server that answers nothing
+    would otherwise report every one of its refs gone.
+    """
+    rows_by_server: dict[str, list] = {}
+    for name in servers:
+        rows = (
+            await session.execute(
+                select(
+                    MediaItemServerRef.id, MediaItemServerRef.native_id,
+                    MediaItemServerRef.updated_at,
+                    # Fix round 3, M1: the ref's OWN library -- the name that
+                    # server knows this item by (spec §4.1) -- because it is
+                    # that server's `excluded_libraries` it is compared
+                    # against below. `MediaItem.library` is the identity
+                    # server's name for it, which is a different string on
+                    # every other server.
+                    MediaItemServerRef.library,
+                    MediaItem.id.label("item_id"), MediaItem.kind,
+                    MediaItem.title, MediaItem.tmdb_id, MediaItem.tvdb_id, MediaItem.imdb_id,
+                    MediaItem.year, MediaItem.season_number, MediaItem.episode_number,
+                )
+                .join(MediaItem, MediaItem.id == MediaItemServerRef.item_id)
+                .where(MediaItemServerRef.server == name)
+            )
+        ).all()
+        if rows:
+            rows_by_server[name] = rows
+    if not rows_by_server:
+        return []
+
+    await session.rollback()
+
+    stale: list[StaleRef] = []
+    for name, rows in rows_by_server.items():
+        server = servers[name]
+        server_excluded = excluded.get(name, frozenset())
+        intents = [
+            intent_for(row, server=name, native_id=row.native_id) for row in rows
+        ]
+        # strict=True: a mismatched flags list must be loud, not silently
+        # drop a row from consideration -- the same discipline the old
+        # single-probe version applied.
+        resolved_flags = await server.exists_many(intents)
+        for row, ok in zip(rows, resolved_flags, strict=True):
+            if ok and row.library not in server_excluded:
+                continue
+            stale.append(StaleRef(
+                id=row.id, item_id=row.item_id, server=name, updated_at=row.updated_at,
+            ))
+    return stale
+
+
+async def _retire_stale_refs(
+    session: AsyncSession, stale_refs: list[StaleRef], pruned_item_ids: set[int],
+) -> int:
+    """Delete the refs ``_scan_stale_refs`` found doomed (fix round 1 C1),
+    called ONLY from the apply branch, after ``implausible_prune_count`` has
+    passed and ``retire`` has run.
+
+    A ref whose item is ALSO in ``pruned_item_ids`` is skipped: the
+    whole-row cascade (``media_items.parent_id``/refs both
+    ``ondelete="CASCADE"``) already removed it along with the row, and a
+    second delete here would be redundant (harmless, but redundant -- and
+    counting it would double-report work this pass did not do twice).
+    Guarded on ``(id, updated_at)``, same as ``retire``'s own delete: a ref a
+    worker re-upserted between the scan and this delete no longer matches
+    and survives.
+    """
+    retired = 0
+    for ref in stale_refs:
+        if ref.item_id in pruned_item_ids:
+            continue
+        result = await session.execute(
+            delete(MediaItemServerRef)
+            .where(MediaItemServerRef.id == ref.id)
+            .where(MediaItemServerRef.updated_at == ref.updated_at)
+        )
+        retired += result.rowcount or 0
+    return retired
+
+
 async def find_prunable(
-    session: AsyncSession, plex, excluded: frozenset[str] = frozenset()
+    session: AsyncSession, servers, excluded: dict[str, frozenset[str]] | None = None,
 ) -> PruneScan:
-    """Every ``media_items`` row the pipeline can no longer resolve, safe to delete.
+    """Every ``media_items`` row the pipeline can no longer resolve on ANY
+    configured server, safe to delete.
 
-    One probe pass, then two rules over its result.
+    Task 19 ruling 6 turns the old single-Plex probe into one per server
+    (``_prune_stale_refs``, above): a row is reachable when it still holds a
+    ref on at least one of them, whatever server that is -- Plex artwork is
+    never held to Jellyfin's absence and vice versa. ``excluded`` maps server
+    name to that server's own excluded libraries (``plex.excluded_libraries``,
+    ``jellyfin.excluded_libraries``); a missing key means that server excludes
+    nothing.
 
-    The probe (``PlexClient.exists_many``) answers "does the pipeline still
-    find this row's item". Nothing is caught: a probe that raises takes the
-    whole sweep with it, because a server that answers nothing would otherwise
-    report the entire library as gone.
-
-    ``excluded`` is the live ``plex.excluded_libraries``, and a row whose own
-    ``library`` column is in it is gone WHATEVER the probe says. The probe is
-    not sufficient on its own: ``_search_sync`` falls back from the stored
-    rating key to a GUID walk over every permitted section of the right type,
-    so an item whose identity also exists in a non-excluded library resolves
-    under the excluded row's intent and reads as present. The row's library is
-    the fact that settles it -- the pipeline will never write to that item
-    again either way, which is exactly the "cannot resolve it" this sweep
-    means. Compared exactly, never case-folded, matching every other reader of
-    the setting (``plex/client.py:327``, ``api/mismatches.py:249``).
-
-    That answer is folded in ONCE, above both rules, so the cascade guard and
-    the gone set cannot disagree about the same row: a row holds its ancestors
-    when it will itself survive the sweep, not merely when the probe answered
-    for it. A permitted descendant therefore still holds an excluded ancestor
-    -- deleting it would cascade away a row this service still manages -- while
-    an excluded descendant no longer holds anything, because it is going too.
+    That reachability answer is folded in ONCE, above both rules below, so
+    the cascade guard and the gone set cannot disagree about the same row: a
+    row holds its ancestors when it will itself survive the sweep, not merely
+    when some server still resolved it before exclusion was applied.
 
     The first rule is the cascade guard. ``media_items.parent_id`` deletes
     ``ondelete="CASCADE"`` (``db/models.py``), so removing a show silently
     removes its seasons and episodes. A parent is therefore prunable only when
-    it AND every descendant probed gone; one descendant that survives this
+    it AND every descendant is unreachable; one descendant that survives this
     sweep holds every ancestor above it, and the held count is reported rather
     than swallowed. A gone child under a surviving parent is still prunable on
     its own -- the rule protects live rows from a cascade, not gone rows from
@@ -232,6 +378,7 @@ async def find_prunable(
     what gives every row its own audit row: were the show deleted first, the
     cascade would take the rest without one.
     """
+    excluded = excluded or {}
     rows = (
         await session.execute(
             select(
@@ -253,11 +400,17 @@ async def find_prunable(
     ).all()
     if not rows:
         return PruneScan(prunable=[], gone=0, held=0, total=0, excluded=0)
-    # One query for the whole table's Plex ids, not one per row: the probe
-    # below already asks Plex once per row, and a second per-row round trip
-    # to this database for the same information would double the sweep's own
-    # query count for nothing.
+    # The Plex native id specifically, unchanged: `intent_for` (retry
+    # resolution) and `dismiss_jobs_for` (job-payload matching) both still key
+    # on it, whatever else this row has a ref on.
     plex_ids = await native_ids_for(session, [row.id for row in rows], "plex")
+    # A snapshot, not a live read: a row going away entirely has every ref
+    # removed by the cascade the instant `retire` deletes it, and a
+    # surviving row's individually-stale ref is deleted by the apply
+    # branch's own `_retire_stale_refs` call -- either way, reading
+    # `refs_for` INSIDE `retire` would report less than the row actually had
+    # at scan time (see PruneCandidate's own docstring).
+    refs_by_item = await refs_for_items(session, [row.id for row in rows])
     candidates = [
         PruneCandidate(
             id=row.id,
@@ -274,45 +427,46 @@ async def find_prunable(
             episode_number=row.episode_number,
             logo_upload_key=row.logo_upload_key,
             updated_at=row.updated_at,
+            refs=refs_by_item.get(row.id, {}),
         )
         for row in rows
     ]
 
-    # The reads above (refuse_if_empty's probe and this full media_items
-    # read) opened a transaction the walk below would otherwise hold idle
-    # for its whole duration -- 13 minutes on a 15,794-row library,
-    # measured, pinning a pooled connection and the vacuum horizon for
-    # nothing. PruneCandidate is a frozen dataclass and retire() re-reads
-    # every row anyway, deleting on (id, updated_at) precisely so a row
-    # that changed under the pass survives.
+    # The reads above opened a transaction the per-server walk below would
+    # otherwise hold idle for its whole duration -- 13 minutes on a
+    # 15,794-row library, measured, pinning a pooled connection and the
+    # vacuum horizon for nothing. PruneCandidate is a frozen dataclass and
+    # retire() re-reads every row anyway, deleting on (id, updated_at)
+    # precisely so a row that changed under the pass survives.
     await session.rollback()
 
-    resolved_flags = await plex.exists_many([intent_for(c) for c in candidates])
+    stale_refs = await _scan_stale_refs(session, servers, excluded)
+
+    # Reachable means "still holds a ref on at least one server that
+    # `_scan_stale_refs` did NOT find stale" -- computed against the CURRENT
+    # ref rows (nothing has been deleted; C1), so a ref on a server this
+    # pass never touched at all (not in `servers`) still counts as live,
+    # same as before.
+    #
+    # Fix round 2, NB1: matched on (id, updated_at), not id alone. A ref
+    # re-upserted between the scan above and this read -- `retry_pending_
+    # deliveries` calls `upsert_server_ref` on its own, unrelated to this
+    # sweep, and bumps only the ref's own `updated_at` -- must not still
+    # read as the same stale observation; the id is unchanged but the row
+    # is not the one that was found gone.
+    stale_ref_keys = {(ref.id, ref.updated_at) for ref in stale_refs}
+    all_refs = (
+        await session.execute(
+            select(MediaItemServerRef.item_id, MediaItemServerRef.id, MediaItemServerRef.updated_at)
+        )
+    ).all()
+    remaining_ids = {
+        item_id
+        for item_id, ref_id, updated_at in all_refs
+        if (ref_id, updated_at) not in stale_ref_keys
+    }
     by_id = {candidate.id: candidate for candidate in candidates}
-    # strict=True: a mismatched flags list would silently drop a live
-    # descendant from the held-computation and permit exactly the
-    # over-deletion the cascade guard prevents. This turns that into a loud
-    # ValueError the job layer treats as a probe failure.
-    #
-    # Reachability is the probe's answer AND the row's library, folded once
-    # here so that the gone set and the cascade guard below cannot disagree.
-    # The guard's rule becomes "a row holds its ancestors when it will itself
-    # SURVIVE this sweep", which is what it always meant -- reading the raw
-    # flags instead would hold an excluded show forever by its own
-    # still-resolving episode, and this population would never shrink.
-    #
-    # Note what the fold does NOT do: for a row whose own library is
-    # permitted, `resolved and True` is `resolved`, so its goneness is the
-    # probe's answer verbatim, unchanged from before. And a permitted
-    # descendant still survives, so it still holds its ancestors even when
-    # the ancestor's own library is excluded -- deleting that ancestor would
-    # cascade (parent_id is ondelete="CASCADE") and take a row this service
-    # still manages, without an audit row. That direction is the one the
-    # guard exists for and it is preserved exactly.
-    reachable = [
-        resolved and candidate.library not in excluded
-        for candidate, resolved in zip(candidates, resolved_flags, strict=True)
-    ]
+    reachable = [candidate.id in remaining_ids for candidate in candidates]
     gone = {
         candidate.id
         for candidate, ok in zip(candidates, reachable, strict=True)
@@ -326,12 +480,14 @@ async def find_prunable(
 
     prunable = [c for c in candidates if c.id in gone and c.id not in held]
     prunable.sort(key=lambda c: len(_ancestors(c, by_id)), reverse=True)
+    all_excluded: frozenset[str] = frozenset().union(*excluded.values()) if excluded else frozenset()
     return PruneScan(
         prunable=prunable,
         gone=len(gone),
         held=len(gone & held),
         total=len(candidates),
-        excluded=sum(1 for c in prunable if c.library in excluded),
+        excluded=sum(1 for c in prunable if c.library in all_excluded),
+        stale_refs=stale_refs,
     )
 
 
@@ -464,11 +620,13 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
                 .where(Render.item_id == candidate.id)
             )
         ).scalar_one()
-        # Read before the delete below, for the same reason render_count is:
-        # the FK from media_item_server_refs cascades on that same
-        # statement, so a refs_for call placed after it would find nothing
-        # left to report.
-        refs = await refs_for(session, candidate.id)
+        # `candidate.refs`, the scan-time snapshot -- never a live `refs_for`
+        # read here: Task 19's `_prune_stale_refs` (the caller's own prune
+        # pass, ahead of `retire`) may already have deleted this row's only
+        # stale ref before this point, on top of the FK cascade this delete
+        # itself triggers, so a live read at either seam would report less
+        # than the row actually had. See PruneCandidate's own docstring.
+        refs = candidate.refs
         # synchronize_session=False because nothing here holds ORM MediaItem
         # objects -- the sweep reads columns -- and the default strategies have
         # to guess at how to reconcile a criteria DELETE with an identity map
@@ -599,8 +757,8 @@ def cleanup_cap_warning(directories: int, cleanup) -> str:
 
 def make_prune_job(
     holder: ConfigHolder,
-    plex_factory: Callable[[], object],
-    is_healthy: Callable[[], bool],
+    servers_factory: Callable[[], object],
+    unhealthy_servers: Callable[[], list[str]],
 ) -> Job:
     """Build the scheduled ``media_items`` prune job.
 
@@ -612,35 +770,41 @@ def make_prune_job(
     nothing, and a walk of every rating key in the library is the wrong thing
     to hold an HTTP request open for.
 
-    ``plex_factory`` is a zero-argument callable returning a connected
-    ``PlexClient``. It runs through ``asyncio.to_thread`` because connecting
-    blocks -- the same contract ``make_collections_job``'s ``server_factory``
-    has, and for the same reason: this job shares the event loop with the
-    worker pool and the Plex liveness probe.
+    ``servers_factory`` is a zero-argument callable returning a connected
+    ``Servers`` registry (Task 19: every configured server, not one). It runs
+    through ``asyncio.to_thread`` because connecting blocks -- the same
+    contract ``make_collections_job``'s ``server_factory`` has, and for the
+    same reason: this job shares the event loop with the worker pool and the
+    liveness probes.
 
-    ``is_healthy`` is ``PlexHealth.healthy``, read per run. For every other
-    consumer an unhealthy Plex means "wait"; for this one it means "refuse",
-    and that difference is the whole safety story. A server that answers
-    nothing makes EVERY row read as gone, so a pruner running during an outage
-    would delete the library. It is checked first, before the table is read and
-    before a client is built.
+    ``unhealthy_servers`` names the configured servers whose liveness probe
+    is currently unhappy, read per run (fix round 3, M2: a list rather than
+    the old ``is_healthy`` boolean, so the refusal can say WHICH server is
+    out -- on a dual deployment a Jellyfin outage used to produce a sentence
+    naming Plex). For every other consumer an unhealthy server means "wait";
+    for this one it means "refuse", and that difference is the whole safety
+    story. A server that answers nothing makes EVERY row read as gone, so a
+    pruner running during an outage would delete the library. It is checked
+    first, before the table is read and before a client is built.
 
     Config comes off ``holder`` per run -- ``prune.apply``, both caps, the
     cleanup caps the warning is measured against, and this job's own cadence --
     so every one of them is live.
 
-    ``plex.excluded_libraries`` is read off the holder here too, and is what
-    makes an excluded library's rows retirable even while Plex still answers
-    for them -- the ``plex`` section is frozen for the client the WORKERS
-    hold, not for this job's, which is rebuilt per run (``app.py``).
+    ``excluded_libraries`` is read off the holder here too, per server, and is
+    what makes an excluded library's rows retirable even while its server
+    still answers for them -- these sections are frozen for the client the
+    WORKERS hold, not for this job's, which is rebuilt per run (``app.py``).
     """
 
     async def run(session: AsyncSession) -> str:
         config = holder.current
-        if not is_healthy():
+        unhealthy = unhealthy_servers()
+        if unhealthy:
             return (
-                "refused: Plex is unhealthy, so every row would look gone; "
-                "change nothing"
+                f"refused: {', '.join(unhealthy)} "
+                f"{'is' if len(unhealthy) == 1 else 'are'} unhealthy, so every "
+                "row would look gone; change nothing"
             )
 
         empty = await refuse_if_empty(session, MediaItem, table_name="media_items")
@@ -651,17 +815,18 @@ def make_prune_job(
             # The factory is inside the try because it connects: a refused
             # connection, a rejected token or a plexapi BadRequest all raise
             # here, and every one of those messages carries the server address.
-            plex = await asyncio.to_thread(plex_factory)
+            servers = await asyncio.to_thread(servers_factory)
             # Read off the holder like everything else this job uses, so an
-            # edited exclusion list reaches the sweep on its next run. The
-            # `plex` section is a FROZEN_SECTIONS entry (config/live.py) --
-            # true of the CLIENT the workers hold, which is built once at
-            # startup, and not of this job, whose PlexClient is rebuilt per run
-            # from the same live value (app.py's plex_factory lambda).
-            excluded = frozenset(
-                holder.current.plex.excluded_libraries if holder.current.plex else []
-            )
-            scan = await find_prunable(session, plex, excluded)
+            # edited exclusion list reaches the sweep on its next run. Each
+            # section is a FROZEN_SECTIONS entry (config/live.py) -- true of
+            # the CLIENTS the workers hold, which are built once at startup,
+            # and not of this job's, which are rebuilt per run
+            # (app.py's servers_factory lambda).
+            excluded = {
+                "plex": frozenset(config.plex.excluded_libraries if config.plex else []),
+                "jellyfin": frozenset(config.jellyfin.excluded_libraries if config.jellyfin else []),
+            }
+            scan = await find_prunable(session, servers, excluded)
         except Exception as exc:
             # The class name only, never str(exc) and never a URL: a Plex
             # error's message carries the server address and sometimes the
@@ -691,23 +856,28 @@ def make_prune_job(
             return (
                 f"dry run: {len(scan.prunable)} of {scan.total} media_items row(s) "
                 f"would be pruned; {scan.excluded} row(s) in excluded libraries "
-                f"would be retired; {held}; {files_sentence(scan.directories)}"
+                f"would be retired; {held}; refs to retire: {len(scan.stale_refs)}; "
+                f"{files_sentence(scan.directories)}"
             )
 
         outcome = await retire(session, scan.prunable)
-        # Counted off what was actually deleted, not off the candidates:
-        # ``retire`` leaves any row that changed under the pass, and those
-        # orphan nothing. Reporting the candidate total would claim directories
-        # no delete created and could fire the cleanup-cap warning over a
-        # threshold this prune never crossed. The dry run has no such
-        # distinction to make -- there, the candidates are the whole story.
-        #
         # Matched on ``id``, never on ``native_id``: a candidate with no Plex
         # ref reads back as ``native_id=None``, and a None in the set matched
         # every other ref-less candidate -- claiming their directories and
         # dismissing their queued jobs on the strength of a row that was
         # skipped.
         pruned_ids = set(outcome.pruned)
+        # C1: the doomed refs `_scan_stale_refs` found are only deleted now,
+        # after the plausibility caps above have passed and the whole-row
+        # retire has run -- a ref whose item was ALSO just retired is
+        # skipped (the cascade already took it).
+        refs_retired = await _retire_stale_refs(session, scan.stale_refs, pruned_ids)
+        # Counted off what was actually deleted, not off the candidates:
+        # ``retire`` leaves any row that changed under the pass, and those
+        # orphan nothing. Reporting the candidate total would claim directories
+        # no delete created and could fire the cleanup-cap warning over a
+        # threshold this prune never crossed. The dry run has no such
+        # distinction to make -- there, the candidates are the whole story.
         deleted = [c for c in scan.prunable if c.id in pruned_ids]
         # Only the rows that HAVE a Plex id: the job payloads are matched by
         # that id, so a None would match nothing useful and is not worth
@@ -718,12 +888,15 @@ def make_prune_job(
         directories = _directory_count(deleted)
         # The same rule for the excluded population, and for the same reason:
         # "retired" must describe rows that are gone, not rows that were
-        # offered and then shielded by a concurrent re-upsert.
-        excluded_pruned = sum(1 for c in deleted if c.library in excluded)
+        # offered and then shielded by a concurrent re-upsert. `excluded` is
+        # now per-server (Task 19); the union of every server's excluded
+        # libraries is what `scan.excluded` itself is measured against too.
+        all_excluded = frozenset().union(*excluded.values()) if excluded else frozenset()
+        excluded_pruned = sum(1 for c in deleted if c.library in all_excluded)
         summary = (
             f"pruned {len(outcome.pruned)} of {scan.total} media_items row(s); "
             f"{excluded_pruned} row(s) in excluded libraries retired; "
-            f"{held}; dismissed {dismissed} queued job(s); "
+            f"{held}; refs retired: {refs_retired}; dismissed {dismissed} queued job(s); "
             f"{files_sentence(directories)}"
         )
         if outcome.skipped:

@@ -3989,6 +3989,13 @@ class SchedulerConfig(BaseModel):
         default=7,
         description="How often the media_items twin merge runs.",
     )
+    pending_deliveries_minutes: int = Field(
+        default=15,
+        description=(
+            "How often the pending-deliveries pass retries deliveries a "
+            "server could not take yet."
+        ),
+    )
 
 
 class RadarrConfig(BaseModel):

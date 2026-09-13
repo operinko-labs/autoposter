@@ -23,7 +23,7 @@ from autoposter.overlays.assets import FONTS
 from autoposter.overlays.families import FAMILIES
 from autoposter.overlays.schema import OverlayDefinition
 from autoposter.plex.artwork import upload_artwork as _plex_upload_artwork
-from autoposter.render.pipeline import apply_badges
+from autoposter.render.pipeline import compose_badged_bytes, deliver
 from autoposter.servers.base import CAP_LOCK_ARTWORK, ServerItemRef
 
 from conftest import seed_media_item
@@ -583,6 +583,23 @@ class FakeServer:
 
 
 REF = ServerItemRef("plex", "1", "Movies", "movie")
+
+
+async def apply_badges(
+    session, config, render, item, server, ref, facts, probe=None,
+    *, http=None, mdblist=None,
+):
+    """Back-compat shim, local to this suite: ``compose_badged_bytes`` then
+    ``deliver`` (Task 19), under the exact old ``apply_badges`` positional
+    shape so none of this file's ~30 entry-point calls need to change.
+    ``probe`` is accepted and ignored -- every ``FakeServer`` here lacks
+    ``CAP_ARTWORK_PROVENANCE``, so ``deliver``'s ``_already_delivered`` always
+    fell through to a normal upload before this split too."""
+    data = await compose_badged_bytes(
+        session, config, render, item, server=server, ref=ref, facts=facts,
+        http=http, mdblist=mdblist,
+    )
+    await deliver(session, config, render, item, {"plex": server}, {"plex": ref}, data)
 
 
 async def _render(session, rating_key="overlay-entrypoint-item"):

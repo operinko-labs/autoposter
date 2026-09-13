@@ -504,6 +504,7 @@ from autoposter.facts import gather as _gather_module  # noqa: E402
 from autoposter.intake.arr import RenderIntent  # noqa: E402
 from autoposter.providers.tvdb import TVDBClient  # noqa: E402
 from autoposter.render.pipeline import process_item  # noqa: E402
+from autoposter.servers.registry import Servers  # noqa: E402
 
 
 class FakePlexServer:
@@ -565,7 +566,7 @@ async def test_process_item_wires_a_real_tvdb_provider_into_the_request(session,
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         tvdb = TVDBClient("key", http)
         await process_item(
-            session, config, http, FakePlexServer(item, plex_item), [tvdb],
+            session, config, http, Servers({"plex": FakePlexServer(item, plex_item)}), [tvdb],
             _movie_intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )
@@ -597,7 +598,7 @@ async def test_process_item_warns_when_tvdb_is_absent_from_providers(
     )) as http:
         with caplog.at_level(logging.WARNING):
             await process_item(
-                session, config, http, FakePlexServer(item, plex_item), [NotTVDB()],
+                session, config, http, Servers({"plex": FakePlexServer(item, plex_item)}), [NotTVDB()],
                 _movie_intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
                 mdblist=NullMDBListClient(),
             )

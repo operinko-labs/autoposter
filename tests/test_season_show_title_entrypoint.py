@@ -29,6 +29,7 @@ from autoposter.providers.base import ArtCandidate
 from autoposter.render import pipeline as pipeline_module
 from autoposter.render.pipeline import process_item
 from autoposter.render.textfit import FitResult
+from autoposter.servers.registry import Servers
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -106,7 +107,7 @@ MOVIE_INTENT = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134
 async def _fingerprints(session, config, item, intent, monkeypatch):
     _stub_magick(monkeypatch)
     async with _http() as http:
-        await process_item(session, config, http, _Plex(item), [_Provider()], intent)
+        await process_item(session, config, http, Servers({"plex": _Plex(item)}), [_Provider()], intent)
     rows = (await session.execute(select(Render))).scalars().all()
     return {r.art_kind: r.fingerprint for r in rows}
 
@@ -132,7 +133,7 @@ async def test_the_gate_off_leaves_the_season_posters_fingerprint_where_it_was(
     _stub_magick(monkeypatch)
     async with _http() as http:
         renders = await process_item(
-            session, config, http, _Plex(SEASON), [_Provider()], SEASON_INTENT,
+            session, config, http, Servers({"plex": _Plex(SEASON)}), [_Provider()], SEASON_INTENT,
         )
     assert [r.detail for r in renders] == ["unchanged"]
     assert {r.art_kind: r.fingerprint for r in renders} == first
@@ -218,7 +219,7 @@ async def test_the_show_title_still_draws_on_a_show_fallback_base(
 
     async with _http() as http:
         renders = await process_item(
-            session, config, http, _Plex(SEASON), [_NoSeasonArtProvider()],
+            session, config, http, Servers({"plex": _Plex(SEASON)}), [_NoSeasonArtProvider()],
             SEASON_INTENT,
         )
 

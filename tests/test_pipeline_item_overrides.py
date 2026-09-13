@@ -33,6 +33,7 @@ from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
 from autoposter.render.pipeline import process_item
+from autoposter.servers.registry import Servers
 
 from test_mass_ops_fields import FakeTMDB, _item
 from test_mass_ops_verbs import FakeField, FakePlexServer, RecordingPlexItem
@@ -80,13 +81,13 @@ async def test_gate_off_writes_nothing_the_pipeline_would_not_have_written(
         transport=httpx.MockTransport(lambda r: httpx.Response(500))
     ) as http:
         await process_item(
-            session, config, http, FakePlexServer(_item(), plex_item), [],
+            session, config, http, Servers({"plex": FakePlexServer(_item(), plex_item)}), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )
         await _override(session, "tagline", "New words")
         await process_item(
-            session, config, http, FakePlexServer(_item(), plex_item), [],
+            session, config, http, Servers({"plex": FakePlexServer(_item(), plex_item)}), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )
@@ -115,13 +116,13 @@ async def test_gate_on_writes_the_override_even_with_no_provider_facts(
         transport=httpx.MockTransport(lambda r: httpx.Response(500))
     ) as http:
         await process_item(
-            session, config, http, FakePlexServer(_item(), plex_item), [],
+            session, config, http, Servers({"plex": FakePlexServer(_item(), plex_item)}), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )
         await _override(session, "tagline", "New words")
         await process_item(
-            session, config, http, FakePlexServer(_item(), plex_item), [],
+            session, config, http, Servers({"plex": FakePlexServer(_item(), plex_item)}), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )
@@ -154,7 +155,7 @@ async def test_the_second_pass_over_an_applied_override_writes_nothing(
         transport=httpx.MockTransport(lambda r: httpx.Response(500))
     ) as http:
         await process_item(
-            session, config, http, FakePlexServer(_item(), plex_item), [],
+            session, config, http, Servers({"plex": FakePlexServer(_item(), plex_item)}), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )
@@ -162,7 +163,7 @@ async def test_the_second_pass_over_an_applied_override_writes_nothing(
         plex_item.tagline = "New words"
         plex_item.fields = [FakeField("tagline", True)]
         await process_item(
-            session, config, http, FakePlexServer(_item(), plex_item), [],
+            session, config, http, Servers({"plex": FakePlexServer(_item(), plex_item)}), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )
@@ -196,13 +197,13 @@ async def test_the_pass_never_writes_the_operator_s_value_into_item_facts(
         transport=httpx.MockTransport(lambda r: httpx.Response(500))
     ) as http:
         await process_item(
-            session, config, http, FakePlexServer(_item(), plex_item), [],
+            session, config, http, Servers({"plex": FakePlexServer(_item(), plex_item)}), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )
         await _override(session, "critic_rating", "9.9")
         await process_item(
-            session, config, http, FakePlexServer(_item(), plex_item), [],
+            session, config, http, Servers({"plex": FakePlexServer(_item(), plex_item)}), [],
             _intent(), tmdb_facts=FakeTMDB(GatheredFacts()),
             mdblist=NullMDBListClient(),
         )

@@ -40,6 +40,7 @@ from autoposter.config.loader import config_for_library
 from autoposter.config.schema import RadarrConfig, Secrets, SonarrConfig
 from autoposter.db.models import FactsBackfillState, ItemFacts, MediaItem, Render
 from autoposter.db.refs import native_ids
+from autoposter.deliveries import retry_pending_deliveries
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue, reclaim_stale
 from autoposter.scheduler.core import Job
@@ -1049,5 +1050,53 @@ def make_asset_stats_job(holder: ConfigHolder) -> Job:
     return Job(
         name="asset_stats",
         interval_seconds=lambda: holder.current.scheduler.asset_stats_days * 24 * 3600,
+        run=run,
+    )
+
+
+def make_pending_deliveries_job(
+    holder: ConfigHolder,
+    servers_ref: Callable[[], object],
+    http: httpx.AsyncClient | None,
+    mdblist,
+) -> Job:
+    """Build the scheduled pending-deliveries retry pass (``deliveries.py``,
+    spec Sec 5.3): due rows only, each re-resolved on the one server it is
+    still owed to.
+
+    Registered beside ``make_cleanup_job``/``make_asset_stats_job``, inside
+    ``scheduler.enabled`` but not conditioned on ``config.plex`` (unlike the
+    collections/credits/maintenance/prune/merge/arr_sync block): a pending
+    delivery can exist against any configured server, and a Jellyfin-only
+    deployment needs this retry pass exactly as much as a Plex one does. Not
+    registered unconditionally like ``make_stale_reclaim_job`` -- this is an
+    operator-tunable maintenance pass, not a queue-correctness sweep, so its
+    runs ARE recorded and trimmed by the cleanup pass, which only exists
+    inside this same ``scheduler.enabled`` gate.
+
+    ``servers_ref`` is a zero-argument callable returning the current
+    ``Servers`` registry (``app.state.servers``) rather than a closured
+    value. Both ``plex`` and ``jellyfin`` are ``FROZEN_SECTIONS`` entries, so
+    ``app.state.servers`` is in practice built once at boot and never
+    replaced -- the deref is a convenience matching the other job factories'
+    own ``servers``/``server_factory`` arguments, not something a config swap
+    requires here. ``http`` and ``mdblist`` are the process's own, forwarded
+    unchanged: a retry re-runs ``render/pipeline.compose_badged_bytes``,
+    which needs both to composite the badge it re-uploads.
+
+    Cadence floor at 60 seconds, the same floor every other holder-derived
+    interval in this module effectively has by virtue of the scheduler's own
+    poll cadence -- spelled out here because ``pending_deliveries_minutes``
+    is operator-editable down to 1.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        return await retry_pending_deliveries(
+            session, servers_ref(), holder.current, http=http, mdblist=mdblist,
+        )
+
+    return Job(
+        name="pending_deliveries",
+        interval_seconds=lambda: max(60, holder.current.scheduler.pending_deliveries_minutes * 60),
         run=run,
     )

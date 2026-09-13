@@ -12,6 +12,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
 from autoposter.render.pipeline import SourceRefused, process_item
+from autoposter.servers.registry import Servers
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 GOLDEN = Path(__file__).parent / "fixtures" / "golden"
@@ -104,7 +105,7 @@ async def test_movie_intent_writes_poster_and_background(config, session, tmp_pa
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as http:
         renders = await process_item(
-            session, config, http, FakePlex(item),
+            session, config, http, Servers({"plex": FakePlex(item)}),
             [FakeProvider("https://image.tmdb.org/t/p/original/x.jpg")],
             RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134),
         )
@@ -140,10 +141,10 @@ async def test_second_run_is_a_no_op(config, session):
     providers = [FakeProvider("https://image.tmdb.org/t/p/original/x.jpg")]
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        await process_item(session, config, http, FakePlex(item), providers, intent)
+        await process_item(session, config, http, Servers({"plex": FakePlex(item)}), providers, intent)
         poster = config.assets_root / "Movies" / "Dune Part Two (2024)" / "poster.jpg"
         first_mtime = poster.stat().st_mtime_ns
-        renders = await process_item(session, config, http, FakePlex(item), providers, intent)
+        renders = await process_item(session, config, http, Servers({"plex": FakePlex(item)}), providers, intent)
 
     assert poster.stat().st_mtime_ns == first_mtime
     assert all(r.detail == "unchanged" for r in renders)
@@ -164,7 +165,7 @@ async def test_no_art_records_the_reason_without_writing(config, session):
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404))) as http:
         renders = await process_item(
-            session, config, http, FakePlex(item), [Empty()],
+            session, config, http, Servers({"plex": FakePlex(item)}), [Empty()],
             RenderIntent(kind="movie", title="Obscure Film", tmdb_id=1),
         )
     assert all(r.status == "no_art" for r in renders)
@@ -202,7 +203,7 @@ async def test_a_stale_plex_hint_is_not_a_fork_the_resolved_key_becomes_the_ref(
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with caplog.at_level("WARNING", logger="autoposter.render.pipeline"):
             results = await process_item(
-                session, config, http, FakePlex(item), [FakeProvider("https://x/y.jpg")], intent,
+                session, config, http, Servers({"plex": FakePlex(item)}), [FakeProvider("https://x/y.jpg")], intent,
             )
 
     assert results, "the item was processed, not stopped"
@@ -236,7 +237,7 @@ async def test_a_refused_kind_does_not_abort_its_sibling(config, session):
     })
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         renders = await process_item(
-            session, config, http, FakePlex(item), [provider],
+            session, config, http, Servers({"plex": FakePlex(item)}), [provider],
             RenderIntent(kind="movie", title="Corrupt Poster", tmdb_id=1),
         )
 
@@ -282,7 +283,7 @@ async def test_a_non_first_kind_refusing_still_badges_the_earlier_kind(config, s
     })
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         renders = await process_item(
-            session, config, http, FakePlex(item), [provider],
+            session, config, http, Servers({"plex": FakePlex(item)}), [provider],
             RenderIntent(kind="movie", title="Corrupt Background", tmdb_id=3),
         )
 
@@ -313,7 +314,7 @@ async def test_every_kind_refusing_still_fails_the_job(config, session):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(SourceRefused):
             await process_item(
-                session, config, http, FakePlex(item), [provider],
+                session, config, http, Servers({"plex": FakePlex(item)}), [provider],
                 RenderIntent(kind="movie", title="All Corrupt", tmdb_id=2),
             )
 
@@ -381,7 +382,7 @@ async def test_a_last_kind_refusing_with_facts_enabled_still_writes_facts(config
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         renders = await process_item(
-            session, config, http, FakePlex(item), [provider],
+            session, config, http, Servers({"plex": FakePlex(item)}), [provider],
             RenderIntent(kind="movie", title="Corrupt Background With Facts", tmdb_id=4),
             tmdb_facts=FakeTMDBFacts(), mdblist=NullMDBListClient(),
         )
