@@ -119,6 +119,16 @@ class LibraryIndex:
         name = folder["Name"]
         return self._map.get(name, name)
 
+    def library_names(self) -> set[str]:
+        """Every folder this index holds, under its PLEX-facing name.
+
+        `_folders` is already filtered by `excluded` and by CollectionType,
+        so an excluded library is absent by construction -- which is right:
+        an excluded library is one this deployment does not manage on this
+        server, and "not carried" is the honest thing to say about it.
+        """
+        return {self._map.get(f["Name"], f["Name"]) for f in self._folders}
+
     # --- build ---
     def _stale(self) -> bool:
         return self.built_at is not None and (_monotonic() - self.built_at) >= self._max_age_seconds

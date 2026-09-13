@@ -210,6 +210,10 @@ class JellyfinClient:
     async def exists_many(self, intents) -> list[bool]:
         return [await self._index.exists(intent) for intent in intents]
 
+    async def library_names(self) -> set[str]:
+        await self._index.rebuild()  # no-op once built; the folder list is what we need
+        return self._index.library_names()
+
     async def _key_matches(self, dto: dict, intent) -> bool:
         """Whether a live-fetched ``dto`` is still the item ``intent``'s
         stored native id names -- plex/client.py:~396's type+coordinate

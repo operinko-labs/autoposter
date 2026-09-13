@@ -362,6 +362,17 @@ class PlexClient:
             if s.title not in self._excluded and s.type == wanted_type
         ]
 
+    def _library_names_sync(self) -> set[str]:
+        return {
+            s.title for s in self._server.library.sections()
+            if s.title not in self._excluded and s.type in ("movie", "show")
+        }
+
+    async def library_names(self) -> set[str]:
+        # plexapi's sections() is a blocking HTTP call of up to several
+        # seconds on a large server -- offloaded for `list_items`' own reason.
+        return await asyncio.to_thread(self._library_names_sync)
+
     def _fetch_by_rating_key_sync(self, intent: RenderIntent, sections) -> _RawMatch | None:
         """The item named by ``intent.native_id_on("plex")``, or None to fall back.
 

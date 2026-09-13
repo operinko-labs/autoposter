@@ -56,6 +56,15 @@ class FakeMediaServer:
     #: configurable per instance, so a test can prove one
     #: server's own exempting label never exempts a write on another server.
     labels: list[str] = field(default_factory=list)
+    #: what library_names() answers; None means "derive from `items`", which
+    #: is what an unconfigured double should say.
+    libraries: set[str] | None = None
+    #: resolve() answers with this whatever the intent, when set. `items` is
+    #: keyed on `intent.dedupe_key`, which a test that seeds a media_items
+    #: row -- rather than building the intent itself -- cannot spell without
+    #: recomputing it; the retry and catch-up suites all take that shape,
+    #: because a persisted row is what those passes read.
+    resolve_any: ResolvedItem | None = None
 
     def _require(self, capability: str) -> None:
         if capability not in self.capabilities:
@@ -68,9 +77,18 @@ class FakeMediaServer:
         key = intent.dedupe_key
         if key in self.path_mismatch:
             raise PathMismatch(f"{self.name}: {intent.title!r} is outside every library root")
-        if key in self.not_found or key not in self.items:
+        if key in self.not_found:
+            raise ItemNotFound(f"no {self.name} item for {intent.kind} {intent.title!r}")
+        if self.resolve_any is not None:
+            return self.resolve_any
+        if key not in self.items:
             raise ItemNotFound(f"no {self.name} item for {intent.kind} {intent.title!r}")
         return self.items[key]
+
+    async def library_names(self) -> set[str]:
+        if self.libraries is not None:
+            return set(self.libraries)
+        return {item.library for item in self.items.values()}
 
     async def fetch_ref(self, native_id: str) -> ServerItemRef | None:
         for item in self.items.values():

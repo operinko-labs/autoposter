@@ -38,6 +38,10 @@ def test_unsupported_on_server_sentence():
     assert exc.server == "jellyfin" and exc.capability == "lock_artwork"
 
 
+def test_the_protocol_lists_library_names():
+    assert "library_names" in set(base.MediaServer.__protocol_attrs__)
+
+
 def test_the_protocol_lists_every_operation_the_spec_names():
     wanted = {
         "resolve", "fetch_ref", "exists_many", "keys_resolve", "list_items",
