@@ -687,10 +687,13 @@ def _config(*, apply=False, max_prunes=500, max_prune_share=0.25, max_orphans=50
     )
 
 
-def _job(config, plex, *, healthy=True):
+def _job(config, plex, *, healthy=True, extra_servers=None):
     # Task 19: make_prune_job's second argument is a servers_factory
     # returning a {name: MediaServer} mapping, not one bare server.
-    return make_prune_job(ConfigHolder(config), lambda: {"plex": plex}, lambda: healthy)
+    # `extra_servers` lets a multi-server test add e.g. a jellyfin double
+    # beside `plex` without a whole second helper.
+    servers = {"plex": plex, **(extra_servers or {})}
+    return make_prune_job(ConfigHolder(config), lambda: servers, lambda: healthy)
 
 
 class _ReupsertingPlex(FakePlex):
@@ -932,9 +935,13 @@ async def test_a_dry_run_deletes_nothing_and_reports_the_counts(session):
 
     assert "dry run" in summary.lower()
     assert "1 of 2" in summary
+    assert "refs to retire: 1" in summary
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 2
     assert (await session.execute(select(EventLog))).scalars().all() == []
+    # C1: a dry run must never write, so "11"'s own stale ref -- the whole
+    # reason it is prunable at all -- is still there to prove it.
+    assert len((await session.execute(select(MediaItemServerRef))).scalars().all()) == 2
 
 
 async def test_an_implausible_share_refuses_the_whole_pass(session):
@@ -949,6 +956,9 @@ async def test_an_implausible_share_refuses_the_whole_pass(session):
     assert "refus" in summary.lower()
     assert "30" in summary, f"the refusal must report the real numbers: {summary!r}"
     session.expire_all()
+    # C1: the refusal fires before `_retire_stale_refs` ever runs -- every
+    # one of these 30 rows' own ref would otherwise have been deleted.
+    assert len((await session.execute(select(MediaItemServerRef))).scalars().all()) == 30
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 30
 
 
@@ -1179,6 +1189,35 @@ async def test_an_applied_pass_retires_excluded_rows_and_counts_them_separately(
     assert event.payload["library"] == "DVR"
 
 
+async def test_an_applied_pass_deletes_the_doomed_ref_but_keeps_a_row_another_server_still_resolves(
+    session,
+):
+    """Fix round 1, C1's whole point through the real job: a ref going stale
+    on ONE server must not touch the row at all when another server still
+    resolves it -- only that one ref is deleted, the media_items row and its
+    live ref on the other server survive untouched."""
+    item = await _add_item(session, "10")
+    session.add(MediaItemServerRef(
+        item_id=item.id, server="jellyfin", native_id="j10", library=item.library,
+    ))
+    await session.commit()
+
+    summary = await _job(
+        _config(apply=True), FakePlex(live=set()),
+        extra_servers={"jellyfin": FakePlex(live={"j10"}, name="jellyfin")},
+    ).run(session)
+
+    assert "pruned 0 of 1" in summary
+    assert "refs retired: 1" in summary
+    session.expire_all()
+    assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
+    refs = {
+        (row.server, row.native_id)
+        for row in (await session.execute(select(MediaItemServerRef))).scalars().all()
+    }
+    assert refs == {("jellyfin", "j10")}, "the stale plex ref must be gone, the live jellyfin ref kept"
+
+
 async def test_a_dry_run_names_the_excluded_population_without_deleting(session):
     """Dry run is the default and stays honoured: the population is named and
     counted, and nothing is touched."""
@@ -1189,9 +1228,13 @@ async def test_a_dry_run_names_the_excluded_population_without_deleting(session)
     summary = await _job(config, FakePlex(live={"10", "11"})).run(session)
 
     assert "1 row(s) in excluded libraries would be retired" in summary
+    assert "refs to retire: 1" in summary
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 2
     assert (await session.execute(select(EventLog))).scalars().all() == []
+    # C1: dry run touches nothing, even though "11"'s only ref is on an
+    # excluded library and would otherwise be a delete candidate.
+    assert len((await session.execute(select(MediaItemServerRef))).scalars().all()) == 2
 
 
 async def test_the_caps_still_rule_a_newly_excluded_library(session):
