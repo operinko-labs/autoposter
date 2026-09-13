@@ -693,7 +693,10 @@ def _job(config, plex, *, healthy=True, extra_servers=None):
     # `extra_servers` lets a multi-server test add e.g. a jellyfin double
     # beside `plex` without a whole second helper.
     servers = {"plex": plex, **(extra_servers or {})}
-    return make_prune_job(ConfigHolder(config), lambda: servers, lambda: healthy)
+    return make_prune_job(
+        ConfigHolder(config), lambda: servers,
+        lambda: [] if healthy else ["plex"],
+    )
 
 
 class _ReupsertingPlex(FakePlex):
@@ -803,7 +806,7 @@ async def test_the_job_is_named_and_paced_off_the_holder():
     """The cadence is a deref, not a captured number, so an edit to
     ``scheduler.prune_days`` is live the way every other job's is."""
     holder = ConfigHolder(_config())
-    job = make_prune_job(holder, lambda: FakePlex(), lambda: True)
+    job = make_prune_job(holder, lambda: FakePlex(), lambda: [])
 
     assert job.name == "plex_prune"
     assert job.current_interval() == 7 * 24 * 3600
@@ -815,19 +818,27 @@ async def test_the_job_is_named_and_paced_off_the_holder():
     assert job.current_interval() == 24 * 3600
 
 
-async def test_an_unhealthy_plex_refuses_before_anything_is_probed(session):
+async def test_an_unhealthy_server_refuses_before_anything_is_probed_and_names_it(session):
     """The inversion that makes this sweep dangerous: a server that answers
     nothing makes EVERY row look gone. So this is the first check, before the
-    table is read and before a client is even built."""
+    table is read and before a client is even built.
+
+    Fix round 3, M2: the sentence names the server that is actually out. The
+    guard covers every configured server now, so a Jellyfin outage that read
+    "Plex is unhealthy" sent the operator to the wrong machine."""
     await _add_item(session, "11")
 
     def exploding_factory():
-        raise AssertionError("no Plex client may be built when Plex is unhealthy")
+        raise AssertionError("no Plex client may be built when a server is unhealthy")
 
-    job = make_prune_job(ConfigHolder(_config(apply=True)), exploding_factory, lambda: False)
+    job = make_prune_job(
+        ConfigHolder(_config(apply=True)), exploding_factory, lambda: ["jellyfin"],
+    )
     summary = await job.run(session)
 
-    assert "refus" in summary.lower() and "unhealthy" in summary.lower()
+    assert summary == (
+        "refused: jellyfin is unhealthy, so every row would look gone; change nothing"
+    )
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 1
 
@@ -840,7 +851,7 @@ async def test_an_empty_media_items_table_refuses(session):
     def exploding_factory():
         raise AssertionError("no Plex client may be built for an empty table")
 
-    job = make_prune_job(ConfigHolder(_config(apply=True)), exploding_factory, lambda: True)
+    job = make_prune_job(ConfigHolder(_config(apply=True)), exploding_factory, lambda: [])
     summary = await job.run(session)
 
     assert "refus" in summary.lower() and "empty" in summary.lower()
@@ -963,7 +974,7 @@ async def test_a_connect_failure_refuses_without_leaking_the_server_address(sess
     def exploding_factory():
         raise ConnectionError("https://plex.example:32400 boom")
 
-    job = make_prune_job(ConfigHolder(_config(apply=True)), exploding_factory, lambda: True)
+    job = make_prune_job(ConfigHolder(_config(apply=True)), exploding_factory, lambda: [])
 
     with pytest.raises(PruneRefused) as caught:
         await job.run(session)
@@ -1309,6 +1320,6 @@ def test_the_job_name_is_in_the_hand_trigger_allowlist():
     becomes untriggerable. This is the check that they have not."""
     from autoposter.api.routes import SCHEDULED_JOB_NAMES
 
-    job = make_prune_job(ConfigHolder(_config()), lambda: FakePlex(), lambda: True)
+    job = make_prune_job(ConfigHolder(_config()), lambda: FakePlex(), lambda: [])
 
     assert job.name in SCHEDULED_JOB_NAMES

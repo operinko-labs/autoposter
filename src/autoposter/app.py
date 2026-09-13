@@ -260,6 +260,12 @@ def create_app(
         def is_healthy() -> bool:
             return all(health.healthy for health in health_by_server.values())
 
+        def unhealthy_servers() -> list[str]:
+            # The prune sweep's own refusal names the servers that are out
+            # (fix round 3, M2); every other consumer only needs the boolean
+            # above.
+            return [name for name, health in health_by_server.items() if not health.healthy]
+
         # Replaces create_app's http=None placeholder with one that can
         # actually poll, now that `http` exists. See api/version.py's
         # ReleasePoller and its module docstring for why this is a
@@ -429,7 +435,7 @@ def create_app(
                 scheduler_jobs.append(make_prune_job(
                     holder,
                     _prune_servers_factory,
-                    is_healthy,
+                    unhealthy_servers,
                 ))
                 # The twin merge takes the same PlexClient the prune does, and for
                 # the same reason: it asks whether a stored rating key is still

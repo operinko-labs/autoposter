@@ -274,7 +274,14 @@ async def _scan_stale_refs(
                 select(
                     MediaItemServerRef.id, MediaItemServerRef.native_id,
                     MediaItemServerRef.updated_at,
-                    MediaItem.id.label("item_id"), MediaItem.kind, MediaItem.library,
+                    # Fix round 3, M1: the ref's OWN library -- the name that
+                    # server knows this item by (spec §4.1) -- because it is
+                    # that server's `excluded_libraries` it is compared
+                    # against below. `MediaItem.library` is the identity
+                    # server's name for it, which is a different string on
+                    # every other server.
+                    MediaItemServerRef.library,
+                    MediaItem.id.label("item_id"), MediaItem.kind,
                     MediaItem.title, MediaItem.tmdb_id, MediaItem.tvdb_id, MediaItem.imdb_id,
                     MediaItem.year, MediaItem.season_number, MediaItem.episode_number,
                 )
@@ -751,7 +758,7 @@ def cleanup_cap_warning(directories: int, cleanup) -> str:
 def make_prune_job(
     holder: ConfigHolder,
     servers_factory: Callable[[], object],
-    is_healthy: Callable[[], bool],
+    unhealthy_servers: Callable[[], list[str]],
 ) -> Job:
     """Build the scheduled ``media_items`` prune job.
 
@@ -770,12 +777,15 @@ def make_prune_job(
     same reason: this job shares the event loop with the worker pool and the
     liveness probes.
 
-    ``is_healthy`` is ``PlexHealth.healthy``, read per run. For every other
-    consumer an unhealthy Plex means "wait"; for this one it means "refuse",
-    and that difference is the whole safety story. A server that answers
-    nothing makes EVERY row read as gone, so a pruner running during an outage
-    would delete the library. It is checked first, before the table is read and
-    before a client is built.
+    ``unhealthy_servers`` names the configured servers whose liveness probe
+    is currently unhappy, read per run (fix round 3, M2: a list rather than
+    the old ``is_healthy`` boolean, so the refusal can say WHICH server is
+    out -- on a dual deployment a Jellyfin outage used to produce a sentence
+    naming Plex). For every other consumer an unhealthy server means "wait";
+    for this one it means "refuse", and that difference is the whole safety
+    story. A server that answers nothing makes EVERY row read as gone, so a
+    pruner running during an outage would delete the library. It is checked
+    first, before the table is read and before a client is built.
 
     Config comes off ``holder`` per run -- ``prune.apply``, both caps, the
     cleanup caps the warning is measured against, and this job's own cadence --
@@ -789,10 +799,12 @@ def make_prune_job(
 
     async def run(session: AsyncSession) -> str:
         config = holder.current
-        if not is_healthy():
+        unhealthy = unhealthy_servers()
+        if unhealthy:
             return (
-                "refused: Plex is unhealthy, so every row would look gone; "
-                "change nothing"
+                f"refused: {', '.join(unhealthy)} "
+                f"{'is' if len(unhealthy) == 1 else 'are'} unhealthy, so every "
+                "row would look gone; change nothing"
             )
 
         empty = await refuse_if_empty(session, MediaItem, table_name="media_items")
