@@ -683,17 +683,204 @@ this: it counts only `version` and `skip_tba` changes today, so a
 library-only edit — including a `badges` one — always shows no re-renders,
 whether or not one is coming.
 
+## Media servers
+
+This service manages **Plex, Jellyfin, or both**. The `plex:` and `jellyfin:`
+blocks in `autoposter.yaml` are independent and each is optional: the
+deployment is usable as soon as one of them names an address and that server's
+own credential resolves. A document that names neither is not configured at
+all — `python -m autoposter.boot` logs `no usable media server` and serves the
+first-start wizard instead of the application, because that is a shape the
+wizard can fix. A half-configured server is refused by the same rule: a
+document naming `jellyfin:` with no `AUTOPOSTER_JELLYFIN_APIKEY` does not boot
+even with a complete `plex:` beside it, so a server this config names is always
+a server this service can reach. An existing Plex-only document is valid
+unchanged and behaves exactly as it did before any of this existed.
+
+Jellyfin **12.x** only. The client is written against the 12.0 OpenAPI
+document captured at `docs/reference/2026-09-jellyfin-openapi-12.md` and
+verified against a live 12.0.0 server. An older major version is not refused
+with a friendly message — it simply answers differently.
+
+### The `jellyfin:` block
+
+```yaml
+jellyfin:
+  url: https://<jellyfin-host>
+  excluded_libraries: []
+  library_map: {}
+  replace_thumb_with_backdrop: false
+  liveness_interval_seconds: 60
+```
+
+- `url` — the Jellyfin server's base URL this service manages.
+- `excluded_libraries` (default `[]`) — Jellyfin libraries this service never
+  touches, skipped by every walk and sync. Matched on the **Jellyfin** folder
+  name, before any translation `library_map` performs, so name a library here
+  exactly as Jellyfin's own library list names it.
+- `library_map` (default `{}`) — **the Plex library name on the left, the
+  Jellyfin one on the right**, and only for libraries the two servers name
+  differently; a library not listed is matched by its own name. The left-hand
+  name is the one the rest of this config speaks — `collections.libraries`,
+  the per-library overrides — and this mapping is the only place a
+  Jellyfin-side name appears at all.
+- `replace_thumb_with_backdrop` (default `false`) — also upload the background
+  into Jellyfin's `Thumb` slot, which some views show instead of the backdrop.
+  This is Posterizarr's `ReplaceThumbwithBackdrop` under another name. It is a
+  second upload of the same bytes for every background, which is why it is
+  opt-in rather than on.
+- `liveness_interval_seconds` (default `60`) — how often the background health
+  check asks Jellyfin for `/System/Info`.
+
+### The credential
+
+`AUTOPOSTER_JELLYFIN_APIKEY` — a **server** API key (Jellyfin's own Dashboard,
+under API Keys), not a user password. It rides the
+`Authorization: MediaBrowser Token="<key>"` header on every request; the
+legacy `X-Emby-Token` header answers `401` on 12.0 and is not used.
+
+Add it to the ExternalSecret beside the others. It is required exactly when
+`jellyfin:` is configured and ignored when it is not — the same posture
+`AUTOPOSTER_PLEX_TOKEN` now has for `plex:`. Neither is a *hard* name any more
+(see "Secrets" below): a deployment running one server has no business being
+refused for the other server's missing credential.
+
+### The twin switches
+
+Every surface that writes to a server has one switch per server, and the two
+are independent:
+
+| Switch | Default | What it governs |
+|---|---|---|
+| `operations.write_to_plex` | `true` | writing the gathered metadata to Plex |
+| `operations.write_to_jellyfin` | `true` | writing the gathered metadata to Jellyfin |
+| `badges.upload_to_plex` | `false` | uploading the composed, badged artwork to Plex |
+| `badges.upload_to_jellyfin` | `false` | uploading the composed, badged artwork to Jellyfin |
+
+Off, each one still gathers and stores the facts, or composes and fingerprints
+the artwork — it withholds only the write, which is the safe setting while
+another tool still owns those fields. All four can be set per library (see
+"Per-library overrides" above); `operations.enabled` and `badges.enabled`
+remain the master switches above them.
+
+### Artwork on Jellyfin has no lock
+
+`badges.lock_artwork` (default `true`) locks the Plex artwork field after
+upload so another agent cannot reclaim it. Jellyfin has no equivalent — its
+`LockedFields` vocabulary names no image field at all — so on Jellyfin the
+switch has no effect: each upload asks the server whether it has the
+capability and passes the lock only to one that does. A Jellyfin upload is
+never refused because the switch is on, and there is nothing to turn off for
+it.
+
+What that leaves is worth knowing before you schedule Jellyfin's own library
+scans. An image this service uploaded survives a routine scan and a
+`Default`-mode metadata refresh — verified against a live 12.0.0 instance, the
+uploaded image still reads back afterwards. Replacement is opt-in per refresh
+call: `POST /Items/{id}/Refresh` replaces images only when given
+`metadataRefreshMode=FullRefresh` **and** `replaceAllImages=true`. That
+combination is what to keep off a schedule, not scanning as such.
+
+### One item, one row, across both servers
+
+An item is keyed by its **identity** — its provider ids, TMDB first, then
+TVDB, then IMDb, or its on-disk path when it has none — rather than by any one
+server's own id, and `media_item_server_refs` then carries one ref per server
+for that row. That is what lets one render be delivered to both servers and
+one item page show both.
+
+The consequence for a dual deployment: **the two servers have to agree on the
+provider ids**, or the same film becomes two rows that never meet. A Plex item
+carrying a TMDB id and a Jellyfin item carrying only a TVDB id key differently,
+because the first id in that order wins. Where both servers mount the same
+storage and neither item has a provider id, the shared path keys them
+together, so that shape works — but a provider id on one side only does not.
+Fix the disagreement in whichever server is wrong; there is no override for it
+here.
+
+### What a Plex-less deployment does not have
+
+Everything this service does per item — resolve, render, composite badges,
+write metadata, upload artwork — works on Jellyfin alone. What does not are
+the features written against `plexapi` surface Jellyfin's API has no
+counterpart for, and they are gated rather than left half-working. Each is
+registered or served only when `plex:` is configured:
+
+- **Collections**, every builder — including the two with their own sections
+  below, "Common Sense collections config" and "IMDb chart and Oscars
+  collections".
+- **Playlists.**
+- **The adoption cutover**, `python -m autoposter.adopt` — see "Adopting an
+  existing library (cutover)" below.
+- **The ID mismatch scan** (`GET /api/id-mismatches`, the ID mismatches page).
+- **The metadata backup** (`POST /api/metadata-backup`, see "Volumes" above)
+  and the run modes beside it: artwork backup, restore, revert, reset and the
+  two logo actions.
+- **Clearing a per-item metadata override**
+  (`DELETE /api/items/{id}/metadata-overrides/{field}`), which exists to
+  *unlock* the field in Plex again and has nothing to unlock elsewhere.
+- **The library credits scan** and the **Plex maintenance** pass.
+- **The Radarr/Sonarr registration sync.**
+- **The `media_items` prune and the twin merge.** The prune sweep itself is
+  server-neutral — it asks every configured server whether a row still
+  resolves — but its job is still registered only when Plex is configured, so
+  a Jellyfin-only deployment runs no prune today. That is a follow-up, not a
+  decision.
+
+None of this fails on a Plex-less deployment. The scheduler logs one INFO line
+per pass it skips, naming the job exactly as the dashboard does
+(`collections_reconcile`, `credits_scan`, `plex_maintenance`, `plex_prune`,
+`plex_merge`, `arr_sync`), and each gated route answers `409` with
+`This needs Plex, and no Plex server is configured.` `GET /api/status` reports
+which servers the document configures under `capabilities`, and the Web UI
+reads that to hide the Plex-only sidebar entries — Collections, ID mismatches
+and Run modes — rather than offering a page that can only refuse.
+
+### The pending-deliveries pass
+
+A server can be reachable and still not hold the item yet: Jellyfin has not
+scanned the new file, or the *arr moved it a moment ago. That is not a
+failure, so the delivery is recorded `pending` against that one server instead
+of being retried inline, and a scheduled pass picks it up.
+
+`scheduler.pending_deliveries_minutes` (default `15`) is its cadence, floored
+at 60 seconds. Each run takes the due rows — `pending`, with `next_attempt_at`
+in the past, oldest first, at most 500 — and re-resolves each on the **one**
+server it is still owed to. Only that one: the other servers already have
+their own delivery row, and re-running them here would be a second,
+uncoordinated delivery pass racing the one the next webhook triggers. A row
+that still does not resolve stays `pending` and is deferred six hours. A
+compose or upload that throws is recorded `failed`, with a category and an
+exception class name and never a URL. One row's own failure never takes the
+rest of the pass down with it.
+
+The per-server rows roll up into the render's `upload_status`, so every
+existing query and dashboard that reads it keeps working. The precedence is
+`failed` over `pending` over `uploaded` over `skipped` — one server still
+failing is worth surfacing even while every other server has succeeded, and a
+delivery still in flight means the render is not done yet.
+
+Like the other maintenance passes this one is registered only when
+`scheduler.enabled` is `true` (see "Periodic scheduler" below). Unlike them it
+is **not** gated on Plex: a pending delivery can exist against any configured
+server, and a Jellyfin-only deployment needs this pass exactly as much.
+
 ## Secrets
 
 Secrets come from an ExternalSecret providing the `AUTOPOSTER_*` environment
 variables:
 
 - `AUTOPOSTER_DATABASE_URL`
-- `AUTOPOSTER_PLEX_TOKEN`
 - `AUTOPOSTER_TMDB_TOKEN`
 - `AUTOPOSTER_TVDB_APIKEY`
 - `AUTOPOSTER_FANART_APIKEY`
 - `AUTOPOSTER_WEBHOOK_SECRET`
+- `AUTOPOSTER_PLEX_TOKEN` / `AUTOPOSTER_JELLYFIN_APIKEY` — the media-server
+  credentials, and the only two that are conditional on the config document:
+  each is required exactly when its own block is configured, and at least one
+  server must be. They are therefore not among the five *hard* names above —
+  a Jellyfin-only deployment supplies no Plex token and is complete without
+  one. See "Media servers" above.
 - `AUTOPOSTER_MDBLIST_APIKEY` — optional. Unset, only the `content_rating`
   metadata field is skipped; every other metadata operation (ratings, genres,
   studio, release date) still runs (see `app.py`'s `_build_mdblist`), and any
@@ -2124,6 +2311,12 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   `scheduler` setting** — see `merge.apply` below, which defaults to `false`
   (dry run: report which pairs would merge). The scan itself asks Plex
   nothing, so the dry-run report is readable even while Plex is down.
+- `pending_deliveries_minutes` (default `15`) — cadence for the
+  pending-deliveries retry pass, which re-attempts an artwork delivery a
+  server could not take yet. Minutes rather than days because the thing it
+  waits on is a library scan, not a week's drift. It is the one pass here that
+  is not gated on Plex. See "The pending-deliveries pass" under "Media
+  servers" above for what a run does.
 
 ### Orphaned-asset cleanup: what it can and cannot find
 
