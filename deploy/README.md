@@ -99,9 +99,12 @@ manifests rather than assumed:
   never one facing the internet.
 - The admin password hash is supplied by the SOPS-held Secret, not the
   ExternalSecret that can render empty — and so is the database URL
-  (`secret.sops.yaml`). The ExternalSecret supplies four of the six hard
-  names instead: `AUTOPOSTER_PLEX_TOKEN`, `AUTOPOSTER_TMDB_TOKEN`,
-  `AUTOPOSTER_TVDB_APIKEY` and `AUTOPOSTER_FANART_APIKEY`. The only reachable
+  (`secret.sops.yaml`). The ExternalSecret supplies four names instead:
+  `AUTOPOSTER_TMDB_TOKEN`, `AUTOPOSTER_TVDB_APIKEY` and
+  `AUTOPOSTER_FANART_APIKEY` — three of the five hard names — plus
+  `AUTOPOSTER_PLEX_TOKEN`, which is not a hard name but is required because
+  this deployment's document configures Plex, and whose absence puts the boot
+  into setup mode just the same (see "Media servers" below). The only reachable
   way into setup mode here is that ExternalSecret blanking one of those four
   — the admin hash and the database URL still resolve regardless. So step 1
   on this deployment is **verify-only**: an unauthenticated caller on the
@@ -113,7 +116,7 @@ The genuinely unbounded case is a true first start, where nobody has ever set
 a password anywhere: whoever arrives first becomes admin there, which is what
 any first-start wizard accepts.
 
-### The five steps
+### The six steps
 
 Every step past the first has a **Back** button. Back is free and entirely
 client-side: the server already holds everything a re-render needs (a stored
@@ -149,40 +152,24 @@ returned 200.
    environment or the state file. Validated by connecting before it is kept,
    so a well-formed URL pointing at nothing is refused here rather than
    passing this step and failing hours later with the wizard already gone.
-   Staged in memory, not written, until step 5.
-4. **Systems.** One collapsible panel per system: Plex, the Plex account,
-   TMDb, TVDB, Fanart, MDBList, Radarr, Sonarr, Tracearr. A system
-   this deployment cannot boot without opens by default; one whose credential
-   is already stored collapses with a **Stored** pill on its header; the rest
-   collapse. Open or closed is never sent to the server and never persisted.
+   Staged in memory, not written, until step 6.
+4. **Media servers.** One card per server — Plex and Jellyfin — each holding
+   that server's address, its credential, its own **Check connection** and its
+   own library tick-list; the unticked libraries become that server's
+   `excluded_libraries`. The two are independent rather than a choice between
+   them: a card submits only its own pair of fields, so saving one leaves the
+   other's block alone, and a deployment can finish with either server or with
+   both. What it cannot finish with is neither, or with a server it names and
+   holds no credential for — the same `missing_server_setup` rule the next boot
+   applies, asked here rather than as a second expression that happens to agree
+   with it today. See "Media servers" below for what each block then means.
 
-   - **Check connection.** Every panel has one. It goes to a single
-     token-gated endpoint whose targets are a compiled-in table: the caller
-     names a system key from a ten-entry allowlist and, for the four whose
-     address is not built in (Plex, Radarr, Sonarr, Tracearr), a base address
-     — never a path, a method or a header. The answer is one of three fixed
-     sentences, the third carrying an exception's class name, and never the
-     other service's own response. Every probe is bounded at five seconds.
+   Only one card opens at a time: the one the document names and holds no
+   credential for, or Plex's on a deployment with nothing configured yet. The
+   Plex card carries a whole sign-in flow, and two open cards would be the
+   longest pane in the wizard for an operator who runs one server.
 
-     There is deliberately **no private-IP denylist**: every correct target on
-     every shipped deployment *is* a private address (`http://sonarr`,
-     `http://plex:32400`), so a denylist would refuse the only right answers.
-     What that leaves, stated rather than papered over: someone holding the
-     setup token can learn whether an arbitrary host answers on an arbitrary
-     port, as a boolean. The token is minted only by the master password, and
-     that step is rate-limited.
-
-     A boolean, and nothing more than a boolean: for those same four systems
-     the credential the probe sends must have arrived with the address — typed
-     into the field beside the button, or staged earlier by this wizard. One
-     the deployment already holds from its environment or its state file is
-     never sent to an address a request names, and pressing Check with the
-     field empty answers a fixed sentence asking for the key instead. (Setup
-     mode is entered when *any one* hard credential fails to resolve, so a pod
-     in it still holds all the others.) The six systems with a built-in
-     address are unaffected: an empty field there still means "check the key
-     you already have".
-   - **Plex signs in rather than being pasted.** The panel starts a PIN flow
+   - **Plex signs in rather than being pasted.** The card starts a PIN flow
      against plex.tv (a strong PIN — plex.tv mints a long, opaque code rather
      than the four-character one a typed sign-in uses, so there is nothing to
      type; the link already carries it), shows the code and a sign-in link,
@@ -195,6 +182,54 @@ returned 200.
      Servers shared *to* the account are out of scope and the pick-list omits
      them. You then choose the server (its local address first) and tick the
      libraries to manage; the unticked ones become `plex.excluded_libraries`.
+   - **Jellyfin is an address and a key.** There is no account sign-in to
+     arrive from, so both are always typed here. Its check is a
+     `GET /System/Info` — authenticated, not the public variant, so the probe
+     proves the API key and not merely that the host answered — and the same
+     key then reads the library tick-list.
+
+   This is also the step that writes the configuration document, and it is
+   **refused outright on a deployment that already resolves one** (a mounted
+   ConfigMap, compose's bind-mounted example): writing beside a document the
+   next boot never opens is exactly the failure the finish step's write order
+   exists to avoid. The cards there read the addresses out of that document and
+   collect only the credentials. If such a document names no media server at
+   all, this step cannot be finished from this page — the pane says so, and the
+   way out is the document itself.
+5. **Systems.** One collapsible panel per system: the Plex account, TMDb,
+   TVDB, Fanart, MDBList, Radarr, Sonarr, Tracearr. The two media servers are
+   not here — they have their own step above. A system this deployment cannot
+   boot without opens by default; one whose credential is already stored
+   collapses with a **Stored** pill on its header; the rest collapse. Open or
+   closed is never sent to the server and never persisted.
+
+   - **Check connection.** Every panel has one, and so does every card on the
+     media-server step above. It goes to a single token-gated endpoint whose
+     targets are a compiled-in table: the caller names a system key from a
+     ten-entry allowlist and, for the five whose address is not built in (Plex,
+     Jellyfin, Radarr, Sonarr, Tracearr), a base address — never a path, a
+     method or a header. The answer is one of three fixed sentences, the third
+     carrying an exception's class name, and never the other service's own
+     response. Every probe is bounded at five seconds.
+
+     There is deliberately **no private-IP denylist**: every correct target on
+     every shipped deployment *is* a private address (`http://sonarr`,
+     `http://plex:32400`), so a denylist would refuse the only right answers.
+     What that leaves, stated rather than papered over: someone holding the
+     setup token can learn whether an arbitrary host answers on an arbitrary
+     port, as a boolean. The token is minted only by the master password, and
+     that step is rate-limited.
+
+     A boolean, and nothing more than a boolean: for those same five systems
+     the credential the probe sends must have arrived with the address — typed
+     into the field beside the button, or staged earlier by this wizard. One
+     the deployment already holds from its environment or its state file is
+     never sent to an address a request names, and pressing Check with the
+     field empty answers a fixed sentence asking for the key instead. (Setup
+     mode is entered when *any one* hard credential fails to resolve, or when
+     no media server is usable, so a pod in it still holds all the others.) The
+     five systems with a built-in address are unaffected: an empty field there
+     still means "check the key you already have".
    - **Register the webhook for me.** Radarr's and Sonarr's panels each carry
      this. It creates — or updates in place, matched on name *and*
      implementation — a `Webhook` connection named `Autoposter - Radarr` /
@@ -227,14 +262,14 @@ returned 200.
    Sonarr/Radarr webhook secret, minted the first time the step completes with
    none on record, and shown **once**, on the finish page. Submitting one
    yourself is refused outright.
-5. **Finish.** Three blocks: the generated secret, once, with the warning that
+6. **Finish.** Three blocks: the generated secret, once, with the warning that
    it will not return; one row per *arr saying `created`, `updated`, the
    refusal sentence, or `not attempted`, with the URL that was registered (not
    the header value); and everything left for later — each credential left
    empty by name, the database step if the environment already resolved one,
    and `public_url` if a supplied document meant it could not be written.
 
-   Then the write. Steps 2–4 are staged in memory rather than persisted as
+   Then the write. Steps 2–5 are staged in memory rather than persisted as
    they are collected. This step writes the config document **first**, then
    the secrets file, each atomically, then re-runs the same CONFIGURED check
    the next boot will run — over what was actually just written, not over what
@@ -271,18 +306,19 @@ one. Writes are atomic (temp file in the same directory, `fsync`,
 **Precedence, in one line: the environment wins.** A name set in the
 environment is used even when the file also carries it, so adding an
 ExternalSecret later takes effect at the next restart with no need to edit or
-delete anything under `/state` for the six hard names themselves — with one
+delete anything under `/state` for the five hard names themselves — with one
 exception among them: `AUTOPOSTER_WEBHOOK_SECRET` must be **carried over from
 `secrets.env`, never regenerated**. The wizard mints it, shows it exactly once
 and it is the value Sonarr and Radarr were given; a fresh one in the Secret
 wins over the file, and every webhook then fails verification silently until
 both applications are updated. Copy the existing line out of `secrets.env`
 into the Secret. It is not free for the SOFT names the wizard writes either:
-once all six hard names resolve from the environment, `resolve_secret_values`
+once all five hard names resolve from the environment, `resolve_secret_values`
 never opens `secrets.env` again, for any name. A deployment the wizard configured, whose
 hard names are later handed to an ExternalSecret, must carry every soft name
 the wizard wrote into the environment (or the Secret) in that same change:
-`AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, and every provider key step 3
+`AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, the media-server credential the
+media-server step collected, and every provider key the Systems step
 collected — `AUTOPOSTER_MDBLIST_APIKEY`, `AUTOPOSTER_RADARR_APIKEY`,
 `AUTOPOSTER_SONARR_APIKEY`,
 `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` and `AUTOPOSTER_TRACEARR_APIKEY` — or they are
@@ -312,9 +348,9 @@ environment and roll the deployment, exactly as for every other credential.
 ### Kubernetes
 
 Add a PVC and mount it; nothing else changes, and the deployment stays
-env-configured — every hard name plus the admin hash already comes from
-`envFrom: secretRef`, so it enters setup mode only if one of those six names
-stops resolving from the environment. That is one reachable case and it is
+env-configured — every hard name plus the Plex token and the admin hash
+already comes from `envFrom: secretRef`, so it enters setup mode only if one
+of those seven names stops resolving from the environment. That is one reachable case and it is
 bounded: see "The unauthenticated-form question" above, where the four
 ExternalSecret-supplied names are the door and the SOPS-held admin hash makes
 step 1 verify-only. The two manifest changes are:
@@ -368,7 +404,10 @@ in `frontend/`) so `frontend/dist` exists. That stack's `api` service also
 already sets `AUTOPOSTER_CONFIG` to the example config bind-mounted in from
 the repository (`.:/app`), so a document always resolves there — what a
 compose deployment is actually missing, when it is missing anything, is
-credentials, and the wizard's step 4 is never offered on it.
+credentials. The media-server step is therefore the constrained one on it: the
+document already names `plex:`, `POST /api/setup/config` is refused while a
+document resolves, and what that step collects there is the token, not the
+address.
 
 ### A note on TLS
 
