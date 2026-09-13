@@ -21,7 +21,7 @@ from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from autoposter.config.holder import ConfigHolder
 from autoposter.db.models import (
@@ -33,6 +33,7 @@ from autoposter.scheduler.prune import (
     PRUNE_EVENT,
     PRUNE_SOURCE,
     PruneRefused,
+    _directory_count,
     dismiss_jobs_for,
     find_prunable,
     implausible_prune_count,
@@ -47,19 +48,24 @@ class FakePlex:
 
     ``live`` is the set of rating keys that still resolve; ``error``, when set,
     is raised instead, because "the probe failed" and "everything is gone" must
-    never be the same answer.
+    never be the same answer. ``name`` defaults to ``"plex"`` -- every test in
+    this suite predates a second server -- but Task 19's per-server
+    ``find_prunable`` reads each server's OWN native id off the intent, so a
+    test standing this in for another server (``test_the_audit_rows_refs_
+    include_every_server``) passes ``name="jellyfin"`` to match.
     """
 
-    def __init__(self, live=(), *, error=None):
+    def __init__(self, live=(), *, error=None, name: str = "plex"):
         self._live = set(live)
         self._error = error
+        self._name = name
         self.asked = []
 
     async def exists_many(self, intents):
         if self._error is not None:
             raise self._error
         self.asked.extend(intents)
-        return [intent.native_id_on("plex") in self._live for intent in intents]
+        return [intent.native_id_on(self._name) in self._live for intent in intents]
 
 
 async def _add_item(session, rating_key, *, kind="movie", parent=None, **columns):
@@ -107,7 +113,7 @@ def _producer_payload(native_id: str, *, title: str = "Gone", kind: str = "movie
 async def test_a_row_plex_still_resolves_is_never_a_candidate(session):
     await _add_item(session, "10")
 
-    scan = await find_prunable(session, FakePlex(live={"10"}))
+    scan = await find_prunable(session, {"plex": FakePlex(live={"10"})})
 
     assert scan.prunable == []
     assert (scan.gone, scan.held, scan.total) == (0, 0, 1)
@@ -117,7 +123,7 @@ async def test_a_row_that_no_longer_resolves_is_prunable(session):
     await _add_item(session, "10")
     await _add_item(session, "11")
 
-    scan = await find_prunable(session, FakePlex(live={"10"}))
+    scan = await find_prunable(session, {"plex": FakePlex(live={"10"})})
 
     assert [c.native_id for c in scan.prunable] == ["11"]
     assert (scan.gone, scan.held, scan.total) == (1, 0, 2)
@@ -134,7 +140,7 @@ async def test_the_probe_is_asked_exactly_what_the_pipeline_asks(session):
     )
     plex = FakePlex(live={"42"})
 
-    await find_prunable(session, plex)
+    await find_prunable(session, {"plex": plex})
 
     (intent,) = plex.asked
     assert intent.native_id_on("plex") == "42"
@@ -153,7 +159,7 @@ async def test_a_parent_is_held_when_any_descendant_still_resolves(session):
     season = await _add_item(session, "110", kind="season", parent=show)
     await _add_item(session, "111", kind="episode", parent=season)
 
-    scan = await find_prunable(session, FakePlex(live={"111"}))
+    scan = await find_prunable(session, {"plex": FakePlex(live={"111"})})
 
     assert scan.prunable == []
     assert (scan.gone, scan.held, scan.total) == (2, 2, 3)
@@ -166,7 +172,7 @@ async def test_a_family_that_is_entirely_gone_is_prunable_deepest_first(session)
     season = await _add_item(session, "110", kind="season", parent=show)
     await _add_item(session, "111", kind="episode", parent=season)
 
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
 
     assert [c.native_id for c in scan.prunable] == ["111", "110", "100"]
     assert (scan.gone, scan.held, scan.total) == (3, 0, 3)
@@ -180,7 +186,7 @@ async def test_a_gone_child_under_a_surviving_parent_is_prunable_on_its_own(sess
     season = await _add_item(session, "110", kind="season", parent=show)
     await _add_item(session, "111", kind="episode", parent=season)
 
-    scan = await find_prunable(session, FakePlex(live={"100", "110"}))
+    scan = await find_prunable(session, {"plex": FakePlex(live={"100", "110"})})
 
     assert [c.native_id for c in scan.prunable] == ["111"]
     assert (scan.gone, scan.held, scan.total) == (1, 0, 3)
@@ -197,7 +203,9 @@ async def test_an_excluded_librarys_row_is_gone_even_though_plex_resolves_it(ses
     await _add_item(session, "10", library="Movies")
     await _add_item(session, "11", library="DVR")
 
-    scan = await find_prunable(session, FakePlex(live={"10", "11"}), frozenset({"DVR"}))
+    scan = await find_prunable(
+        session, {"plex": FakePlex(live={"10", "11"})}, {"plex": frozenset({"DVR"})}
+    )
 
     assert [c.native_id for c in scan.prunable] == ["11"]
     assert (scan.gone, scan.held, scan.total, scan.excluded) == (1, 0, 2, 1)
@@ -214,7 +222,7 @@ async def test_an_excluded_familys_resolving_descendant_does_not_hold_it(session
     await _add_item(session, "111", kind="episode", parent=season, library="DVR")
 
     scan = await find_prunable(
-        session, FakePlex(live={"100", "110", "111"}), frozenset({"DVR"})
+        session, {"plex": FakePlex(live={"100", "110", "111"})}, {"plex": frozenset({"DVR"})}
     )
 
     assert [c.native_id for c in scan.prunable] == ["111", "110", "100"]
@@ -250,8 +258,8 @@ async def test_the_fold_never_retires_a_row_whose_own_library_is_permitted(sessi
 
     scan = await find_prunable(
         session,
-        FakePlex(live={"200", "201", "300", "301"}),
-        frozenset({"DVR"}),
+        {"plex": FakePlex(live={"200", "201", "300", "301"})},
+        {"plex": frozenset({"DVR"})},
     )
 
     # Only the excluded episode goes. The excluded show is gone-but-held by its
@@ -263,7 +271,7 @@ async def test_the_fold_never_retires_a_row_whose_own_library_is_permitted(sessi
 async def test_an_empty_table_probes_nothing(session):
     plex = FakePlex(live=set())
 
-    scan = await find_prunable(session, plex)
+    scan = await find_prunable(session, {"plex": plex})
 
     assert (scan.prunable, scan.gone, scan.held, scan.total) == ([], 0, 0, 0)
     assert plex.asked == []
@@ -279,7 +287,7 @@ async def test_the_scan_counts_the_asset_directories_a_prune_would_orphan(sessio
     await _add_item(session, "111", kind="episode", parent=season)
     await _add_item(session, "200", kind="movie")
 
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
 
     assert len(scan.prunable) == 4
     assert scan.directories == 2
@@ -320,7 +328,7 @@ async def test_the_ancestor_walk_terminates_on_a_parent_id_cycle(session):
     )
     await session.commit()
 
-    scan = await find_prunable(session, FakePlex(live={"100"}))
+    scan = await find_prunable(session, {"plex": FakePlex(live={"100"})})
 
     assert scan.total == 2
     assert scan.prunable == []
@@ -329,7 +337,7 @@ async def test_the_ancestor_walk_terminates_on_a_parent_id_cycle(session):
 async def test_an_applied_retire_deletes_the_row(session):
     item = await _add_item(session, "11")
     item_id = item.id
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
 
     outcome = await retire(session, scan.prunable)
     await session.commit()
@@ -356,7 +364,7 @@ async def test_each_delete_writes_one_audit_row_carrying_the_whole_identity(sess
     )
     session.add(Render(item_id=item.id, art_kind="poster", asset_path="/assets/a.jpg"))
     await session.commit()
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
 
     await retire(session, scan.prunable)
     await session.commit()
@@ -387,7 +395,13 @@ async def test_the_audit_rows_refs_include_every_server(session):
         item_id=item.id, server="jellyfin", native_id="0a", library=item.library,
     ))
     await session.commit()
-    scan = await find_prunable(session, FakePlex(live=set()))
+    # Both servers gone, so nothing holds the row reachable -- Task 19's
+    # per-server prune only retires a row once EVERY configured server has
+    # lost it, and this test is about the audit payload, not cross-server
+    # reachability.
+    scan = await find_prunable(
+        session, {"plex": FakePlex(live=set()), "jellyfin": FakePlex(live=set(), name="jellyfin")}
+    )
 
     await retire(session, scan.prunable)
     await session.commit()
@@ -404,7 +418,7 @@ async def test_every_row_of_a_pruned_family_gets_its_own_audit_row(session):
     season = await _add_item(session, "110", kind="season", parent=show)
     episode = await _add_item(session, "111", kind="episode", parent=season)
     deepest_first = [episode.id, season.id, show.id]
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
 
     outcome = await retire(session, scan.prunable)
     await session.commit()
@@ -426,7 +440,7 @@ async def test_the_renders_and_facts_of_a_pruned_row_go_with_it(session):
     session.add(Render(item_id=item.id, art_kind="poster", asset_path="/assets/a.jpg"))
     session.add(ItemFacts(item_id=item.id))
     await session.commit()
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
 
     await retire(session, scan.prunable)
     await session.commit()
@@ -456,7 +470,7 @@ async def test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped(
     """
     item = await _add_item(session, "11", title="Old Title")
     item_id = item.id
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
     assert [c.native_id for c in scan.prunable] == ["11"]
 
     await session.execute(update(MediaItem).where(MediaItem.id == item_id).values(title="New Title"))
@@ -491,7 +505,7 @@ async def test_a_re_upserted_child_holds_its_whole_family_back_from_the_delete(s
     season = await _add_item(session, "110", kind="season", parent=show)
     episode = await _add_item(session, "111", kind="episode", parent=season)
     show_id, season_id, episode_id = show.id, season.id, episode.id
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
     assert [c.native_id for c in scan.prunable] == ["111", "110", "100"]
 
     # A plain ORM update stands in for the real re-upsert (see the sibling
@@ -527,7 +541,7 @@ async def test_a_blocked_family_does_not_spare_an_unrelated_gone_row(session):
     episode_id = episode.id
     movie = await _add_item(session, "11", title="A Movie")
     movie_id = movie.id
-    scan = await find_prunable(session, FakePlex(live=set()))
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
 
     # A plain ORM update stands in for the real re-upsert -- see
     # test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped's
@@ -666,11 +680,17 @@ def _config(*, apply=False, max_prunes=500, max_prune_share=0.25, max_orphans=50
         cleanup=SimpleNamespace(max_orphans=max_orphans, max_orphan_share=0.25),
         scheduler=SimpleNamespace(prune_days=7),
         plex=SimpleNamespace(excluded_libraries=list(excluded)),
+        # Task 19: make_prune_job's servers_factory builds every configured
+        # server; this suite is Plex-only throughout, so `jellyfin` reads as
+        # not configured, exactly like a real Config with no jellyfin: block.
+        jellyfin=None,
     )
 
 
 def _job(config, plex, *, healthy=True):
-    return make_prune_job(ConfigHolder(config), lambda: plex, lambda: healthy)
+    # Task 19: make_prune_job's second argument is a servers_factory
+    # returning a {name: MediaServer} mapping, not one bare server.
+    return make_prune_job(ConfigHolder(config), lambda: {"plex": plex}, lambda: healthy)
 
 
 class _ReupsertingPlex(FakePlex):
@@ -688,6 +708,14 @@ class _ReupsertingPlex(FakePlex):
     carry one a real ``ResolvedItem`` could compute -- ``onupdate=func.now()``
     bumps ``updated_at`` on this update exactly as the real upsert's ON
     CONFLICT arm does, which is the only thing the guard being pinned reads.
+
+    Task 19: the real re-upsert also re-touches this server's OWN ref row
+    (``upsert_server_ref``'s ON CONFLICT arm, keyed on ``uq_server_ref``),
+    and ``_prune_stale_refs`` now guards its own delete on that ref's
+    ``(id, updated_at)`` the same way ``retire`` guards the item's -- so the
+    stand-in bumps the ref's ``updated_at`` too, or the ref would still read
+    as stale and be deleted out from under a `MediaItem` this fixture means
+    to keep alive.
     """
 
     def __init__(self, session, native_id, *, title="New Title", live=()):
@@ -706,6 +734,13 @@ class _ReupsertingPlex(FakePlex):
                 )
             )
         ).scalar_one()
+        await self._session.execute(
+            update(MediaItemServerRef)
+            .where(
+                MediaItemServerRef.item_id == item_id, MediaItemServerRef.server == "plex",
+            )
+            .values(updated_at=func.now())
+        )
         await self._session.execute(
             update(MediaItem).where(MediaItem.id == item_id).values(title=self._title)
         )
@@ -1015,24 +1050,6 @@ async def test_an_applied_pass_counts_directories_off_what_it_actually_pruned(se
     )
 
 
-class _ReupsertingByIdPlex(FakePlex):
-    """``_ReupsertingPlex`` for a row that has no Plex ref to find it by."""
-
-    def __init__(self, session, item_id, *, title="New Title"):
-        super().__init__(())
-        self._session = session
-        self._item_id = item_id
-        self._title = title
-
-    async def exists_many(self, intents):
-        flags = await super().exists_many(intents)
-        await self._session.execute(
-            update(MediaItem).where(MediaItem.id == self._item_id).values(title=self._title)
-        )
-        await self._session.commit()
-        return flags
-
-
 async def _add_ref_less_item(session, title, *, kind="movie", library="Movies"):
     """A ``media_items`` row with NO server ref at all -- what a Jellyfin-only
     item, or a row whose only ref was deleted, looks like to this sweep.
@@ -1049,16 +1066,34 @@ async def test_a_skipped_ref_less_row_does_not_speak_for_the_other_ref_less_rows
     ``None`` in it -- and every OTHER ref-less candidate then matched, whether
     or not it was deleted. Here the surviving row would have claimed the
     deleted one's directory count as a second orphan. Matching on
-    ``media_items.id`` is what closes it."""
+    ``media_items.id`` is what closes it.
+
+    Task 19: a ref-less row has no ref on any server, so it never reaches a
+    per-server probe at all (there is nothing to check) -- ``_ReupsertingByIdPlex``'s
+    old hook, inside ``exists_many``, has nothing left to fire from. The
+    concurrent write is applied directly here, between the scan and the
+    delete, in its place; the row's OWN reachability answer (gone, having no
+    ref anywhere) is unaffected either way, which is the point of this test.
+    """
     kept = await _add_ref_less_item(session, "Kept")
+    # Captured before find_prunable's own rollback expires this instance --
+    # a lazy reload of `.id` afterward would be a plain attribute access
+    # outside greenlet context.
+    kept_id = kept.id
     await _add_ref_less_item(session, "Gone")
 
-    plex = _ReupsertingByIdPlex(session, kept.id)
-    summary = await _job(_config(apply=True), plex).run(session)
+    scan = await find_prunable(session, {"plex": FakePlex(live=set())})
+    await session.execute(
+        update(MediaItem).where(MediaItem.id == kept_id).values(title="New Title")
+    )
+    await session.commit()
 
-    assert "pruned 1 of 2" in summary
-    assert "1 asset director" in summary, (
-        f"the skipped ref-less row was counted as deleted too: {summary!r}"
+    outcome = await retire(session, scan.prunable)
+
+    assert outcome.skipped == 1
+    assert kept_id not in outcome.pruned
+    assert _directory_count([c for c in scan.prunable if c.id in set(outcome.pruned)]) == 1, (
+        "the skipped ref-less row was counted as deleted too"
     )
     session.expire_all()
     survivors = (await session.execute(select(MediaItem.title))).scalars().all()
@@ -1070,7 +1105,15 @@ async def test_a_skipped_rows_queued_job_is_not_dismissed(session):
     list, said at the job level. The row was re-upserted between this pass's
     probe and its delete, so it survives -- and the work queued against it is
     still live work, which a dismissal keyed on the candidates would sweep away
-    on the strength of an observation that stopped being true mid-pass."""
+    on the strength of an observation that stopped being true mid-pass.
+
+    Task 19: the re-upsert also touches this item's OWN ref
+    (``_ReupsertingPlex``'s own note), so ``_prune_stale_refs``'s ``(id,
+    updated_at)`` guard now catches the very same race one step earlier --
+    the ref survives, the row is never even a candidate, and there is no
+    ``outcome.skipped`` count or "shielded by one that did" line to show for
+    it. What still has to hold, and is still asserted here, is the point of
+    the test: the row is not pruned, and its queued job is not dismissed."""
     await _add_item(session, "11", title="Old Title")
     session.add(Job(
         kind="process_item",
@@ -1085,7 +1128,6 @@ async def test_a_skipped_rows_queued_job_is_not_dismissed(session):
 
     assert "pruned 0 of 1" in summary
     assert "dismissed 0" in summary
-    assert "shielded by one that did" in summary
     session.expire_all()
     survivor = (await session.execute(select(MediaItem))).scalar_one()
     survivor_native_id = (
