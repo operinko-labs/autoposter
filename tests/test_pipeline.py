@@ -9,7 +9,7 @@ from conftest import decodable_png
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config, render_version_for
-from autoposter.db.models import MediaItem, Render, RenderDelivery
+from autoposter.db.models import MediaItem, MediaItemServerRef, Render, RenderDelivery
 from autoposter.db.refs import item_id_for
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
@@ -1378,7 +1378,13 @@ async def test_a_transport_error_from_one_server_resolve_does_not_abort_the_othe
     """I4 (fix round 2): a transport error resolving on ONE server must not
     abort the item for the others -- logged (class name only, never a URL),
     treated as a miss (that server gets `pending`), and the loop continues
-    to deliver everything else normally."""
+    to deliver everything else normally.
+
+    `upload_to_jellyfin` is turned on explicitly (fix round 3, I1): the
+    toggle now gates the MISSED half of `deliver` as well as the resolved
+    one, so with it off this server's honest outcome would be `skipped` and
+    the assertion below would stop testing what this test is named for."""
+    config_with_badges.badges.upload_to_jellyfin = True
     monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
     monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
     servers, plex, jf = _two_servers()
@@ -1680,3 +1686,261 @@ async def test_a_failed_compose_after_a_provenance_mismatch_leaves_the_fingerpri
     monkeypatch.setattr(pipeline_module, "compose_badges", _spy)
     await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
     assert calls == [1], "the second pass must retry compose, not skip on a stale gate"
+
+
+# Fix round 3 (Phase 5 branch review).
+
+
+async def _refs_for_the_intent(session) -> set[str]:
+    """Which servers hold a ref for the item ``INTENT`` resolves to."""
+    return set((await session.execute(select(MediaItemServerRef.server))).scalars())
+
+
+async def test_a_refused_art_kind_keeps_every_resolved_servers_ref(
+    session, config_with_badges, monkeypatch,
+):
+    """C1: the refusal handler rolls back while the non-primary refs written
+    at the top of `process_item` are still uncommitted, and then re-establishes
+    the item -- re-upserting the PRIMARY ref alone, silently dropping
+    jellyfin's, and committing that loss. Worst for a season or an episode,
+    whose single art kind makes any `SourceRefused` a first-kind refusal.
+
+    Badges off: the badge block's own re-upsert must not be what repairs
+    this, or the test would pass for the wrong reason."""
+    from autoposter.render.artwork_fetch import SourceRefused
+
+    config_with_badges.badges.enabled = False
+    servers, plex, jf = _two_servers()
+
+    async def refuse_the_poster(session, config, http, item, art_kind, providers, **kwargs):
+        if art_kind != "poster":
+            return await _fake_render_artifact(
+                session, config, http, item, art_kind, providers, **kwargs
+            )
+        # The real `render_artifact` flushes its own render-row upsert before
+        # it can refuse, which is what makes the handler's rollback matter.
+        media_item = await pipeline_module._upsert_media_item(session, item)
+        await pipeline_module._get_or_create_render(session, media_item, art_kind, "/tmp/p.jpg")
+        raise SourceRefused("the poster source refused")
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", refuse_the_poster)
+
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    assert await _refs_for_the_intent(session) == {"plex", "jellyfin"}
+
+
+async def test_a_metadata_failure_keeps_every_resolved_servers_ref(
+    session, config_with_badges, monkeypatch,
+):
+    """C1, the other rollback: the metadata-operations containment. It needs
+    no refusal at all -- a TMDb hiccup, or one server's `apply_facts` failing
+    (I4) -- and the only thing that re-established the item afterwards was
+    `render_artifact`'s own `_upsert_media_item`, which knows nothing about
+    the other servers."""
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    servers, plex, jf = _two_servers()
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    async def explode(*args, **kwargs):
+        raise RuntimeError("the facts provider hiccuped")
+
+    monkeypatch.setattr(pipeline_module, "apply_metadata", explode)
+
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT, tmdb_facts=object(),
+    )
+
+    assert await _refs_for_the_intent(session) == {"plex", "jellyfin"}
+
+
+async def test_an_upload_disabled_server_that_missed_gets_no_pending_row(
+    session, config_with_badges, monkeypatch,
+):
+    """I1: NB3's toggle check sat inside `deliver`'s RESOLVED half, so a
+    server the pass could not resolve still got a `pending` catch-up row with
+    its upload toggle off. `upload_to_jellyfin` defaults to off, so that is
+    every item Jellyfin has not scanned yet on a dual deployment's first
+    pass -- each one dropping the render's roll-up from `uploaded` to
+    `pending`, and each one rewritten `skipped` by the next retry pass."""
+    config_with_badges.badges.upload_to_jellyfin = False
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers(jelly_has=False)
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    rows = {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    }
+    assert rows == {("plex", "uploaded"), ("jellyfin", "skipped")}
+    assert poster.upload_status == "uploaded"
+
+
+async def test_one_servers_metadata_write_failure_does_not_cost_the_other_its_write(
+    session, monkeypatch, caplog,
+):
+    """I4: `_write` was awaited in sequence with no `try`, so Plex's
+    `apply_facts` failing aborted before Jellyfin was attempted at all and
+    propagated into `process_item`'s containment -- whose rollback discards
+    this item's `persist_facts` and, before C1, its refs with it (spec
+    §6.1: every server call is caught at the ref it belongs to)."""
+    config = load_config(EXAMPLE)
+    config.operations.write_to_plex = True
+    config.operations.write_to_jellyfin = True
+    config.badges.enabled = False
+    plex = FakeMediaServer(name="plex")
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    jf.items[INTENT.dedupe_key] = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+    servers = Servers({"plex": plex, "jellyfin": jf})
+
+    async def explode(*args, **kwargs):
+        raise httpx.ConnectError("https://plex.internal/library/metadata/1")
+
+    monkeypatch.setattr(plex, "apply_facts", explode)
+
+    class _FakeTMDBFacts:
+        async def movie(self, tmdb_id):
+            return GatheredFacts(audience_rating=6.3, sources={"audience_rating": "tmdb"})
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    with caplog.at_level("WARNING"):
+        await pipeline_module.process_item(
+            session, config, None, servers, [], INTENT,
+            tmdb_facts=_FakeTMDBFacts(), mdblist=NullMDBListClient(),
+        )
+
+    assert len(jf.facts_written) == 1, "plex's failure must not cost jellyfin its write"
+    assert not any(
+        "metadata operations failed" in record.message for record in caplog.records
+    ), "one server's write failure must not reach process_item's rollback path"
+    assert any("ConnectError" in record.message for record in caplog.records)
+    assert not any("plex.internal" in record.message for record in caplog.records)
+
+
+async def test_a_migration_backfilled_delivery_row_does_not_block_adoption(
+    session, config_with_badges, monkeypatch,
+):
+    """I5: the Phase-2 migration backfills one `plex` delivery row for EVERY
+    pre-existing render, with no `attempted_at`. `_already_delivered`
+    answered False as soon as any row existed, so on the production database
+    the provenance probe could never run again -- for exactly the population
+    (`badge_fingerprint IS NULL`) adoption exists for, which would then be
+    recomposed and re-uploaded instead.
+
+    `badge_fingerprint` is stubbed rather than learnt from a real first pass
+    (the shape
+    `test_a_single_upload_enabled_server_skips_compose_on_matching_provenance`
+    uses): this test is about the probe running at all, and a fixed digest
+    keeps it out of ImageMagick's way entirely."""
+    from sqlalchemy import insert
+
+    config_with_badges.badges.adopt_from_plex = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "badge_fingerprint", lambda *a, **k: "fp-from-exif")
+
+    probed: list[str] = []
+
+    class _ProvenanceServer(FakeMediaServer):
+        async def fetch_item(self, native_id):
+            return None
+
+        async def artwork_provenance(self, ref, art_kind):
+            probed.append(art_kind)
+            return "fp-from-exif"
+
+    plex = _ProvenanceServer(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    servers = Servers({"plex": plex})
+
+    # The migration's own row shape: status copied off `renders.upload_status`,
+    # every timestamp NULL.
+    media_item = await pipeline_module._upsert_media_item(
+        session, fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    )
+    render = await pipeline_module._get_or_create_render(
+        session, media_item, "poster", "/tmp/poster.jpg"
+    )
+    render.status = "rendered"
+    await session.flush()
+    await session.execute(
+        insert(RenderDelivery).values(render_id=render.id, server="plex", status="pending")
+    )
+    await session.commit()
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compose must not run when adoption matches")
+
+    monkeypatch.setattr(pipeline_module, "compose_badges", _boom)
+
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    assert probed == ["poster"], "a migration-backfilled row must not silence the probe"
+    assert plex.uploads == [], "this is adoption, not a re-upload"
+    row = (
+        await session.execute(
+            select(RenderDelivery.status, RenderDelivery.attempted_at).where(
+                RenderDelivery.render_id == render.id, RenderDelivery.server == "plex",
+            )
+        )
+    ).one()
+    assert row.status == "uploaded" and row.attempted_at is not None
+
+
+async def test_one_permanently_pending_server_does_not_recompose_every_pass(
+    session, config_with_badges, monkeypatch,
+):
+    """I7: the unchanged-work gate was inherited from the single-server code
+    (`fingerprint` unchanged AND `upload_status == "uploaded"`), but
+    `upload_status` is now the roll-up, whose precedence puts `pending` above
+    `uploaded`. So one server that has not scanned the item -- the normal
+    steady state of a newly added Jellyfin over a large library -- meant
+    ImageMagick per render per pass, plus a redundant re-upload to every
+    server that already had the bytes."""
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.badges.adopt_from_plex = False
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    composes: list[str] = []
+
+    def _spy(base_path, art_kind, *args, **kwargs):
+        composes.append(art_kind)
+        return b"badged"
+
+    monkeypatch.setattr(pipeline_module, "compose_badges", _spy)
+
+    class _NoMediaPlex(FakeMediaServer):
+        async def fetch_item(self, native_id):
+            return None
+
+    plex = _NoMediaPlex(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    servers = Servers({"plex": plex, "jellyfin": jf})
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert composes == ["poster"] and len(plex.uploads) == 1
+
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    assert composes == ["poster"], "an unchanged fingerprint must not recompose"
+    assert len(plex.uploads) == 1, "plex already has these bytes"
+    rows = {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    }
+    assert rows == {("plex", "uploaded"), ("jellyfin", "pending")}

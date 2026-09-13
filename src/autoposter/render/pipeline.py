@@ -1649,14 +1649,30 @@ async def apply_metadata(
         # same media_items row.
         if target_server is None or not getattr(config.operations, f"write_to_{name}", False):
             return
-        exempt = exemption_reason(
-            config.operations, ref_item.native_id, ref_item.imdb_id,
-            await target_server.item_labels(ref_item.ref),
-        )
-        if exempt is not None:
-            logger.info("%s: skipped writing %s: %s", target_server.name, ref_item.native_id, exempt)
-        else:
-            await target_server.apply_facts(ref_item.ref, facts, config.operations, parental_categories, overrides)
+        # Fix round 3, I4: each server's write stands or falls alone (spec
+        # §6.1). Without this a Plex `apply_facts` failure aborted before
+        # Jellyfin was attempted at all, and a Jellyfin one propagated out of
+        # this function into `process_item`'s containment -- whose rollback
+        # discards THIS item's `persist_facts` above and, before C1, its refs
+        # with it. `AttributeError` is deliberately inside the catch here and
+        # not re-raised the way `process_item` re-raises its own: a server
+        # that does not implement `item_labels`/`apply_facts` is one server's
+        # wiring, and this loop's whole point is that it costs no other
+        # server its write.
+        try:
+            exempt = exemption_reason(
+                config.operations, ref_item.native_id, ref_item.imdb_id,
+                await target_server.item_labels(ref_item.ref),
+            )
+            if exempt is not None:
+                logger.info("%s: skipped writing %s: %s", target_server.name, ref_item.native_id, exempt)
+            else:
+                await target_server.apply_facts(ref_item.ref, facts, config.operations, parental_categories, overrides)
+        except Exception as exc:
+            logger.warning(
+                "%s: metadata write failed for %s (%s)",
+                target_server.name, ref_item.native_id, deliveries.failure_detail(exc),
+            )
 
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:
         await _write(item.server, server, item)
@@ -1700,7 +1716,12 @@ async def _already_delivered(session, config, server, name, ref, render, fingerp
     check (``render.badge_fingerprint is not None`` skipped the probe): a
     server this render has already been delivered to answers the question
     for free from its own last recorded outcome, and asking again would be a
-    request per item, every ordinary re-badge. `render.badge_fingerprint`
+    request per item, every ordinary re-badge. "Delivered" means a row this
+    code actually wrote -- `attempted_at IS NOT NULL` (fix round 3, I5): the
+    Phase-2 migration backfills a `plex` row for EVERY pre-existing render,
+    with no `attempted_at`, so without that term the probe could never run
+    again for a single row already in the database -- exactly the population
+    (`badge_fingerprint IS NULL`) adoption exists for. `render.badge_fingerprint`
     itself cannot carry this any more -- `compose_badged_bytes` overwrites it
     with the NEW fingerprint once a compose actually succeeds, once for every
     server, so a per-server delivery-row check is what a per-render column
@@ -1738,6 +1759,7 @@ async def _already_delivered(session, config, server, name, ref, render, fingerp
         await session.execute(
             select(RenderDelivery.id).where(
                 RenderDelivery.render_id == render.id, RenderDelivery.server == name,
+                RenderDelivery.attempted_at.isnot(None),
             )
         )
     ).scalar_one_or_none()
@@ -1937,14 +1959,17 @@ async def compose_badged_bytes(
         render.fingerprint or "", render.art_kind, values, manifest_sha(),
         definitions, outcomes, ratings=ratings,
     )
-    # `render.upload_status` is the cross-server rollup (deliveries.rollup):
-    # "uploaded" here means every server this render was delivered to as of
-    # the last pass got it, so an unchanged fingerprint has nothing new for
-    # ANY of them. A server added to the config after that rollup will not
-    # get its own delivery until the fingerprint next moves -- the same
-    # known gap the single-server version had for a freshly-enabled
-    # `upload_to_plex`, now shared across every server.
-    if fingerprint == render.badge_fingerprint and render.upload_status == "uploaded":
+    # The fingerprint alone, and deliberately NOT `render.upload_status` too
+    # (fix round 3, I7): that column is now the cross-server roll-up, whose
+    # precedence puts `pending` above `uploaded`, so one server that has not
+    # scanned the item yet -- the normal steady state of a newly added
+    # Jellyfin over a large library -- would keep this gate from ever firing
+    # and recompose every render, every pass, then re-upload it to the
+    # servers that already had the bytes. "Render once" is the fingerprint's
+    # question. Which servers still need those bytes is `deliver`'s own
+    # per-server bookkeeping, and its `data is None` catch-up already keeps a
+    # still-pending server pending without any image work here.
+    if fingerprint == render.badge_fingerprint:
         return None
 
     # Fix round 1, I2: the single-server adoption shortcut, checked BEFORE
@@ -1964,7 +1989,14 @@ async def compose_badged_bytes(
         ):
             render.badge_fingerprint = fingerprint
             await deliveries.record(session, render.id, solo_name, "uploaded")
-            await session.flush()
+            # Fix round 3, M7: `deliver` rolls up and commits only what IT
+            # recorded, and this shortcut's `uploaded` is recorded here,
+            # before `deliver` ever sees the render. So the roll-up and the
+            # commit belong beside it -- and an adoption match IS the
+            # successful outcome, the same thing `deliver`'s own commit
+            # protects for an upload that already reached the server.
+            await deliveries.rollup(session, render.id)
+            await session.commit()
             return None
 
     resolved_images: dict[str, Path] = {}
@@ -2019,13 +2051,15 @@ async def deliver(
     this function's whole job is deciding, for each of ``servers``, which of
     its four outcomes applies:
 
+    * this library's ``badges.upload_to_<name>`` is off -- ``skipped``, and
+      only the first time that server is considered; resolved or missed, it
+      is asked for nothing, so no miss of its own is worth a row (fix round
+      3, I1).
     * not resolved this pass, and the miss was ``ItemNotFound`` (not a
       ``PathMismatch``) -- ``pending``, retried by the next
       ``retry_pending_deliveries`` pass (no cap).
     * not resolved this pass, and the miss WAS a ``PathMismatch`` -- ``failed``
       with a fixed sentence; no retry fixes a mount mismatch.
-    * resolved, but this library's ``badges.upload_to_<name>`` is off --
-      ``skipped``.
     * resolved and on, and the server already reports this exact fingerprint's
       provenance (``_already_delivered``, ``adopt_from_plex``) -- ``uploaded``
       without a redundant upload.
@@ -2050,9 +2084,12 @@ async def deliver(
     running, regardless of that render's own status, rather than being
     silently skipped by a guard at the call site.
 
-    ``deliveries.rollup`` is called once at the end, unconditionally: it only
-    ever recomputes off whatever rows already exist, so a pass that recorded
-    nothing new is a harmless no-op re-write of the same status.
+    ``deliveries.rollup`` is called once at the end, and only when this call
+    actually recorded something (fix round 3, M7). It recomputes off whatever
+    rows already exist, so on a pass that recorded nothing it would rewrite
+    the identical status -- an UPDATE and a COMMIT per rendered render per
+    pass, including for every item where nothing changed at all, which the
+    old ``apply_badges`` returned from without a single statement.
 
     Commits before returning -- the old ``apply_badges``' own discipline for
     a successful upload ("a flushed-but-uncommitted fingerprint for an
@@ -2071,32 +2108,43 @@ async def deliver(
     ):
         return
     misses = misses or {}
+    # Fix round 3, M7: whether this call wrote a single delivery row. The
+    # rollup and the commit below hang off it.
+    recorded = False
     for name, server in servers.items():
         ref = refs.get(name)
-        if ref is not None:
-            # Fix round 2, NB3: the per-library toggle is evaluated BEFORE
-            # the catch-up below -- an upload-disabled server must never get
-            # a `pending` catch-up row, only for the very next retry pass to
-            # immediately overwrite it with `skipped`. When there is
-            # genuinely nothing new this pass (`data is None`) an
-            # upload-disabled server gets no row at all, not even `skipped`.
-            if not getattr(library_config.badges, f"upload_to_{name}", False):
-                if data is not None:
-                    # I3: `skipped` is stamped only the FIRST time a server
-                    # is considered -- an already-recorded outcome (most of
-                    # all `uploaded`) must not be rewritten just because the
-                    # toggle is off this particular pass.
-                    already_recorded = (
-                        await session.execute(
-                            select(RenderDelivery.id).where(
-                                RenderDelivery.render_id == render.id,
-                                RenderDelivery.server == name,
-                            )
+        # Fix round 2, NB3: the per-library toggle is evaluated BEFORE the
+        # catch-up below -- an upload-disabled server must never get a
+        # `pending` catch-up row, only for the very next retry pass to
+        # immediately overwrite it with `skipped`. When there is genuinely
+        # nothing new this pass (`data is None`) an upload-disabled server
+        # gets no row at all, not even `skipped`.
+        #
+        # Fix round 3, I1: hoisted ABOVE the resolved/missed split, which is
+        # where NB3 left it. A server nothing is being uploaded to is asked
+        # nothing, so its own miss is not worth a `pending` row either --
+        # and `upload_to_jellyfin` defaults to off, so a dual deployment's
+        # very first pass is exactly that case, for every item Jellyfin has
+        # not scanned yet.
+        if not getattr(library_config.badges, f"upload_to_{name}", False):
+            if data is not None:
+                # I3: `skipped` is stamped only the FIRST time a server
+                # is considered -- an already-recorded outcome (most of
+                # all `uploaded`) must not be rewritten just because the
+                # toggle is off this particular pass.
+                already_recorded = (
+                    await session.execute(
+                        select(RenderDelivery.id).where(
+                            RenderDelivery.render_id == render.id,
+                            RenderDelivery.server == name,
                         )
-                    ).scalar_one_or_none()
-                    if already_recorded is None:
-                        await deliveries.record(session, render.id, name, "skipped")
-                continue
+                    )
+                ).scalar_one_or_none()
+                if already_recorded is None:
+                    await deliveries.record(session, render.id, name, "skipped")
+                    recorded = True
+            continue
+        if ref is not None:
             if data is None:
                 # Fix round 1, I1/I3: an unchanged fingerprint (nothing new
                 # composed) must never overwrite an already-`uploaded` row
@@ -2117,11 +2165,13 @@ async def deliver(
                 ).scalar_one_or_none()
                 if existing_status is None or existing_status == "pending":
                     await deliveries.record(session, render.id, name, "pending", retry_in=0)
+                    recorded = True
                 continue
             if await _already_delivered(
                 session, library_config, server, name, ref, render, render.badge_fingerprint,
             ):
                 await deliveries.record(session, render.id, name, "uploaded")
+                recorded = True
                 continue
             lock = library_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities
             try:
@@ -2133,21 +2183,56 @@ async def deliver(
                 )
             else:
                 await deliveries.record(session, render.id, name, "uploaded")
+            recorded = True
         else:
             exc = misses.get(name)
             if exc is None:
                 continue
             if isinstance(exc, PathMismatch):
                 await deliveries.record(
+                    # Fix round 3, M4: the same `failure_detail` every other
+                    # detail goes through -- category and class name, never
+                    # the message, which names a filesystem path.
                     session, render.id, name, "failed",
-                    detail=f"{type(exc).__name__}: {exc}",
+                    detail=deliveries.failure_detail(exc),
                 )
             else:
                 await deliveries.record(
                     session, render.id, name, "pending", retry_in=deliveries.RETRY_SECONDS,
                 )
+            recorded = True
+    if not recorded:
+        # Fix round 3, M7: nothing was written for this render, so the
+        # roll-up would recompute the status it already has. Skipping it (and
+        # the commit) is what keeps an unchanged full pass free of an
+        # UPDATE + COMMIT per render, as the old `apply_badges` was.
+        return
     await deliveries.rollup(session, render.id)
     await session.commit()
+
+
+async def _persist_identity(session, item, resolved_on) -> MediaItem:
+    """The item's ``media_items`` row and EVERY resolved server's ref row.
+
+    One intent means one ``media_items`` row and one
+    ``media_item_server_refs`` row per server that resolved it (spec
+    §4.1/§5.1). ``_upsert_media_item`` writes the identity server's own ref
+    and no other, so the two halves belong together everywhere the item is
+    (re-)established -- which, before fix round 3's C1, they were not: the
+    metadata containment and the refusal handler both ``rollback()`` while
+    this work is still uncommitted, and each then re-upserted the item ALONE.
+    Every non-primary server's ref was silently dropped, permanently for a
+    season or an episode (one art kind, so any ``SourceRefused`` is a
+    first-kind refusal) and until a clean pass for everything else.
+
+    Neither call commits, here as before: ``render_artifact`` still owns the
+    transaction boundary this sits inside.
+    """
+    media_item = await _upsert_media_item(session, item)
+    for other in resolved_on.values():
+        if other is not item:
+            await upsert_server_ref(session, media_item.id, other)
+    return media_item
 
 
 async def process_item(
@@ -2238,10 +2323,7 @@ async def process_item(
         )
         raise not_found or next(iter(misses.values()))
     item = resolved_on.get("plex") or next(iter(resolved_on.values()))
-    media_item = await _upsert_media_item(session, item)
-    for other in resolved_on.values():
-        if other is not item:
-            await upsert_server_ref(session, media_item.id, other)
+    media_item = await _persist_identity(session, item, resolved_on)
 
     # Roadmap row 92. A separately-named object, and NOT a rebinding of
     # `config`: `render_artifact` below must keep the global one. Today that
@@ -2275,6 +2357,13 @@ async def process_item(
             # containment's whole purpose. Every other error path in this
             # codebase rolls back first (see queue/worker.py).
             await session.rollback()
+            # Fix round 3, C1: that rollback discarded the identity written
+            # above, refs and all -- and the only thing that re-establishes it
+            # further down is `render_artifact`'s own `_upsert_media_item`,
+            # which restores the primary ref and nothing else. Re-established
+            # whole here instead, so a TMDb hiccup or one server's
+            # `apply_facts` failure never costs the item another server's ref.
+            media_item = await _persist_identity(session, item, resolved_on)
             logger.warning(
                 "metadata operations failed for %s; continuing to artwork",
                 item.native_id, exc_info=True,
@@ -2315,7 +2404,7 @@ async def process_item(
             logger.warning(
                 "%s refused for %s: %s", art_kind, item.native_id, exc, exc_info=True,
             )
-            media_item_for_kind = await _upsert_media_item(session, item)
+            media_item_for_kind = await _persist_identity(session, item, resolved_on)
             missing = naming.missing_number(art_kind, item.season_number, item.episode_number)
             target = "" if missing is not None else naming.asset_path(
                 config, item.library, item.root_folder, art_kind,
@@ -2371,7 +2460,7 @@ async def process_item(
                 # their own reasons.
                 for render in results:
                     await session.refresh(render)
-                media_item = await _upsert_media_item(session, item)
+                media_item = await _persist_identity(session, item, resolved_on)
             # Every resolved server's own ref, for `deliver`'s fan-out.
             refs = {name: resolved_item.ref for name, resolved_item in resolved_on.items()}
             # `compose_badged_bytes` still samples live media info and native
