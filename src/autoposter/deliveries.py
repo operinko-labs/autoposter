@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.loader import config_for_library
-from autoposter.db.models import MediaItem, Render, RenderDelivery
+from autoposter.db.models import MediaItem, MetadataWrite, Render, RenderDelivery
 from autoposter.db.refs import refs_for
 from autoposter.intake.arr import RenderIntent
 from autoposter.servers.base import CAP_LOCK_ARTWORK, ItemNotFound, PathMismatch
@@ -49,18 +49,36 @@ def failure_detail(exc: Exception) -> str:
 async def record(
     session: AsyncSession, render_id: int, server: str, status: str, *,
     detail: str | None = None, retry_in: float | None = None,
-) -> None:
-    """Upsert this render's delivery row for ``server``.
+    fingerprint: str | None = None, count_attempt: bool = True,
+) -> int:
+    """Upsert this render's delivery row for ``server``; return its ``attempts``.
 
     ``attempted_at`` is stamped on every call, ``skipped`` included: it is
     the "we last looked at this server" timestamp, not a success marker.
+
+    ``attempts`` is the retry budget's counter (spec §2). It climbs on a
+    ``pending`` or ``failed`` outcome and is reset to zero by anything that
+    settles the row -- so the budget bounds the CURRENT streak of trouble
+    rather than the row's whole history. ``count_attempt=False`` is the
+    resolution-miss case: the item is simply not on that server yet, which
+    is a wait and not an attempt at delivering anything, and spending budget
+    on it would turn "the server has not scanned this file" into a
+    permanent ``failed``.
+
+    ``fingerprint`` is the badge fingerprint actually delivered. Stored on
+    ``uploaded`` only, and -- exactly like ``uploaded_at`` -- never erased by
+    a later non-``uploaded`` outcome, because the catch-up's "is this row
+    behind the render" question is about what this server IS serving.
     """
     now = datetime.now(timezone.utc)
+    counted = count_attempt and status in ("pending", "failed")
     values = dict(
         render_id=render_id, server=server, status=status, detail=detail,
         attempted_at=now,
         uploaded_at=now if status == "uploaded" else None,
         next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
+        fingerprint=fingerprint if status == "uploaded" else None,
+        attempts=1 if counted else 0,
     )
     stmt = insert(RenderDelivery).values(**values)
     updatable = {k: v for k, v in values.items() if k not in ("render_id", "server")}
@@ -72,12 +90,58 @@ async def record(
         # delivered" rather than "delivered, then broke" -- the distinction
         # the single-server code kept by leaving the column alone on a failure.
         updatable.pop("uploaded_at")
+        updatable.pop("fingerprint")
+    if counted:
+        # The EXISTING row's value plus one: naming the column in `set_`
+        # renders `attempts = render_deliveries.attempts + 1`, which is what
+        # makes the increment atomic against a concurrent pass.
+        updatable["attempts"] = RenderDelivery.attempts + 1
+    elif status in ("pending", "failed"):
+        updatable.pop("attempts")
     stmt = stmt.on_conflict_do_update(
         constraint="uq_delivery_render_server",
         set_=updatable,
-    )
-    await session.execute(stmt)
+    ).returning(RenderDelivery.attempts)
+    attempts = (await session.execute(stmt)).scalar_one()
     await session.flush()
+    return attempts
+
+
+async def record_metadata(
+    session: AsyncSession, item_id: int, server: str, status: str, *,
+    detail: str | None = None, retry_in: float | None = None,
+    count_attempt: bool = True,
+) -> int:
+    """Upsert this item's metadata-write row for ``server``; return ``attempts``.
+
+    The sibling of ``record`` (spec §1), field for field, with ``written``
+    where artwork says ``uploaded`` and ``written_at`` where it says
+    ``uploaded_at``. Keyed on the ITEM: a metadata write has no art kind.
+    """
+    now = datetime.now(timezone.utc)
+    counted = count_attempt and status in ("pending", "failed")
+    values = dict(
+        item_id=item_id, server=server, status=status, detail=detail,
+        attempted_at=now,
+        written_at=now if status == "written" else None,
+        next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
+        attempts=1 if counted else 0,
+    )
+    stmt = insert(MetadataWrite).values(**values)
+    updatable = {k: v for k, v in values.items() if k not in ("item_id", "server")}
+    if status != "written":
+        updatable.pop("written_at")
+    if counted:
+        updatable["attempts"] = MetadataWrite.attempts + 1
+    elif status in ("pending", "failed"):
+        updatable.pop("attempts")
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_metadata_write_item_server",
+        set_=updatable,
+    ).returning(MetadataWrite.attempts)
+    attempts = (await session.execute(stmt)).scalar_one()
+    await session.flush()
+    return attempts
 
 
 async def rollup(session: AsyncSession, render_id: int) -> str:
@@ -220,7 +284,10 @@ async def retry_pending_deliveries(
                     continue
                 except ItemNotFound:
                     # Not on this server yet -- keep waiting, no cap (spec §5.3).
-                    await record(session, render.id, delivery.server, "pending", retry_in=RETRY_SECONDS)
+                    await record(
+                        session, render.id, delivery.server, "pending",
+                        retry_in=RETRY_SECONDS, count_attempt=False,
+                    )
                     still_pending += 1
                     await rollup(session, render.id)
                     continue
@@ -320,7 +387,7 @@ async def retry_pending_deliveries(
                     await rollup(session, render.id)
                     continue
 
-                await record(session, render.id, delivery.server, "uploaded")
+                await record(session, render.id, delivery.server, "uploaded", fingerprint=render.badge_fingerprint)
                 uploaded += 1
                 await rollup(session, render.id)
         except Exception as exc:

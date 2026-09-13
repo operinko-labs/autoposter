@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 
 import httpx
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from autoposter import deliveries
 from autoposter.db.models import MetadataWrite, Render, RenderDelivery
@@ -481,8 +483,9 @@ async def test_metadata_write_is_unique_per_item_and_server(session):
     item = await seed_media_item(session, "rk-mw", title="A")
     session.add(MetadataWrite(item_id=item.id, server="jellyfin", status="pending"))
     await session.commit()
-    row = (await session.execute(select(MetadataWrite))).scalar_one()
-    assert row.attempts == 0 and row.written_at is None and row.detail is None
+    session.add(MetadataWrite(item_id=item.id, server="jellyfin", status="pending"))
+    with pytest.raises(IntegrityError):
+        await session.commit()
 
 
 async def test_render_delivery_carries_attempts_and_the_delivered_fingerprint(session):
@@ -491,3 +494,60 @@ async def test_render_delivery_carries_attempts_and_the_delivered_fingerprint(se
     await session.commit()
     row = (await session.execute(select(RenderDelivery))).scalar_one()
     assert row.attempts == 0 and row.fingerprint == "abc"
+
+
+async def test_attempts_climb_on_pending_and_reset_on_success(session):
+    render = await _render(session)
+    assert await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=60) == 1
+    assert await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=60) == 2
+    assert await deliveries.record(session, render.id, "jellyfin", "failed", detail="error: X") == 3
+    assert await deliveries.record(session, render.id, "jellyfin", "uploaded") == 0
+
+
+async def test_an_uncounted_pending_leaves_the_budget_alone(session):
+    """A resolution miss is a wait, not an attempt at the write (spec §2)."""
+    render = await _render(session)
+    assert await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=60) == 1
+    assert await deliveries.record(
+        session, render.id, "jellyfin", "pending", retry_in=60, count_attempt=False
+    ) == 1
+
+
+async def test_the_delivered_fingerprint_is_kept_and_never_erased(session):
+    render = await _render(session)
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await deliveries.record(session, render.id, "plex", "pending", retry_in=60)
+    row = (await session.execute(
+        select(RenderDelivery.fingerprint, RenderDelivery.status)
+    )).one()
+    assert row.fingerprint == "fp1" and row.status == "pending"
+
+
+async def test_record_metadata_writes_one_row_per_item_and_server(session):
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-rm", title="A")
+    assert await deliveries.record_metadata(session, item.id, "jellyfin", "written") == 0
+    assert await deliveries.record_metadata(
+        session, item.id, "jellyfin", "pending", detail="connect: ConnectError", retry_in=60
+    ) == 1
+    row = (await session.execute(select(
+        MetadataWrite.status, MetadataWrite.detail, MetadataWrite.attempts,
+        MetadataWrite.written_at, MetadataWrite.next_attempt_at,
+    ))).one()
+    assert row.status == "pending" and row.detail == "connect: ConnectError"
+    assert row.attempts == 1
+    # The written_at half of the `uploaded_at` rule: a later failure must not
+    # erase the fact that this server DID hold the metadata once.
+    assert row.written_at is not None and row.next_attempt_at is not None
+
+
+async def test_record_metadata_skipped_keeps_its_reason(session):
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-sk", title="A")
+    await deliveries.record_metadata(
+        session, item.id, "jellyfin", "skipped",
+        detail="config: operations.write_to_jellyfin is off",
+    )
+    row = (await session.execute(select(MetadataWrite.status, MetadataWrite.detail))).one()
+    assert row.status == "skipped"
+    assert row.detail == "config: operations.write_to_jellyfin is off"

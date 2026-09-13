@@ -2210,7 +2210,7 @@ async def deliver(
             if await _already_delivered(
                 session, library_config, server, name, ref, render, render.badge_fingerprint,
             ):
-                await deliveries.record(session, render.id, name, "uploaded")
+                await deliveries.record(session, render.id, name, "uploaded", fingerprint=render.badge_fingerprint)
                 recorded = True
                 continue
             lock = library_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities
@@ -2222,7 +2222,7 @@ async def deliver(
                     session, render.id, name, "failed", detail=deliveries.failure_detail(exc),
                 )
             else:
-                await deliveries.record(session, render.id, name, "uploaded")
+                await deliveries.record(session, render.id, name, "uploaded", fingerprint=render.badge_fingerprint)
             recorded = True
         else:
             exc = misses.get(name)
@@ -2256,6 +2256,7 @@ async def deliver(
                 continue
             await deliveries.record(
                 session, render.id, name, "pending", retry_in=deliveries.RETRY_SECONDS,
+                count_attempt=False,
             )
             recorded = True
     if not recorded:
