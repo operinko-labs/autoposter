@@ -90,6 +90,7 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue, enqueue_batch
 from autoposter.render.pipeline import ART_KINDS_FOR, manual_override_path
 from autoposter.scheduler.run_history import FULL_PASS_NAME, open_run
+from autoposter.servers.registry import require_plex
 
 logger = logging.getLogger(__name__)
 
@@ -1114,7 +1115,7 @@ def _require_plex(request: Request) -> tuple:
     return plex, http
 
 
-@router.post("/artwork-modes/backup")
+@router.post("/artwork-modes/backup", dependencies=[Depends(require_plex)])
 async def run_artwork_backup(
     request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
@@ -1134,7 +1135,7 @@ async def run_artwork_backup(
     return result.as_response()
 
 
-@router.post("/metadata-backup")
+@router.post("/metadata-backup", dependencies=[Depends(require_plex)])
 async def run_metadata_backup(
     request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
@@ -1217,7 +1218,7 @@ async def _run_plex_writing_mode(request: Request, mode, apply: bool) -> dict:
     return result.as_response()
 
 
-@router.post("/artwork-modes/restore")
+@router.post("/artwork-modes/restore", dependencies=[Depends(require_plex)])
 async def run_artwork_restore(
     body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
@@ -1239,7 +1240,7 @@ async def run_artwork_restore(
     return await _run_plex_writing_mode(request, mode, apply)
 
 
-@router.post("/artwork-modes/revert")
+@router.post("/artwork-modes/revert", dependencies=[Depends(require_plex)])
 async def run_artwork_revert(
     body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
@@ -1261,7 +1262,7 @@ async def run_artwork_revert(
     return await _run_plex_writing_mode(request, mode, apply)
 
 
-@router.post("/artwork-modes/reset")
+@router.post("/artwork-modes/reset", dependencies=[Depends(require_plex)])
 async def run_artwork_reset(
     body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
@@ -1287,7 +1288,7 @@ async def run_artwork_reset(
     return await _run_plex_writing_mode(request, mode, apply)
 
 
-@router.post("/artwork-modes/logo")
+@router.post("/artwork-modes/logo", dependencies=[Depends(require_plex)])
 async def run_artwork_logo(
     body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:
@@ -1316,7 +1317,7 @@ async def run_artwork_logo(
     return await _run_plex_writing_mode(request, mode, apply)
 
 
-@router.post("/artwork-modes/logo-revert")
+@router.post("/artwork-modes/logo-revert", dependencies=[Depends(require_plex)])
 async def run_artwork_logo_revert(
     body: ModeFilterBody, request: Request, _: SessionModel = Depends(require_session)
 ) -> dict:

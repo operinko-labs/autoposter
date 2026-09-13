@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import requests
 from plexapi.exceptions import NotFound as PlexNotFound
+from plexapi.server import PlexServer
 
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex import artwork as plex_artwork
@@ -16,6 +17,44 @@ from autoposter.servers.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _LazyPlexServer:
+    """Defers connecting to Plex until the server is actually used.
+
+    ``PlexServer(...)`` makes a blocking network call. Doing that eagerly at
+    boot means a Plex outage crashloops the whole pod, taking webhook intake
+    down with it. Connecting lazily lets the process start, serve /healthz,
+    and queue webhooks while Plex is unreachable; jobs that need Plex get
+    ``config.plex.resolve_max_attempts`` worth of backoff (see
+    ``_handle_intent`` in app.py) instead of the generic retry cap, but an
+    outage longer than that still parks them permanently -- see "Recovering
+    parked jobs" in deploy/README.md to requeue them by hand. Every attribute
+    access (already happening inside a worker thread via ``PlexClient``)
+    triggers a (re)connect attempt if the previous one failed or never ran.
+
+    Lives here rather than in ``main.py`` (where it started) so that
+    ``servers/registry.py``'s ``build_servers`` can construct one without
+    importing ``main`` -- the circular import that shape would create.
+    """
+
+    def __init__(self, url: str, token: str):
+        self._url = url
+        self._token = token
+        self._server = None
+
+    def _connect(self):
+        if self._server is None:
+            try:
+                self._server = PlexServer(self._url, self._token)
+            except Exception:
+                logger.error("failed to connect to Plex at %s", self._url, exc_info=True)
+                raise
+        return self._server
+
+    def __getattr__(self, name):
+        return getattr(self._connect(), name)
+
 
 _GUID_RE = re.compile(r"^(?:com\.plexapp\.agents\.)?(tmdb|imdb|tvdb)://([^?]+)")
 

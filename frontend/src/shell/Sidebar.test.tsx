@@ -94,6 +94,35 @@ function stubVersion(
   return fetchMock;
 }
 
+/** `GET /api/version` left pending forever (nothing to say about it here) and
+ * `GET /api/status` answered with `capabilities`. Path-keyed, because the
+ * gate and the version line are unrelated fetches and a test asserting on one
+ * must not have to shape the other. */
+function stubCapabilities(capabilities: { plex: boolean; jellyfin: boolean }) {
+  const fetchMock = vi.fn((path: string) => {
+    if (path === "/api/status") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            jobs_by_state: {
+              pending: 0, running: 0, deferred: 0, done: 0,
+              failed: 0, parked: 0, dismissed: 0,
+            },
+            workers: 1,
+            processed_last_24h: 0,
+            capabilities,
+            scheduled_jobs: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+    return new Promise<Response>(() => {});
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 beforeEach(() => {
   stubStorage();
   stubPendingVersion();
@@ -395,5 +424,49 @@ describe("Sidebar version line", () => {
     expect(
       fetchMock.mock.calls.filter(([path]) => path === "/api/version"),
     ).toHaveLength(1);
+  });
+});
+
+describe("Sidebar Plex gate", () => {
+  it("renders every entry before /api/status answers (never flash-hides)", () => {
+    // The default `beforeEach` leaves both fetches pending -- this is the
+    // instant between mount and either answer landing, and it must not read
+    // as "no Plex" any sooner than the server actually says so.
+    stubMatchMedia(false);
+
+    renderSidebar();
+
+    expect(screen.getByRole("link", { name: "Collections" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "ID mismatches" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Run modes" })).toBeInTheDocument();
+  });
+
+  it("hides the Plex-only entries once the status answers capabilities.plex: false", async () => {
+    stubMatchMedia(false);
+    stubCapabilities({ plex: false, jellyfin: true });
+
+    renderSidebar();
+
+    await waitFor(() => {
+      expect(screen.queryByRole("link", { name: "Collections" })).not.toBeInTheDocument();
+    });
+    expect(screen.queryByRole("link", { name: "ID mismatches" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Run modes" })).not.toBeInTheDocument();
+    // Everything else stays -- the gate is per-entry, not a whole-sidebar mode.
+    expect(screen.getByRole("link", { name: "Library" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
+  });
+
+  it("keeps the Plex-only entries when capabilities.plex is true", async () => {
+    stubMatchMedia(false);
+    stubCapabilities({ plex: true, jellyfin: false });
+
+    renderSidebar();
+
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: "Collections" })).toBeInTheDocument();
+    });
+    expect(screen.getByRole("link", { name: "ID mismatches" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Run modes" })).toBeInTheDocument();
   });
 });

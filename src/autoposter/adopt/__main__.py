@@ -21,6 +21,7 @@ from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
 from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
+from autoposter.servers.registry import PLEX_REQUIRED
 
 CONFIG_PATH = DEFAULT_CONFIG_PATH
 
@@ -51,6 +52,15 @@ async def main() -> None:
     try:
         async with session_factory() as session:
             config = await load_effective_config(CONFIG_PATH, session)
+            # config.plex is optional now (a Jellyfin-only deployment). This
+            # CLI builds a real PlexServer directly -- there is no
+            # lazy-connect wrapper here (see the module docstring) -- so a
+            # missing `plex:` block must be refused loudly before the
+            # unguarded `config.plex.url` read below, not crash on it.
+            if config.plex is None:
+                logger.error(PLEX_REQUIRED)
+                raise SystemExit(2)
+
             dry_run = not config.adopt.apply
             server = await asyncio.to_thread(
                 PlexServer, config.plex.url, secrets.plex_token

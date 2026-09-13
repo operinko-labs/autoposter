@@ -263,6 +263,29 @@ describe("Mismatches", () => {
     expect(screen.getByRole("button", { name: "Scan" })).toBeEnabled();
   });
 
+  it("shows the gate sentence when this deployment has no Plex configured", async () => {
+    // GET /api/id-mismatches is one of the routes Depends(require_plex)
+    // guards (spec §9): on a Plex-less deployment it 409s with PLEX_REQUIRED
+    // as `detail`, which apiFetch surfaces as the caught error's `message` --
+    // the same shape a 502 already renders here, just a different sentence.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ detail: "This needs Plex, and no Plex server is configured." }),
+          { status: 409, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    render(<Mismatches />);
+    fireEvent.click(screen.getByRole("button", { name: "Scan" }));
+
+    expect(
+      await screen.findByText("This needs Plex, and no Plex server is configured."),
+    ).toBeInTheDocument();
+  });
+
   it("contains each table and wraps the path", async () => {
     // The mobile conventions, as on Jobs: a full path is long and arbitrary,
     // and unwrapped it widens the table past the content column. jsdom

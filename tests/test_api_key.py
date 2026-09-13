@@ -116,7 +116,7 @@ async def test_a_key_reads_the_allowlisted_routes_without_a_session(client):
     status = await client.get("/api/status", headers=KEYED)
     assert status.status_code == 200
     assert set(status.json()) == {
-        "jobs_by_state", "workers", "processed_last_24h", "scheduled_jobs",
+        "jobs_by_state", "workers", "processed_last_24h", "capabilities", "scheduled_jobs",
     }
 
     version = await client.get("/api/version", headers=KEYED)

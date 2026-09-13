@@ -306,7 +306,7 @@ def excluded_library_predicate(config: Config) -> ColumnElement[bool]:
     ``_provider_miss`` precedent above: an empty configuration means the
     predicate has nothing to say, not that every row fails it.
     """
-    excluded = config.plex.excluded_libraries
+    excluded = config.plex.excluded_libraries if config.plex else []
     if not excluded:
         return literal(True)
     return MediaItem.library.notin_(excluded)

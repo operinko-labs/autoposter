@@ -69,6 +69,7 @@ from autoposter.plex.item_overrides import (
     writable_fields,
 )
 from autoposter.plex.writer import _locked_in_plex, _PLEX_FIELD_NAMES, exemption_reason
+from autoposter.servers.registry import require_plex
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +280,7 @@ async def put_metadata_override(
     }
 
 
-@router.delete("/items/{item_id}/metadata-overrides/{field}")
+@router.delete("/items/{item_id}/metadata-overrides/{field}", dependencies=[Depends(require_plex)])
 async def delete_metadata_override(
     item_id: int,
     field: str,

@@ -13,14 +13,18 @@ The decision is re-derived here at every boot and stored nowhere. There is no
 disagree with the credentials, and the disagreement's failure mode is a
 process that will not start and will not offer to be fixed.
 
-CONFIGURED means both halves, in this order:
+CONFIGURED means all three, in this order:
 
 1. every hard secret resolves -- the environment first, the state file second
    (``config/schema.resolve_secret_values``), with an EMPTY value counting as
    absent on both sides;
 2. a config document is readable -- the ``AUTOPOSTER_CONFIG`` path when that
    file exists, the state directory's ``autoposter.yaml`` otherwise
-   (``config/loader.config_document_path``).
+   (``config/loader.config_document_path``);
+3. that document names at least one media server, and every server it names
+   has its own credential set (``config/schema.missing_server_setup``) -- a
+   plex-only deployment's ``AUTOPOSTER_PLEX_TOKEN``, a jellyfin-only one's
+   ``AUTOPOSTER_JELLYFIN_APIKEY``, both if both are configured.
 
 The database is NOT consulted. A deployment that has both halves boots exactly
 as it did before this module existed, including when postgres is down: the
@@ -32,18 +36,21 @@ Service and Ingress already point at. The ``SELECT 1`` probe still exists, in
 ``db/base.database_answers``, as the setup wizard's database-step validation --
 where a human is waiting for the answer and no traffic is being served.
 
-There are three outcomes, and the wizard is only one of them:
+There are four outcomes, and the wizard answers two of them:
 
-* both halves -- the resolved names are exported into this process's
+* all three -- the resolved names are exported into this process's
   environment (so ``alembic/env.py`` and the exec'd application read a
   file-configured deployment exactly as they read an env-configured one),
   ``alembic upgrade head`` runs, and the real command is exec'd:
   byte-identical downstream to what the old shell line did;
 * a hard secret missing -- no migration, no engine, no database session; the
-  setup application is served instead. This is the ONLY door into setup mode;
-* every hard secret present and no config document -- one line naming the two
-  paths that were looked at, and a non-zero exit. A deployment that holds
-  credentials was configured by somebody, so a missing document is that
+  setup application is served instead;
+* every hard secret present, a document readable, but no usable media server
+  in it -- the same setup application, so an operator can add a server or set
+  the credential it is missing;
+* every hard secret present and no config document at all -- one line naming
+  the two paths that were looked at, and a non-zero exit. A deployment that
+  holds credentials was configured by somebody, so a missing document is that
   somebody's mistake -- a ConfigMap whose key was renamed is the reachable
   shape -- and not a first start. Serving the wizard there would put an
   unauthenticated credential-collecting form on the port the Service and
@@ -59,10 +66,11 @@ import sys
 
 import uvicorn
 
-from autoposter.config.loader import config_document_path
+from autoposter.config.loader import config_document_path, read_config_document
 from autoposter.config.schema import (
     STATE_FILE_NAMES_ENV,
     missing_hard_secret_names,
+    missing_server_setup,
     resolve_secret_values,
     state_file_secret_names,
 )
@@ -85,19 +93,21 @@ def is_configured(resolved: dict[str, str]) -> bool:
     the second branch's message can say "has credentials", which is the fact
     that makes a missing document a mistake rather than a first start.
 
-    False has two shapes and ``main`` treats them differently, which is why it
-    asks ``missing_hard_secret_names`` again rather than reading this bool
-    alone: a missing credential is setup mode, a missing document is a
-    non-zero exit. The re-ask is a list comprehension over a dict this
-    function does not mutate; the alternative is two log sites for one
-    decision.
+    False has three shapes and ``main`` treats them differently, which is why
+    it re-derives rather than reading this bool alone: a missing hard
+    credential is setup mode, a missing document is a non-zero exit, and a
+    server-credential problem (no server configured, or a configured server's
+    own credential unset) is setup mode too -- the wizard can fix that one.
+    The re-derivation is cheap reads over dicts this function does not
+    mutate; the alternative is two log sites for one decision.
     """
     missing = missing_hard_secret_names(resolved)
     if missing:
         # Names, never values: these are the variables an operator sets.
         logger.warning("credentials do not resolve; unset: %s", ", ".join(missing))
         return False
-    if config_document_path() is None:
+    path = config_document_path()
+    if path is None:
         # Paths, never contents. The two candidates are named because "no
         # config document" is otherwise indistinguishable from "the wrong one",
         # and this is the line an operator has to read to fix the restart loop
@@ -108,6 +118,20 @@ def is_configured(resolved: dict[str, str]) -> bool:
             os.environ.get("AUTOPOSTER_CONFIG") or "(AUTOPOSTER_CONFIG unset)",
             state_config_path(),
         )
+        return False
+    try:
+        document = read_config_document(path)
+    except Exception:
+        # A document that exists but fails to parse is not this function's
+        # failure to report -- this gate only ever asked "is there a
+        # document", never "is it valid"; that question belongs to the real
+        # config load, wherever this deployment's document is loaded as a
+        # `Config`. Crashing the boot decision itself over it would be new
+        # behaviour this row does not add.
+        return True
+    problems = missing_server_setup(document, resolved)
+    if problems:
+        logger.warning("no usable media server: %s", "; ".join(problems))
         return False
     return True
 
@@ -158,11 +182,14 @@ def main(argv: list[str] | None = None) -> None:
     command = list(argv if argv is not None else sys.argv[1:])
     resolved = resolve_secret_values()
     if not is_configured(resolved):
-        if not missing_hard_secret_names(resolved):
+        if not missing_hard_secret_names(resolved) and config_document_path() is None:
             # Credentials but no document. `is_configured` has already logged
             # the two paths; exiting non-zero is the restart loop this shape
             # produced before the wizard existed, and it is what keeps an
-            # unauthenticated wizard off a configured deployment's port.
+            # unauthenticated wizard off a configured deployment's port. A
+            # server-credential problem (a document that is there, but names
+            # no server or one whose credential is unset) is NOT this branch
+            # -- the wizard can fix that one, so it falls through below.
             raise SystemExit(1)
         # Imported here rather than at module scope so that a configured boot
         # -- every boot that exists today -- never imports the setup surface

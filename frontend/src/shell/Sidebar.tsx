@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
 import { apiFetch } from "../api/client";
-import type { VersionResponse } from "../api/types";
+import type { Status, VersionResponse } from "../api/types";
 import { useSession } from "../auth/SessionContext";
 import logoMark from "../assets/logo-small.svg";
 import "./shell.css";
@@ -37,7 +37,19 @@ const ICONS: Record<string, string> = {
   expand: "M8.6 7.4 10 6l6 6-6 6-1.4-1.4 4.6-4.6-4.6-4.6z",
 };
 
-const NAV = [
+interface NavItem {
+  to: string;
+  label: string;
+  icon: string;
+  end: boolean;
+  /** Set when the page behind this entry calls a route gated by
+   * `Depends(require_plex)` (spec §9) -- hidden while `capabilities.plex` is
+   * false. Adopt and Backup are Plex-only too but have no sidebar entry of
+   * their own, so there is nothing to mark for them. */
+  needs?: "plex";
+}
+
+const NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: "dashboard", end: true },
   // Directly after Dashboard: "what needs me" is the question an operator
   // asks immediately after "what is happening", and before browsing anything.
@@ -45,7 +57,7 @@ const NAV = [
   // is the other surface, for artwork that succeeded and is suboptimal.
   { to: "/actions", label: "Action Center", icon: "actions", end: false },
   { to: "/library", label: "Library", icon: "library", end: false },
-  { to: "/collections", label: "Collections", icon: "collections", end: false },
+  { to: "/collections", label: "Collections", icon: "collections", end: false, needs: "plex" },
   // Before Failures: the live queue is the question an operator has while a
   // pass is running, and Failures is what is left over once it has stopped.
   { to: "/jobs", label: "Jobs", icon: "jobs", end: false },
@@ -54,8 +66,8 @@ const NAV = [
   // Plex and Radarr/Sonarr matched the same folder to different titles -- and
   // it is the page an operator reaches for once Failures has stopped
   // explaining itself.
-  { to: "/mismatches", label: "ID mismatches", icon: "mismatches", end: false },
-  { to: "/modes", label: "Run modes", icon: "modes", end: false },
+  { to: "/mismatches", label: "ID mismatches", icon: "mismatches", end: false, needs: "plex" },
+  { to: "/modes", label: "Run modes", icon: "modes", end: false, needs: "plex" },
   { to: "/logs", label: "Logs", icon: "logs", end: false },
   { to: "/testing", label: "Testing", icon: "testing", end: false },
   // After Testing and before Settings: this is where the files a config value
@@ -149,10 +161,36 @@ export function Sidebar() {
     };
   }, []);
 
+  // Which media servers this deployment has (spec §9), fetched once at mount
+  // the same way as the version line above. `null` means "not answered yet"
+  // -- a replica just starting, or the request still in flight -- and every
+  // `needs: "plex"` entry renders through that state exactly as it would with
+  // Plex configured: hiding an entry before the answer is in would flash it
+  // away and then (usually) back, which is worse than a one-beat delay in
+  // hiding it for the deployments that actually lack Plex.
+  const [capabilities, setCapabilities] = useState<Status["capabilities"] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch<Status>("/api/status")
+      .then((response) => {
+        if (!cancelled) setCapabilities(response.capabilities);
+      })
+      .catch(() => {
+        // Same posture as the version fetch above: nothing to say about it,
+        // and `capabilities` staying null keeps every entry visible.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const toggleLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
   // Only a true is a marker. A null means the registry was not asked or could
   // not be reached, which is not evidence of being up to date.
   const updateAvailable = version?.update_available === true;
+  const visibleNav = NAV.filter(
+    (item) => item.needs !== "plex" || capabilities?.plex !== false,
+  );
 
   return (
     <nav className={collapsed ? "sidebar collapsed" : "sidebar"}>
@@ -179,7 +217,7 @@ export function Sidebar() {
       </div>
 
       <ul className="sidebar-nav" id="sidebar-nav">
-        {NAV.map((item) => (
+        {visibleNav.map((item) => (
           <li key={item.to}>
             {/* The label stays in the DOM when collapsed -- CSS clips it out
                 of sight rather than removing it, so the link keeps its

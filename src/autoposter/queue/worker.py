@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import WorkerPause
 from autoposter.db.models import Job
-from autoposter.plex.client import ItemNotFound, PlexPathMismatch
 from autoposter.queue.jobs import (
     DEFER_INTERVAL_SECONDS,
     MAX_ATTEMPTS,
@@ -17,6 +16,7 @@ from autoposter.queue.jobs import (
     fail,
     release,
 )
+from autoposter.servers.base import ItemNotFound, PathMismatch
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ async def run_once(
             await session.rollback()
             await release(session, job_id)
             raise
-        except PlexPathMismatch as exc:
+        except PathMismatch as exc:
             # A subclass of ItemNotFound, so it must be caught here, ahead of
             # the ItemNotFound clause below: Python matches except clauses
             # top to bottom by isinstance, so a broader clause listed first

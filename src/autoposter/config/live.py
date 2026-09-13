@@ -44,6 +44,10 @@ FROZEN_SECTIONS: dict[str, str] = {
         "the Plex client, the liveness probe and the scheduler's server "
         "factory are all built once at startup from these values"
     ),
+    "jellyfin": (
+        "the Jellyfin client, the liveness probe and the scheduler's server "
+        "factory are all built once at startup from these values"
+    ),
     "operations.imdb_refresh_enabled": (
         "the IMDb auto-refresh loop is started once at startup and cannot be "
         "switched on or off underneath itself"

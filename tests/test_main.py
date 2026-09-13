@@ -128,18 +128,17 @@ async def test_build_can_be_called_from_inside_a_running_event_loop():
     assert isinstance(app, FastAPI)
 
 
-async def test_build_passes_a_plex_factory_that_builds_a_real_plex_client(
+async def test_build_passes_a_servers_factory_that_builds_a_real_plex_client(
     _stub_build_dependencies,
 ):
-    """``build()`` must hand ``create_app`` a ``plex_factory`` -- deleting the
+    """``build()`` must hand ``create_app`` a ``servers_factory`` -- deleting the
     keyword from `main.py`'s ``create_app(...)`` call leaves this suite green
     everywhere else (no other test here drives the lifespan, and
-    `test_app.py`'s own plex_factory coverage, e.g.
+    `test_app.py`'s own servers_factory coverage, e.g.
     `test_the_lifespan_builds_the_plex_client_from_the_effective_config`
-    around line 186, passes its own stand-in factory rather than exercising
-    `main.build()`'s) while every real deployment starts with
-    `app.state.plex is None`, turning the live-artwork endpoint into a
-    permanent 503.
+    passes its own stand-in factory rather than exercising `main.build()`'s)
+    while every real deployment starts with `app.state.plex is None`, turning
+    the live-artwork endpoint into a permanent 503.
 
     Fix round 1 (controller ruling C1) extends this rather than adding a
     second test: the built client being a ``PlexClient`` at all is not
@@ -159,8 +158,8 @@ async def test_build_passes_a_plex_factory_that_builds_a_real_plex_client(
     main_module.build()
 
     assert len(calls) == 1
-    plex_factory = calls[0].get("plex_factory")
-    assert plex_factory is not None, "build() did not pass plex_factory to create_app"
+    servers_factory = calls[0].get("servers_factory")
+    assert servers_factory is not None, "build() did not pass servers_factory to create_app"
 
     seen = []
 
@@ -177,7 +176,8 @@ async def test_build_passes_a_plex_factory_that_builds_a_real_plex_client(
     config.plex.url = "http://plex.local"
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        client = plex_factory(config, http)
+        servers = servers_factory(config, http)
+        client = servers.plex
         assert isinstance(client, PlexClient)
 
         # Only the plexapi item lookup is stubbed -- _LazyPlexServer.fetchItem

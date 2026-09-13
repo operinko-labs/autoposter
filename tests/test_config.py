@@ -16,7 +16,14 @@ from autoposter.config.loader import (
     render_version,
     render_version_for,
 )
-from autoposter.config.schema import ArtworkConfig, Config, Secrets
+from autoposter.config.schema import (
+    ArtworkConfig,
+    Config,
+    Secrets,
+    _SECRET_ENV,
+    _SERVER_SECRET_ENV,
+    missing_server_setup,
+)
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -592,3 +599,55 @@ def test_the_actionable_digest_knob_does_not_move_the_render_version():
     assert render_version(after) == render_version(before)
     for kind in RENDER_ART_KINDS:
         assert render_version_for(kind, after) == render_version_for(kind, before), kind
+
+
+# --- plex becomes optional, jellyfin arrives (roadmap row 267 / Task 10) ----
+
+
+def test_plex_token_left_the_hard_list_and_joined_the_server_list():
+    assert "plex_token" not in _SECRET_ENV
+    assert _SERVER_SECRET_ENV == {
+        "plex_token": "AUTOPOSTER_PLEX_TOKEN",
+        "jellyfin_api_key": "AUTOPOSTER_JELLYFIN_APIKEY",
+    }
+
+
+def test_a_plex_only_document_still_loads_unchanged(tmp_path):
+    cfg = load_config(EXAMPLE)
+    assert cfg.plex is not None and cfg.jellyfin is None
+    assert cfg.configured_servers == ["plex"]
+
+
+def test_a_jellyfin_only_document_loads(tmp_path):
+    doc = read_config_document(EXAMPLE)
+    doc.pop("plex")
+    doc["jellyfin"] = {"url": "https://jellyfin.example", "excluded_libraries": ["Photos"]}
+    cfg = build_config(doc)
+    assert cfg.plex is None and cfg.jellyfin.url == "https://jellyfin.example"
+    assert cfg.configured_servers == ["jellyfin"]
+    assert cfg.jellyfin.replace_thumb_with_backdrop is False
+
+
+def test_no_server_at_all_is_refused_at_load():
+    doc = read_config_document(EXAMPLE)
+    doc.pop("plex")
+    with pytest.raises(ValueError, match="at least one media server"):
+        build_config(doc)
+
+
+def test_missing_server_setup_names_the_variable_not_the_value():
+    plex_only = {"plex": {"url": "https://plex"}}
+    assert missing_server_setup(plex_only, {}) == ["plex is configured but AUTOPOSTER_PLEX_TOKEN is not set"]
+    assert missing_server_setup(plex_only, {"AUTOPOSTER_PLEX_TOKEN": "t"}) == []
+    both = {"plex": {"url": "x"}, "jellyfin": {"url": "y"}}
+    assert missing_server_setup(both, {"AUTOPOSTER_PLEX_TOKEN": "t"}) == [
+        "jellyfin is configured but AUTOPOSTER_JELLYFIN_APIKEY is not set"
+    ]
+    assert missing_server_setup({}, {}) == ["no media server is configured"]
+    assert missing_server_setup(None, {}) == ["no media server is configured"]
+
+
+def test_the_twin_switches_exist_and_default_like_their_plex_twins():
+    cfg = load_config(EXAMPLE)
+    assert cfg.badges.upload_to_jellyfin is False
+    assert cfg.operations.write_to_jellyfin is True

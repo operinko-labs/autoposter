@@ -66,6 +66,7 @@ from autoposter.config.overrides import load_overrides_document
 from autoposter.db.models import EventLog, ManagedCollection
 from autoposter.db.models import Session as SessionModel
 from autoposter.redact import redact_urls
+from autoposter.servers.registry import require_plex
 
 logger = logging.getLogger(__name__)
 
@@ -273,7 +274,7 @@ class PreviewRequest(BaseModel):
     title: str | None = None
 
 
-@router.post("/collections/preview")
+@router.post("/collections/preview", dependencies=[Depends(require_plex)])
 async def preview_collections(
     body: PreviewRequest,
     request: Request,
@@ -459,7 +460,7 @@ async def _managed_row(session, library: str, title: str) -> ManagedCollection |
     ).scalar_one_or_none()
 
 
-@router.post("/collections/ops/blank")
+@router.post("/collections/ops/blank", dependencies=[Depends(require_plex)])
 async def blank_collection(
     body: BlankRequest,
     request: Request,
@@ -545,7 +546,7 @@ async def blank_collection(
     return {"actions": [action]}
 
 
-@router.post("/collections/ops/delete")
+@router.post("/collections/ops/delete", dependencies=[Depends(require_plex)])
 async def delete_collection(
     body: DeleteRequest,
     request: Request,
@@ -613,7 +614,7 @@ async def delete_collection(
     return {"actions": [action]}
 
 
-@router.post("/collections/ops/mass-mode")
+@router.post("/collections/ops/mass-mode", dependencies=[Depends(require_plex)])
 async def mass_collection_mode(
     body: MassModeRequest,
     request: Request,

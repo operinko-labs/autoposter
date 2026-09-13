@@ -114,6 +114,14 @@ async def status_snapshot(
         "jobs_by_state": jobs_by_state,
         "workers": config.workers,
         "processed_last_24h": processed_last_24h,
+        # spec §9: which media servers this DOCUMENT configures -- not which
+        # ones this process has actually wired (app.state.servers), so a test
+        # app built with no servers_factory still answers truthfully. The UI
+        # hides a Plex-only page and renders the gate sentence if reached
+        # directly when this is false.
+        "capabilities": {
+            name: name in config.configured_servers for name in ("plex", "jellyfin")
+        },
         "scheduled_jobs": [
             {
                 "name": row.name,
