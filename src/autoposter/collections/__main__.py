@@ -28,6 +28,7 @@ from autoposter.config.schema import Secrets
 from autoposter.db.base import make_engine, make_session_factory
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.providers.cache import ProviderCache
+from autoposter.servers.registry import PLEX_REQUIRED
 
 CONFIG_PATH = DEFAULT_CONFIG_PATH
 
@@ -57,6 +58,15 @@ async def main() -> None:
             if not config.collections.enabled and not config.playlists.enabled:
                 logger.info("collections and playlists are disabled in config")
                 return
+
+            # config.plex is optional now (a Jellyfin-only deployment). This
+            # CLI hard-depends on a real plexapi.PlexServer -- there is no
+            # lazy-connect wrapper here (see the module docstring) -- so a
+            # missing `plex:` block must be refused loudly before the
+            # unguarded `config.plex.url` read below, not crash on it.
+            if config.plex is None:
+                logger.error(PLEX_REQUIRED)
+                raise SystemExit(2)
 
             server = PlexServer(config.plex.url, secrets.plex_token)
             async with httpx.AsyncClient() as http:

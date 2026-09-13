@@ -232,7 +232,7 @@ def create_app(
         # is_healthy() below is vacuously True (all([]) == True): nothing
         # needing a server that is not there should ever be gated by one.
         health_by_server = {}
-        if config.plex is not None:
+        if "plex" in app.state.servers:
             health_by_server["plex"] = PlexHealth(
                 url=config.plex.url,
                 token=secrets.plex_token,
@@ -241,8 +241,8 @@ def create_app(
                 refresh_interval=config.plex.token_refresh_interval_seconds,
                 refresh_enabled=config.plex.token_refresh_enabled,
             )
-        # Task 15 adds JellyfinHealth here, behind `if config.jellyfin is not
-        # None:` -- jellyfin/health.py does not exist until then.
+        # Task 15 adds JellyfinHealth here, behind `if "jellyfin" in
+        # app.state.servers:` -- jellyfin/health.py does not exist until then.
         app.state.server_health = health_by_server
         app.state.plex_health = health_by_server.get("plex")
         # Check once before workers start: a service booting during an outage
@@ -433,12 +433,15 @@ def create_app(
                 if config.arr_sync.enabled:
                     scheduler_jobs.append(make_arr_sync_job(holder, server_factory, http, secrets))
             else:
+                # Named by their SCHEDULED_JOB_NAMES entry (api/routes.py), not
+                # a paraphrase, so an operator can grep the dashboard for the
+                # exact name this line reports skipped.
                 if config.collections.enabled or config.playlists.enabled:
-                    logger.info("%s needs Plex; skipped -- %s", "collections", PLEX_REQUIRED)
-                logger.info("%s needs Plex; skipped -- %s", "credits", PLEX_REQUIRED)
-                logger.info("%s needs Plex; skipped -- %s", "maintenance", PLEX_REQUIRED)
-                logger.info("%s needs Plex; skipped -- %s", "prune", PLEX_REQUIRED)
-                logger.info("%s needs Plex; skipped -- %s", "merge", PLEX_REQUIRED)
+                    logger.info("%s needs Plex; skipped -- %s", "collections_reconcile", PLEX_REQUIRED)
+                logger.info("%s needs Plex; skipped -- %s", "credits_scan", PLEX_REQUIRED)
+                logger.info("%s needs Plex; skipped -- %s", "plex_maintenance", PLEX_REQUIRED)
+                logger.info("%s needs Plex; skipped -- %s", "plex_prune", PLEX_REQUIRED)
+                logger.info("%s needs Plex; skipped -- %s", "plex_merge", PLEX_REQUIRED)
                 if config.arr_sync.enabled:
                     logger.info("%s needs Plex; skipped -- %s", "arr_sync", PLEX_REQUIRED)
             scheduler_jobs.append(make_drift_job(holder))
@@ -447,6 +450,17 @@ def create_app(
             # are the two passes that read the asset tree. It needs nothing but
             # the holder: no Plex, no HTTP, no provider clients -- it stats the
             # paths renders rows already name.
+            #
+            # drift/cleanup/asset_stats are registered AFTER the plex-gated
+            # block above rather than interleaved with it (as they were before
+            # this task): this DOES change scheduler_jobs' order --
+            # scheduler/core.py's Scheduler iterates the list in order within
+            # one poll tick, so a plex-less deployment's first tick now claims
+            # collections/credits/maintenance/prune/merge/arr_sync's due-check
+            # (all skipped, none registered) before drift/cleanup/asset_stats
+            # rather than after. Nothing depends on cross-job ordering within a
+            # tick (each job claims its own row independently), so this is a
+            # visible but harmless reordering, not a hidden behaviour change.
             scheduler_jobs.append(make_asset_stats_job(holder))
         # Published so config.live.swap_config can recompute the cadences
         # below without rebuilding the jobs -- it has no other way to reach

@@ -213,6 +213,30 @@ async def test_the_cli_exits_non_zero_when_a_library_failed(monkeypatch):
     assert exit_info.value.code == 1
 
 
+async def test_the_cli_refuses_before_touching_plex_when_it_is_not_configured(
+    monkeypatch, caplog
+):
+    """I1: ``config.plex`` is optional now (a Jellyfin-only deployment). This
+    CLI builds a real ``PlexServer(config.plex.url, ...)`` with no lazy-connect
+    wrapper, so a missing ``plex:`` block must be refused loudly before that
+    read, not crash on ``None.url``."""
+    import logging
+
+    import autoposter.collections.__main__ as cli
+
+    async def fake_reconcile(session, server, config, http, summaries=None, **kwargs):
+        raise AssertionError("must not reach the reconcile when Plex is not configured")
+
+    _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, plex=None)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(SystemExit) as exit_info:
+            await cli.main()
+
+    assert exit_info.value.code == 2
+    assert "no Plex server is configured" in caplog.text
+
+
 async def test_the_cli_exits_zero_when_every_library_succeeded(monkeypatch):
     import autoposter.collections.__main__ as cli
 
@@ -275,10 +299,19 @@ async def test_the_cli_threads_a_real_source_bundle_to_the_reconcile(monkeypatch
     )
 
 
-def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey=""):
+_CONFIGURED_PLEX = SimpleNamespace(url="http://plex.invalid")
+
+
+def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey="", plex=_CONFIGURED_PLEX):
     """Replace everything ``main()`` touches outside its own logic: config
     loading, the Plex connection, the engine and the reconcile itself. What
-    is under test here is only what ``main()`` does with the summary."""
+    is under test here is only what ``main()`` does with the summary.
+
+    ``plex`` defaults to a configured stand-in block; the I1 refusal test
+    passes ``plex=None`` explicitly to mean "no ``plex:`` block at all",
+    which is a real, distinct state from the default -- not the same as
+    "not supplied".
+    """
 
     class _NullSession:
         async def __aenter__(self):
@@ -300,7 +333,7 @@ def _stub_cli_dependencies(monkeypatch, cli, fake_reconcile, mdblist_apikey=""):
             # `main()` does with the summary, and turning it on would drag a
             # second pass and a second set of fakes into it.
             playlists=SimpleNamespace(enabled=False),
-            plex=SimpleNamespace(url="http://plex.invalid"),
+            plex=plex,
             # The CLI builds its own cache-fronted TMDB facts client, for the
             # ``tmdb_summary:`` definitions a pass may carry -- so the stub
             # config needs the section that decides whether to cache.

@@ -1,8 +1,7 @@
 """Which media servers this deployment has (spec §3.5), and the gate (spec §9)."""
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Iterator
+from collections.abc import Iterator, Mapping
 
 from fastapi import HTTPException, Request
 
@@ -12,9 +11,21 @@ PLEX_REQUIRED = "This needs Plex, and no Plex server is configured."
 
 
 class Servers(Mapping[str, MediaServer]):
-    def __init__(self, by_name: dict[str, MediaServer], health: dict | None = None):
+    """The media servers this deployment has, by name (spec §3.5).
+
+    A read-only view built once, by ``build_servers``, from the effective
+    config -- there is no add/remove after construction. Iterating, indexing
+    (``servers["plex"]``) and membership (``"plex" in servers``) all come from
+    ``Mapping``; ``.plex``/``.jellyfin`` are the two named conveniences most
+    callers actually want. Per-server HEALTH is deliberately not carried here:
+    it lives on ``app.state.server_health`` instead, built and owned by the
+    lifespan (app.py), because it has its own lifecycle (async `.run()` tasks
+    to cancel on shutdown) that this plain, immutable registry has no business
+    holding.
+    """
+
+    def __init__(self, by_name: dict[str, MediaServer]):
         self._by_name = dict(by_name)
-        self.health = dict(health or {})
 
     def __getitem__(self, name: str) -> MediaServer:
         return self._by_name[name]
