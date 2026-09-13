@@ -18,12 +18,23 @@ for a season/episode is always the SERIES folder's basename, and
 its match container to the show for a season/episode intent and reads
 file_path off that (always None there too). Together this makes a
 Jellyfin-resolved item compute the same ``identity_key`` as its Plex twin at
-the same coordinates (tests/test_jellyfin_index.py).
+the same coordinates (tests/test_jellyfin_index.py). A movie whose two
+servers pick a different underlying file would still key differently under
+this rule -- that case is ruled into Task 19 (one intent maps to one row,
+and the second server contributes only its ref, never a second identity).
+
+Basename lookup deferred: spec §4.4 step 2 describes falling back to a
+by-basename index entry on a provider-id miss, but ``RenderIntent`` carries
+no path for this index to match against, so nothing can ever call it
+(ledgered).
+
+``kind_of`` returns ``""`` for a ``Type`` this module does not recognise
+(e.g. ``BoxSet``), and such a dto is never indexed under any kind -- a
+collection sharing a movie's provider id must never be filed as that movie.
 """
 from __future__ import annotations
 
 import asyncio
-import posixpath
 
 from autoposter.render.naming import derive_root_folder  # the same helper plex/client.py uses
 from autoposter.servers.base import ItemNotFound, PathMismatch, ResolvedItem, SectionItem
@@ -52,10 +63,17 @@ def _as_int(v):
 class LibraryIndex:
     def __init__(self, api, excluded: set[str], library_map: dict[str, str] | None = None):
         self._api = api
+        # Matched on the raw Jellyfin folder name -- a different name space
+        # from `_map` below, and on purpose: exclusion happens before any
+        # translation to the Plex-facing name.
         self._excluded = set(excluded)
-        self._map = dict(library_map or {})
+        # config/schema.py defines library_map as Plex name -> Jellyfin name.
+        # Every folder this index sees carries its JELLYFIN name, so the
+        # lookup direction is inverted here, once, rather than on every
+        # resolve: this is jellyfin name -> Plex name.
+        self._map = {jellyfin_name: plex_name for plex_name, jellyfin_name in dict(library_map or {}).items()}
         self._folders: list[dict] = []          # VirtualFolders, filtered
-        self._by_key: dict[tuple, dict] = {}    # (kind, ns, value) | (kind, "path", basename) -> dto
+        self._by_key: dict[tuple, dict] = {}    # (kind, ns, value) -> dto
         self._by_id: dict[str, dict] = {}
         self._children: dict[str, tuple[list[dict], list[dict]]] = {}  # series id -> (seasons, episodes)
         self.built = False
@@ -63,19 +81,30 @@ class LibraryIndex:
 
     # --- shape helpers the client also uses ---
     def kind_of(self, dto: dict) -> str:
-        return KIND_OF.get(dto.get("Type", ""), "movie")
+        return KIND_OF.get(dto.get("Type", ""), "")
 
-    def library_of(self, dto: dict) -> str:
+    def _folder_of(self, dto: dict) -> dict | None:
         path = dto.get("Path") or ""
         for f in self._folders:
             if any(path.startswith(loc.rstrip("/") + "/") or path == loc for loc in f.get("Locations") or []):
-                name = f["Name"]
-                return self._map.get(name, name)
-        return ""
+                return f
+        return None
+
+    def library_of(self, dto: dict) -> str:
+        folder = self._folder_of(dto)
+        if folder is None:
+            return ""
+        name = folder["Name"]
+        return self._map.get(name, name)
 
     # --- build ---
     async def rebuild(self) -> None:
         async with self._lock:
+            if self.built:
+                # Another caller already won the race to build (or this is a
+                # redundant explicit call); `invalidate()` is how a caller
+                # asks for a real rebuild.
+                return
             # capture -> "/Library/VirtualFolders" -> get
             folders = [f for f in await self._api.virtual_folders()
                        if f.get("Name") not in self._excluded and f.get("CollectionType") in ("movies", "tvshows")]
@@ -94,13 +123,16 @@ class LibraryIndex:
 
     def _index_one(self, dto: dict, by_key: dict, by_id: dict) -> None:
         kind = self.kind_of(dto)
+        if not kind:
+            # An unrecognised Type (e.g. BoxSet) is never indexed under any
+            # kind, even when it happens to share a provider id with a real
+            # movie or series.
+            return
         by_id[dto["Id"]] = dto
         for ns in ("tmdb", "tvdb", "imdb"):
             v = _pid(dto, ns)
             if v:
                 by_key.setdefault((kind, ns, str(v)), dto)
-        if dto.get("Path"):
-            by_key.setdefault((kind, "path", posixpath.basename(dto["Path"])), dto)
 
     def invalidate(self) -> None:
         self.built = False
@@ -123,6 +155,11 @@ class LibraryIndex:
         if intent.year:
             query["years"] = str(intent.year)
         for dto in await self._api.items(**query):
+            if self.kind_of(dto) != kind:
+                # includeItemTypes should already have filtered this out;
+                # never trust a hit's kind without checking (a BoxSet must
+                # never be taken for the movie it collects).
+                continue
             for ns, v in (("tmdb", intent.tmdb_id), ("tvdb", intent.tvdb_id), ("imdb", intent.imdb_id)):
                 if v and str(_pid(dto, ns)) == str(v):
                     self._index_one(dto, self._by_key, self._by_id)
@@ -130,7 +167,11 @@ class LibraryIndex:
         return None
 
     async def _children_of(self, series_id: str):
-        if series_id not in self._children:
+        if series_id in self._children:
+            return self._children[series_id]
+        async with self._lock:
+            if series_id in self._children:
+                return self._children[series_id]
             # capture -> "/Shows/{seriesId}/Seasons" and "/Shows/{seriesId}/Episodes" -> get
             self._children[series_id] = (await self._api.seasons(series_id), await self._api.episodes(series_id))
         return self._children[series_id]
@@ -162,8 +203,8 @@ class LibraryIndex:
     async def resolve(self, intent) -> ResolvedItem:
         dto, top, season = await self._find(intent)
         container = top or dto
-        library = self.library_of(container)
-        folder = next((f for f in self._folders if self._map.get(f["Name"], f["Name"]) == library), None)
+        folder = self._folder_of(container)
+        library = self._map.get(folder["Name"], folder["Name"]) if folder else ""
 
         if intent.kind == "movie":
             target = dto.get("Path")
@@ -203,7 +244,7 @@ class LibraryIndex:
 
         return ResolvedItem(
             server="jellyfin", native_id=dto["Id"], library=library, kind=intent.kind,
-            title=dto.get("Name") or intent.title, year=dto.get("ProductionYear") or intent.year,
+            title=dto.get("Name") or intent.title, year=ids_source.get("ProductionYear") or intent.year,
             season_number=intent.season_number, episode_number=intent.episode_number,
             root_folder=root_folder, file_path=file_path, art_url=None,
             tmdb_id=_as_int(_pid(ids_source, "tmdb")) or intent.tmdb_id,
