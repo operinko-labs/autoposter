@@ -1552,12 +1552,13 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     address and follows no successful check is refused with ``STEP_SERVERS``,
     which is the same sentence the finish step refuses on -- there is no shape
     in which this step accepts a document the next boot then rejects. The
-    blocks that survive are the ones the operator actually configured: the two
-    cards on this step may be saved in one body or one at a time, so a server
-    this body does not name keeps whatever THIS SESSION staged for it and
-    loses only the example's placeholder block -- which a Jellyfin-only
-    deployment must not inherit, or ``missing_server_setup`` would demand a
-    Plex token forever.
+    blocks that survive are the ones the operator actually SAVED: the two cards
+    on this step may be submitted in one body or one at a time, so a server
+    this body does not name keeps what an earlier submit of this session staged
+    for it -- and loses the example's placeholder block, and loses a block for
+    a server that was only checked. A probe is not a decision to run a server,
+    and ``missing_server_setup`` would demand the credential of any server this
+    document names.
 
     Each address is checked here as well as validated, because ``url`` on both
     server models is a bare ``str``: an empty or hostless one passes the model
@@ -1625,19 +1626,27 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     for name, url in urls.items():
         document.setdefault(name, {})["url"] = url
     for name in _SERVERS:
-        # What this submit says about the server it did NOT name. The document
-        # is re-derived from the example every time, so there are three
-        # possible sources for a block and only one of them is this
-        # deployment's: an address this submit typed (above), an address a
-        # check staged (`_apply_staged_urls`, left alone here), and an address
-        # an EARLIER SUBMIT of this session staged -- which is one card of the
-        # servers step saved before the other, and is restored here. What is
-        # left is the example's own `plex:` block, with its placeholder
-        # address, and it is dropped: `boot` would read it as a Plex
-        # deployment missing its token, forever, on a Jellyfin-only pod.
-        if name in urls or name in state.base_urls:
+        # What this submit says about the server it did NOT name, which is the
+        # question "did the operator SAVE this server". The document is
+        # re-derived from the example every time, so a block survives only for
+        # an address this submit typed (above) or one an EARLIER SUBMIT of this
+        # session staged -- one card of the servers step saved before the
+        # other, restored here. Two blocks are dropped instead:
+        #
+        # * the example's own `plex:`, with its placeholder address, which a
+        #   Jellyfin-only pod must not inherit or `boot` reads it as a Plex
+        #   deployment missing its token, forever;
+        # * a server that was only CHECKED. "Check connection" is framed as a
+        #   test and is the one control on the pane that is: a probe writing a
+        #   delivery target into the document -- and making that server's
+        #   credential mandatory to finish, with nothing anywhere able to
+        #   remove it -- is an opt-in the operator never gave. The check's
+        #   address is still honoured for the server this body DOES name,
+        #   because `_apply_staged_urls` ran above and the typed url, when
+        #   there is one, overwrote it.
+        if name in urls:
             continue
-        previous = (state.config_document or {}).get(name) or {}
+        previous = copy.deepcopy((state.config_document or {}).get(name) or {})
         if previous.get("url"):
             document[name] = previous
         else:
@@ -1694,8 +1703,17 @@ def _apply_staged_urls(document: dict, state: SetupState) -> dict:
         # the same step can write. `plex_account` and the five built-in hosts
         # never reach here: only the five typed systems are ever staged, and
         # the account has no address of its own.
+        #
+        # `setdefault` for an *arr and never for a server (review I2): a
+        # checked address UPDATES a server the document already names -- the
+        # back navigation this function exists for, an operator correcting the
+        # address they saved -- and never ADDS one, because "Check connection"
+        # is a test and a probe is not a decision to run a server. The config
+        # step drops the block of a server nobody saved; without this arm,
+        # finish's second application would put it straight back.
         if system in _SERVERS:
-            document.setdefault(system, {})["url"] = base_url
+            if system in document:
+                document[system]["url"] = base_url
         elif system in ("radarr", "sonarr", "tracearr"):
             document.setdefault(system, {})["base_url"] = base_url
     return document
