@@ -23,8 +23,9 @@ def test_jellyfin_only_registry_has_no_plex():
     doc = read_config_document(EXAMPLE)
     doc.pop("plex")
     doc["jellyfin"] = {"url": "https://jf"}
-    with pytest.raises(NotImplementedError):  # until Task 14 lands the client
-        build_servers(build_config(doc), _secrets(jellyfin_api_key="k"), http=None)
+    servers = build_servers(build_config(doc), _secrets(jellyfin_api_key="k"), http=None)
+    assert servers.names == ["jellyfin"] and servers.plex is None
+    assert servers.jellyfin is not None and servers.jellyfin.name == "jellyfin"
 
 
 class _App:

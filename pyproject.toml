@@ -95,6 +95,7 @@ testpaths = ["tests"]
 markers = [
     'imagemagick: needs a real `magick` binary; pass "hdri" when byte-exact parity requires a Q16-HDRI build',
     "deep: an ASGI-plus-database integration suite, deselected on pull requests and run in full on main; see DEEP_SUITES in tests/conftest.py",
+    "jellyfin: needs a live Jellyfin 12.x at AUTOPOSTER_TEST_JELLYFIN_URL with AUTOPOSTER_TEST_JELLYFIN_APIKEY; skipped without them, deselected in CI",
 ]
 # Pillow deprecations otherwise sit unnoticed among "N warnings" until the
 # removal release breaks the suite outright. Fail on one now so a future

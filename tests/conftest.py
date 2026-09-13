@@ -276,15 +276,22 @@ def imagemagick(request):
 
 
 @pytest.fixture(autouse=True)
-def no_outbound_network(monkeypatch):
+def no_outbound_network(request, monkeypatch):
     """Fail loudly if a test reaches the real network.
 
-    Nothing in the suite does today, but that is avoidance rather than
+    Nothing else in the suite does today, but that is avoidance rather than
     enforcement: the IMDb GraphQL API and the Kometa GitHub dataset are one
     forgotten ``MockTransport`` away, and IMDb's own response carries a
     non-commercial-use disclaimer. ``MockTransport`` and ``ASGITransport``
     are unaffected -- only the real connecting transport is blocked.
+
+    Exempt: tests marked ``jellyfin`` (tests/test_jellyfin_live.py) reach the
+    operator's own throwaway instance on purpose -- that is the entire point
+    of ``jellyfin_live``, and it is gated by that fixture's own skip, not by
+    this one.
     """
+    if request.node.get_closest_marker("jellyfin") is not None:
+        return
 
     async def blocked(self, request):
         raise RuntimeError(
@@ -463,3 +470,11 @@ def session_factory_for(session):
         yield session
 
     return factory
+
+
+@pytest.fixture
+def jellyfin_live():
+    url, key = os.environ.get("AUTOPOSTER_TEST_JELLYFIN_URL"), os.environ.get("AUTOPOSTER_TEST_JELLYFIN_APIKEY")
+    if not (url and key):
+        pytest.skip("set AUTOPOSTER_TEST_JELLYFIN_URL and AUTOPOSTER_TEST_JELLYFIN_APIKEY")
+    return url.rstrip("/"), key

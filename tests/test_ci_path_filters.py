@@ -413,8 +413,8 @@ def test_the_test_step_defers_the_deep_lane_only_on_pull_requests():
         "reason that is not a defect"
     )
 
-    fast = 'markers="not imagemagick and not deep"'
-    full = 'markers="not imagemagick"'
+    fast = 'markers="not imagemagick and not deep and not jellyfin"'
+    full = 'markers="not imagemagick and not jellyfin"'
     assert fast in script and full in script, (
         f"the Test step's lanes are {selections}; expected one selection that "
         "deselects `deep` and one that does not"
