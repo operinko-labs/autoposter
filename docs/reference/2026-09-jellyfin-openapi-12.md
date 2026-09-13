@@ -28,6 +28,12 @@ Against the operator's own Jellyfin 12.0.0 instance:
    `Tvdb`, `TmdbCollection`. The spec's schema (below) types `ProviderIds` as
    a plain `additionalProperties` string dictionary — it does not enumerate
    key names, so this casing is a live-server fact, not a spec fact.
+5. `POST /Items/{itemId}/Images/{imageType}` (`SetItemImage`) → `500` when
+   the body is the raw image bytes the spec's `requestBody` schema below
+   describes. The body must be **base64-encoded** instead, `Content-Type`
+   unchanged (the real image mime, not `text/plain` or similar) — this is an
+   observation about the live server, not something the spec says anywhere;
+   `JellyfinApi.set_image` encodes accordingly (V3, §11).
 
 The header **value** format (`MediaBrowser Token="<key>"`, with or without
 the `Client`/`Device`/`DeviceId`/`Version` fields) is not written anywhere in
@@ -267,8 +273,12 @@ field on this list is nullable.
 }
 ```
 
-Body content type is `image/*` — the raw image bytes, not multipart and not
-JSON. `ImageType` enum, verbatim (13 values):
+Body content type is `image/*`, and the schema above declares raw binary —
+not multipart, not JSON. **That is the spec's claim, not the wire's**: the
+live instance answers `500` to a raw-bytes body and wants it base64-encoded
+instead, `Content-Type` unchanged (observation, not spec — see item 5 in
+"Verified live" above; `JellyfinApi.set_image` is where this is handled).
+`ImageType` enum, verbatim (13 values):
 
 ```json
 {
@@ -317,7 +327,12 @@ raw `image/*` bytes, no JSON schema. No `security` block on this operation
 }
 ```
 
-## jellyfin-openapi-12.json → paths → "/Items/{itemId}/Refresh" → post
+## jellyfin-openapi-12.json → paths → "/Items/{itemId}/Refresh" → post (abridged)
+
+Abridged: the query parameters' `allOf`/`$ref` mode-schema wrappers are
+flattened to their `enum` inline below, and the `401`/`403`/`503` responses
+(same shape as every other route captured here) are omitted; only `204` and
+`404` are kept.
 
 ```json
 {

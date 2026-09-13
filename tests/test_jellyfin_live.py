@@ -4,6 +4,9 @@ A failure here is a **finding**, not a regression: the fix belongs to the one
 ``JellyfinApi``/``LibraryIndex`` function the failing V-item names (spec §11),
 not to this file.
 """
+import asyncio
+import os
+
 import httpx
 import pytest
 
@@ -20,6 +23,67 @@ async def _lowest_named_movie(api: JellyfinApi) -> dict:
     movies = next(f for f in await api.virtual_folders() if f["CollectionType"] == "movies")
     items = await api.items(parentId=movies["ItemId"], recursive="true", includeItemTypes="Movie", fields="Path")
     return min(items, key=lambda item: item["Name"])
+
+
+@pytest.fixture(scope="module")
+def _v3v4_movie():
+    """Owns the ONE movie V3 and V4 write to: picks it, captures its current
+    Primary image once, yields ``(item_id, original_bytes_or_None,
+    content_type_or_None)``, and restores the original (or ``delete_image``,
+    if there was none) in teardown -- module-scoped so V3 and V4 share one
+    capture/restore cycle rather than each capturing and restoring its own
+    (fix round 1, I2: a failed restore in one must not silently become the
+    other's baseline).
+
+    Plain (non-async) module-scoped fixture using ``asyncio.run()`` for its
+    own setup/teardown calls, rather than an async generator fixture at
+    module scope: this suite's event loop is function-scoped (asyncio_mode =
+    "auto", no override in pyproject.toml), and a module-scoped async fixture
+    would conflict with that. The setup/teardown calls each open and close
+    their own client, so nothing async is held open across the yield.
+
+    Duplicates ``jellyfin_live``'s env-var check rather than depending on it:
+    a function-scoped fixture cannot be requested by a module-scoped one.
+    """
+    url = os.environ.get("AUTOPOSTER_TEST_JELLYFIN_URL")
+    key = os.environ.get("AUTOPOSTER_TEST_JELLYFIN_APIKEY")
+    if not (url and key):
+        pytest.skip("set AUTOPOSTER_TEST_JELLYFIN_URL and AUTOPOSTER_TEST_JELLYFIN_APIKEY")
+    url = url.rstrip("/")
+
+    async def _capture():
+        async with httpx.AsyncClient(timeout=30) as http:
+            api = JellyfinApi(http, url, key, "test")
+            item = await _lowest_named_movie(api)
+            original = await api.image(item["Id"], "Primary")
+            return item, original
+
+    item, original = asyncio.run(_capture())
+    print("V3/V4 movie:", item["Name"], item["Id"])
+    content_type = _content_type(original) if original is not None else None
+    try:
+        yield item["Id"], original, content_type
+    finally:
+        async def _restore():
+            # Retried with a growing timeout: this instance's concurrent
+            # library scan has twice been observed to make a real poster's
+            # write take longer than a first, generous 30s allowance -- this
+            # write is the one thing that must not silently fail to land.
+            last_exc = None
+            for attempt_timeout in (30, 60, 90):
+                try:
+                    async with httpx.AsyncClient(timeout=attempt_timeout) as http:
+                        api = JellyfinApi(http, url, key, "test")
+                        if original is None:
+                            await api.delete_image(item["Id"], "Primary")
+                        else:
+                            await api.set_image(item["Id"], "Primary", original, content_type)
+                    return
+                except httpx.TimeoutException as exc:
+                    last_exc = exc
+            raise last_exc
+
+        asyncio.run(_restore())
 
 
 def test_the_network_guard_exempts_this_suite(jellyfin_live):
@@ -56,64 +120,46 @@ async def test_v2_provider_id_keys_as_served_and_whether_seasons_carry_any(jelly
     print("V2 season ProviderIds:", [s.get("ProviderIds") for s in seasons])  # observation
 
 
-async def test_v3_set_image_accepts_raw_bytes(jellyfin_live, jpeg_bytes):
+@pytest.mark.xdist_group("jellyfin-live-write")
+async def test_v3_set_image_accepts_a_base64_body(jellyfin_live, jpeg_bytes, _v3v4_movie):
     """V3 (spec §11): capture -> "/Items/{itemId}/Images/{imageType}" -> post.
 
-    Writes to one deterministic movie (``_lowest_named_movie``); its original
-    Primary image is captured before the write and restored (or deleted, if
-    there was none) in a ``finally``, whatever the assertion below decides.
+    Writes to the one movie ``_v3v4_movie`` owns; that fixture captures and
+    restores its original Primary image once, shared with V4 (fix round 1,
+    I2) rather than each test capturing and restoring its own.
     """
+    item_id, _, _ = _v3v4_movie
     url, key = jellyfin_live
-    # A generous timeout: the finally-block restore writes back a real,
-    # possibly large poster, and this instance's concurrent library scan was
-    # observed (while developing this test) to slow an image-write response
-    # past httpx's 5s default, raising ReadTimeout mid-restore.
     async with httpx.AsyncClient(timeout=30) as http:
         api = JellyfinApi(http, url, key, "test")
-        item = await _lowest_named_movie(api)
-        print("V3 movie:", item["Name"], item["Id"])
-        original = await api.image(item["Id"], "Primary")
-        try:
-            await api.set_image(item["Id"], "Primary", jpeg_bytes, "image/jpeg")
-            back = await api.image(item["Id"], "Primary")
-            assert back is not None and len(back) > 0
-        finally:
-            if original is None:
-                await api.delete_image(item["Id"], "Primary")
-            else:
-                await api.set_image(item["Id"], "Primary", original, _content_type(original))
+        await api.set_image(item_id, "Primary", jpeg_bytes, "image/jpeg")
+        back = await api.image(item_id, "Primary")
+    assert back is not None and len(back) == len(jpeg_bytes)
 
 
-async def test_v4_a_metadata_refresh_without_replace_leaves_our_image(jellyfin_live, jpeg_bytes):
+@pytest.mark.xdist_group("jellyfin-live-write")
+async def test_v4_a_metadata_refresh_without_replace_leaves_our_image(jellyfin_live, jpeg_bytes, _v3v4_movie):
     """V4 (spec §11): the refresh call is cited from jellyfin-openapi-12.json
     -> paths -> "/Items/{itemId}/Refresh" -> post (docs/reference/2026-09-jellyfin-openapi-12.md
     gained a matching section in this task).
 
-    Writes to one deterministic movie (``_lowest_named_movie``); its original
-    Primary image is captured before the write and restored (or deleted, if
-    there was none) in a ``finally``.
+    Writes to the one movie ``_v3v4_movie`` owns; that fixture captures and
+    restores its original Primary image once, shared with V3 (fix round 1,
+    I2) rather than each test capturing and restoring its own.
     """
+    item_id, _, _ = _v3v4_movie
     url, key = jellyfin_live
-    async with httpx.AsyncClient(timeout=30) as http:  # see V3's timeout note above
+    async with httpx.AsyncClient(timeout=30) as http:
         api = JellyfinApi(http, url, key, "test")
-        item = await _lowest_named_movie(api)
-        print("V4 movie:", item["Name"], item["Id"])
-        original = await api.image(item["Id"], "Primary")
-        try:
-            await api.set_image(item["Id"], "Primary", jpeg_bytes, "image/jpeg")
-            r = await http.post(
-                f"{url}/Items/{item['Id']}/Refresh",
-                params={"metadataRefreshMode": "Default", "imageRefreshMode": "Default", "replaceAllImages": "false"},
-                headers=api.headers(),
-            )
-            r.raise_for_status()
-            back = await api.image(item["Id"], "Primary")
-            assert back == jpeg_bytes or (back is not None and len(back) == len(jpeg_bytes))
-        finally:
-            if original is None:
-                await api.delete_image(item["Id"], "Primary")
-            else:
-                await api.set_image(item["Id"], "Primary", original, _content_type(original))
+        await api.set_image(item_id, "Primary", jpeg_bytes, "image/jpeg")
+        r = await http.post(
+            f"{url}/Items/{item_id}/Refresh",
+            params={"metadataRefreshMode": "Default", "imageRefreshMode": "Default", "replaceAllImages": "false"},
+            headers=api.headers(),
+        )
+        r.raise_for_status()
+        back = await api.image(item_id, "Primary")
+    assert back == jpeg_bytes or (back is not None and len(back) == len(jpeg_bytes))
 
 
 async def test_v5_paths_are_absolute_and_inside_a_location(jellyfin_live):

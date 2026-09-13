@@ -1,5 +1,7 @@
 """JellyfinApi against the captured spec (docs/reference/2026-09-jellyfin-openapi-12.md).
 Every path and parameter here is quoted from that document; nothing is recalled."""
+import base64
+
 import httpx
 import pytest
 
@@ -66,7 +68,6 @@ async def test_set_image_posts_a_base64_body_with_the_image_content_type():
     # (documented). V3 (design doc §11), resolved live 2026-09-13 against
     # Jellyfin 12.0.0: raw bytes get a 500; the body must be base64-encoded,
     # Content-Type stays the real image mime.
-    import base64
     seen = {}
     async def handler(request):
         seen["path"], seen["ct"], seen["body"] = request.url.path, request.headers["Content-Type"], request.content
