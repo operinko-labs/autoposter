@@ -131,3 +131,32 @@ async def test_the_genre_plans_add_and_remove_keys_become_one_replaced_list():
     # addGenre/removeGenre(locked=True) -- otherwise the new list has no
     # protection against Jellyfin's own scanner reverting it.
     assert recorder.posted["LockedFields"] == ["Genres"]
+
+
+@pytest.mark.asyncio
+async def test_an_override_on_title_and_summary_writes_and_locks_both():
+    # Review finding I1: title/summary are real DTO properties an override can
+    # set (WRITABLE_BY_KIND permits it), and dropping the value while still
+    # honouring its paired lock would lock Name/Overview to a STALE value.
+    dto = {
+        "Id": "m1", "Type": "Movie", "Name": "Old Title", "Overview": "Old overview",
+        "LockedFields": [],
+    }
+    overrides = {"title": "New Title", "summary": "New overview"}
+    recorder, edits = await _apply(dto, GatheredFacts(), overrides=overrides)
+    assert recorder.posted["Name"] == "New Title"
+    assert recorder.posted["Overview"] == "New overview"
+    assert sorted(recorder.posted["LockedFields"]) == ["Name", "Overview"]
+    assert edits == {"title": "New Title", "summary": "New overview"}
+
+
+@pytest.mark.asyncio
+async def test_a_tagline_override_writes_the_value_with_no_lock_entry():
+    # Tagline is not a captured MetadataField member (not in LOCKABLE), so an
+    # override on it is value-only -- its paired ".locked" edit key has no
+    # Jellyfin home and must not appear in LockedFields.
+    dto = {"Id": "m1", "Type": "Movie", "Taglines": ["Old tagline"], "LockedFields": []}
+    recorder, edits = await _apply(dto, GatheredFacts(), overrides={"tagline": "New tagline"})
+    assert recorder.posted["Taglines"] == ["New tagline"]
+    assert recorder.posted.get("LockedFields") == []
+    assert edits == {"tagline": "New tagline"}

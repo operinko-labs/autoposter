@@ -34,10 +34,13 @@ KIND_TO_PLEX_TYPE = {"Movie": "movie", "Series": "show", "Season": "season", "Ep
 
 # Plex edit key (what plan_edits' `put(field, value)` names -- the plexapi
 # attribute name, identical to the lock-key name for every field except
-# genres) -> the Jellyfin DTO property it is written to. Restated verbatim
-# from the task-16 addendum; ``userRating``/``addedAt`` and the three
-# override-only text fields (``title``, ``summary``, ``tagline``) are
-# deliberately NOT here -- see ``_NO_DTO_HOME`` below.
+# genres) -> the Jellyfin DTO property it is written to. The three
+# override-only text fields (`title`, `summary`, `tagline`) are real DTO
+# properties too -- WRITABLE_BY_KIND permits an override to set any of them,
+# and dropping the value while still honouring its paired lock (review
+# finding I1) would lock Name/Overview to a STALE value, worse than not
+# writing at all. `tagline` has no lock representation (not in LOCKABLE --
+# not a captured MetadataField member) -- an override on it is value-only.
 EDIT_TO_DTO = {
     "titleSort": "ForcedSortName",
     "contentRating": "OfficialRating",
@@ -46,18 +49,18 @@ EDIT_TO_DTO = {
     "originallyAvailableAt": "PremiereDate",
     "rating": "CriticRating",
     "audienceRating": "CommunityRating",
+    "title": "Name",
+    "summary": "Overview",
+    "tagline": "Taglines",
 }
 
 # Edit keys with no Jellyfin DTO home this task writes to, dropped with a
 # debug log rather than raised: `userRating` (Jellyfin's BaseItemDto carries
 # no per-server user rating -- _DtoView.userRating is always None, so a
 # `user_rating` fact always looks like a change and would otherwise retry
-# forever), `addedAt` (DateCreated is read for comparison but this task does
-# not write it back), and the three override-only text fields `title`,
-# `summary`, `tagline` (GatheredFacts never carries them -- the only way they
-# reach here is a per-item override -- and EDIT_TO_DTO above, matching the
-# addendum verbatim, has no entry for any of the three).
-_NO_DTO_HOME = frozenset({"userRating", "addedAt", "title", "summary", "tagline"})
+# forever) and `addedAt` (DateCreated is read for comparison but this task
+# does not write it back).
+_NO_DTO_HOME = frozenset({"userRating", "addedAt"})
 
 # Exactly the captured MetadataField members that map to a field this writer
 # ever produces (spec / capture "MetadataField enum", cast/productionLocations/
@@ -199,7 +202,8 @@ class _DtoView:
 
     @property
     def tagline(self) -> str | None:
-        return None  # no verified DTO home this task writes to; see _NO_DTO_HOME
+        taglines = self._dto.get("Taglines") or []
+        return taglines[0] if taglines else None
 
     @property
     def fields(self):
@@ -297,6 +301,8 @@ async def apply_facts(
             dto[dto_prop] = round(value * 10, 1)
         elif dto_prop == "Studios":
             dto[dto_prop] = [{"Name": value}]
+        elif dto_prop == "Taglines":
+            dto[dto_prop] = [value]
         elif dto_prop == "PremiereDate":
             dto[dto_prop] = f"{value}T00:00:00.0000000Z"
         else:
