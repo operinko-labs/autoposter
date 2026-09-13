@@ -1626,6 +1626,17 @@ async def test_a_single_upload_enabled_server_skips_compose_on_matching_provenan
     assert poster.upload_status == "uploaded"
     assert poster.badge_fingerprint == fingerprint
     assert plex.uploads == [], "the real upload must not run either -- this is adoption, not a copy"
+    # The adoption shortcut's own `uploaded` row must carry the fingerprint
+    # provenance just matched -- otherwise a later catch-up reads it as
+    # unconfirmed and re-uploads adopted artwork on every run.
+    delivery_fingerprint = (
+        await session.execute(
+            select(RenderDelivery.fingerprint).where(
+                RenderDelivery.render_id == poster.id, RenderDelivery.server == "plex",
+            )
+        )
+    ).scalar_one()
+    assert delivery_fingerprint == poster.badge_fingerprint
 
 
 async def test_a_failed_compose_after_a_provenance_mismatch_leaves_the_fingerprint_untouched(

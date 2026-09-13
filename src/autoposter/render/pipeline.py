@@ -2009,7 +2009,7 @@ async def compose_badged_bytes(
             session, config, solo_server, solo_name, solo_ref, render, fingerprint,
         ):
             render.badge_fingerprint = fingerprint
-            await deliveries.record(session, render.id, solo_name, "uploaded")
+            await deliveries.record(session, render.id, solo_name, "uploaded", fingerprint=fingerprint)
             # `deliver` rolls up and commits only what IT
             # recorded, and this shortcut's `uploaded` is recorded here,
             # before `deliver` ever sees the render. So the roll-up and the
