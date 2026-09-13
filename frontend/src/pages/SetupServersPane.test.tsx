@@ -51,7 +51,7 @@ describe("SetupServersPane", () => {
   });
 
   it("opens the Plex card on a deployment with nothing configured, and only that one", () => {
-    // Review M3. The Plex token used to be a required provider key, so the
+    // The Plex token used to be a required provider key, so the
     // Plex-only operator landed on an accordion already expanded around the
     // sign-in; a first run that showed two closed cards under a disabled
     // Continue would be the one thing this step changed about that walk. Not
@@ -64,7 +64,7 @@ describe("SetupServersPane", () => {
   });
 
   it("says what to do when a resolving document names no media server at all", () => {
-    // Branch review I1. `POST /api/setup/config` is refused while a document
+    // `POST /api/setup/config` is refused while a document
     // resolves, and `configured` is read off that document -- so on one that
     // names neither server the step can never be answered from this page: both
     // cards say the address is read from the document, which is true and is

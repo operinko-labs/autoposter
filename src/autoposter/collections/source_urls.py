@@ -1,6 +1,6 @@
 """Where a pasted list URL becomes a ``(builder, params)`` pair.
 
-Server-side deliberately (custom-collections UI phase, facts C2): every URL
+Server-side deliberately: every URL
 shape lives beside the params model it feeds, so what counts as "a valid IMDb
 list id" exists once, in Python -- a TypeScript transcription would drift the
 first time a builder's pattern moved. The endpoint wrapping this
@@ -63,7 +63,7 @@ SUPPORTED = (
     "thetvdb.com/lists/<slug> (tvdb_list)"
 )
 
-# The TMDb entity family rides free (facts C2): one host, five path kinds, one
+# The TMDb entity family rides free: one host, five path kinds, one
 # params model. Disclosed per kind in the display note, because a company or
 # network paste builds something broader than "the list at this URL".
 _TMDB_KINDS: dict[str, tuple[str, str]] = {
@@ -180,7 +180,7 @@ _HOSTS = {
 
 
 def _parse_bare(value: str) -> ParsedSource:
-    """The four bare shapes (facts C2), accepted where unambiguous.
+    """The four bare shapes, accepted where unambiguous.
 
     Told apart by shape rather than by the order of the tests below: MDBList's
     ``<user>/<slug>`` is the only one carrying a ``/``, so it is recognised

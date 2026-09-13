@@ -255,7 +255,7 @@ describe("the custom collections panel", () => {
   });
 
   it("a file-defined definition never enters the overrides write", async () => {
-    // The freezing hazard from the other side (facts C1/C3): the write is
+    // The freezing hazard from the other side: the write is
     // seeded from the STORED document, never from the listing, so a row the
     // listing shows but the overrides document does not hold cannot reach the
     // payload. Driven through Remove (the guard does not disable it) with a

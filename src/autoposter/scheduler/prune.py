@@ -89,7 +89,7 @@ class PruneCandidate:
     delete's key.
 
     ``refs`` is a SNAPSHOT of every server ref this row had at SCAN time, not
-    a live read -- Task 19's ``_prune_stale_refs`` deletes an individually
+    a live read -- ``_prune_stale_refs`` deletes an individually
     stale ref (a survivor whose OTHER server ref still resolves) before
     ``retire`` ever runs, and a row going away entirely has every ref of its
     own removed by the cascade the moment ``retire`` deletes it. Either way, a
@@ -136,7 +136,7 @@ class PruneScan:
     held: int
     total: int
     excluded: int = 0
-    # Fix round 1, C1: every ref `_scan_stale_refs` found doomed, collected
+    # Every ref `_scan_stale_refs` found doomed, collected
     # but NOT deleted here -- a scheduled DRY RUN must never write, and the
     # plausibility caps have to see this population before anything is
     # removed. `make_prune_job`'s apply branch deletes these, guarded on
@@ -155,7 +155,7 @@ class StaleRef:
     whose library that server now excludes), found by ``_scan_stale_refs``.
 
     Deleted, guarded on ``(id, updated_at)``, only in the apply branch --
-    never during the scan itself (C1). ``item_id`` is what lets the caller
+    never during the scan itself. ``item_id`` is what lets the caller
     skip a ref whose item is ALSO being retired this pass: the whole-row
     cascade removes it, so a separate delete would be redundant.
     """
@@ -192,8 +192,8 @@ def intent_for(candidate, *, server: str = "plex", native_id=_UNSET) -> RenderIn
 
     ``server``/``native_id`` default to ``"plex"``/``candidate.native_id``,
     which is every existing direct caller's shape (a ``PruneCandidate``,
-    unchanged). ``_scan_stale_refs`` (Task 19 fix round 1, reusing this
-    rather than a second inlined copy) passes both explicitly, once per
+    unchanged). ``_scan_stale_refs`` (reusing this rather than a second
+    inlined copy) passes both explicitly, once per
     server, against a plain SQL row that carries the same field names but no
     ``native_id`` attribute of its own -- hence the sentinel default rather
     than reading ``candidate.native_id`` unconditionally.
@@ -236,8 +236,8 @@ def _ancestors(candidate: PruneCandidate, by_id: dict[int, PruneCandidate]) -> l
 async def _scan_stale_refs(
     session: AsyncSession, servers, excluded: dict[str, frozenset[str]],
 ) -> list[StaleRef]:
-    """Find every ref a server no longer resolves (Task 19 ruling 6, fix
-    round 1 C1; spec §5.5): per server in ``servers``, ``exists_many`` over
+    """Find every ref a server no longer resolves (spec §5.5): per server
+    in ``servers``, ``exists_many`` over
     the intents of every row that HAS a ref on that server -- built from
     THAT ref's own native id, never another server's, via ``intent_for``.
     ``False``, or a row whose own ``library`` that server excludes (the
@@ -274,7 +274,7 @@ async def _scan_stale_refs(
                 select(
                     MediaItemServerRef.id, MediaItemServerRef.native_id,
                     MediaItemServerRef.updated_at,
-                    # Fix round 3, M1: the ref's OWN library -- the name that
+                    # The ref's OWN library -- the name that
                     # server knows this item by (spec §4.1) -- because it is
                     # that server's `excluded_libraries` it is compared
                     # against below. `MediaItem.library` is the identity
@@ -319,7 +319,7 @@ async def _scan_stale_refs(
 async def _retire_stale_refs(
     session: AsyncSession, stale_refs: list[StaleRef], pruned_item_ids: set[int],
 ) -> int:
-    """Delete the refs ``_scan_stale_refs`` found doomed (fix round 1 C1),
+    """Delete the refs ``_scan_stale_refs`` found doomed,
     called ONLY from the apply branch, after ``implausible_prune_count`` has
     passed and ``retire`` has run.
 
@@ -351,7 +351,7 @@ async def find_prunable(
     """Every ``media_items`` row the pipeline can no longer resolve on ANY
     configured server, safe to delete.
 
-    Task 19 ruling 6 turns the old single-Plex probe into one per server
+    The old single-Plex probe became one per server
     (``_prune_stale_refs``, above): a row is reachable when it still holds a
     ref on at least one of them, whatever server that is -- Plex artwork is
     never held to Jellyfin's absence and vice versa. ``excluded`` maps server
@@ -444,11 +444,11 @@ async def find_prunable(
 
     # Reachable means "still holds a ref on at least one server that
     # `_scan_stale_refs` did NOT find stale" -- computed against the CURRENT
-    # ref rows (nothing has been deleted; C1), so a ref on a server this
+    # ref rows (nothing has been deleted yet), so a ref on a server this
     # pass never touched at all (not in `servers`) still counts as live,
     # same as before.
     #
-    # Fix round 2, NB1: matched on (id, updated_at), not id alone. A ref
+    # Matched on (id, updated_at), not id alone. A ref
     # re-upserted between the scan above and this read -- `retry_pending_
     # deliveries` calls `upsert_server_ref` on its own, unrelated to this
     # sweep, and bumps only the ref's own `updated_at` -- must not still
@@ -621,7 +621,7 @@ async def retire(session: AsyncSession, candidates: list[PruneCandidate]) -> Ret
             )
         ).scalar_one()
         # `candidate.refs`, the scan-time snapshot -- never a live `refs_for`
-        # read here: Task 19's `_prune_stale_refs` (the caller's own prune
+        # read here: `_prune_stale_refs` (the caller's own prune
         # pass, ahead of `retire`) may already have deleted this row's only
         # stale ref before this point, on top of the FK cascade this delete
         # itself triggers, so a live read at either seam would report less
@@ -771,15 +771,15 @@ def make_prune_job(
     to hold an HTTP request open for.
 
     ``servers_factory`` is a zero-argument callable returning a connected
-    ``Servers`` registry (Task 19: every configured server, not one). It runs
+    ``Servers`` registry (every configured server, not one). It runs
     through ``asyncio.to_thread`` because connecting blocks -- the same
     contract ``make_collections_job``'s ``server_factory`` has, and for the
     same reason: this job shares the event loop with the worker pool and the
     liveness probes.
 
     ``unhealthy_servers`` names the configured servers whose liveness probe
-    is currently unhappy, read per run (fix round 3, M2: a list rather than
-    the old ``is_healthy`` boolean, so the refusal can say WHICH server is
+    is currently unhappy, read per run (a list rather than the old
+    ``is_healthy`` boolean, so the refusal can say WHICH server is
     out -- on a dual deployment a Jellyfin outage used to produce a sentence
     naming Plex). For every other consumer an unhealthy server means "wait";
     for this one it means "refuse", and that difference is the whole safety
@@ -867,7 +867,7 @@ def make_prune_job(
         # dismissing their queued jobs on the strength of a row that was
         # skipped.
         pruned_ids = set(outcome.pruned)
-        # C1: the doomed refs `_scan_stale_refs` found are only deleted now,
+        # The doomed refs `_scan_stale_refs` found are only deleted now,
         # after the plausibility caps above have passed and the whole-row
         # retire has run -- a ref whose item was ALSO just retired is
         # skipped (the cascade already took it).
@@ -889,7 +889,7 @@ def make_prune_job(
         # The same rule for the excluded population, and for the same reason:
         # "retired" must describe rows that are gone, not rows that were
         # offered and then shielded by a concurrent re-upsert. `excluded` is
-        # now per-server (Task 19); the union of every server's excluded
+        # now per-server; the union of every server's excluded
         # libraries is what `scan.excluded` itself is measured against too.
         all_excluded = frozenset().union(*excluded.values()) if excluded else frozenset()
         excluded_pruned = sum(1 for c in deleted if c.library in all_excluded)

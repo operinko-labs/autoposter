@@ -581,8 +581,8 @@ def test_the_roadmap_row_this_phase_closes_says_so_and_names_its_corrections():
     # Correction 2: not every history record carries ids.
     assert "2 of 50" in row
 
-    # And the three rows this phase files rather than builds (164-166) are
-    # contiguous. Not required to be the table's last rows: a later fix round
+    # And the three rows filed rather than built (164-166) are
+    # contiguous. Not required to be the table's last rows: a later addition
     # may file further rows after them (row 167 does).
     numbered = [int(m.group(1)) for m in re.finditer(r"^\|\s*(\d+)\s*\|", roadmap, re.M)]
     assert [164, 165, 166] == [n for n in numbered if 164 <= n <= 166], (

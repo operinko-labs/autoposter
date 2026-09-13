@@ -122,7 +122,7 @@ def test_a_movie_only_sort_refuses_on_a_show_library():
 
 
 def test_a_movie_show_refusal_names_library_kinds_only():
-    """Task 2 review I-1: ``others`` used to draw from all four ``SORT_TYPES``,
+    """``others`` used to draw from all four ``SORT_TYPES``,
     so ``duration.asc`` (a MOVIE and an EPISODE sort) refused on a show library
     named "episode or movie" and told the operator to narrow `libraries:` onto
     an episode library, which does not exist. The library branch only ever

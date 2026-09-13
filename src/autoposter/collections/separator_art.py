@@ -18,8 +18,8 @@ the very separators we fetch for the other three groups: face
 ``Comfortaa-Medium``, ALL CAPS, ``#FFFFFF``, caption box 1900x1000, point size
 fitted then clamped to [100, 203], composited ``-gravity center -geometry
 +0+0`` onto the 2000x3000 ``@base/<style>.png``.
-``.superpowers/sdd/p-div-font.md`` records the transcription and the render
-that verified it: upstream's own shipped ``separators/orig/genre.jpg``,
+The transcription was verified by a render of upstream's own shipped
+``separators/orig/genre.jpg``,
 reproduced from its own ``@base/orig.png``, RMSE 0.000158 normalised -- JPEG
 quantisation noise. Two consequences of that verification are worth keeping in
 view:
@@ -31,7 +31,7 @@ view:
   have to fall 17% before the version mattered.
 - ``compositor._caption_group`` emits ``-trim +repage -extent``; upstream emits
   ``-trim -extent`` with no ``+repage``. That divergence was MEASURED rather
-  than assumed harmless (``.superpowers/run-pdiv-t2-repage.log``): the two
+  than assumed harmless: the two
   argvs produce pixel-identical output here, RMSE 0 against each other and
   0.000158 against upstream's shipped file. So the shared builder is reused
   rather than forked.
@@ -87,7 +87,7 @@ FONT = asset_path("fonts") / "Comfortaa-Medium.ttf"
 
 # The text block, transcribed from ``create_default_posters.ps1`` lines
 # 5546-5549 and the composer at ``create_poster.ps1:1453`` -- see the module
-# docstring. ``max_point_size`` is 203, not a round 200: every real label
+# docstring. ``max_point_size`` is 203, not a tidy 200: every real label
 # clamps to it, so 200 would render every divider 1.5% small against
 # upstream's own art for no reason. ``min_point_size`` 100 is upstream's
 # floor; where upstream logs "text is too small and will be truncated" and

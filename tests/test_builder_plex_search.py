@@ -105,7 +105,7 @@ def test_the_type_key_is_refused_by_name():
     Asserts a fragment of the tailored reason rather than the bare word
     ``"type"`` -- every pydantic ``ValidationError`` contains that word on its
     own (``[type=value_error, ...]``), so it does not pin the refusal being
-    exercised here at all (Task 4 review, Minor 9)."""
+    exercised here at all."""
     with pytest.raises(ValidationError) as error:
         PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "type": "episode"})
     message = str(error.value)
@@ -117,10 +117,9 @@ def test_the_type_key_is_refused_by_name():
 def test_an_unknown_params_key_is_refused():
     """``extra="forbid"`` itself -- the class docstring's reason this model
     exists at all -- rather than one of the tailored ``_REFUSED_KEYS``/``sort``
-    branches, which is what this test used to exercise (Task 4 review,
-    Fix-round Carry 3: it duplicated ``test_the_key_is_sort_by_and_not_sort``
-    on the same input, answered by the same ``sort`` branch, and its name
-    describes neither)."""
+    branches, which is what this test used to exercise: it duplicated
+    ``test_the_key_is_sort_by_and_not_sort`` on the same input, answered by
+    the same ``sort`` branch, and its name described neither."""
     with pytest.raises(ValidationError):
         PlexSearchParams.model_validate({"all": {"genre": "Horror"}, "nonsense": 1})
 
@@ -130,7 +129,7 @@ def test_the_key_is_sort_by_and_not_sort():
     collection's Plex display order; ``sort_by`` in PARAMS is the query's
     order, which decides membership when a limit is present. Writing ``sort``
     here is a typo with a plausible-looking effect, so it refuses -- naming
-    both keys and which is which (Task 4 review, Minor 10: this used to
+    both keys and which is which (this used to
     validate a *good* ``sort_by`` and duplicate the test below instead of
     exercising the refusal its own name describes)."""
     with pytest.raises(ValidationError) as error:
@@ -314,8 +313,8 @@ async def test_the_builder_sends_the_query_to_the_sections_all_endpoint():
 
 
 async def test_current_year_in_a_plex_search_resolves_to_the_real_year():
-    """Row 171's ``plex_search`` half (search-tails-2 Task 3, controller
-    ruling). ``year`` is searchable and ``_as_current_year`` is not gated by
+    """Row 171's ``plex_search`` half.
+    ``year`` is searchable and ``_as_current_year`` is not gated by
     ``searching``, so ``year: current_year`` parsed without error even before
     this fix -- and then reached ``search_url``'s plain ``str(value)``
     fallback carrying the unresolved ``_CurrentYear`` sentinel, rendering its
@@ -971,7 +970,7 @@ def test_the_field_discovery_forces_the_episode_scope_on_a_show_library():
 
 
 def test_the_field_discovery_forces_the_episode_scope_when_the_search_type_already_is_one():
-    """Task 2 review, Minor 3. The m-3 resolution's third row: a show library
+    """The m-3 resolution's third row: a show library
     whose SEARCH type is already ``episode`` (``builder_level: episode``) asks
     ``listFilters("episode")`` and answers the SAME prefixed field as row 2's
     item-level show search -- ``is_show and filter_type == "show"`` is false
@@ -1025,7 +1024,7 @@ def test_the_field_discovery_is_one_schema_read_for_the_whole_pass():
 
 
 def test_the_field_memo_key_is_scoped_by_attribute_not_shared_across_them():
-    """Task 2 review, Important 1. The key used to be
+    """The key used to be
     ``plex_search:field:{library}:{filter_type}`` -- naming only the library
     and the (post-re-scope) filter type, never the attribute -- while both the
     answer and the row-213 refusal are attribute-dependent (the match clause,

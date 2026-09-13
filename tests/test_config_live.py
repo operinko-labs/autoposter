@@ -1,6 +1,6 @@
 """``config/live.py``: the swap primitive and the restart-flag map.
 
-``swap_config`` is what Task 3's write endpoint will call once a new
+``swap_config`` is what the config write endpoint will call once a new
 generation has been built and validated. It is tested here on its own, before
 any endpoint exists, because the property that matters is not "the endpoint
 returned 200" -- it is that everything reading the config is looking at the

@@ -1,12 +1,11 @@
 """The declarative overlay definition -- row 97's engine, replacing
 `badges/spec.py`'s hardcoded table.
 
-The attribute set is Kometa's, banked in `.superpowers/sdd/p-overlay-grammar-probe.md`
-section 1.1 (independently corroborated by that document's section 5.5, which
+The attribute set is Kometa's, banked by the overlay grammar probe
+section 1.1 (independently corroborated by that probe's section 5.5, which
 is Kometa's own author-list of every key the `overlay:` block accepts). Every
 validator below cites the probe SECTION that banks it. Attributes the probe
-banks and this phase deliberately does not build are listed in the plan's
-"Banked but deliberately deferred" table and are REFUSED here rather than
+banks and this engine deliberately does not build are REFUSED here rather than
 accepted-and-ignored: an operator who writes `queue:` has to be told it does
 nothing, because a silently dropped attribute looks exactly like a working one.
 """
@@ -25,8 +24,8 @@ _COLOR_FIELDS = ("back_color", "back_line_color", "font_color", "stroke_color")
 def _as_rgba(value: str) -> tuple[int, int, int, int]:
     """Probe section 1.1: every colour goes through Pillow's own parser.
 
-    Imported here rather than at module scope. T3 Step 8 makes
-    `config/schema.py` import `OverlayDefinition` to type
+    Imported here rather than at module scope.
+    `config/schema.py` imports `OverlayDefinition` to type
     `BadgesConfig.definitions`, and `actions/flags.py` imports
     `config.schema` on every Action Center queue/summary request --
     `flags.py`'s own module docstring exists precisely to keep heavy imports
@@ -65,7 +64,7 @@ class OverlayDefinition(BaseModel):
         description="Not supported by this service; see roadmap row 97. Present only so writing it is refused with a real message instead of a generic extra-inputs error.",
     )
 
-    # The SELECTION half (overlay era, sub-phase C1). Every family roadmap
+    # The SELECTION half. Every family roadmap
     # row 100 names is a CONDITIONAL overlay -- Kometa expresses each as a
     # `plex_search:` or `filters:` block -- and until this field existed the
     # engine drew every configured definition on every badged item, so none
@@ -116,8 +115,7 @@ class OverlayDefinition(BaseModel):
     # silently reinterpreted by `overlays/render.py::_scaled`'s `or` fallback
     # as "native size" -- the one value this schema was otherwise scrupulous
     # about refusing rather than quietly ignoring. The probe's scale section
-    # (`.superpowers/sdd/p-overlay-grammar-probe.md` #55-57) banks only the
-    # parsing delegate, not a numeric range, so no upper bound is invented
+    # banks only the parsing delegate, not a numeric range, so no upper bound is invented
     # here either.
     scale_width: int | None = Field(
         default=None, gt=0,

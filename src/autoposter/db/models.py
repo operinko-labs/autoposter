@@ -423,8 +423,8 @@ class ItemFacts(Base):
 class ItemCredit(Base):
     """One (item, credit kind, person) fact from Plex's own credit tags.
 
-    The dedicated many-to-many table roadmap row 197 exists to decide
-    (adjudication C4): credits cannot live on ``item_facts``, whose
+    The dedicated many-to-many table roadmap row 197 exists to decide:
+    credits cannot live on ``item_facts``, whose
     UNIQUE(item_id) scalar shape is wrong for one-item-many-people. Composite
     PK in the ``ImdbEpisode`` mold; rows exist only for items the library
     contains (FK CASCADE -- the ``ImdbRating`` size discipline). ``person``
@@ -1056,7 +1056,7 @@ class Run(Base):
     scheduled job's name, or the literal ``full_pass``; it is not unique and
     is not indexed -- the retention clause keeps the newest
     ``RUN_HISTORY_KEEP`` rows per recorded name, trimmed by two different
-    callers for its two kinds of row (fix round 1, I-2). A scheduled row is
+    callers for its two kinds of row. A scheduled row is
     bounded by ``scheduler/jobs.py``'s cleanup pass, which holds while
     ``scheduler.enabled``, because every job that records a row here other
     than ``stale_job_reclaim`` is registered behind that same switch
@@ -1133,8 +1133,8 @@ class Run(Base):
     rendered_title_card: Mapped[int | None] = mapped_column(Integer)
     processed: Mapped[int | None] = mapped_column(Integer)
     failed: Mapped[int | None] = mapped_column(Integer)
-    # A wait, not a failure (jobs.state's own comment). Counted because C3
-    # names it; `parked` deliberately is not -- a parked job is an operator
+    # A wait, not a failure (jobs.state's own comment). Counted
+    # deliberately; `parked` is not -- a parked job is an operator
     # matter the Action Center owns, and a run's rollup is not where it
     # belongs.
     deferred: Mapped[int | None] = mapped_column(Integer)

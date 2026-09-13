@@ -1,7 +1,7 @@
 """The overlay definition schema.
 
-Every assertion cites the section of `.superpowers/sdd/p-overlay-grammar-probe.md`
-that banks the behaviour. Sections, never line numbers -- the probe's lines move.
+Every assertion cites the probe section that banks the behaviour. Sections,
+never line numbers -- the probe's lines move.
 """
 import pytest
 from pydantic import ValidationError
@@ -185,15 +185,14 @@ def test_addon_defaults_match_kometas():
 
 
 def test_scale_width_and_height_must_be_positive():
-    """M2: neither carried a bound, unlike every other integer on this model
+    """Neither carried a bound, unlike every other integer on this model
     (`weight`, `back_line_width`, `back_radius`, `back_padding`, `font_size`,
     `stroke_width`). A negative value raises inside `Image.resize`; 0 was
     silently reinterpreted as 'native size' by `overlays/render.py::_scaled`'s
     `or` fallback -- the one value this schema was otherwise scrupulous about
-    refusing rather than quietly ignoring. The probe's scale section
-    (`.superpowers/sdd/p-overlay-grammar-probe.md` #55-57) banks only the
-    parsing delegate, not a numeric range, so this stays a permissive
-    positive-only floor rather than inventing a ceiling."""
+    refusing rather than quietly ignoring. The probe's scale section (#55-57)
+    banks only the parsing delegate, not a numeric range, so this stays a
+    permissive positive-only floor rather than inventing a ceiling."""
     assert _d(scale_width=100, scale_height=50).scale_width == 100
     with pytest.raises(ValidationError):
         _d(scale_width=0)
@@ -299,7 +298,7 @@ def test_the_deferred_queue_attribute_is_refused_by_name():
 
 
 def test_the_text_attribute_is_refused_not_silently_accepted():
-    """T1's own note on this field: Kometa has no `text` attribute (probe
+    """Kometa has no `text` attribute (probe
     section 2.1) -- the rendered literal lives in `name` as `text(LITERAL)`,
     which is what every builtin (`overlays/builtin.py`) and the operator draw
     path (`badges/compose.py::_draw_definitions`) actually read. `text` is
@@ -311,7 +310,7 @@ def test_the_text_attribute_is_refused_not_silently_accepted():
         _d(text="hello")
 
 
-# --- the selection seam's one new field (overlay era, sub-phase C1) ---------
+# --- the selection seam's one new field (overlay era) ----------------------
 
 
 def test_a_definition_may_carry_a_condition():

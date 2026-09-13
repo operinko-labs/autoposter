@@ -5,10 +5,13 @@ share one absence: no ISO→name table exists anywhere in the tree, and Kometa's
 own pack files carry none. This document is the fetched evidence that closes
 that absence, and the measurement that gates the two location packs.
 
-It is the committed output of Task 1 of
-`docs/superpowers/plans/2026-08-31-location-names.md`. Its §Decisions rows
-`D1`–`D6` are what Task 3's `CONFIRMED-BY-T1` block re-validates before the
-pack transcriptions may flip READY.
+It is the committed output of the location-names work's first step. Its
+§Decisions rows `D1`–`D6` are re-validated before the pack transcriptions may
+flip READY.
+
+Paths under `scratch/` below are the untracked probe workspace: the fetched
+artifacts and the scripts that produced them are kept outside the tree, and this
+document is the committed record of what they returned.
 
 Nothing here is recalled. Every name, count and hash below comes from bytes
 fetched or already on disk, captured by the scripts reproduced verbatim in the
@@ -22,17 +25,17 @@ last section.
 | --- | --- | --- | --- | --- | --- | --- |
 | TMDb configuration | `/configuration/countries` | 2026-08-30 | 200 | 18835 | 251 | `fb4609a1fb14d5b77aed0b65496c05f4c1d0018782b1c91cbc4c9f6bdf97d9e4` |
 | TMDb configuration | `/configuration/languages` | 2026-08-30 | 200 | 11133 | 187 | `6e23ef1a9fcfb57aa2ac0838b836c9db21be6ee3b09b5bd9e5b57b32a46b1d60` |
-| Kometa v2.4.8 (already fetched) | `.superpowers/kometa-v2.4.8/region.yml` | recorded at `p-prefetch-upstream.md:340-362` | — | 11163 | 346 distinct member strings | `9409fee72b78ddfefc0c77075557a9ce986e6f20830c3dae5e3e273f012ba60a` |
-| Kometa v2.4.8 (already fetched) | `.superpowers/kometa-v2.4.8/continent.yml` | recorded at `p-prefetch-upstream.md:340-362` | — | 10883 | 330 distinct member strings | `fbc20666618fdd6728ea38766358fa2e559003eea3c8ebe7cb695527f3a40e05` |
+| Kometa v2.4.8 (already fetched) | `scratch/kometa-v2.4.8/region.yml` | recorded during the prefetch phase | — | 11163 | 346 distinct member strings | `9409fee72b78ddfefc0c77075557a9ce986e6f20830c3dae5e3e273f012ba60a` |
+| Kometa v2.4.8 (already fetched) | `scratch/kometa-v2.4.8/continent.yml` | recorded during the prefetch phase | — | 10883 | 330 distinct member strings | `fbc20666618fdd6728ea38766358fa2e559003eea3c8ebe7cb695527f3a40e05` |
 
 The two upstream hashes match the prefixes recorded by the prefetch phase
 (`9409fee7…`, `fbc20666…`) exactly — re-verified against the bytes on disk for
 this measurement, not assumed from the record.
 
-The raw fetched bytes live at `.superpowers/sdd/p-locnames-countries.json` and
-`.superpowers/sdd/p-locnames-languages.json` (gitignored, kept). They are the
-generation source for `src/autoposter/collections/iso_names.py`, which Task 2
-emits **by script** from these bytes; that module is the committed derivation,
+The raw fetched bytes live at `scratch/p-locnames-countries.json` and
+`scratch/p-locnames-languages.json` (gitignored, kept). They are the
+generation source for `src/autoposter/collections/iso_names.py`, which is
+emitted **by script** from these bytes; that module is the committed derivation,
 and these files are what it is regenerated from.
 
 Both fetches were made once, from inside the `plocn1` test container, with the
@@ -41,7 +44,7 @@ Constraint 4). The token appears in no output, no log and no tracked file: the
 URLs carry no key (the credential rides in an `Authorization` header) and
 nothing in the probe prints headers.
 
-The fetch record, `.superpowers/run-plocn-fetch.log`, verbatim:
+The fetch record, `scratch/run-plocn-fetch.log`, verbatim:
 
 ```
 countries: HTTP 200, 18835 bytes, 251 entries, sha256 fb4609a1fb14d5b77aed0b65496c05f4c1d0018782b1c91cbc4c9f6bdf97d9e4
@@ -56,9 +59,9 @@ A shape assertion over the saved files (`iso_3166_1` + `english_name` on every
 country row, `iso_639_1` + `english_name` on every language row) passed for all
 251 and all 187 entries.
 
-### A note on the "647 member strings" in the facts file
+### A note on the "647 member strings" count
 
-`p-locnames-facts.md` C2 describes upstream's tables as 647 member strings.
+An earlier note describes upstream's tables as 647 member strings.
 Measured against the bytes: that is the count of **addon member values** in the
 two files (323 in `region.yml` + 324 in `continent.yml`). Counting every
 member entry, including the `include:` lists and the addon group keys, gives
@@ -71,7 +74,7 @@ is itself a matchable member name upstream.
 
 ## 2. The library's codes
 
-**The probe returned no rows.** `.superpowers/sdd/p-locnames-db.txt` is empty:
+**The probe returned no rows.** `scratch/p-locnames-db.txt` is empty:
 zero `ORIGIN` lines, zero `LANG` lines.
 
 That is not a probe failure, and establishing which it was mattered enough to
@@ -81,7 +84,7 @@ connection opened, both queries executed, and both returned zero rows. A
 read-only diagnostic block was then appended to the same probe for one run
 (the probe was restored to its verbatim form immediately afterwards; both the
 verbatim script and the diagnostic block are reproduced in section 5). Its
-output, `.superpowers/sdd/p-locnames-db-diagnostic.txt`, verbatim:
+output, `scratch/p-locnames-db-diagnostic.txt`, verbatim:
 
 ```
 DIAG	media_items rows	15821
@@ -135,7 +138,7 @@ production database as of 2026-08-30, not an inference.
 "The enrichment has not run" reads equally well as a pipeline bug, and the
 difference decides whether the packs ever converge. So it was measured rather
 than argued. One further read-only aggregate against the same production
-database (`.superpowers/sdd/p-locnames-db2.txt`, script in section 5), run
+database (`scratch/p-locnames-db2.txt`, script in section 5), run
 2026-08-30 06:59:45Z:
 
 ```
@@ -243,7 +246,7 @@ threshold, so the first *eligible* tick fell about then, and "a tick that ran
 while the columns stayed empty" would revive the writer-bug hypothesis and
 withdraw the disclosure. The wrap therefore re-ran the same aggregate — same
 query shape, same read-only `kubectl exec` — 1h57m later
-(`.superpowers/sdd/p-locnames-db3.txt`):
+(`scratch/p-locnames-db3.txt`):
 
 ```
 AGG	now()	2026-08-30 08:56:36.118188+00:00
@@ -273,7 +276,7 @@ predicate is `fetched_at < now() - drift_max_age_days` over
 begins at `min(fetched_at) + 7 days` at the shipped default
 `drift_max_age_days: 7` — a deployment that overrides it moves this moment.
 Asked directly
-(`.superpowers/sdd/p-locnames-db3.txt`, second block):
+(`scratch/p-locnames-db3.txt`, second block):
 
 ```
 ELIG	now()	2026-08-30 08:57:13.757911+00:00
@@ -308,7 +311,7 @@ evidence to the contrary.
 
 ## 3. The join, per name
 
-`.superpowers/sdd/p-locnames-join.txt`, verbatim:
+`scratch/p-locnames-join.txt`, verbatim:
 
 ```
 D5 duplicate english_name entries: {'Congo': ['CD', 'CG']}
@@ -342,7 +345,7 @@ remains measurable: **241 of 251** TMDb country names (96.0%) land in
 Ten misses out of 251 is only useful if it is known whether they are countries
 upstream does not group at all, or the same countries under a different
 spelling. Measured, offline, against the same bytes
-(`.superpowers/sdd/p-locnames-miss-detail.txt`, verbatim):
+(`scratch/p-locnames-miss-detail.txt`, verbatim):
 
 ```
 supplementary: are the 10 forward-join misses absent countries, or other spellings?
@@ -372,7 +375,7 @@ Nine of the ten rows carry their own evidence in the capture — a folded hit, a
 prefix-3 candidate, or both. `FO 'Faeroe Islands'` shows `NONE NONE`, because the
 prefix-3 heuristic cannot bridge `fae` → `far` and the accent fold has no accent
 to strip. The pairing below is therefore derived from the on-disk bytes
-explicitly, so that Task 2's alias table has a derivation to cite and nobody has
+explicitly, so that the alias table has a derivation to cite and nobody has
 to supply `Faroe Islands` from memory — which would be right, and would still be
 the forbidden move.
 
@@ -380,10 +383,10 @@ the forbidden move.
 
 | spelling | artifact | where |
 | --- | --- | --- |
-| `Faeroe Islands` | `.superpowers/sdd/p-locnames-countries.json` (TMDb `/configuration/countries`, sha256 `fb4609a1…`) | the `FO` record's `english_name`; the record object begins at byte offset 5398 (the `"FO"` token itself is at 5412) |
+| `Faeroe Islands` | `scratch/p-locnames-countries.json` (TMDb `/configuration/countries`, sha256 `fb4609a1…`) | the `FO` record's `english_name`; the record object begins at byte offset 5398 (the `"FO"` token itself is at 5412) |
 | `Faroe Islands` | *the same TMDb record*, `native_name` | the same object at 5398 |
-| `Faroe Islands` | `.superpowers/kometa-v2.4.8/region.yml` (sha256 `9409fee7…`) | line 328, an addon member of group `Northern Europe` (key at line 321) |
-| `Faroe Islands` | `.superpowers/kometa-v2.4.8/continent.yml` (sha256 `fbc20666…`) | line 315, an addon member of group `Europe` (key at line 291) |
+| `Faroe Islands` | `scratch/kometa-v2.4.8/region.yml` (sha256 `9409fee7…`) | line 328, an addon member of group `Northern Europe` (key at line 321) |
+| `Faroe Islands` | `scratch/kometa-v2.4.8/continent.yml` (sha256 `fbc20666…`) | line 315, an addon member of group `Europe` (key at line 291) |
 
 The whole `FO` record, from the fetched bytes:
 
@@ -413,21 +416,22 @@ carry**: `Faeroe Islands`/`Faroe Islands`, `Kyrgyz Republic`/`Kyrgyzstan`,
 Islands`/`Svalbard and Jan Mayen Islands`. **Not one of the 251 TMDb countries
 is missing from upstream's tables as a place.** The residual gap is
 name-normalisation, not coverage — which is exactly the Türkiye/Turkey class
-the facts file (C2) anticipated, with the twist that here upstream's alias set
+anticipated earlier, with the twist that here upstream's alias set
 does not happen to carry TMDb's spelling.
 
 No normalisation beyond exact string equality is proposed by this document.
-The fold above is a measurement, not a design: whether Task 2/3 should fold
-accents, or hard-code the eight remaining spelling bridges as NOT_KOMETA
-additions, or let all ten fall into `Other Regions`/`Other Continents` and
-disclose them, is a decision for the plan's owner and not one T1 makes.
+The fold above is a measurement, not a design: whether the module or the packs
+should fold accents, or hard-code the eight remaining spelling bridges as
+NOT_KOMETA additions, or let all ten fall into `Other Regions`/`Other
+Continents` and disclose them, is a decision for this work's owner and not one
+this document makes.
 
-### What Task 2 decided: `COUNTRY_NAME_ALIASES`, and the rule that derived it
+### The `COUNTRY_NAME_ALIASES` decision, and the rule that derived it
 
-T1 left the choice open; T2 took the second option and carries all **ten**
+The choice was left open above; the second option was taken, carrying all **ten**
 bridges as an OURS-marked table in `src/autoposter/collections/iso_names.py`
 (`COUNTRY_NAME_ALIASES`, digest-guarded in `tests/test_collection_iso_names.py`).
-Ten rather than the eight the phase Addendum names, because the eight presumes
+Ten rather than eight, because eight presumes
 the accent fold measured above and **no accent fold exists anywhere at
 runtime** — `derive_keys` compares raw strings, the family layer does a plain
 dict lookup, and `iso_names` folds nothing. Carrying `CI` and `RE` here too
@@ -507,7 +511,7 @@ carry.
 **The table is data, not behaviour.** `COUNTRY_NAMES` stays TMDb's bytes
 verbatim so `country_codes` can still fold a family key back to the stored code;
 nothing in `iso_names` applies an alias. **Applying** them is the packs' job
-(Task 3), as an OURS/NOT_KOMETA-marked overlay beside the verbatim
+(the packs'), as an OURS/NOT_KOMETA-marked overlay beside the verbatim
 transcription.
 
 ---
@@ -523,15 +527,15 @@ transcription.
 | D5 | duplicate `english_name`: **one, listed** | `{'Congo': ['CD', 'CG']}` — the name→code fold is one-to-many for `Congo` and must expand to both codes; every other one of the 251 names is unique to its code |
 | D6 | language names: **every fetched code named; the library's half is vacuous** | zero fetched entries have an empty `english_name` (all 187 usable); the library stores no `tmdb_original_language` at all (§2), so no stored code needs the code-fallback today. The fallback stays required by design for codes TMDb does not name later |
 
-### What D3/D4 mean for Task 3
+### What D3/D4 mean for the pack transcriptions
 
-The plan's PROCEED threshold (Global Constraint 11, plan Step 6) is *≥90% of
+The PROCEED threshold as first written is *≥90% of
 movie-kind origin-coded item-values land in a named group for that pack*. It
-cannot be evaluated: the library has no such item-values. Per the plan's own
+cannot be evaluated: the library has no such item-values. Per the stated
 rule — "a pack whose join misses too much re-files with the measured numbers —
-honesty over momentum" — this is not a PROCEED, and T1 does not manufacture one
-from the forward join. **Both packs' halves of Task 3 are
-BLOCKED-FOR-ADJUDICATION.** The controller's call, on evidence that is now
+honesty over momentum" — this is not a PROCEED, and this document does not
+manufacture one from the forward join. **Both packs' transcriptions are
+BLOCKED-FOR-ADJUDICATION.** The decision follows, on evidence that is now
 complete on the fetched side:
 
 - The **name-table join is healthy** where it can be measured: 96.0% exact,
@@ -544,8 +548,8 @@ complete on the fetched side:
 
 Re-scoping the gate to the forward join, deferring the flips until the
 enrichment has run, or flipping with the leftover-bucket disclosure the plan
-describes are all defensible readings — and all three are the controller's to
-choose, not this document's.
+describes are all defensible readings — and all three are the decision owner's
+to choose, not this document's.
 
 ### The operative gate (superseding the plan's original wording)
 
@@ -553,17 +557,16 @@ That choice has since been made, and it is recorded here so a reader of this
 document alone meets the gate that is actually in force rather than the one it
 replaced.
 
-**Superseded.** The plan as committed
-(`docs/superpowers/plans/2026-08-31-location-names.md:1037`, and Global
-Constraint 11) words the Task 3 gate as *D3, D4 = PROCEED (≥90% of movie-kind
-origin-coded item-values land in a named group)*, admitting only PROCEED or
+**Superseded.** The gate as first written words it as *D3, D4 = PROCEED (≥90%
+of movie-kind origin-coded item-values land in a named group)*, admitting only
+PROCEED or
 RE-FILE. That threshold is **unmeasurable, permanently as of this measurement
 and not merely unmet**: its denominator is the count of origin-coded movie-kind
 item-values in production, which is **0 of 0** (§2). Neither branch of a
 two-branch gate can be taken when the quantity it tests does not exist.
 
-**Operative.** The controller re-scoped the gate to the **forward join** —
-`p-locnames-facts.md`, Addendum of 2026-08-31, item 1, binding — on the reasoning
+**Operative.** The gate was re-scoped to the **forward join** — recorded
+2026-08-31, binding — on the reasoning
 that the forward join answers the gate's actual semantic question (*do TMDb's
 country names land in upstream's groups?*) using the half of the evidence that is
 measurable today. The re-scoped gate and the numbers that satisfy it:
@@ -574,9 +577,9 @@ measurable today. The re-scoped gate and the numbers that satisfy it:
 | **region.yml** | **241/251 = 96.0%** exact; 243/251 = 96.8% accent-folded |
 | **continent.yml** | **241/251 = 96.0%** exact; 243/251 = 96.8% accent-folded — the same ten misses, name for name |
 | **misses** | all ten are spelling divergences for countries upstream does carry (§3); **not one of the 251 is absent as a place** |
-| **verdict** | **D3 = PROCEED, D4 = PROCEED.** Task 3 flips both packs. |
+| **verdict** | **D3 = PROCEED, D4 = PROCEED.** Both packs flip. |
 
-Two conditions ride with that PROCEED (Addendum item 2), and neither is
+Two conditions ride with that PROCEED, and neither is
 optional:
 
 1. The flip ships the **convergence disclosure**: membership grows from near-zero
@@ -590,7 +593,7 @@ optional:
    `2026-08-30 21:50:16Z`, so the sweep has not merely not ticked, it has had
    nothing it may pick up.
 2. The **eight post-fold spelling divergences** get an OURS-marked alias table in
-   Task 2's module, every pair derived by comparing the two fetched artifacts on
+   the `iso_names` module, every pair derived by comparing the two fetched artifacts on
    disk rather than recalled, each carrying its own digest guard. §3's `FO`
    subsection supplies the one derivation the capture did not already carry.
 
@@ -604,14 +607,14 @@ handling (`Other Regions` / `Other Continents`), disclosed.
 Reproduced so the fetch and the measurement are repeatable after the transient
 scripts were deleted. The tables above were produced by exactly these.
 
-### `.superpowers/sdd/p-locnames-fetch.py` — the two configuration fetches
+### `scratch/p-locnames-fetch.py` — the two configuration fetches
 
 ```python
 """Fetch TMDb's two /configuration name tables, once, saving raw bytes.
 
 Runs inside the plocn1 test container (deps installed, tree mounted at /app).
-The read token comes from /app/.env's AUTOPOSTER_TMDB_TOKEN -- the facts file
-(C1) names the .env TMDb token for this one fetch. It is never printed: the
+The read token comes from /app/.env's AUTOPOSTER_TMDB_TOKEN, the token named
+for this one fetch. It is never printed: the
 URLs carry no token (Bearer header), and nothing below prints headers.
 """
 import hashlib
@@ -642,7 +645,7 @@ for name, path in (("countries", "/configuration/countries"),
     )
     resp.raise_for_status()
     raw = resp.content
-    dest = "/app/.superpowers/sdd/p-locnames-%s.json" % name
+    dest = "/app/scratch/p-locnames-%s.json" % name
     with open(dest, "wb") as fh:
         fh.write(raw)
     rows = json.loads(raw)
@@ -655,15 +658,15 @@ Run as (no `--rm`; the log is read from the host afterwards, the container is
 removed by name, the project is torn down without `-v`):
 
 ```bash
-docker compose -p plocn1 -f docker-compose.yml -f .superpowers/isolated-db.yml \
+docker compose -p plocn1 -f docker-compose.yml -f scratch/isolated-db.yml \
   run -d --name plocn1-fetch test sh -c \
-  "set -o pipefail; python /app/.superpowers/sdd/p-locnames-fetch.py 2>&1 | tee /app/.superpowers/run-plocn-fetch.log"
+  "set -o pipefail; python /app/scratch/p-locnames-fetch.py 2>&1 | tee /app/scratch/run-plocn-fetch.log"
 docker wait plocn1-fetch
 docker rm plocn1-fetch
 docker compose -p plocn1 down
 ```
 
-### `.superpowers/sdd/p-locnames-db.py` — the read-only library probe
+### `scratch/p-locnames-db.py` — the read-only library probe
 
 ```python
 """Distinct stored origin_country / original_language codes, with counts.
@@ -750,15 +753,15 @@ async def diagnose():
         await conn.close()
 ```
 
-### `.superpowers/sdd/p-locnames-db2.py` — the sweep-timing aggregate
+### `scratch/p-locnames-db2.py` — the sweep-timing aggregate
 
 Added after review, to settle by measurement whether §2's empty columns are a
 sweep that has not ticked or a writer that does not write. Read-only, like the
 probe above; deleted after the run. Run as:
 
 ```bash
-kubectl exec -n media -i deploy/autoposter -- python - < .superpowers/sdd/p-locnames-db2.py \
-  2>&1 | tee .superpowers/sdd/p-locnames-db2.txt
+kubectl exec -n media -i deploy/autoposter -- python - < scratch/p-locnames-db2.py \
+  2>&1 | tee scratch/p-locnames-db2.txt
 ```
 
 ```python
@@ -843,15 +846,15 @@ async def main():
 asyncio.run(main())
 ```
 
-### `.superpowers/sdd/p-locnames-db3.py` — the T4 re-check
+### `scratch/p-locnames-db3.py` — the re-check
 
 The wrap's re-run of the aggregate above, settling the review's time-bound.
 Read-only; deleted after the run; capture at
-`.superpowers/sdd/p-locnames-db3.txt`. Run the same way:
+`scratch/p-locnames-db3.txt`. Run the same way:
 
 ```bash
-kubectl exec -n media -i deploy/autoposter -- python - < .superpowers/sdd/p-locnames-db3.py \
-  2>&1 | tee .superpowers/sdd/p-locnames-db3.txt
+kubectl exec -n media -i deploy/autoposter -- python - < scratch/p-locnames-db3.py \
+  2>&1 | tee scratch/p-locnames-db3.txt
 ```
 
 Its body is `p-locnames-db2.py` verbatim, plus one extra `AGG` row
@@ -879,7 +882,7 @@ capture rather than two:
             print("COL\t%s\t%s" % (label, await conn.fetchval(sql)))
 ```
 
-### `.superpowers/sdd/p-locnames-db4.py` — the eligibility count
+### `scratch/p-locnames-db4.py` — the eligibility count
 
 Mirrors `sweep_stale_facts`' own predicate (`scheduler/jobs.py:154,158-165`) so
 "how many items can the next tick actually pick up?" is measured against the
@@ -916,17 +919,17 @@ The §3 `FO` subsection's four locations, reproduced so the pairing is
 re-derivable. Offline, over the already-fetched bytes:
 
 ```bash
-grep -Fn 'Faroe' .superpowers/kometa-v2.4.8/region.yml .superpowers/kometa-v2.4.8/continent.yml
-grep -Fc 'Faeroe' .superpowers/kometa-v2.4.8/region.yml .superpowers/kometa-v2.4.8/continent.yml
-grep -Fc 'Faroe' .superpowers/sdd/p-locnames-countries.json
+grep -Fn 'Faroe' scratch/kometa-v2.4.8/region.yml scratch/kometa-v2.4.8/continent.yml
+grep -Fc 'Faeroe' scratch/kometa-v2.4.8/region.yml scratch/kometa-v2.4.8/continent.yml
+grep -Fc 'Faroe' scratch/p-locnames-countries.json
 ```
 
 ```
-.superpowers/kometa-v2.4.8/region.yml:328:        - Faroe Islands
-.superpowers/kometa-v2.4.8/continent.yml:315:        - Faroe Islands
-.superpowers/kometa-v2.4.8/region.yml:0
-.superpowers/kometa-v2.4.8/continent.yml:0
-.superpowers/sdd/p-locnames-countries.json:1
+scratch/kometa-v2.4.8/region.yml:328:        - Faroe Islands
+scratch/kometa-v2.4.8/continent.yml:315:        - Faroe Islands
+scratch/kometa-v2.4.8/region.yml:0
+scratch/kometa-v2.4.8/continent.yml:0
+scratch/p-locnames-countries.json:1
 ```
 
 The enclosing addon groups were resolved by the same `universe()` fold section 3
@@ -934,10 +937,10 @@ uses (`region.yml` → `Northern Europe`, `continent.yml` → `Europe`; an addon
 member in both, in neither `include:` list), and the `FO` record was read
 straight out of the fetched JSON.
 
-### `.superpowers/sdd/p-locnames-join.py` — the join measurement
+### `scratch/p-locnames-join.py` — the join measurement
 
 ```python
-"""The join measurement facts C2/C5 gate on. Offline: fetched bytes only.
+"""The join measurement the gate rests on. Offline: fetched bytes only.
 
 For every TMDb country name reachable from the library's stored origin codes:
 does it land in region.yml's member universe? continent.yml's? Misses are
@@ -951,11 +954,11 @@ from pathlib import Path
 
 import yaml
 
-SDD = Path(".superpowers/sdd")
-UP = Path(".superpowers/kometa-v2.4.8")
+SCRATCH = Path("scratch")
+UP = Path("scratch/kometa-v2.4.8")
 
-countries = json.loads((SDD / "p-locnames-countries.json").read_bytes())
-languages = json.loads((SDD / "p-locnames-languages.json").read_bytes())
+countries = json.loads((SCRATCH / "p-locnames-countries.json").read_bytes())
+languages = json.loads((SCRATCH / "p-locnames-languages.json").read_bytes())
 country_names = {r["iso_3166_1"]: r["english_name"] for r in countries}
 language_names = {r["iso_639_1"]: r["english_name"] for r in languages}
 
@@ -984,7 +987,7 @@ continent = universe(UP / "continent.yml")
 print("member universes: region=%d continent=%d" % (len(region), len(continent)))
 
 origin = {}  # (kind, code) -> count
-for line in (SDD / "p-locnames-db.txt").read_text().splitlines():
+for line in (SCRATCH / "p-locnames-db.txt").read_text().splitlines():
     parts = line.split("\t")
     if len(parts) == 4 and parts[0] == "ORIGIN":
         origin[(parts[1], parts[2])] = int(parts[3])
@@ -1019,7 +1022,7 @@ print("continent misses: %s" % missing_c)
 
 print("\n== languages (D6) ==")
 lib_langs = set()
-for line in (SDD / "p-locnames-db.txt").read_text().splitlines():
+for line in (SCRATCH / "p-locnames-db.txt").read_text().splitlines():
     parts = line.split("\t")
     if len(parts) == 4 and parts[0] == "LANG":
         lib_langs.add(parts[2])
@@ -1039,8 +1042,8 @@ D3/D4 adjudication turns on. Offline, over the same bytes.
 ```python
 import json, yaml, unicodedata
 from pathlib import Path
-SDD = Path(".superpowers/sdd"); UP = Path(".superpowers/kometa-v2.4.8")
-countries = json.loads((SDD / "p-locnames-countries.json").read_bytes())
+SCRATCH = Path("scratch"); UP = Path("scratch/kometa-v2.4.8")
+countries = json.loads((SCRATCH / "p-locnames-countries.json").read_bytes())
 def universe(path):
     doc = yaml.safe_load(path.read_bytes().decode("utf-8"))
     block = next(iter(doc["dynamic_collections"].values()))
@@ -1069,5 +1072,5 @@ out.append("")
 out.append("folded-join totals: region %d/%d matched, continent %d/%d matched"
            % (sum(1 for r in countries if fold(r["english_name"]) in region_folded), len(countries),
               sum(1 for r in countries if fold(r["english_name"]) in continent_folded), len(countries)))
-Path(".superpowers/sdd/p-locnames-miss-detail.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
+Path("scratch/p-locnames-miss-detail.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
 ```

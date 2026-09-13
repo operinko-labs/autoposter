@@ -237,7 +237,7 @@ describe("the definition editor", () => {
   });
 
   it("writes a typed poster URL into the payload byte-for-byte", () => {
-    // Task 3 review I-1: the sibling case above only ever proves the DELETE
+    // The sibling case above only ever proves the DELETE
     // direction (the entry already carries the key). Nothing typed a URL into
     // a definition that had none and clicked Save -- so a dropped write, a
     // wrong value, or a silent `new URL(value).href` normalisation all stayed

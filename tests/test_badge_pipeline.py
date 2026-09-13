@@ -49,7 +49,7 @@ class FakeServer:
     """The MediaServer surface ``compose_badged_bytes``/``deliver`` now go
     through, wrapping a ``FakePlexItem`` so the real ``plex.artwork.upload_artwork``
     still runs against it, and answering ``artwork_provenance`` with whatever
-    this test configured -- Task 19's ``deliver`` reads this straight off the
+    this test configured -- ``deliver`` reads this straight off the
     server/capability/config, so there is no longer a separate ``probe``
     callable to inject."""
 
@@ -304,7 +304,7 @@ async def _fingerprint_of(session, config, item, render, plex_item):
     state adoption (or a database restore) leaves it in.
 
     The ``render_deliveries`` row this pass just recorded is deleted too --
-    Task 19's ``_already_delivered`` checks THAT for delivery history, not
+    ``_already_delivered`` checks THAT for delivery history, not
     ``render.badge_fingerprint`` (``compose_badged_bytes`` overwrites it before
     ``deliver`` ever runs), so a real adoption/restore -- a fresh database
     with no delivery rows at all -- has to be reproduced here the same way.
@@ -473,7 +473,7 @@ async def test_the_badge_ignores_an_override_while_the_gate_is_off(
 async def test_an_overridden_rating_moves_this_item_s_badge(
     session, config_with_badges
 ):
-    """C4's outcome, at the seam that actually reads facts for a badge: Plex
+    """At the seam that actually reads facts for a badge: Plex
     shows the operator's rating and so does the badge.
 
     Measured on ONE item across the gate rather than between two items, for
@@ -535,7 +535,7 @@ async def test_a_second_pass_over_an_overridden_item_re_badges_nothing(
 async def test_an_exempt_item_s_badge_ignores_the_override_too(
     session, config_with_badges
 ):
-    """Task-2 fix round 1, ruling on m-2: row 35's exemption gates the Plex
+    """Row 35's exemption gates the Plex
     WRITE (``apply_metadata``, tested elsewhere) and, as of this fix, the
     badge overlay too -- an item Plex will never receive the override for
     must not show it in the badge either, or the two visibly disagree.

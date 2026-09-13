@@ -1,7 +1,6 @@
 """The <<variable>> text grammar.
 
-Banked in `.superpowers/sdd/p-overlay-grammar-probe.md` sections 2.1 to 2.4.
-Cited by section throughout.
+Follows a probe's sections 2.1 to 2.4. Cited by section throughout.
 """
 import pytest
 
@@ -72,7 +71,7 @@ def test_the_date_bracket_form_is_its_own_token():
         # trailing .0, /2 to one decimal. The bare form keeps the float's own
         # repr (including a trailing .0); only `#` strips it -- this repo's own
         # EPISODE oracle fixture (test_badge_parity.py) carries
-        # audience_rating=10.0, so the two rows below pin the exact case a T2
+        # audience_rating=10.0, so the two rows below pin the exact case a
         # text overlay would hit.
         ("audience_rating", "", 6.3, "6.3"),
         ("audience_rating", "", 8.0, "8.0"),

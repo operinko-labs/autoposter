@@ -80,8 +80,7 @@ from autoposter.providers.tmdb_lists import CHART_ENDPOINTS
 #
 # ``franchises`` is the tenth and it is OURS, not upstream's: Kometa files
 # ``franchise.yml`` under content, but 65 live franchise collections are a
-# block of their own rather than four rows inside Content -- C2,
-# ``.superpowers/sdd/p-dividers-facts.md``. The Universes and DC packs joined
+# block of their own rather than four rows inside Content. The Universes and DC packs joined
 # it on 2026-09-01 (operator directive): they are franchise blocks by every
 # reading an operator does, and keeping them a tab away from the enumerated
 # family they overlap was the thing that made the overlap hard to see.
@@ -482,7 +481,7 @@ class Preset:
         counted. None is knowable here, and all four answer with the same
         one-line SHAPE through the same payload key the picker already renders
         -- one field, one UI branch, no second shape for a second family to
-        drift from (10b decision C3).
+        drift from.
         """
         if self.award_event is not None:
             return _shape_line(
@@ -1099,8 +1098,7 @@ CONTENT_PRESETS: tuple[Preset, ...] = (
     #   mdblist.com/lists/fa11en82/dc-extended-universe  -> "DC Extended Universe"
     #   mdblist.com/lists/fa11en82/in-association-with-dc -> "In Association With DC"
     #
-    # All three verified live before transcription (the phase's T1 probe;
-    # counts and composition in its PR). Each row is (title, builder, one
+    # All three verified live before transcription. Each row is (title, builder, one
     # params pair, library_types) -- the params KEY differs per builder
     # (``tmdb_list`` takes ``id``, ``mdblist_list`` takes ``list``), so the
     # pair is written whole rather than derived. ``library_types`` narrows a

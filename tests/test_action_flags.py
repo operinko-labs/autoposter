@@ -571,7 +571,7 @@ async def test_near_miss_fires_at_the_floor_and_is_silent_one_point_above(sessio
 
 
 async def test_near_miss_is_silent_on_a_row_that_drew_no_text(session, config):
-    """C4. NULL is a logo poster, a verbatim source, a suppressed title, or a
+    """NULL is a logo poster, a verbatim source, a suppressed title, or a
     row rendered before the column was captured. None of those is a near
     miss, and `<=` against NULL is NULL rather than TRUE -- the explicit
     `IS NOT NULL` gate says so rather than relying on it."""
@@ -663,8 +663,8 @@ async def test_near_miss_is_off_by_default_and_names_one_integer(session, config
 
 
 async def test_the_evidence_hash_moves_when_the_fitted_point_size_changes(session, config):
-    """C2's pin, and the reason the one-time dismissal reset is worth paying
-    for. A dismissal made while a title sat on the floor must not survive the
+    """The reason the one-time dismissal reset is worth paying for: a
+    dismissal made while a title sat on the floor must not survive the
     re-render that fitted it at 180 -- so `text_point_size` is part of what a
     dismissal is a dismissal OF. Removing it again would be a visible change,
     which is the point of pinning it here."""
@@ -687,7 +687,7 @@ async def test_the_evidence_hash_moves_when_the_fitted_point_size_changes(sessio
 
 
 def test_the_near_miss_flag_moves_no_render_version(config):
-    """C3's storm guard. `render_version` (`config/loader.py:71`) hashes
+    """A storm guard: `render_version` (`config/loader.py:71`) hashes
     `config.artwork` WHOLESALE and `render_version_for` (`:188`) hashes
     `artwork.<art_kind>`; both are allow-lists, so a threshold field placed
     under either would move every stored fingerprint and re-render the whole

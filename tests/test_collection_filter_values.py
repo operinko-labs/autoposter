@@ -1,8 +1,8 @@
-"""The item view: Task 1's predicate model over real, live ``plexapi`` items.
+"""The item view: the predicate model over real, live ``plexapi`` items.
 
 Every fixture here is a REAL ``plexapi.video.Movie``/``Show`` built from XML
-shaped like the production listing (the shapes are copied from the Task 2 probe
-dump in ``.superpowers/sdd/task-2-report.md``), attached to a server object
+shaped like the production listing (the shapes are copied from a probe
+dump of the production listing), attached to a server object
 that raises if anything asks it for a request. That is deliberate: a
 hand-written fake item would answer every attribute happily and prove nothing
 about the one property this module exists to guarantee -- that evaluating a
@@ -178,7 +178,7 @@ def test_the_runtime_batched_field_map_matches_the_batched_rows():
 def test_the_fourteen_shipped_families_are_named():
     """Spelled out rather than derived, so that the set of attributes an
     operator can actually filter on is reviewable in one line -- and so that
-    Task 2's probe verdicts cannot drift silently into or out of tier 1.
+    the probe verdicts cannot drift silently into or out of tier 1.
 
     The last three of the first twelve are phase B's: probe (d) walked both
     section listings and found ``viewCount``/``lastViewedAt``/``userRating``
@@ -224,8 +224,8 @@ def test_the_fourteen_shipped_families_are_named():
 # within a couple of hours of midnight, a different calendar DATE -- depending
 # on where the pass runs. Pinning the literal here would have pinned this
 # machine's offset (it did, in this test's first run: +2 against the container's
-# UTC). See the Task 2 report; the moment comparison in ``filters._as_moment``
-# is where it would show -- and since Task 4 made that comparison keep the time
+# UTC). The moment comparison in ``filters._as_moment``
+# is where it would show -- and since that comparison keeps the time
 # of day, it now shows at any hour, not only near midnight.
 @pytest.mark.parametrize(
     "attribute,expected",
@@ -250,7 +250,7 @@ def test_duration_is_the_exact_quotient_in_minutes_not_raw_milliseconds():
     is minutes, and the view divides -- WITHOUT rounding. 6_353_000ms is
     105.8833... minutes and stays that.
 
-    It was rounded until Task 4's oracle (see
+    It was rounded until the oracle (see
     ``tests/test_collection_filter_oracle.py``). Rounding kept ``duration.eq``
     off float equality, but it moved every range comparison for a runtime
     within half a minute of the threshold: Kometa's conversion is
@@ -376,8 +376,7 @@ def test_a_never_played_item_is_excluded_the_way_kometa_excludes_it():
     fails a ``last_played`` filter upstream under every modifier, ``.not``
     included, and this table's ``date`` missing rule
     (``_MISSING_ALWAYS_EXCLUDES``) is that same behaviour. The two are pinned
-    against Kometa's own transcribed code in
-    ``.superpowers/oracle/9a/kometa_oracle.py``.
+    against Kometa's own transcribed code.
 
     ``user_rating`` is the same story one type along: it is in Kometa's
     ``number_filters``, whose branch reads ``if test_number is None or
@@ -398,7 +397,7 @@ def test_a_never_played_item_is_excluded_the_way_kometa_excludes_it():
 
 
 def test_the_missing_rule_from_the_table_falls_out_of_a_None_answer():
-    """Task 1 owns the rule; this pins that the view feeds it correctly. A tag
+    """This pins that the view feeds it correctly. A tag
     attribute with no value is dropped by a positive filter and kept by a
     negative one; a numeric one is dropped by both -- except ``year``'s
     bare/``.not`` forms, which take the tag half because Kometa routes them

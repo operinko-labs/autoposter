@@ -1078,7 +1078,7 @@ FILTERS = {
 # --- modules/plex.py:1283-1298 (Library.get_search_key) -----------------------
 # Roadmap row 176, and the branch the ``# REMOVED:`` comment inside
 # ``build_url_arg`` used to stand for. APPENDED here for E-2's reason (facts
-# C4, restated by row 176's C6): every by-line citation into this file points
+# restated by row 176's C6): every by-line citation into this file points
 # at a line below :530, so an insertion beside the construct it belongs to
 # would move all of them onto different constructs while still resolving.
 # ``build_url_arg`` reads this name at CALL time, so a function defined after
@@ -1181,7 +1181,7 @@ CONFIGS = [
     # and 13 pin that join under ``all``, so without this one a renderer that
     # hard-codes ``and=1&`` between the terms of a single written key passes
     # every oracle case -- which is the self-agreement the oracle exists to
-    # escape (Task 3 review, Minor 3).
+    # escape.
     ("movie", "movie", {"any": {"content_rating": ["PG-13", "R"]}}),
     # 15: the render classes and the rows the first fourteen never reach
     # (whole-branch review, Minor 1). ``studio.isnot`` is the only modifier

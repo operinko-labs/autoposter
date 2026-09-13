@@ -305,8 +305,8 @@ export function submitServerSelection(
 
 export interface ArrRegistration {
   ok: boolean;
-  /** `"created"` or `"updated"` on success -- facts C2a asks the finish page to
-   * tell those two apart -- and `null` otherwise. */
+  /** `"created"` or `"updated"` on success -- the finish page tells those two
+   * apart -- and `null` otherwise. */
   action: string | null;
   /** A fixed sentence, rendered verbatim like every other `detail` here. */
   detail: string;
@@ -316,7 +316,7 @@ export interface ArrRegistration {
  *
  * Answers `200` whether or not the registration worked: a failure is a RESULT
  * this step reports rather than an error in the request that asked for it, and
- * it must never block the finish (facts C3). So `ok` is read from the body and
+ * it must never block the finish. So `ok` is read from the body and
  * not from the status, and this call does not reject on a failed registration.
  */
 export function registerArrWebhook(service: string): Promise<ArrRegistration> {

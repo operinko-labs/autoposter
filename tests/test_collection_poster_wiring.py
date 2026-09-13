@@ -1,4 +1,4 @@
-"""Wiring the poster machinery (Task 4) into the two reconcilers.
+"""Wiring the poster machinery into the two reconcilers.
 
 The safety property that matters most: a protected or unlabelled collection
 must never have a poster applied. That falls out of ``apply_poster`` being
@@ -230,7 +230,7 @@ async def test_the_separator_gets_the_separator_poster(session, config_factory, 
 
     collection = section._existing[SEPARATOR_TITLE]
     assert collection.uploaded_bytes == [data]
-    # The style-bearing key since C4: "<style>:<stem>", so the URL names the
+    # The style-bearing key: "<style>:<stem>", so the URL names the
     # style folder the config selected rather than a hardcoded ``orig``. Both
     # requests are pinned, in order and exhaustively: the "Other Collections"
     # fence reconciles after this divider and, having no upstream stem, asks
@@ -1149,7 +1149,7 @@ async def test_the_gate_on_re_uploads_each_managed_poster_exactly_once(
 
     Pass 3 settles at the CALLER's short-circuit, on both digests at once. The
     in-process determinism that makes the CONTENT compare settle too is pinned
-    separately, by Task 1's ``test_the_same_inputs_give_byte_identical_output``;
+    separately, by ``test_the_same_inputs_give_byte_identical_output``;
     this test does not claim to prove it.
     """
     section = RatingSection(ratings={"17"})
@@ -1500,7 +1500,7 @@ async def test_a_definitions_poster_url_reaches_the_list_reconcilers_poster_step
 async def test_adopting_a_poster_url_re_reconciles_that_definition_exactly_once(
     session, config_factory, tmp_path, monkeypatch
 ):
-    """C4's property, end to end. `lists.py:314` returns before the poster
+    """The property, end to end. `lists.py:314` returns before the poster
     block whenever the membership hash is current and `poster_sha256` is set,
     so a `poster_url` outside `_RIDE_ALONG_DEFAULTS` would be a setting that
     reads as saved and silently never applies.

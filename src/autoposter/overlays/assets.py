@@ -6,7 +6,7 @@ so `overlays/builtin.py` can read them while `badges/spec.py` reads
 a cycle. `badges/spec.py` re-exports every name, so existing imports of
 `INTER_MEDIUM`, `BACK_COLOR`, `POSTER_CANVAS` and friends are unchanged.
 
-Two importers as of T2: `overlays/builtin.py` and `badges/spec.py`.
+Two importers today: `overlays/builtin.py` and `badges/spec.py`.
 """
 from autoposter.assets import asset_path
 

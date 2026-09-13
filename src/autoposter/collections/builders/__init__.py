@@ -159,7 +159,7 @@ register(ImdbAwardYearsBuilder("venice"))
 register(CsBucketBuilder())
 # The generic engine ``cs_bucket`` is one hardcoded instance of: one smart
 # collection per distinct value the library holds, written through
-# ``smart_filter``'s reconciler and grammar (10a decision C1).
+# ``smart_filter``'s reconciler and grammar.
 register(DynamicBuilder())
 # The list family, and the only builder here whose source is this
 # service's own database: Plex holds none of TMDb's origin country,

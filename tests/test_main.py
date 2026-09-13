@@ -140,7 +140,7 @@ async def test_build_passes_a_servers_factory_that_builds_a_real_plex_client(
     while every real deployment starts with `app.state.plex is None`, turning
     the live-artwork endpoint into a permanent 503.
 
-    Fix round 1 (controller ruling C1) extends this rather than adding a
+    This test was extended rather than adding a
     second test: the built client being a ``PlexClient`` at all is not
     enough -- one built with no ``http``/``base_url``/``token`` 500s on every
     live-artwork request (``api/artwork.py``) and silently swallows every

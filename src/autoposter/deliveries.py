@@ -65,7 +65,7 @@ async def record(
     stmt = insert(RenderDelivery).values(**values)
     updatable = {k: v for k, v in values.items() if k not in ("render_id", "server")}
     if status != "uploaded":
-        # Fix round 3, I6: a failed, skipped or pending outcome must never
+        # A failed, skipped or pending outcome must never
         # erase what this server DID deliver last time. ``rollup`` reads these
         # values back into ``renders.uploaded_at``, which the item page's
         # Uploaded column shows, and an operator reads a blank there as "never
@@ -109,7 +109,7 @@ async def rollup(session: AsyncSession, render_id: int) -> str:
     uploaded_at = max((u for _, u in rows if u is not None), default=None)
     values: dict[str, object] = {"upload_status": status}
     if uploaded_at is not None:
-        # Fix round 3, I6, the roll-up half: the column is carried forward,
+        # The roll-up half: the column is carried forward,
         # never overwritten with NULL. No delivery row holding a timestamp
         # means nothing this pass learned anything new about when the render
         # was last delivered -- which is not the same as learning it never was.
@@ -148,11 +148,9 @@ async def retry_pending_deliveries(
     delivery pass racing the one the next webhook or full-pass item triggers.
     A pending row is that server's unfinished business alone.
 
-    ``pipeline.compose_badged_bytes`` (Task 19) is imported lazily, inside
-    the function: importing it at module load time would require the name
-    to exist on ``autoposter.render.pipeline`` before Task 19 lands it there,
-    and a top-level import in that direction risks a cycle once ``pipeline``
-    calls back into this module.
+    ``pipeline.compose_badged_bytes`` is imported lazily, inside the
+    function: a top-level import in that direction risks a cycle, since
+    ``pipeline`` calls back into this module.
     """
     from autoposter.render import pipeline as _pipeline
     from autoposter.render.pipeline import upsert_server_ref
@@ -174,7 +172,7 @@ async def retry_pending_deliveries(
         # rest of the pass down with it; every other due row still deserves
         # its own attempt.
         #
-        # A SAVEPOINT per row (fix round 3 round 3, N1) is what makes that
+        # A SAVEPOINT per row is what makes that
         # true of a DATABASE failure too, which is the likeliest thing to
         # land in the handler below -- a statement error out of `record`'s
         # upsert, a `rollup` UPDATE, a dropped connection -- and which
@@ -214,7 +212,7 @@ async def retry_pending_deliveries(
                     resolved_item = await server.resolve(_intent_for(item, refs))
                 except PathMismatch as exc:
                     # A path-mapping mismatch that no retry fixes (spec §6.2).
-                    # Fix round 3, M4: the detail goes through `failure_detail`
+                    # The detail goes through `failure_detail`
                     # like every other one -- category plus class name, never the
                     # exception's own message, which carries an operator path.
                     await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
@@ -239,8 +237,8 @@ async def retry_pending_deliveries(
 
                 await upsert_server_ref(session, item.id, resolved_item)
 
-                # The identity the FULL pass composes from (fix round 3 round
-                # 3, N2): `process_item` samples live media info and native
+                # The identity the FULL pass composes from:
+                # `process_item` samples live media info and native
                 # ratings off Plex alone and passes `None` when this pass
                 # resolved no Plex item (see `compose_badged_bytes`' own
                 # docstring), and those values feed both the badge and the
@@ -258,8 +256,8 @@ async def retry_pending_deliveries(
                     except PathMismatch as exc:
                         # `PathMismatch` subclasses `ItemNotFound`, so without
                         # this clause a mount mismatch on the identity server
-                        # became an unbounded `pending` retried forever (fix
-                        # round 3 round 4, N6). No retry fixes one (spec
+                        # would become an unbounded `pending`, retried
+                        # forever. No retry fixes one (spec
                         # §6.2) -- the same `failed` the delivery server's own
                         # resolve records two blocks above.
                         await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
@@ -288,7 +286,7 @@ async def retry_pending_deliveries(
                         session, row_config, render, item, http=http, mdblist=mdblist,
                         server=servers.get(identity_name) if identity_item is not None else None,
                         ref=identity_item.ref if identity_item is not None else None,
-                        # Fix round 3 round 2, R1: a due row means THIS server
+                        # A due row means THIS server
                         # does not have these bytes, so the unchanged-fingerprint
                         # gate -- which answers for the servers that DO -- must
                         # not turn this pass into a no-op. The three "not a badge
@@ -297,7 +295,7 @@ async def retry_pending_deliveries(
                         force=True,
                     )
                     if data is None:
-                        # Fix round 3, I3: a pending row outlives the state that
+                        # A pending row outlives the state that
                         # created it. Badges turned off for this library, or a
                         # render that has since gone `failed`, leaves nothing to
                         # compose -- and uploading `None` would turn that into a
@@ -336,7 +334,7 @@ async def retry_pending_deliveries(
     try:
         await session.commit()
     except Exception as exc:
-        # Fix round 3, I2: the commit is the last thing that can fail, and a
+        # The commit is the last thing that can fail, and a
         # scheduled pass that raises out of its body loses the summary the
         # operator reads. Reported in the sentence instead, rolled back so
         # the session is usable again.

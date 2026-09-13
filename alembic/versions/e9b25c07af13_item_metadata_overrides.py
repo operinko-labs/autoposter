@@ -68,7 +68,7 @@ def downgrade() -> None:
     # downgrade loses exactly the overrides and nothing derived from them.
     # The Plex-side effect of an override -- a locked field holding the
     # operator's value -- is not undone by this and is not meant to be; that
-    # is the DELETE endpoint's job (roadmap row 99's C9).
+    # is the DELETE endpoint's job (roadmap row 99).
     op.drop_index(
         op.f('ix_item_metadata_overrides_item_id'),
         table_name='item_metadata_overrides',

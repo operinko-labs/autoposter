@@ -58,7 +58,7 @@ SOFT = (
     "AUTOPOSTER_TRACEARR_APIKEY",
 )
 
-# Distinctive so the T6 grep gate can prove they never entered src/ or the
+# Distinctive so a grep gate can prove they never entered src/ or the
 # frontend bundle.
 FAKE_DB_URL = "postgresql+asyncpg://row121user:row-121-db-secret-4f1a@db.invalid:5432/ap"
 FAKE_PLEX_TOKEN = "row-121-plex-token-9c2a"
@@ -318,7 +318,7 @@ def test_the_config_path_falls_back_to_the_state_directory(monkeypatch):
 
 
 def test_a_present_configured_document_always_wins(monkeypatch, tmp_path):
-    """C5: a deployment that mounts a document at the path it names keeps
+    """A deployment that mounts a document at the path it names keeps
     exactly today's path, whatever the state directory holds."""
     mounted = tmp_path / "mounted.yaml"
     mounted.write_text(yaml.safe_dump({"workers": 9}), encoding="utf-8")
@@ -465,7 +465,7 @@ def test_a_config_map_that_lost_its_key_never_becomes_a_wizard(monkeypatch, tmp_
 
 
 def test_the_decision_never_opens_a_database(monkeypatch):
-    """The amended C1. A configured deployment whose database is down keeps
+    """A configured deployment whose database is down keeps
     failing its migration and restarting, exactly as the shell line this
     replaced did -- it never demotes itself into an unauthenticated wizard on
     the port the Service and Ingress already point at."""
@@ -600,8 +600,8 @@ def _failing_migration() -> None:
 
 
 def test_an_unconfigured_boot_runs_no_migration_and_serves_the_setup_app(monkeypatch):
-    """The contract is pinned, not the collaborator: Task 2 owns the real
-    `build_setup_app`, and stubbing it here keeps this commit green on its own
+    """The contract is pinned, not the collaborator: another module owns the
+    real `build_setup_app`, and stubbing it here keeps this commit green on its own
     so every later gate reads B + n with no standing failure for a new one to
     hide behind."""
     monkeypatch.setitem(
@@ -756,7 +756,7 @@ def test_a_state_file_boot_publishes_the_names_it_read_from_the_file(monkeypatch
 def test_an_env_configured_boot_publishes_an_empty_marker(monkeypatch):
     """Fail closed, structurally: an env-complete deployment never opens the
     file at all (`schema.py:76`), so there is nothing for the marker to name
-    and the rotation refuses -- which is C5's whole point."""
+    and the rotation refuses -- which is the whole point."""
     for name in HARD:
         monkeypatch.setenv(name, "from-env")
 
@@ -779,8 +779,8 @@ def test_the_environment_wins_name_by_name_in_the_marker_too(monkeypatch):
 
 
 def test_the_marker_carries_no_value_only_names(monkeypatch):
-    """Row 213. `FAKE_PLEX_TOKEN` and `FAKE_DB_URL` are distinctive so the T4
-    grep gate can prove the same thing about the whole tree."""
+    """Row 213. `FAKE_PLEX_TOKEN` and `FAKE_DB_URL` are distinctive so a grep
+    gate can prove the same thing about the whole tree."""
     _write_state_secrets(
         {
             "AUTOPOSTER_DATABASE_URL": FAKE_DB_URL,

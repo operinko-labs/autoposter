@@ -28,7 +28,7 @@ const MEDIA_SERVERS = [
  *
  * SAVED, not given: a server whose address was typed and CHECKED but never
  * submitted is this state too, since a probed server is no longer configured
- * by the check alone (branch review I2). "No address was given" would be read
+ * by the check alone. "No address was given" would be read
  * as "you never typed one" by the operator likeliest to see this line. */
 const SERVER_LEFT =
   "Left for later — no address was saved for it, so the configuration names it nowhere.";
@@ -73,8 +73,8 @@ const NOT_CONFIGURED = "Not configured — no API key staged, or its address was
  * and everything that was skipped -- credentials left empty, and the
  * DEPLOYMENT-SHAPE skips that are not the operator's doing.
  *
- * The last of those is the one the operator cannot find out any other way
- * (facts C1). On a deployment whose configuration document already resolves,
+ * The last of those is the one the operator cannot find out any other way.
+ * On a deployment whose configuration document already resolves,
  * `finish` writes no document at all -- it writes one only
  * `if state.config_document is not None`, and `stage_config_document` refuses
  * to stage one while a document resolves -- so three things are true at once
@@ -86,7 +86,7 @@ const NOT_CONFIGURED = "Not configured — no API key staged, or its address was
  *
  * Neither server is named in it: the block above says which server this
  * deployment was set up with, and the walk this step exists for is the one
- * where that server is Jellyfin (review I1).
+ * where that server is Jellyfin.
  */
 export function SetupFinishPane({
   busy,

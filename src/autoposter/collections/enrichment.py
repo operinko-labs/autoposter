@@ -41,7 +41,7 @@ async def ensure_tags(
     module's to hide.
 
     The pass-level failure memo is consulted AFTER the already-cached
-    short-circuit, and the order is load-bearing (T2 review): the memo records
+    short-circuit, and the order is load-bearing: the memo records
     that FETCHING failed, so it may only refuse an ask that would have to
     fetch. Checking it first refused a definition whose every key was already
     in the cache -- an answer the cache could have served in full, withheld

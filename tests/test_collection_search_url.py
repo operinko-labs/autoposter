@@ -35,7 +35,7 @@ CHOICES = {
     # Search-tail E-1's five tag rows. Keyed by the ROW NAME, which is what
     # ``_arguments`` hands the resolver (``resolve_tag(row.name, value)``),
     # so ``episode_actor`` and ``actor`` are separate entries here even
-    # though the real resolver answers both from one ``actor`` listing (T2).
+    # though the real resolver answers both from one ``actor`` listing.
     ("season_collection", "Specials"): ("301",),
     ("season_label", "Overlay"): ("3",),
     ("episode_collection", "Pilots"): ("302",),
@@ -387,7 +387,7 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_moment_field():
     assert evaluate(after, the_evening_before, now=BOUNDARY_NOW) is False
 
     # `.to` takes the whole calendar day A -- 09:15 IS kept, which is the one
-    # cell of this row's decision table the controller ruled on -- and stops
+    # cell of this row's decision table -- and stops
     # at the first instant of A+1.
     assert evaluate(before, at_midnight, now=BOUNDARY_NOW) is True
     assert evaluate(before, during_the_day, now=BOUNDARY_NOW) is True
@@ -732,7 +732,7 @@ def test_a_search_type_never_changes_which_attributes_are_legal():
     A movie-only attribute is still refused on a show library at episode level,
     and by the library's kind.
 
-    ``duration``, not the brief's original ``resolution``: ``resolution`` is
+    ``duration``, not the earlier ``resolution``: ``resolution`` is
     ``search_kinds=_BOTH`` (filters.py:770-792, and already proved legal on a
     show library by ``test_a_show_library_gets_the_rescoped_fields`` above),
     so it never raises here regardless of ``search_type`` -- confirmed

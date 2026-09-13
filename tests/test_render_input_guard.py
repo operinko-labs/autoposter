@@ -208,7 +208,7 @@ async def test_a_corrupt_clearlogo_is_skipped_and_the_poster_renders_without_one
     session, tmp_path, monkeypatch, caplog
 ):
     """The logo is a second download, and it is the one that fails -- but a
-    logo failing no longer refuses the whole poster (Task 1, ``_pick_logo``):
+    logo failing no longer refuses the whole poster (``_pick_logo``):
     the ladder is re-asked, this provider has nothing else to offer, and the
     poster renders WITHOUT a logo rather than being refused. The refusal
     still names the clearlogo rather than the poster -- just in a WARNING
@@ -384,7 +384,7 @@ def test_an_oversized_manual_override_is_refused_before_it_is_read(tmp_path):
     assert not working.exists(), "a refused override must not have been copied"
 
 
-# --- the pixel ceiling (M1) ---------------------------------------------------
+# --- the pixel ceiling --------------------------------------------------------
 
 
 def _oversized_declared_png(width: int, height: int) -> bytes:
@@ -495,7 +495,7 @@ async def test_a_corrupt_body_at_an_svg_clearlogo_url_is_skipped_not_composited(
     still be decoded and refused if it is not an SVG document, rather than
     skipping validation on the strength of a filename the provider chose.
 
-    A refused clearlogo no longer refuses the poster (Task 1): it is skipped,
+    A refused clearlogo no longer refuses the poster: it is skipped,
     the ladder has nothing else to offer, and the poster renders without a
     logo -- so ``calls`` is no longer empty, only free of a logo composite.
     """

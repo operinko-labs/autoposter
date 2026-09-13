@@ -6,7 +6,7 @@
 costs exactly one narrow search (same doc, "/Items" -> get with
 ``searchTerm``) before giving up, rather than searching on every resolve.
 
-Identity ruling (Phase 2 identity corrections, 2026-09-12): a season or
+Identity rule (identity corrections, 2026-09-12): a season or
 episode's own ``tmdb_id``/``tvdb_id``/``imdb_id`` -- and its ``parent_*``
 ids -- are always the SERIES' ``ProviderIds`` (never a season/episode's own),
 because Jellyfin's TV agent only ever writes real provider ids onto the
@@ -20,8 +20,8 @@ file_path off that (always None there too). Together this makes a
 Jellyfin-resolved item compute the same ``identity_key`` as its Plex twin at
 the same coordinates (tests/test_jellyfin_index.py). A movie whose two
 servers pick a different underlying file would still key differently under
-this rule -- that case is ruled into Task 19 (one intent maps to one row,
-and the second server contributes only its ref, never a second identity).
+this rule -- that case falls under the one-intent-one-row model (the second
+server contributes only its ref, never a second identity).
 
 Basename lookup deferred: spec §4.4 step 2 describes falling back to a
 by-basename index entry on a provider-id miss, but ``RenderIntent`` carries
@@ -30,7 +30,7 @@ no path for this index to match against, so nothing can ever call it
 
 Freshness (spec §4.4 step 6): "rebuilt at the start of each full pass and on
 a fixed interval otherwise". ``invalidate()`` is the full-pass hook (wired by
-Task 19, not this module) -- an unconditional "forget everything, the next
+the pipeline, not this module) -- an unconditional "forget everything, the next
 lookup rebuilds" regardless of age. The fixed interval is ``max_age_seconds``:
 ``rebuild()`` stamps ``built_at`` (a monotonic clock reading) on every
 successful build, and treats an index older than that as not built at all, so

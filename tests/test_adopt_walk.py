@@ -121,7 +121,7 @@ def _write(target: Path, content: bytes) -> None:
 
 async def _media_item_by_native_id(session, native_id: str) -> MediaItem:
     """The ``media_items`` row for a Plex native id -- ``media_items`` no
-    longer has a ``rating_key`` column to query directly (Task 6); the id
+    longer has a ``rating_key`` column to query directly; the id
     lives in ``media_item_server_refs`` instead."""
     item_id = await item_id_for(session, "plex", native_id)
     return (

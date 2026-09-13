@@ -240,7 +240,7 @@ class JellyfinClient:
     def invalidate(self) -> None:
         """Forces the next resolve/exists/list_items to rebuild the library
         index from scratch (spec §4.4 step 6). The full pass calls this at
-        its start; wiring that call site is Task 19's, not this one's."""
+        its start; wiring that call site is the pipeline's job, not this one's."""
         self._index.invalidate()
 
     async def list_items(self, kind: str) -> list[SectionItem]:

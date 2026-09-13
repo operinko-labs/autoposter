@@ -13,9 +13,8 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = 'd7a45f0c9b21'
-# Re-derived at implementation time (task-1-report.md): main had already
-# merged C2c's status_facts migration when this branch cut, so this chains
-# from c4f2a19b6d38 rather than the brief's b8c31f4a7e26.
+# Re-derived when this branch cut: main had already merged the status_facts
+# migration, so this chains from c4f2a19b6d38 rather than b8c31f4a7e26.
 down_revision: Union[str, Sequence[str], None] = 'c4f2a19b6d38'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

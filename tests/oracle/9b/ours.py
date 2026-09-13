@@ -1,10 +1,10 @@
 """Our side of the oracle: parse_filters + build_search_url, fifteen URLs.
 
 The comparison itself lives in ``tests/test_collection_search_oracle.py``,
-where Kometa's answers are pinned as data. This script exists so a reviewer can
-put the two sides side by side without pytest::
+where Kometa's answers are pinned as data. This script exists so the two sides
+can be put side by side without pytest::
 
-    docker compose -p p9bt3 -f docker-compose.yml -f .superpowers/isolated-db.yml \
+    docker compose -p p9bt3 -f docker-compose.yml \
         run --rm test sh -c 'python tests/oracle/9b/kometa_build_filter.py > /tmp/k.txt; \
                              python tests/oracle/9b/ours.py > /tmp/o.txt; diff /tmp/k.txt /tmp/o.txt && echo IDENTICAL'
 

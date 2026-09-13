@@ -312,7 +312,7 @@ async def seed_media_item(
     """Seed one ``media_items`` row, plus its ``media_item_server_refs`` row
     unless ``plex_ref`` is False.
 
-    ``media_items.rating_key`` no longer exists (Task 6): a row is identified
+    ``media_items.rating_key`` no longer exists: a row is identified
     by ``identity_key``, and its per-server native id lives in a separate
     ``MediaItemServerRef``. Shared here so every artwork-mode and
     metadata-backup suite that used to write ``MediaItem(rating_key=...)``

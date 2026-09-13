@@ -498,7 +498,7 @@ def test_every_audio_codec_weight_row_names_a_vendored_png():
 # --- Every `<Media>`, awarded by Kometa's weights (roadmap row 106) ---------
 
 
-# MEASURED at Task 1 Step 6, on the cut ref, BEFORE any source edit -- the
+# MEASURED on the cut ref, BEFORE any source edit -- the
 # only way a "this did not move" pin can mean anything. Do not recompute them
 # from the code under test.
 SINGLE_VERSION_FINGERPRINT = "7c21f6ec22f64511e7af1285aed62b03bf07ff8e5d64f751545aa12c83c1db4f"
@@ -714,7 +714,7 @@ def test_a_single_version_item_keeps_its_badge_values_and_fingerprint_to_the_byt
     item must move NOTHING: its resolution set is one tier, its flag union is
     one version's flags, its path list is one path, and its track title
     resolves to the same stem the Plex identifier did. Both literals were
-    captured on the pre-change code at Task 1 Step 6, not re-derived from the
+    captured on the pre-change code, not re-derived from the
     function under test -- a re-derivation would pass even if the formula and
     the pin moved together."""
     item = _multi(
@@ -737,7 +737,7 @@ def test_a_single_version_item_keeps_its_badge_values_and_fingerprint_to_the_byt
 def test_the_two_version_item_moves_its_fingerprint_off_the_media_zero_one():
     """The movement, stated honestly and pinned in both directions. The
     left-hand dict is what the shipped code produces for this item today
-    (captured at Task 1 Step 6) and is what is in the database; the right-hand
+    (captured on the pre-change code) and is what is in the database; the right-hand
     one is what replaces it. Only the badge layer redraws: `badge_fingerprint`
     is deliberately separate from the base `fingerprint`, so no source art is
     re-fetched and no base is re-composited. Measured ceiling for the whole

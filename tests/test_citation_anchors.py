@@ -1,7 +1,7 @@
 """Roadmap row 216: the resolve-to-anchor guard for by-line citations into
 ``tests/oracle/9b/kometa_build_filter.py``.
 
-Why it exists: search-tails-1's Task 2 inserted a ``CHOICES`` block into the
+Why it exists: search-tails-1 inserted a ``CHOICES`` block into the
 vendored transcription and every by-line citation below the insertion point
 silently moved. Nothing failed -- a citation is a comment, so a stale one
 reads as authoritative while pointing at the wrong construct. 41 citations
@@ -17,11 +17,10 @@ Scope -- src/ and tests/ only, and the exclusions are deliberate:
   citations (`filters.py:1220`'s `:282`) whose antecedent a mechanical
   tracker resolves wrong. Excluded; the exclusion is documented in the row's
   close as an accepted residual.
-- The frozen plan documents (docs/superpowers/plans/, no longer tracked)
-  keep their
-  as-authored numbers by design (a historical brief rewritten is a record
-  falsified), so a guard walking them would red on them by design.
-- .superpowers/ is gitignored scratch, not a citing surface the repo owns.
+- Frozen historical planning documents (no longer tracked) keep their
+  as-authored numbers by design (rewriting a historical record falsifies
+  it), so a guard walking them would red on them by design.
+- Untracked scratch directories are not a citing surface the repo owns.
 
 The two anchor rules -- and an anchorless citation FAILS rather than skips,
 so a new citation can never pass vacuously:
@@ -84,11 +83,11 @@ SURFACES = (
 )
 # 21 filename-anchored + 9 bare continuations. The whole inventory is 38
 # counting the roadmap's 8, which sit outside this guard's scope (see the
-# module docstring). The two added past 17/26/34 are Task 2's (roadmap row
-# 171): the ``year`` row's note and the ``_CurrentYear`` class docstring
+# module docstring). The two added past 17/26/34 are roadmap row
+# 171's: the ``year`` row's note and the ``_CurrentYear`` class docstring
 # each cite ``tests/oracle/9b/kometa_build_filter.py:768-788`` by name. The
-# two added past 28 are the branch-review fix for C2 (``_Today`` rendering a
-# bare date, not a timestamp): ``test_collection_filters.py`` and
+# two added past 28 fix ``_Today`` rendering a
+# bare date, not a timestamp: ``test_collection_filters.py`` and
 # ``test_builder_plex_search.py`` each cite
 # ``tests/oracle/9b/kometa_build_filter.py:800`` (the driver's own
 # ``return_as="%Y-%m-%d"`` truncation) by name.
@@ -100,21 +99,21 @@ SURFACES = (
 # entry for ``episode_plays`` and the three new tests appended to
 # ``test_collection_filters.py``.
 #
-# The 12 added past 102 are the branch-review fix wave (I-1, F1-F3): eleven
+# The 12 added past 102 are eleven
 # previously-stale, previously-unguarded citations corrected by +9 and
 # rewritten file-anchored -- filters.py:1532; the FAMILY_E header in
 # test_collection_filters.py (nine refs across four lines); and
 # test_collection_search_url.py:400, brought under the guard by adding that
 # file to SURFACES -- plus one brand-new citation, the FAMILY_E header's
-# added M-6 clause in filters.py noting Kometa's kind gate is keyed on
+# new clause in filters.py noting Kometa's kind gate is keyed on
 # ``name.modifier`` (kometa_build_filter.py:914).
 #
 # Search-tail E-2 (roadmap rows 173/179) adds ``search_sorts.py`` and
-# ``search_url.py`` to SURFACES -- the same move the branch-review fix wave
+# ``search_url.py`` to SURFACES -- the same move
 # made for ``test_collection_search_url.py`` above, for the same class of
 # reason: both files gained by-line citations into Kometa's builder.py/plex.py
 # with the season/episode matrices and the kind/search-type split. Measured
-# by re-running this guard rather than by hand (C9): those two additions do
+# by re-running this guard rather than by hand: those two additions do
 # NOT move the census. Every one of those citations names ``builder.py`` or
 # ``plex.py`` -- Kometa's ORIGINAL module names -- and never the vendored
 # file's own name (``kometa_build_filter.py``), so ``_oracle_refs``'s
@@ -124,7 +123,7 @@ SURFACES = (
 # in either file spelled ``kometa_build_filter.py:<n>`` is now guarded rather
 # than invisible.
 #
-# The Task 4 review (I-2) found the other half: the same branch ALSO added
+# The same change also added
 # ``tests/test_smart_collection_oracle.py`` and
 # ``tests/test_collection_search_oracle.py`` to SURFACES, so the three
 # citations those two files add land under the guard too --
@@ -137,7 +136,7 @@ SURFACES = (
 # docstring makes: ``tests/test_collection_search_oracle.py``'s new
 # twenty-fifth/twenty-sixth section names ``kometa_build_filter.py:904-907``
 # (the restored branch). Growing the driver's ``CHOICES`` literal in place
-# (beside it, per C6) shifted every absolute-line citation below it by a
+# shifted every absolute-line citation below it by a
 # constant +5 -- the existing citations across ``filters.py``,
 # ``plex_search.py``, ``test_collection_filters.py``,
 # ``test_builder_plex_search.py``, ``test_collection_search_url.py`` and this
@@ -146,12 +145,12 @@ SURFACES = (
 # census. Re-derived by RUNNING this guard, never counted by hand: the
 # census moves to 118.
 #
-# Search tail H's SECOND move, at Task 2: the ``folder_location`` row's own
+# Search tail H's second move: the ``folder_location`` row's own
 # note in ``filters.py`` and the table test that reads it both cite
 # ``kometa_build_filter.py:422`` (``folder_location`` in the driver's
-# ``tag_attributes``) -- TWO new guarded references, not the one the brief
-# predicted, because the row's checksum test quotes the row's own source line.
-# ``:422`` and not ``:417``: Task 1's five-line ``CHOICES`` growth shifted the
+# ``tag_attributes``) -- TWO new guarded references, not just one, because
+# the row's checksum test quotes the row's own source line.
+# ``:422`` and not ``:417``: an earlier five-line ``CHOICES`` growth shifted the
 # driver's ``tag_attributes`` list down with everything else below it.
 # Re-derived by RUNNING this guard: 120.
 EXPECTED_REF_COUNT = 120

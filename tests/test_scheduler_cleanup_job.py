@@ -444,7 +444,7 @@ def test_move_to_backup_refuses_assets_root_itself(tmp_path):
 
 
 async def test_the_cleanup_pass_trims_the_run_history(session, tmp_path, monkeypatch):
-    """C6: the table is bounded by a clause in a pass that already runs, not
+    """The table is bounded by a clause in a pass that already runs, not
     by a fifth scheduled job nobody asked for."""
     monkeypatch.setattr(jobs, "RUN_HISTORY_KEEP", 2)
     for _ in range(3):

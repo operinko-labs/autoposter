@@ -15,7 +15,7 @@
  * 409 that re-reads instead of retrying.
  *
  * No storage stub: this file touches neither `localStorage` nor
- * `sessionStorage`, and Task 2 Step 12 pins that mechanically rather than
+ * `sessionStorage`, which is pinned mechanically rather than
  * trusting this sentence. */
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,7 +62,7 @@ const OVERRIDE_ROW = {
   summary: "What the household watched.",
   limit: 25,
   // The LISTING's shape, so both of `ScheduleGate`'s fields: the handler
-  // dumps the whole model (`model_dump(mode="json")`, T1 Step 16), which is
+  // dumps the whole model (`model_dump(mode="json")`), which is
   // why `months` is here and is not in `STORED_ENTRIES` below. That gap is
   // the point of the edit test: the form shows neither field, so a write
   // rebuilt from this row would corrupt the stored one.

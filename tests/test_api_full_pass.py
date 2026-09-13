@@ -292,7 +292,7 @@ async def test_the_response_does_not_wait_on_the_webhook(
 
 
 async def test_the_full_pass_opens_a_run_row(client, auth_headers, session):
-    """C1: a full pass is a run. Before this it was the one execution in the
+    """A full pass is a run. Before this it was the one execution in the
     tree that persisted nothing at all -- it enqueued, notified, returned three
     numbers and left no row anywhere."""
     await _add_items(session, *_one_of_each_kind())

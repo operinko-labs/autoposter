@@ -11,8 +11,8 @@ separate module rather than a second function in that one.**
 
 - The join is an OUTER join, deliberately. ``facts_enumeration.py`` inner-joins
   because it ENUMERATES: an item with no facts row has no value to offer a
-  family. This module EVALUATES, and the missing row is the answer -- ruling
-  C3's exclusion -- so it must come back rather than be filtered out.
+  family. This module EVALUATES, and the missing row is the answer -- the
+  facts rows' own exclusion -- so it must come back rather than be filtered out.
 - ASKED implies PRESENT, unconditionally. ``ensure_tags`` leaves a key Plex did
   not answer for OUT of its result, and the engine refuses the definition
   rather than evaluating, because "Plex skipped it" is not knowledge. Here it

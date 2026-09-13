@@ -1,8 +1,8 @@
 """Spec §4.4: build, lookup by provider then basename, one narrow search on a
 miss, ItemNotFound on the second miss, PathMismatch outside every root.
 
-Controller ruling (Phase 2 identity corrections, 2026-09-12) amends this
-brief: a season/episode ResolvedItem carries the SERIES' provider ids (never
+A 2026-09-12 identity correction amends the description above:
+a season/episode ResolvedItem carries the SERIES' provider ids (never
 the episode's own), parent_native_id is the series' id for a season and the
 SEASON's id for an episode, root_folder is the series folder's basename, and
 file_path is None for both seasons and episodes -- so a Jellyfin-resolved
@@ -76,11 +76,11 @@ async def test_an_episode_resolves_through_its_series_and_coordinates():
             RenderIntent(kind="episode", title="The Simpsons", tvdb_id=71663, season_number=2, episode_number=3))
     assert item.native_id == "ep3" and item.parent_tvdb_id == 71663
     assert item.season_number == 2 and item.episode_number == 3
-    # Controller ruling: parent_native_id is the two-hop model's immediate
+    # parent_native_id is the two-hop model's immediate
     # parent -- the SEASON's id for an episode, not the series' -- so this
-    # assertion changes from the brief's "s1" to "se2".
+    # assertion changes from "s1" to "se2".
     assert item.parent_native_id == "se2"
-    # Controller ruling: the episode's own provider ids are the SERIES' ids
+    # The episode's own provider ids are the SERIES' ids
     # (never the episode's own Tvdb=55), file_path is None (episodes key
     # without a file, like Plex), and root_folder is the series folder's
     # basename.
@@ -175,7 +175,7 @@ async def test_a_jellyfin_movie_has_the_same_identity_key_as_its_plex_twin():
 
 
 async def test_library_map_translates_the_jellyfin_folder_name_to_the_plex_name():
-    """I1: config/schema.py's library_map is Plex name -> Jellyfin name. The
+    """config/schema.py's library_map is Plex name -> Jellyfin name. The
     Jellyfin folder here is really named "Films"; library_map={"Movies":
     "Films"} must make the resolved item report the PLEX-facing name
     "Movies", and root_folder must still come from the "Films" folder's own
@@ -199,7 +199,7 @@ async def test_library_map_translates_the_jellyfin_folder_name_to_the_plex_name(
 
 
 async def test_concurrent_first_resolves_rebuild_the_index_only_once():
-    """I4: two resolves racing on a fresh index must not each pay for their
+    """Two resolves racing on a fresh index must not each pay for their
     own /Library/VirtualFolders + /Items build -- the second's rebuild() call
     finds the lock already held and the first's build already complete."""
     api, http, calls = _api()
@@ -216,7 +216,7 @@ async def test_concurrent_first_resolves_rebuild_the_index_only_once():
 
 async def test_a_rebuild_after_success_is_a_noop_and_the_old_index_keeps_resolving():
     """Minor: once built, a second rebuild() call (with no invalidate()
-    first) must be a no-op per I4's guard -- built stays True and the old
+    first) must be a no-op -- built stays True and the old
     lookup keeps answering, even though the server would now fail every
     request."""
     state = {"fail": False}
@@ -264,7 +264,7 @@ async def test_kind_of_is_empty_for_an_unknown_type_and_it_is_never_indexed():
 
 
 async def test_the_index_rebuilds_after_max_age_seconds(monkeypatch):
-    """I3 / spec §4.4 step 6: "rebuilt at the start of each full pass and on
+    """spec §4.4 step 6: "rebuilt at the start of each full pass and on
     a fixed interval otherwise". A fresh index answers repeated resolves with
     no further build call; once the clock has moved past ``max_age_seconds``,
     the next resolve pays for exactly one fresh build."""

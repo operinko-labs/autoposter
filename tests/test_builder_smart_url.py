@@ -13,7 +13,7 @@ extractor plus 9c's reconciler, so the tests split the same way:
   collections package and a Plex Web URL can carry ``X-Plex-Token``;
 - one engine-level test proving a pasted URL and the equivalent
   ``smart_filter`` definition store a BYTE-IDENTICAL filter, which is the
-  acceptance criterion the phase brief wrote: the paste is a spelling of the
+  acceptance criterion this phase sets: the paste is a spelling of the
   query, never a second query grammar.
 """
 import logging
@@ -138,7 +138,7 @@ def test_a_field_name_that_merely_ends_in_token_is_not_stripped():
 
 
 def test_a_value_ending_in_an_encoded_question_mark_survives_the_strip():
-    """The regression I1 pins: a title containing a literal ``?`` arrives at
+    """The regression this pins: a title containing a literal ``?`` arrives at
     the (already-once-decoded) query as a bare ``%3F`` inside its own value,
     which the old unconditional ``_EMPTY_FIRST_TERM`` cleanup could not tell
     apart from a stripped token's leftover ``?&`` -- and ate the ``&`` after
@@ -150,11 +150,11 @@ def test_a_value_ending_in_an_encoded_question_mark_survives_the_strip():
 
 
 def test_str_validationerror_for_smarturlparams_names_no_token():
-    """C1(a): a pasted URL that is slightly wrong (the common ``.../web/
+    """A pasted URL that is slightly wrong (the common ``.../web/
     index.html#!/...`` mistake, Global Constraint 8's own scenario) but still
     carries a live token must not put that token into ``str(ValidationError)``
     -- not in the refusal message (already true) and not in pydantic-core's
-    own ``input_value=`` envelope around it (the gap C1 found: a ``mode=
+    own ``input_value=`` envelope around it (a gap where a ``mode=
     "before"`` strip alone does not suppress that annotation without
     ``hide_input_in_errors`` too, verified against pydantic 2.12.5)."""
     bad_url_with_token = (
@@ -489,7 +489,7 @@ async def test_a_pasted_url_and_the_equivalent_smart_filter_store_one_filter(
         "/library/sections/2/all?type=1&sort=random&genre=1138"
     )
     assert stored_uri == _stored_uri(section, "Written Horror")
-    # I3: the hash the phase's storm guard short-circuits a pass on, not just
+    # The hash the phase's storm guard short-circuits a pass on, not just
     # the uri -- the two must be recognised as the SAME desired state.
     assert smart_definition_hash(stored_uri, None, pasted, None) == smart_definition_hash(
         stored_uri, None, written, None

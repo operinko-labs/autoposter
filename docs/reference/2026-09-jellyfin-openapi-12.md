@@ -1,6 +1,6 @@
 # Row 267: Jellyfin 12 OpenAPI capture
 
-Fetched (by the controller, ahead of this task) from:
+Fetched from:
 
 - `https://api.jellyfin.org/openapi/jellyfin-openapi-stable.json`
   sha256 `86ef6b6cea7e474b5bb234f44e5eb7f6e8f458ce6d7d84fab99e8d1f4a75ce39`
@@ -292,7 +292,7 @@ instead, `Content-Type` unchanged (observation, not spec — see item 5 in
 
 `operationId: "GetItemImage"`. Path parameters `itemId` (uuid) and
 `imageType` (`ImageType` enum, above). Also takes an optional `imageIndex`
-query parameter (int32) — this is the route the brief calls out as having
+query parameter (int32) — this is the route called out as having
 both an `{imageType}` path segment and an `imageIndex` query parameter,
 rather than a single `.../{imageType}/{imageIndex}` path. `200` response:
 raw `image/*` bytes, no JSON schema. No `security` block on this operation
@@ -389,6 +389,5 @@ header **value** format is not in the spec; V1 in the design doc (see
 
 The small script used to pull every extract in this document verbatim from
 the spec (paths → operationId/parameters/requestBody, and the referenced
-response schemas' property names) is banked in
-`.superpowers/sdd/2026-09-12-jellyfin-media-server/task-13-report.md`,
-alongside its output and the sha256/version check.
+response schemas' property names) is banked alongside its output and the
+sha256/version check.

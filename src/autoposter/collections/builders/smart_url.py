@@ -53,8 +53,8 @@ outside this module) echoes its WHOLE raw input dict when any of its checks
 fail, this refusal included -- so a config-load refusal's
 ``str(ValidationError)``/``traceback.format_exc()``, taken through that OUTER
 model, still carries the token via that dict. Nothing in this module can
-close that; it is a controller-level residual on Global Constraint 8 (the
-pod-log sink, row 207), not a lapse here.
+close that; it is a residual of the pod-log sink (row 207), not a lapse
+here.
 """
 import logging
 import re

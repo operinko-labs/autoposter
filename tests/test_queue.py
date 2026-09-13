@@ -596,7 +596,7 @@ async def test_reclaim_stale_preserves_cancel_requested(session):
 async def test_reclaim_stale_does_not_re_pend_a_row_already_reclaimed_and_re_claimed(
     session_factory,
 ):
-    """M1 regression, reproduced without a timing race.
+    """A regression, reproduced without a timing race.
 
     Before the fix, the reclaim UPDATE's outer WHERE was qualified only by
     `jobs.id = stale.id` -- the `state = 'running'` and staleness checks lived

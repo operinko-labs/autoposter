@@ -184,8 +184,8 @@ def test_plex_native_ratings_is_total_over_an_unrated_item():
 
 
 def test_plex_native_ratings_does_not_trigger_a_partial_object_reload():
-    """The reload hazard C1's T1 review flagged (finding C3) for
-    OverlayItemView applies identically here: `item` may be the same PARTIAL
+    """The reload hazard flagged for OverlayItemView applies identically here:
+    `item` may be the same PARTIAL
     plexapi object apply_badges uploads to, and a plain `getattr` on an
     UNSET attribute trips PlexPartialObject.__getattribute__'s reload
     branch -- one blocking `requests` GET, inline. A fake with no `reload`
@@ -232,7 +232,7 @@ def _item_with_streams(audio, subtitles, extra_version=None):
 
 
 def test_the_stream_language_lists_come_from_the_streams_the_badge_pass_walks():
-    """C7's A-3, the data half. `media_info_from_plex` already reloads the
+    """The data half. `media_info_from_plex` already reloads the
     item and holds its `<Media>`/`<Part>`/`<Stream>` children; these two
     fields are one more walk of those SAME already-in-hand objects -- zero
     extra Plex requests, zero extra bytes, which is the cost property the

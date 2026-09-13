@@ -1,8 +1,8 @@
 """The shipped overlay families (roadmap row 100, sub-phases C1 and C2a).
 
 Three families ship: `direct_play` (one definition), the six
-content-rating regionals, and `versions` -- adjudication A14 ruled the
-`versions` row in `collections/filters.py` it needed, so C2a shipped it too.
+content-rating regionals, and `versions` -- the `versions` row was needed in
+`collections/filters.py`, so C2a shipped it too.
 
 Every number in `families.py` is transcribed from the pinned Kometa tree
 (v2.4.8, the image digest `assets/badges/PROVENANCE.md` records). These tests
@@ -29,11 +29,11 @@ from autoposter.overlays.variables import literal_of, tokens_in
 OVERLAY_MANIFEST = ASSETS / "OVERLAY-MANIFEST.sha256"
 BUILTIN_MANIFEST = ASSETS / "MANIFEST.sha256"
 
-# The ONE authoritative constant every count pin below derives from, set once
-# from Task 2 Step 1's measured `ls .superpowers/p-overlay-c1-vendor/cr | wc -l`
-# -- never restated as an independent literal. `98` is this document's
-# current best measurement; if Step 1 measured differently, this is the only
-# line that needs to change; every pin that depends on it moves with it.
+# The ONE authoritative constant every count pin below derives from, measured
+# once via `wc -l` over the vendored content-rating overlay directory -- never
+# restated as an independent literal. `98` is this document's current best
+# measurement; if a recount finds differently, this is the only line that
+# needs to change; every pin that depends on it moves with it.
 CR_COUNT = 98
 
 
@@ -131,7 +131,7 @@ def test_the_us_movie_g_bucket_carries_kometas_own_alias_list_verbatim():
     tables are the whole of the regional logic and a dropped alias is a
     silently-wrong badge, not a crash. Note the `gb/` and `no/` prefixes:
     those are PLEX agent spellings, and no Common Sense value in
-    `item_facts` ever looks like one -- adjudication A5's evidence."""
+    `item_facts` ever looks like one."""
     definitions = {d.name: d for d in FAMILIES["content_rating_us_movie"]}
     assert definitions["us_movie_g"].condition == {
         "content_rating": [
@@ -150,22 +150,19 @@ def test_the_us_movie_g_bucket_carries_kometas_own_alias_list_verbatim():
 # crash; it is a silently missing badge"). Two nets: bucket NAMES the probe
 # already gives for UK and US movie (section 4.3), pinned outright below; and
 # a per-family (bucket count, total alias count) pair for every family,
-# counted directly off the vendored YAML while Step 7 transcribes it -- never
-# estimated, never copied from this document -- so a dropped bucket or a
-# short alias list fails a count instead of passing silently.
+# counted directly off the vendored YAML -- never estimated, never copied
+# from this document -- so a dropped bucket or a short alias list fails a
+# count instead of passing silently.
 
 FAMILY_ALIAS_COUNTS = {
-    # <family>: (bucket_count, total_alias_count) -- filled in at Task 2
-    # Step 7, counted directly off the vendored
-    # `content_rating_<region>.yml` while reading it out. Every entry below
-    # is `None` until Step 7 replaces it; a family still `None` when Step 8
-    # runs means Step 7 is not actually done for it.
+    # <family>: (bucket_count, total_alias_count), counted directly off the
+    # vendored `content_rating_<region>.yml` for each family.
     "content_rating_us_movie": (6, 85),
     "content_rating_us_show": (6, 78),
     # EIGHT buckets, not the seven the recon probe named -- the vendored
     # content_rating_uk.yml carries a separate `12a` overlay (own alias
     # list, own image cr/uk12ac) alongside `12`; see families.py's own note
-    # on CONTENT_RATING_UK and Task 2's report.
+    # on CONTENT_RATING_UK.
     "content_rating_uk": (8, 106),
     "content_rating_au": (7, 105),
     "content_rating_de": (7, 92),
@@ -174,7 +171,7 @@ FAMILY_ALIAS_COUNTS = {
 
 
 def test_every_family_transcribes_every_bucket_and_every_alias():
-    """The completeness net Step 7's worked example alone cannot provide:
+    """The completeness net one hand-checked example alone cannot provide:
     every regional family's bucket count and total alias count, both counted
     directly off its own vendored YAML, not estimated from `us_movie_g`'s
     shape or guessed from this document."""
@@ -197,9 +194,8 @@ def test_the_uk_and_us_movie_bucket_names_are_all_present():
     The UK set below adds `12a` to the probe's seven: the vendored
     `content_rating_uk.yml` carries `12` and `12a` as two DISTINCT overlays,
     each with its own alias list and its own image (`cr/uk12c` /
-    `cr/uk12ac`), and the recon's enumeration missed the split. Task 2's
-    report names this divergence from the plan text; this pin follows the
-    vendored source, not the probe's count. A missing bucket here is a
+    `cr/uk12ac`), and the recon's enumeration missed the split; this pin
+    follows the vendored source, not the probe's count. A missing bucket here is a
     dropped CONDITION, not a typo -- an item with that certification draws
     no regional badge at all, silently."""
     uk_names = {d.name for d in FAMILIES["content_rating_uk"]}
@@ -224,13 +220,12 @@ def test_the_six_regions_ship_and_no_more():
 
 
 def test_versions_is_shipped_now_that_adjudication_a14_is_ruled():
-    """Adjudication A14 (raised by C1's plan, ruled by C2a's T1): the
-    `versions` row in `collections/filters.py` now exists, so the family
-    that was fenced can ship. One definition: `versions.gt: 1` -- more than
-    one `<Media>` entry, the same threshold Kometa's `duplicate` smart
+    """The `versions` row in `collections/filters.py` now exists, so the
+    family that was fenced can ship. One definition: `versions.gt: 1` -- more
+    than one `<Media>` entry, the same threshold Kometa's `duplicate` smart
     search meant, expressed on the new filterable int attribute instead
     (`duplicate` itself stays search-only and unusable in a `condition:`
-    block; see the L-4 fix)."""
+    block)."""
     definitions = FAMILIES["versions"]
     assert len(definitions) == 1
     definition = definitions[0]
@@ -288,9 +283,9 @@ def test_naming_the_same_family_twice_is_refused():
 
 ASPECT_BANDS = [
     # (name, low, high, weight) -- probe section 4.1, from `aspect.yml:48-72`
-    # at the pinned v2.4.8 tag. Eight overlays and NO 2.0 and NO 2.4: the
-    # brief that commissioned this sub-phase guessed a nine-entry list with
-    # both of those in it, and the vendored file has neither.
+    # at the pinned v2.4.8 tag. Eight overlays and NO 2.0 and NO 2.4: an
+    # earlier guess assumed a nine-entry list with both of those in it, and
+    # the vendored file has neither.
     ("1.33", 1.32, 1.34, 80),
     ("1.65", 1.64, 1.66, 70),
     ("1.66", 1.65, 1.67, 60),
@@ -331,8 +326,8 @@ def test_the_aspect_family_draws_its_own_name_and_names_no_image():
 def test_the_aspect_family_shares_one_box_and_the_bundled_face():
     """Probe section 4.1: 305x105, bottom-centre at `vertical_offset: 150`,
     `Inter-Medium` at 63. The font is written as the BARE bundled name, which
-    `overlays/sources.py::resolve_font_path`'s A-4 rung answers for every
-    operator, whatever their `fonts_root` holds."""
+    a fallback rung in `overlays/sources.py::resolve_font_path` answers for
+    every operator, whatever their `fonts_root` holds."""
     for definition in FAMILIES["aspect"]:
         assert (definition.back_width, definition.back_height) == (305, 105)
         assert definition.back_color == "#00000099"
@@ -345,8 +340,8 @@ def test_the_aspect_family_shares_one_box_and_the_bundled_face():
 
 
 def test_the_1_65_and_1_66_bands_genuinely_overlap_and_weight_resolves_it():
-    """**A-5's first case, and it reads like a transcription error unless it
-    is pinned.** 1.65's band is 1.64-1.66 and 1.66's is 1.65-1.67, so a 1.655
+    """**This reads like a transcription error unless it is pinned.** 1.65's
+    band is 1.64-1.66 and 1.66's is 1.65-1.67, so a 1.655
     item satisfies BOTH conditions. This is upstream's own arithmetic,
     transcribed rather than corrected; what makes it well-defined is the
     shared `group` plus the weights -- 70 beats 60, so the 1.65 badge draws

@@ -1,7 +1,6 @@
 """fetch_tag_index: the chunked multi-key metadata read, plain data out.
 
-The call-count pin is the point (probe F's own recommendation,
-.superpowers/sdd/archive/p9a-task-2-report.md ~:535): a regression to
+The call-count pin is the point (probe F's own recommendation): a regression to
 per-item fetching must be a red test, not a slow night.
 """
 import math
@@ -92,7 +91,7 @@ def test_result_is_plain_data_keyed_by_string_rating_key():
     assert tags.genres == ("Horror",)
     assert tags.labels == ("Overlay",)
     assert tags.collections == ("Alien Collection",)
-    # the ISO code, never the display title (review round 1, probe decision D6)
+    # the ISO code, never the display title (probe decision D6)
     assert tags.audio_languages == ("en",)
     assert tags.subtitle_languages == ("fi",)
 
@@ -117,7 +116,7 @@ def test_duplicate_tags_deduplicate_preserving_order():
 
 def test_duplicate_rating_keys_are_asked_for_once():
     # duplicates cost chunks, never characters in a chunk -- but the ceil pin
-    # is only honest over DISTINCT keys (review round 1).
+    # is only honest over DISTINCT keys.
     section = FakeSection(_items(3))
     result = fetch_tag_index(section, ["1", "1", "2", "1", "3"], chunk_size=200)
     assert section.calls == [[1, 2, 3]]

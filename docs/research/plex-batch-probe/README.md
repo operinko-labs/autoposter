@@ -1,6 +1,6 @@
 # Plex batched read — the live read-only probe
 
-Phase B Task 1. Run against the operator's production Plex on 2026-08-30,
+Phase B. Run against the operator's production Plex on 2026-08-30,
 **read-only throughout** — every request is a GET, nothing was written, no
 Secret was read through the Kubernetes API. The server address and the token
 are scrubbed from every line here and from the captured output; the
@@ -105,14 +105,14 @@ name lists, not merely on counts.
 batch, zero in the single-key fetch, and zero enumerable values from
 `listFilterChoices`. Three independent readings agree, so this is a fact about
 series-level Plex metadata (those credits live on episodes), not a batch
-artefact. **T4/T5 must not expect show-level director/writer/producer.**
+artefact. **The credit resolvers must not expect show-level director/writer/producer.**
 
 **A 200-cap on `Role` children.** 54 of 200 shows and 2 of 200 movies land on
 *exactly* 200 roles, and none exceed it — a server-side cap on how many `Role`
 children one item's metadata returns, not a coincidence of cast sizes. The
 single-key fetch of key=84951 also returns exactly 200, so the cap is not
 imposed by batching and cannot be escaped by dropping to single-key reads. Any
-T4/T5 claim of a *complete* cast is false for the ~27% of shows that hit it.
+credit-resolver claim of a *complete* cast is false for the ~27% of shows that hit it.
 
 ## 3. Probe c — the URL-length chunk cap
 
@@ -135,7 +135,7 @@ chunk=1600 path-length=10232 ...
 characters**; **1600 keys / 10232 characters** is refused as
 `plexapi.exceptions.BadRequest`, with no `status_code` reachable on the
 exception (plexapi raises `BadRequest` from the status line without attaching
-the response, so callers cannot branch on the code — T2/T6 must catch the
+the response, so callers cannot branch on the code — callers must catch the
 exception class, not a status). The boundary lies somewhere in 1200 < cap <
 1600; the probe stops at the first refusal by design, so the exact cap is not
 measured. The shape is consistent with the classic 8192-byte request-line
@@ -173,7 +173,7 @@ show items=286 viewCount-present=55 (of which =0: 0) lastViewedAt-present=64 use
 reach the listing, but only on the rows that have a value. `viewCount` is
 present on 79/1962 movies and 55/286 shows and is **never `0`** — Plex omits
 the attribute entirely for unwatched items rather than writing a zero. An
-absent `viewCount` therefore means *unwatched*, and T7's rows 180/175 can read
+absent `viewCount` therefore means *unwatched*, and rows 180/175 can read
 `int(attrib.get("viewCount", 0))` off the listing without a per-item fetch.
 
 `lastViewedAt` is present more often than `viewCount` (98 vs 79 on movies, 64
@@ -183,7 +183,7 @@ other.
 
 `userRating` is effectively **ABSENT** as a usable signal on this library: 2 of
 1962 movies, 0 of 286 shows. It is present-when-set like the others, so the
-accessor is sound, but any T7 feature keyed on it will find almost no data
+accessor is sound, but any feature keyed on it will find almost no data
 here.
 
 **Informational.** Credit tags also appear as children *in the section
@@ -288,7 +288,7 @@ for chunk in (50, 100, 200):
     elapsed = time.monotonic() - start
     say("chunk=%3d returned=%3d %6.2fs tags=%s" % (chunk, len(items), elapsed, tag_counts(items)))
 
-# stream language attribs, for T3's accessor spelling (D6): sample the first
+# stream language attribs, for the accessor spelling (D6): sample the first
 # batched show is wrong -- shows carry no Media; sample 5 MOVIES instead
 movie = section_of("movie")
 mkeys = keys_of(movie)[:5]
@@ -402,13 +402,13 @@ say("VERDICT:", "CONFIRMED" if str(actual) == data.attrib.get("totalSize") else 
 
 | # | Question | Verdict | Gates |
 | --- | --- | --- | --- |
-| D1 | Do Role/Director/Writer/Producer tags ride the batch response (probe b)? | **YES** — movie batch of 200 carried Role 8815, Director 228, Writer 482, Producer 590; batch vs single-key credit lists identical on 6/6 sampled items (MATCH=True). Shows carry **Role only** (0 director/writer/producer in batch, in single-key, and in `listFilterChoices`) — a property of series-level Plex metadata, not of batching. **`Role` children are capped at 200/item server-side** (54/200 shows and 2/200 movies hit it exactly, unescapable by single-key reads) — counts from a truncated cast must not claim completeness. | T4, T5 **proceed**. No adjudication. |
-| D2 | Largest working chunk / refusal shape (probe c) | Largest tested OK: **1200 keys / 7671-char path (44.05 s)**. **1600 keys / 10232 chars REFUSED, `BadRequest`, `status=None`** (plexapi attaches no response, so catch the class, not a code). Exact cap unmeasured: 1200 < cap < 1600. Cost, not the cap, binds: 15.5 → 25.2 → 36.7 ms/item at 400/800/1200 vs 8–12 ms/item at 50–200. | `TAG_BATCH_CHUNK` **unchanged at 200** (trigger was "< 200"); 200 is also near the cost optimum. T6. |
+| D1 | Do Role/Director/Writer/Producer tags ride the batch response (probe b)? | **YES** — movie batch of 200 carried Role 8815, Director 228, Writer 482, Producer 590; batch vs single-key credit lists identical on 6/6 sampled items (MATCH=True). Shows carry **Role only** (0 director/writer/producer in batch, in single-key, and in `listFilterChoices`) — a property of series-level Plex metadata, not of batching. **`Role` children are capped at 200/item server-side** (54/200 shows and 2/200 movies hit it exactly, unescapable by single-key reads) — counts from a truncated cast must not claim completeness. | The credit resolvers **proceed**. No adjudication. |
+| D2 | Largest working chunk / refusal shape (probe c) | Largest tested OK: **1200 keys / 7671-char path (44.05 s)**. **1600 keys / 10232 chars REFUSED, `BadRequest`, `status=None`** (plexapi attaches no response, so catch the class, not a code). Exact cap unmeasured: 1200 < cap < 1600. Cost, not the cap, binds: 15.5 → 25.2 → 36.7 ms/item at 400/800/1200 vs 8–12 ms/item at 50–200. | `TAG_BATCH_CHUNK` **unchanged at 200** (trigger was "< 200"); 200 is also near the cost optimum. |
 | D3 | Show-library batch economics (probe a) | 286 shows: **2 calls at chunk=200**; measured 2.41 s for the 200-chunk and 0.82 s for a 100-chunk, so ≈**3.2 s** for the whole show library, ≈**11 ms/item**. Per-chunk measured: 50 → 0.47 s (9.4 ms/item), 100 → 0.82 s (8.2), 200 → 2.41 s (12.05). | recorded; informs nothing structural |
-| D4 | `viewCount`/`lastViewedAt`/`userRating` in the listing (probe d) | **SPARSE, present-when-set** — `viewCount` movie 79/1962, show 55/286, **never `0`** (absent ⇒ unwatched); `lastViewedAt` movie 98/1962, show 64/286 (exceeds `viewCount` — in-progress items, do not infer one from the other); `userRating` movie 2/1962, show 0/286 — **effectively ABSENT** on this library. | **This verdict supersedes the plan's binary ALL-PRESENT/SPARSE branch** (Step 2, `docs/superpowers/plans/2026-08-30-phase-b-plex-read.md:2448-2450`) — the three attributes split rather than moving together, so T7 adjudicates per-attribute instead of picking one branch by keyword match. `plays` **SHIPS listing-tier**: plexapi already defaults `viewCount` to 0 (`video.py:64`, `utils.cast(int, data.attrib.get('viewCount', 0))`), so absent-is-zero is safe regardless of accessor mechanism — add to `_LISTING_ATTRIBS`. `last_played` is **DECIDED AT T7** against Kometa's own None handling: plexapi leaves `lastViewedAt` None when absent (`video.py:50`), so a never-played item reads as MISSING and a recency filter's missing-excludes rule would exclude it unconditionally — T7 ships it listing-tier only if missing-excludes is the wanted semantics for `last_played`, else re-files that half of row 180 honestly (not closed). `user_rating` **ships** per the plan's sparse-ships resolution (`:2471`) — missing-excludes is the correct semantics for an unrated item. |
-| D5 | `totalSize` at container-size 0 (probe e) | **CONFIRMED** — `totalSize='17'`, `size='0'`, 0 children; full fetch of the same URL returned 17. | T7's row-198 commit |
-| D6 | Stream `language` attrib spelling (probe a) | **All three carry values** on audio (`streamType=2`) and subtitle (`streamType=3`) streams: `language='English'`, `languageCode='eng'`, `languageTag='en'`. Sample is one movie's streams, all English. | T3's `_stream_languages` field — `languageCode` (ISO 639-2) is the safe key; `languageTag` (ISO 639-1) matches 9b's `_base_language_code` shape. **Shipped: `languageTag`** — see `client._stream_languages`, which argues the normaliser match makes the comparison an identity for the common case. |
-| D7 | `listFilterChoices` enumerates actor/director/writer/producer (probe b) | **movie: all four answer** — actor 3268, director 1394, writer 2813, producer 3071. **show: actor 789 only** — director/writer/producer answer **0 values** (no refusal, an empty enumeration). | T5's resolver: sufficient for movies and for show *actors*; a show director/writer/producer resolver has nothing to enumerate (C5's hubSearch fallback is the only route if that is ever needed). |
+| D4 | `viewCount`/`lastViewedAt`/`userRating` in the listing (probe d) | **SPARSE, present-when-set** — `viewCount` movie 79/1962, show 55/286, **never `0`** (absent ⇒ unwatched); `lastViewedAt` movie 98/1962, show 64/286 (exceeds `viewCount` — in-progress items, do not infer one from the other); `userRating` movie 2/1962, show 0/286 — **effectively ABSENT** on this library. | **This verdict supersedes the binary ALL-PRESENT/SPARSE branch first planned** — the three attributes split rather than moving together, so the tier is decided per-attribute instead of by picking one branch on a keyword match. `plays` **SHIPS listing-tier**: plexapi already defaults `viewCount` to 0 (`video.py:64`, `utils.cast(int, data.attrib.get('viewCount', 0))`), so absent-is-zero is safe regardless of accessor mechanism — add to `_LISTING_ATTRIBS`. `last_played` is **DECIDED LATER** against Kometa's own None handling: plexapi leaves `lastViewedAt` None when absent (`video.py:50`), so a never-played item reads as MISSING and a recency filter's missing-excludes rule would exclude it unconditionally — it ships listing-tier only if missing-excludes is the wanted semantics for `last_played`, else re-files that half of row 180 honestly (not closed). `user_rating` **ships** per the plan's sparse-ships resolution (`:2471`) — missing-excludes is the correct semantics for an unrated item. |
+| D5 | `totalSize` at container-size 0 (probe e) | **CONFIRMED** — `totalSize='17'`, `size='0'`, 0 children; full fetch of the same URL returned 17. | the row-198 commit |
+| D6 | Stream `language` attrib spelling (probe a) | **All three carry values** on audio (`streamType=2`) and subtitle (`streamType=3`) streams: `language='English'`, `languageCode='eng'`, `languageTag='en'`. Sample is one movie's streams, all English. | the `_stream_languages` field — `languageCode` (ISO 639-2) is the safe key; `languageTag` (ISO 639-1) matches 9b's `_base_language_code` shape. **Shipped: `languageTag`** — see `client._stream_languages`, which argues the normaliser match makes the comparison an identity for the common case. |
+| D7 | `listFilterChoices` enumerates actor/director/writer/producer (probe b) | **movie: all four answer** — actor 3268, director 1394, writer 2813, producer 3071. **show: actor 789 only** — director/writer/producer answer **0 values** (no refusal, an empty enumeration). | The resolver: sufficient for movies and for show *actors*; a show director/writer/producer resolver has nothing to enumerate (the hubSearch fallback is the only route if that is ever needed). |
 
 ---
 

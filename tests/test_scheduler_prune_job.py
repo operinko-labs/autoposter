@@ -49,7 +49,7 @@ class FakePlex:
     ``live`` is the set of rating keys that still resolve; ``error``, when set,
     is raised instead, because "the probe failed" and "everything is gone" must
     never be the same answer. ``name`` defaults to ``"plex"`` -- every test in
-    this suite predates a second server -- but Task 19's per-server
+    this suite predates a second server -- but the per-server
     ``find_prunable`` reads each server's OWN native id off the intent, so a
     test standing this in for another server (``test_the_audit_rows_refs_
     include_every_server``) passes ``name="jellyfin"`` to match.
@@ -75,7 +75,7 @@ async def _add_item(session, rating_key, *, kind="movie", parent=None, **columns
 
     ``identity_key`` is synthesized from the rating key rather than from any
     external id a test also passes in: ``media_items.identity_key`` is
-    UNIQUE (Task 6), and this suite's whole point is rows distinguished only
+    UNIQUE, and this suite's whole point is rows distinguished only
     by their own Plex id, exactly like ``rating_key`` used to be before it
     moved off this table.
     """
@@ -343,7 +343,7 @@ async def test_an_applied_retire_deletes_the_row(session):
     await session.commit()
 
     # ``media_items.id``, not the Plex native id: a candidate need not have
-    # one at all (I4), and a None in this list matched every other ref-less
+    # one at all, and a None in this list matched every other ref-less
     # candidate downstream.
     assert outcome.pruned == [item_id]
     assert outcome.skipped == 0
@@ -395,7 +395,7 @@ async def test_the_audit_rows_refs_include_every_server(session):
         item_id=item.id, server="jellyfin", native_id="0a", library=item.library,
     ))
     await session.commit()
-    # Both servers gone, so nothing holds the row reachable -- Task 19's
+    # Both servers gone, so nothing holds the row reachable -- the
     # per-server prune only retires a row once EVERY configured server has
     # lost it, and this test is about the audit payload, not cross-server
     # reachability.
@@ -461,7 +461,7 @@ async def test_a_row_re_upserted_under_the_pass_survives_and_is_counted_skipped(
     which is what makes the two ``now()`` values differ; nothing here asserts
     on a timestamp or a duration.
 
-    A plain ORM update stands in for the real upsert here: since Task 6 a real
+    A plain ORM update stands in for the real upsert here: the real
     ``_upsert_media_item`` finds the row to update by ``identity_key``, and
     this row's synthetic one (``_add_item``) is not something a real
     ``ResolvedItem`` could ever compute -- the guard being pinned reads
@@ -680,7 +680,7 @@ def _config(*, apply=False, max_prunes=500, max_prune_share=0.25, max_orphans=50
         cleanup=SimpleNamespace(max_orphans=max_orphans, max_orphan_share=0.25),
         scheduler=SimpleNamespace(prune_days=7),
         plex=SimpleNamespace(excluded_libraries=list(excluded)),
-        # Task 19: make_prune_job's servers_factory builds every configured
+        # make_prune_job's servers_factory builds every configured
         # server; this suite is Plex-only throughout, so `jellyfin` reads as
         # not configured, exactly like a real Config with no jellyfin: block.
         jellyfin=None,
@@ -688,7 +688,7 @@ def _config(*, apply=False, max_prunes=500, max_prune_share=0.25, max_orphans=50
 
 
 def _job(config, plex, *, healthy=True, extra_servers=None):
-    # Task 19: make_prune_job's second argument is a servers_factory
+    # make_prune_job's second argument is a servers_factory
     # returning a {name: MediaServer} mapping, not one bare server.
     # `extra_servers` lets a multi-server test add e.g. a jellyfin double
     # beside `plex` without a whole second helper.
@@ -709,13 +709,13 @@ class _ReupsertingPlex(FakePlex):
     own handling of a skip, not ``retire``'s.
 
     A plain ORM update of the row named by ``native_id`` stands in for the
-    real re-upsert: since Task 6 the real ``_upsert_media_item`` finds its
+    real re-upsert: the real ``_upsert_media_item`` finds its
     row by ``identity_key``, which this fixture's rows (``_add_item``) never
     carry one a real ``ResolvedItem`` could compute -- ``onupdate=func.now()``
     bumps ``updated_at`` on this update exactly as the real upsert's ON
     CONFLICT arm does, which is the only thing the guard being pinned reads.
 
-    Task 19: the real re-upsert also re-touches this server's OWN ref row
+    The real re-upsert also re-touches this server's OWN ref row
     (``upsert_server_ref``'s ON CONFLICT arm, keyed on ``uq_server_ref``),
     and ``_prune_stale_refs`` now guards its own delete on that ref's
     ``(id, updated_at)`` the same way ``retire`` guards the item's -- so the
@@ -755,7 +755,7 @@ class _ReupsertingPlex(FakePlex):
 
 
 class _ReupsertingRefOnlyPlex(FakePlex):
-    """Fix round 2, NB1: the genuine ``retry_pending_deliveries`` shape --
+    """The genuine ``retry_pending_deliveries`` shape --
     it calls ``upsert_server_ref`` entirely on its own, unrelated to this
     sweep, which re-touches ONLY the ref's own ``updated_at`` and never
     ``media_items.updated_at`` at all (unlike ``_ReupsertingPlex`` above,
@@ -785,12 +785,12 @@ class _ReupsertingRefOnlyPlex(FakePlex):
 
 
 async def test_a_ref_only_reupsert_between_scan_and_apply_is_never_a_candidate(session):
-    """Fix round 2, NB1: a ref re-upserted between the scan and the apply --
+    """A ref re-upserted between the scan and the apply --
     ``retry_pending_deliveries``'s own ``upsert_server_ref`` call, which
     never touches ``media_items.updated_at`` -- must survive, and so must
-    the row it belongs to. Before the fix, reachability matched on the
-    ref's id alone, so this concurrent re-upsert read as the same stale ref
-    the scan observed and the whole item was pruned anyway."""
+    the row it belongs to. Reachability must not match on the
+    ref's id alone, or this concurrent re-upsert reads as the same stale ref
+    the scan observed and the whole item is pruned anyway."""
     await _add_item(session, "10")
 
     plex = _ReupsertingRefOnlyPlex(session, "10", live=set())
@@ -823,8 +823,8 @@ async def test_an_unhealthy_server_refuses_before_anything_is_probed_and_names_i
     nothing makes EVERY row look gone. So this is the first check, before the
     table is read and before a client is even built.
 
-    Fix round 3, M2: the sentence names the server that is actually out. The
-    guard covers every configured server now, so a Jellyfin outage that read
+    The sentence names the server that is actually out. The
+    guard covers every configured server, so a Jellyfin outage that read
     "Plex is unhealthy" sent the operator to the wrong machine."""
     await _add_item(session, "11")
 
@@ -998,7 +998,7 @@ async def test_a_dry_run_deletes_nothing_and_reports_the_counts(session):
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 2
     assert (await session.execute(select(EventLog))).scalars().all() == []
-    # C1: a dry run must never write, so "11"'s own stale ref -- the whole
+    # A dry run must never write, so "11"'s own stale ref -- the whole
     # reason it is prunable at all -- is still there to prove it.
     assert len((await session.execute(select(MediaItemServerRef))).scalars().all()) == 2
 
@@ -1015,7 +1015,7 @@ async def test_an_implausible_share_refuses_the_whole_pass(session):
     assert "refus" in summary.lower()
     assert "30" in summary, f"the refusal must report the real numbers: {summary!r}"
     session.expire_all()
-    # C1: the refusal fires before `_retire_stale_refs` ever runs -- every
+    # The refusal fires before `_retire_stale_refs` ever runs -- every
     # one of these 30 rows' own ref would otherwise have been deleted.
     assert len((await session.execute(select(MediaItemServerRef))).scalars().all()) == 30
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 30
@@ -1130,14 +1130,14 @@ async def _add_ref_less_item(session, title, *, kind="movie", library="Movies"):
 
 
 async def test_a_skipped_ref_less_row_does_not_speak_for_the_other_ref_less_rows(session):
-    """I4. A candidate with no Plex ref has ``native_id=None``, so keying the
+    """A candidate with no Plex ref has ``native_id=None``, so keying the
     applied pass's "what was actually deleted" set on the native id put a
     ``None`` in it -- and every OTHER ref-less candidate then matched, whether
     or not it was deleted. Here the surviving row would have claimed the
     deleted one's directory count as a second orphan. Matching on
     ``media_items.id`` is what closes it.
 
-    Task 19: a ref-less row has no ref on any server, so it never reaches a
+    A ref-less row has no ref on any server, so it never reaches a
     per-server probe at all (there is nothing to check) -- ``_ReupsertingByIdPlex``'s
     old hook, inside ``exists_many``, has nothing left to fire from. The
     concurrent write is applied directly here, between the scan and the
@@ -1176,7 +1176,7 @@ async def test_a_skipped_rows_queued_job_is_not_dismissed(session):
     still live work, which a dismissal keyed on the candidates would sweep away
     on the strength of an observation that stopped being true mid-pass.
 
-    Task 19: the re-upsert also touches this item's OWN ref
+    The re-upsert also touches this item's OWN ref
     (``_ReupsertingPlex``'s own note), so ``_prune_stale_refs``'s ``(id,
     updated_at)`` guard now catches the very same race one step earlier --
     the ref survives, the row is never even a candidate, and there is no
@@ -1251,7 +1251,7 @@ async def test_an_applied_pass_retires_excluded_rows_and_counts_them_separately(
 async def test_an_applied_pass_deletes_the_doomed_ref_but_keeps_a_row_another_server_still_resolves(
     session,
 ):
-    """Fix round 1, C1's whole point through the real job: a ref going stale
+    """Through the real job: a ref going stale
     on ONE server must not touch the row at all when another server still
     resolves it -- only that one ref is deleted, the media_items row and its
     live ref on the other server survive untouched."""
@@ -1291,7 +1291,7 @@ async def test_a_dry_run_names_the_excluded_population_without_deleting(session)
     session.expire_all()
     assert len((await session.execute(select(MediaItem))).scalars().all()) == 2
     assert (await session.execute(select(EventLog))).scalars().all() == []
-    # C1: dry run touches nothing, even though "11"'s only ref is on an
+    # Dry run touches nothing, even though "11"'s only ref is on an
     # excluded library and would otherwise be a delete candidate.
     assert len((await session.execute(select(MediaItemServerRef))).scalars().all()) == 2
 
@@ -1326,7 +1326,7 @@ def test_the_job_name_is_in_the_hand_trigger_allowlist():
 
 
 async def test_a_refs_own_library_is_what_its_servers_exclusions_are_matched_against(session):
-    """M1 (fix round 3): the scan compares the REF's library -- the name that
+    """The scan compares the REF's library -- the name that
     server knows the item by (spec §4.1) -- against that server's own
     ``excluded_libraries``, not the identity server's ``media_items.library``.
     The two diverge on any server whose folder names differ from Plex's,

@@ -515,7 +515,7 @@ async def test_a_definition_and_a_builder_that_agree_are_not_refused(
     assert run.definitions[0].failed is False
 
 
-# --- I1: the effective level, not just the declared one ---------------------
+# --- The effective level, not just the declared one -------------------------
 #
 # The three `builder_level`-keyed schema validators run at config load and can
 # only ever see `definition.builder_level`. A builder that self-declares a
@@ -663,8 +663,8 @@ async def test_a_library_with_no_folder_filter_refuses_the_definition_by_name(
     written, and the refusal names the attribute and a libtype token and NOT the
     server's filter schema.
 
-    Read from the LOG, not from ``run.actions``. The brief expected the action
-    string to carry it; the engine's containment invariant
+    Read from the LOG, not from ``run.actions``. It was expected that the action
+    string would carry it; the engine's containment invariant
     (``engine.py:683-690``) is stricter than that -- nothing derived from a
     builder exception reaches an action string at all, because a provider error
     commonly carries the URL it failed on. So the action is asserted to be the

@@ -108,11 +108,11 @@ class FakeSection:
 async def test_a_second_sweep_reuploads_a_replaced_local_poster(
     session, tmp_path, jpeg_bytes
 ):
-    """I1: the ledger row row 37 writes on the first sweep must not shadow
+    """The ledger row row 37 writes on the first sweep must not shadow
     the collection on the second, or a replaced local poster is never
     re-uploaded. Driven through ``run_library`` -- the wired path -- not the
     helper directly, since the helper's own short-circuit passes for a
-    reason that does not exist in the wired-up path (see the branch review)."""
+    reason that does not exist in the wired-up path."""
     import io
 
     from PIL import Image

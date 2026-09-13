@@ -275,9 +275,9 @@ describe("SetupPlexPane", () => {
   });
 
   it("offers no submit on a document an EARLIER FINISH wrote, and names that instead", () => {
-    // Round-2 I3. `stage_config_document` refuses on
+    // `stage_config_document` refuses on
     // `config_document_path() is not None`, which is `"configured"` AND
-    // `"state"` -- and `"state"` is reachable by design: Amendment 3's write
+    // `"state"` -- and `"state"` is reachable by design: the write
     // order makes a finish interrupted between the config write and the
     // secrets write the survivable window, and the wizard that comes back at
     // the next boot sees a document at the state path. Both controls that post

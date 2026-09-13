@@ -144,7 +144,7 @@ export function fieldErrors(detail: unknown): Record<string, string> {
   if (!Array.isArray(detail)) return {};
   const errors: Record<string, string> = {};
   // Joined, not last-writer-wins: two entries on one path both survive
-  // (ccui review M6 -- the collapse hid every earlier message for a field).
+  // (last-writer-wins used to collapse every earlier message for a field).
   const add = (path: string, message: string) => {
     // `hasOwn`, not `in`: `errors` is a literal, so `in` would find
     // `constructor`/`toString` on the prototype and join onto them.

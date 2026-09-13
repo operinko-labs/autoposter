@@ -1,6 +1,6 @@
 """``smart_filter``: the same query ``plex_search`` takes, owned by Plex.
 
-One builder, one behaviour (9c decision C5): the params model is
+One builder, one behaviour: the params model is
 ``PlexSearchParams`` ITSELF, not a copy and not a subclass, so the vocabulary,
 the refusals and the error messages cannot drift between the two builders. Two
 deltas live inside that shared model rather than beside it -- the default sort
@@ -170,7 +170,7 @@ def test_it_is_registered_as_a_smart_builder():
 
 
 def test_it_declares_no_titles_method():
-    """C6's degenerate case. A ``cs_bucket`` definition names a FAMILY and has
+    """The degenerate case: a ``cs_bucket`` definition names a FAMILY and has
     to enumerate it; a ``smart_filter`` definition names exactly one collection,
     its own title, so it declares no ``titles`` and the engine falls through --
     which is a smaller diff than a method that restates the definition's title
@@ -178,7 +178,7 @@ def test_it_declares_no_titles_method():
     assert not hasattr(REGISTRY["smart_filter"], "titles")
 
 
-# --- the sort delta (C5) ----------------------------------------------------
+# --- the sort delta ----------------------------------------------------------
 
 
 def test_a_definition_with_no_sort_by_sorts_random(session):
@@ -218,7 +218,7 @@ def test_the_tag_vocabulary_is_read_once_per_pass(session):
     assert section.choice_calls == [("genre", "movie")]
 
 
-# --- the sentinel resolve (C1, roadmap row 171 amendment) -------------------
+# --- the sentinel resolve (roadmap row 171 amendment) -----------------------
 
 
 def test_current_year_in_a_smart_filter_resolves_to_the_real_year(session):
@@ -258,11 +258,11 @@ def test_today_in_a_smart_filter_resolves_to_a_bare_date(session):
     )
 
 
-# --- the load-time refusals (C7, and roadmap row 140) -----------------------
+# --- the load-time refusals (roadmap row 140) --------------------------------
 
 
 def test_sort_is_refused_on_a_smart_filter_definition():
-    """C7. On a smart collection the URI's sort IS the display order, so a
+    """On a smart collection the URI's sort IS the display order, so a
     definition-level ``sort`` and ``params.sort_by`` would be two knobs steering
     one behaviour. The message has to point at the one that works."""
     with pytest.raises(ValueError) as caught:
@@ -271,7 +271,7 @@ def test_sort_is_refused_on_a_smart_filter_definition():
 
 
 def test_summary_is_accepted_on_a_smart_filter_definition():
-    """The other half of C7: a smart_filter definition names ONE collection, and
+    """The other half: a smart_filter definition names ONE collection, and
     that collection's summary is written by the reconciler exactly as the
     Common Sense family's is. Refusing it would be refusing something that
     works."""
@@ -283,7 +283,7 @@ def test_tmdb_summary_is_accepted_on_a_smart_filter_definition():
     collections with no single summary -- true of cs_bucket, false of
     smart_filter, which names exactly one collection whose summary the
     reconciler writes. Mechanically nothing was ever in the way; it was
-    refused only because 9c's C7 had not adjudicated it."""
+    refused only because the earlier rule had not addressed this case."""
     assert _definition(tmdb_summary=603).tmdb_summary == 603
 
 
@@ -355,9 +355,9 @@ def test_the_shipped_default_definition_still_loads():
 
 
 def test_the_stored_uri_carries_each_servers_own_identifier_and_section():
-    """Controller amendment 1, closing the T1 oracle's known blind spot.
+    """Closes a known blind spot in the oracle.
 
-    Every oracle string and every Task 2 assertion reuses ONE
+    Every oracle string and every assertion elsewhere reuses ONE
     ``machineIdentifier`` (``abc123``) and ONE section key (``"2"``), so an
     implementation that hard-coded either would still be byte-identical to
     Kometa's answer on all sixteen configs. Varying both at once is what
@@ -402,7 +402,7 @@ async def test_apply_creates_the_collection_and_writes_a_row(session):
 
 
 async def test_a_filter_matching_nothing_costs_this_definition_and_no_other(session):
-    """C8's refusal reaches the operator as this definition's action string, not
+    """This refusal reaches the operator as this definition's action string, not
     as an exception. The engine does NOT wrap a smart builder (engine.py:341-344,
     on the grounds that anything it raises is a Plex write failing), so an
     escaping refusal would reach ``reconcile_libraries``' per-library rollback
@@ -458,11 +458,11 @@ async def test_no_refusal_string_can_carry_a_plex_token(session):
     assert "RuntimeError" in actions[0]
 
 
-# --- the reconciler's own refusals, caught here (controller amendment 2) ----
+# --- the reconciler's own refusals, caught here ------------------------------
 
 
 async def test_the_reconcilers_empty_refusal_is_returned_not_raised(session, monkeypatch):
-    """Controller amendment 2, half one. ``SmartFilterMatchedNothing`` can be
+    """``SmartFilterMatchedNothing`` can be
     raised from either of the reconciler's two paths -- create and update -- and
     the update one is reached long after this builder's own probe would have
     been satisfied. Whichever path raises it, the engine's smart dispatch
@@ -569,13 +569,14 @@ async def test_the_level_reaches_the_reconciler(session, monkeypatch):
 
 
 def test_the_resolver_carries_the_computed_search_type(session, monkeypatch):
-    """Task 2 review, Important 2. ``search_url`` computes ``search_type``
+    """``search_url`` computes ``search_type``
     (``libtype if level == "item" else level``) for ``build_search_url``
     itself, but built its ``LibraryTagResolver`` without passing that same
     value along -- so the resolver's own field discovery would ask
     ``listFilters`` at the LIBRARY's kind rather than the SEARCH type the
-    moment a second ``DISCOVERED`` row exists, or C5 is ever lifted. Captured
-    at the resolver's constructor, not through ``discover_field``, because C5
+    moment a second ``DISCOVERED`` row exists, or the restriction on naming
+    ``folder_location`` is ever lifted. Captured at the resolver's
+    constructor, not through ``discover_field``, because that restriction
     refuses ``folder_location`` -- the one attribute that reads the search
     type -- before this resolver is ever asked to discover anything."""
     captured = {}
@@ -601,7 +602,7 @@ def test_the_resolver_carries_the_computed_search_type(session, monkeypatch):
 
 
 def test_smart_filter_refuses_folder_location_by_name(session):
-    """Roadmap row 176, ruling C5. ``smart_definition_hash``
+    """Roadmap row 176. ``smart_definition_hash``
     (collections/smart.py:225) hashes the BUILT URL, and for every other
     attribute that URL is a pure function of the config. ``folder_location``'s
     field is discovered from the server, so a smart collection naming it would

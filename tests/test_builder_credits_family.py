@@ -9,7 +9,7 @@ appearances, capped to the `limit` most-credited") needs COUNTS, and
 ``listFilterChoices`` answers values and never counts (roadmap row 194).
 
 The harness is ``tests/test_builder_dynamic``'s -- the same fake section with
-``listFilterChoices``, the same real reconcile against it -- plus Task 4's
+``listFilterChoices``, the same real reconcile against it -- plus
 credits seeding, because that is exactly what this builder is: the dynamic
 family's write path over the credits cache's enumeration.
 
@@ -448,7 +448,7 @@ async def test_an_empty_enumeration_refuses_with_the_coverage_numbers(session):
 
 
 async def test_a_fanout_past_max_collections_refuses_with_both_numbers(session):
-    """Refusal, not truncation -- facts C5 and roadmap row 194's own law. A cap
+    """Refusal, not truncation -- roadmap row 194's own law. A cap
     that silently built the first N would be the same surprise the operator set
     the cap to avoid, so nothing is created at all and the message carries the
     number asked for AND the number allowed."""

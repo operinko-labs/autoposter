@@ -256,8 +256,8 @@ export function posterUrlOk(value: string): boolean {
   if (trimmed === "") return true;
   if (trimmed.length > 2048) return false;
   // Mirrors schema.py's own `[\s\x00-\x1f\x7f]` refusal: `.trim()` only
-  // strips the ends, and WHATWG `new URL` tolerates a space inside the path
-  // (Task 3 review M-1), which the server does not.
+  // strips the ends, and WHATWG `new URL` tolerates a space inside the path,
+  // which the server does not.
   if (/[\s\x00-\x1f\x7f]/.test(trimmed)) return false;
   try {
     const url = new URL(trimmed);

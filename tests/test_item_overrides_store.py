@@ -121,7 +121,7 @@ from autoposter.plex.item_overrides import (  # noqa: E402
 
 
 def test_writable_fields_is_the_kind_s_own_set_sorted():
-    """C3's field set, per libtype, from ``WRITABLE_BY_KIND`` rather than a
+    """The field set, per libtype, from ``WRITABLE_BY_KIND`` rather than a
     second list -- two lists of writable fields would silently stop agreeing,
     and the 422 an operator gets for an unwritable field would then depend on
     which one the request happened to reach."""
@@ -329,7 +329,7 @@ EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 
 def test_the_gate_defaults_off():
-    """A feature nobody has configured changes nothing. C8: default False."""
+    """A feature nobody has configured changes nothing: default False."""
     assert OperationsConfig().item_overrides_enabled is False
 
 

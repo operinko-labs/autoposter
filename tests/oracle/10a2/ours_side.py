@@ -2,7 +2,7 @@
 
 Unlike ``member_sets.py`` this one DOES import from the repository -- that is
 the point of it. It builds the query the Common Sense write path will send once
-Task 4 lands, using the same three calls the ``plex_search`` builder makes, so
+that lands, using the same three calls the ``plex_search`` builder makes, so
 that what the proof compares is this engine's real grammar and not a
 hand-written approximation of it.
 
@@ -57,7 +57,7 @@ def resolver(present):
 def new_query(libtype: str, values, present, base: str = "any") -> str:
     """The query string this engine builds for one bucket's ratings.
 
-    ``base="any"`` is the whole claim under proof (p10a-facts.md C2): several
+    ``base="any"`` is the whole claim under proof: several
     values under an ``any:`` base render as ``push=1&f=a&or=1&f=b&pop=1``,
     which is meant to select what plexapi's comma-joined ``f=a,b`` selects.
     ``sort_by`` is ``release.desc`` because that is this engine's own

@@ -329,7 +329,7 @@ async def test_an_empty_job_list_is_harmless(session_factory):
 
 
 async def test_the_wired_run_loop_closes_a_drained_full_pass(session_factory):
-    """R2-M4: `close_drained_full_passes` was pinned only through the bare
+    """`close_drained_full_passes` was pinned only through the bare
     helper (`tests/test_run_history.py`) -- nothing exercised it through
     `Scheduler.run`'s own poll loop (`core.py:147`), the repository's own
     recorded defect class where a helper's tests are green and the wired
@@ -1067,7 +1067,7 @@ async def test_a_scheduler_with_no_config_holder_still_closes_the_pass(session_f
 async def test_the_digest_fires_only_after_the_closers_own_commit(
     session_factory, monkeypatch
 ):
-    """task-2-review.md I1 (part 1): the post-commit ordering is not pinned
+    """The post-commit ordering is not pinned
     by any existing test. This spies on ``actionable_window_counts`` --
     which ``_notify_newly_actionable`` awaits directly, not through the
     fire-and-forget notification seam, so its call is genuinely sequenced
@@ -1110,7 +1110,7 @@ async def test_the_digest_fires_only_after_the_closers_own_commit(
 async def test_a_failing_digest_leaves_the_run_closed_and_the_scheduler_alive(
     session_factory, monkeypatch, caplog
 ):
-    """task-2-review.md I1 (part 2): the digest's own containment. Deleting
+    """The digest's own containment. Deleting
     the inner ``try``/``except`` in ``_notify_newly_actionable`` must turn
     this red -- an uncontained counting-query failure would propagate out of
     ``_close_drained_runs``, past its own already-exited ``try``, into
@@ -1194,11 +1194,11 @@ async def _scored_render_minutes_ago(
 async def test_a_drain_that_closes_two_full_passes_sends_two_digests_each_over_its_own_window(
     session_factory,
 ):
-    """task-2-review.md I2: the one behaviour the plan spells out at length
-    and the suite could not see -- a second ``POST /api/full-pass`` while the
+    """The one behaviour the suite could not see until now -- a second
+    ``POST /api/full-pass`` while the
     first pass is still draining opens a second ``full_pass`` row, and both
     close together on the same drain (``run_history.py``'s own docstring).
-    Plan D4: each closed row gets its own POST over its own window, so the
+    Each closed row gets its own POST over its own window, so the
     younger row's window is a sub-interval of the older's and a render can be
     counted in both.
 

@@ -244,7 +244,7 @@ async def gather_facts(
             # else this pass gathered." release_dates is optional and
             # secondary -- a transient 5xx here must not discard a gather
             # that would otherwise complete entirely from cache plus
-            # MDBList (review finding I1). Rating key and field only, never
+            # MDBList. Rating key and field only, never
             # the URL: an httpx error's str() carries it in full.
             logger.warning(
                 "tmdb release_dates request failed for %s; skipping added_at: %s",
@@ -341,7 +341,7 @@ async def persist_facts(
     none" are the same value and only the populated-fields rule can tell them
     apart.
     """
-    # C4, and the whole point of it: "we looked and found nothing" and "nobody
+    # The whole point of the stamp: "we looked and found nothing" and "nobody
     # has looked" were the same two NULLs before this, and rows 189/192 need to
     # tell them apart -- an enumeration that cannot say how much of the library
     # it has actually visited cannot state its own coverage honestly.

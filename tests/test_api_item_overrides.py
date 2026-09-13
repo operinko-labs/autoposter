@@ -1,4 +1,4 @@
-"""GET/PUT/DELETE /api/items/{id}/metadata-overrides -- roadmap row 99's C10.
+"""GET/PUT/DELETE /api/items/{id}/metadata-overrides -- roadmap row 99.
 
 Three routes and no fourth. There is no bulk PUT and no importer: YAML import
 is refused by the locked scope decision at the roadmap's own head
@@ -143,7 +143,7 @@ async def test_the_listing_reports_the_gate_the_kind_and_the_writable_fields(
 async def test_the_listing_reports_the_gate_as_off_rather_than_hiding_the_panel(
     client, app, auth_headers, session
 ):
-    """C8: off is READ-ONLY, not absent. The panel needs the flag to render a
+    """Off is READ-ONLY, not absent. The panel needs the flag to render a
     banner naming the key -- an operator whose overrides silently stopped
     applying, with no panel to explain it, would have nothing to go on."""
     item_id = await _item(session)
@@ -219,13 +219,13 @@ async def test_a_second_put_replaces_rather_than_appends(
 async def test_a_field_the_kind_cannot_carry_is_422_with_a_class_name_only_detail(
     client, auth_headers, session
 ):
-    """C3, both halves: a field not in ``WRITABLE_BY_KIND[kind]`` is a 422,
+    """Both halves: a field not in ``WRITABLE_BY_KIND[kind]`` is a 422,
     and the detail is CLASS-NAME-ONLY. A season has no tagline in Plex, so
     storing one would be a row that can never be written.
 
     The form is pinned, not just the status. An earlier draft served a fixed
     sentence here -- safe, because it was a module constant that echoed
-    nothing, but a different FORM from the one C3 and C10 name, and the whole
+    nothing, but a different FORM from the one this rule names, and the whole
     point of a class-name-only rule is that every refusal about an
     operator-supplied value looks the same."""
     item_id = await _item(session, kind="season")
@@ -312,7 +312,7 @@ async def test_a_refusal_never_echoes_a_url_the_operator_typed(
 async def test_a_put_while_the_gate_is_off_is_409_naming_the_key(
     client, app, auth_headers, session
 ):
-    """C8. A config KEY is not an operator value, so naming it is safe -- and
+    """A config KEY is not an operator value, so naming it is safe -- and
     it is the only way the refusal can say what to change."""
     item_id = await _item(session)
     app.state.config_holder.current.operations.item_overrides_enabled = False
@@ -340,7 +340,7 @@ async def test_a_put_requires_a_session(client, session):
 async def test_no_endpoint_seeds_a_row_from_a_provider_or_plex_value(
     client, app, auth_headers, session
 ):
-    """THE NAMED TEST (C5). The freezing hazard, in this row's vocabulary:
+    """THE NAMED TEST. The freezing hazard, in this row's vocabulary:
     "Round-tripping the config would store today's values as overrides,
     freezing them against every future change to the git-owned YAML.
     Reverting a field is its key going *away*."
@@ -401,7 +401,7 @@ async def test_the_listing_never_fills_a_writable_field_with_a_current_value(
 async def test_a_delete_unlocks_the_field_in_plex_and_removes_the_row(
     client, app, auth_headers, session
 ):
-    """C9's option (b), both halves. ONE write, ``{field}.locked = 0``, and no
+    """Option (b), both halves. ONE write, ``{field}.locked = 0``, and no
     value write: everything this service writes is LOCKED, so a row that just
     went away would leave a locked field nothing will ever refill."""
     item_id = await _item(session)
@@ -589,7 +589,7 @@ async def test_a_library_that_disables_the_gate_refuses_its_items(
     assert refused.status_code == 409
     detail = refused.json()["detail"]
     assert "item_overrides_enabled" in detail
-    # Task 3 review, Important 2: a library-off item gets its OWN sentence --
+    # A library-off item gets its OWN sentence --
     # naming no library and no value -- rather than the global gate's, which
     # would read as false here (the global key is still `true`).
     assert detail == (

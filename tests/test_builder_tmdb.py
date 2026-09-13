@@ -155,8 +155,8 @@ async def test_a_lowercase_region_is_normalised_rather_than_sent_as_typed():
 
 async def test_region_still_works_on_the_movie_popular_chart():
     """The four ``/movie/*`` list endpoints are where TMDb actually applies
-    ``region`` -- the fix round's refusal must not catch the charts it is
-    supposed to keep working."""
+    ``region`` -- the refusal to apply an unsupported region must not catch
+    the charts it is supposed to keep working."""
     seen: list = []
     routes = {"/movie/popular": load("tmdb_chart_movie_popular_p1.json") | {"total_pages": 1}}
     async with httpx.AsyncClient(transport=_routed(routes, seen)) as http:

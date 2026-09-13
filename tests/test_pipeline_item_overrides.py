@@ -2,7 +2,7 @@
 
 The law this file exists for: a gated feature gets ONE test through the path
 production actually takes, because a helper test can pass while the wired path
-differs. This ledger has earned that three times.
+differs. That lesson has been earned three times over.
 
 Artwork is disabled in every test here, exactly as row 87's own entry-point
 test does it ("no provider, no imagemagick, needed for the render loop below
@@ -140,7 +140,7 @@ async def test_the_second_pass_over_an_applied_override_writes_nothing(
     """(c) SECOND PASS: steady state. Plex now holds the operator's value AND
     reports it locked, so the diff is empty and no second write happens --
     which is what makes this re-applied every pass without churning the
-    server. The lock matters as of task-2 fix round 1's I-1 ruling: an item
+    server. The lock matters: an item
     Plex reports as matching but NOT locked still gets a lock-only write
     (pinned directly against ``override_edits`` in
     ``tests/test_item_overrides_writer.py``), so this steady-state pass has

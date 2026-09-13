@@ -278,7 +278,7 @@ async def test_mdblist_http_error_does_not_abort_the_other_facts(session):
 
 
 async def test_a_release_dates_5xx_does_not_abort_the_rest_of_the_gather(session, caplog):
-    """Row 227 review finding I1: ``/movie/{id}/release_dates`` is optional
+    """Row 227: ``/movie/{id}/release_dates`` is optional
     and secondary, but until this fix ``gather.py`` caught only
     ``TmdbRateLimited`` around it -- so a transient 500/502/503 propagated out
     of ``gather_facts`` and discarded a gather that would otherwise complete
@@ -487,7 +487,7 @@ async def test_a_gather_whose_only_fact_is_a_status_still_writes_a_row(session):
 
 
 async def test_an_empty_gather_still_records_that_we_looked(session):
-    """C4, and the whole reason rows 189/192 can tell 'TMDb has nothing for
+    """The whole reason rows 189/192 can tell 'TMDb has nothing for
     this item' from 'nobody has asked yet'.
 
     ``persist_facts`` still writes NO ``item_facts`` row for an empty gather --
@@ -580,7 +580,7 @@ def _tvdb_login_response(request: httpx.Request) -> httpx.Response | None:
 
 
 async def test_no_tvdb_source_named_makes_no_tvdb_request(session):
-    """C2's gate-off half: naming no ``*_source`` as ``tvdb`` must not touch
+    """The gate-off half: naming no ``*_source`` as ``tvdb`` must not touch
     the network at all, and the gathered facts must be byte-identical to a
     pass given no tvdb client whatsoever.
     """
@@ -603,7 +603,7 @@ async def test_no_tvdb_source_named_makes_no_tvdb_request(session):
 
 
 async def test_tvdb_source_named_overlays_the_gathered_facts(session):
-    """C2's gate-on half: naming ``tvdb`` for all three fields makes the
+    """The gate-on half: naming ``tvdb`` for all three fields makes the
     overlay fire, replacing TMDb's genres/studio/date with TVDb's and
     recording ``tvdb`` as each field's source.
     """
@@ -662,7 +662,7 @@ async def test_tvdb_http_failure_leaves_the_field_ungathered(session, caplog):
 
 
 async def test_tvdb_source_named_but_no_tvdb_client_configured_warns(session, monkeypatch, caplog):
-    """I2: naming ``genres_source: tvdb`` while ``providers.order`` builds no
+    """Naming ``genres_source: tvdb`` while ``providers.order`` builds no
     TVDb client (or a rename breaks pipeline.py's ``p.name == "TVDB"`` lookup)
     must not fail silently -- gather_facts's own ``tvdb is None`` gate is the
     one place both failure modes funnel through, so the warning belongs here.

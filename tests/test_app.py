@@ -515,7 +515,7 @@ async def test_configured_mdblist_key_builds_the_real_client_without_warning(sec
 
 
 async def test_handle_intent_passes_the_whole_registry_through_to_process_item():
-    """Task 19: process_item resolves on every configured server itself, so
+    """process_item resolves on every configured server itself, so
     _handle_intent no longer picks one server out of the registry (the old
     ``servers.plex or next(iter(servers.values()), None)`` interim) -- it
     passes ``servers`` straight through, unchanged."""
@@ -812,7 +812,7 @@ async def test_pending_deliveries_is_registered_for_a_jellyfin_only_deployment(
     session, session_factory, secrets, stubbed_background_services
 ):
     """Unlike ``stale_job_reclaim``, ``pending_deliveries`` sits INSIDE the
-    ``scheduler.enabled`` gate (Task 20 review, Important 1) -- it is an
+    ``scheduler.enabled`` gate -- it is an
     operator-tunable maintenance pass whose runs the cleanup pass's retention
     trim covers, not a queue-correctness sweep. It must still be registered
     with no ``plex:`` block at all, since a pending delivery can exist
@@ -1037,7 +1037,7 @@ def test_an_empty_marker_is_not_a_name(secrets, monkeypatch):
 
 
 async def test_a_plex_less_app_boots_and_serves_status(session_factory):
-    """Task 11's ruling 2: a deployment with no `plex:` block must still boot
+    """A deployment with no `plex:` block must still boot
     and answer `/api/status` truthfully about which servers it has.
 
     `create_app` is called with no `servers_factory` at all, so

@@ -1,14 +1,14 @@
 # `type=4` with an `episode.`-scoped predicate — the E-2 pre-golden probe
 
-**Date:** 2026-09-05 · **Row:** 173 E-2 (facts C5) · **Mode:** read-only, one GET.
+**Date:** 2026-09-05 · **Row:** 173 E-2 · **Mode:** read-only, one GET.
 
 ## Why
 
 Nothing in this repository had ever fetched a `type=4` search URL from a real
 server. The 9b probe (`README.md` in this directory) covered `type=1` and
-`type=2`; the 2026-09-04 probe (row 173 E-1, facts C4) asked
+`type=2`; the 2026-09-04 probe (row 173 E-1) asked
 `listFilterChoices`, not a search. The season/episode sort matrices and the
-oracle goldens that follow them are transcriptions, and C5 requires the shape
+oracle goldens that follow them are transcriptions, and the shape must
 be observed before a golden is pinned: Kometa renders
 `?type=4&...&episode.title%3C=Pilot` on a SHOW library — the search type is the
 `builder_level`, the field scoping is the LIBRARY's kind — and that pairing is
@@ -35,8 +35,8 @@ Run against the production pod, which already holds both the token
 
 ```bash
 kubectl -n media exec deploy/autoposter -- python -c '...'   # the script in
-                                                            # the plan, Task 1
-                                                            # Step 1
+                                                            # step 1 of the
+                                                            # procedure below
 ```
 
 ## Result

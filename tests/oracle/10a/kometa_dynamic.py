@@ -1,8 +1,7 @@
 """THE DYNAMIC-COLLECTIONS ORACLE -- Kometa's own key and title derivation.
 
 Provenance: Kometa v2.4.8. Every function below is transcribed from the line
-ranges quoted verbatim in ``.superpowers/sdd/p10a-upstream-dynamic.md`` §5 and
-§6, which were read out of:
+ranges read out of:
 
   modules/meta.py:825-867      the exclude/include/addons reads and the
                                addon-members-become-exclusions extension
@@ -36,9 +35,8 @@ GitHub translation lookup with its unresolvable-``<<…>>`` fall-back
 (meta.py:1385-1400 and :1411-1416) -- both are the template system, which this
 service does not have, so ``_base`` at :1400 is always ``title_format``.
 
-NOT removed, and the correction the Task 4 review forced on this docstring: the
-substitution pass at :1402-1404 is **not** a no-op. It runs unconditionally,
-over the ``og_call`` dict built at :1366 -- ``{"value": key_value, auto_type:
+NOT removed: the substitution pass at :1402-1404 is **not** a no-op. It runs
+unconditionally, over the ``og_call`` dict built at :1366 -- ``{"value": key_value, auto_type:
 key_value, "key_name": key_name, "key": key}`` -- which exists with or without a
 template. So a ``title_format`` carrying ``<<value>>``, ``<<{auto_type}>>`` or
 ``<<key>>`` resolves it there rather than shipping the literal token into a
@@ -319,7 +317,7 @@ KEY_CASES = [
     ("custom-keys-false-with-a-key-the-library-has", RATINGS, {
         "addons": {"PG": ["G"]}, "custom_keys": False,
     }),
-    # 11. util.py:931's falsy skip (I1): an ``include`` list holding an empty
+    # 11. util.py:931's falsy skip: an ``include`` list holding an empty
     #     string, an integer zero, and a real key. "" is falsy and gets
     #     dropped, so the "" key -- never whitelisted -- lands in
     #     ``other_keys`` rather than getting a spurious collection of its own.
@@ -372,8 +370,8 @@ TITLE_CASES = [
     #    (meta.py:1401).
     ("title-token", "1990", "1990s", "Movie", "<<title>> Cinema", {}),
     # 9. ``<<key>>`` -- an ``og_call`` variable (:1366) that :1402-1404
-    #    substitutes AFTER :1401 and unconditionally. This docstring called
-    #    that range a no-op until the Task 4 review proved otherwise. The
+    #    substitutes AFTER :1401 and unconditionally, contrary to this
+    #    docstring's earlier no-op claim about that range. The
     #    decade shape is where it shows, because the key ("1980") and the key
     #    name ("1980s") differ, so a driver that skipped the pass would ship
     #    the literal "<<key>>" into the title instead.

@@ -126,7 +126,7 @@ async def test_the_endpoint_refuses_a_request_with_no_credential(client):
 async def test_the_endpoint_never_touches_the_filesystem(
     client, session_headers, session, monkeypatch
 ):
-    """The pin behind the whole design (facts C2's endpoint-never-walks).
+    """The pin behind the whole design: the endpoint never walks the filesystem.
     ``assets_root`` is an NFS mount; a widget polling every sixty seconds must
     never be able to make a request wait on it. With ``os.walk`` and
     ``Path.stat`` both raising, the answer must be unchanged."""

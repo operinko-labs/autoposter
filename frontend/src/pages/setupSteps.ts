@@ -41,7 +41,7 @@ const ALL_STEPS: StepId[] = ["password", "url", "database", "servers", "systems"
  *
  * The URL step is NOT conditional. A deployment whose config document already
  * resolves still needs the address for the *arr registration; it simply is not
- * persisted, which the finish page says by name (facts C1).
+ * persisted, which the finish page says by name.
  */
 export function visibleSteps(progress: SetupProgress | null): StepId[] {
   if (progress === null) return ["password"];

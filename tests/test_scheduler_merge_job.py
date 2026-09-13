@@ -71,7 +71,7 @@ async def _item(session, rating_key, **columns):
     Committed so ``updated_at`` is a settled value from its own transaction
     -- half the delete's key. ``identity_key`` is synthesized from the
     rating key rather than computed from the shared ``tmdb_id`` every twin
-    pair below carries: since Task 6 ``identity_key`` is UNIQUE and the real
+    pair below carries: since ``identity_key`` is UNIQUE and the real
     upsert path would refuse to mint a second row for one identity at all --
     which is the whole reason this job's population can no longer grow.
     These rows simulate the twins that reading is about: ones a migration or
@@ -569,9 +569,9 @@ async def test_a_row_re_upserted_under_the_pass_is_skipped_and_nothing_is_lost(
     check runs under the row lock BEFORE anything is repointed -- so a
     skipped pair leaves the graph exactly as it found it, not half-moved.
 
-    Adapted for identity-keyed upserts (Task 6): the stale and survivor rows
+    Adapted for identity-keyed upserts: the stale and survivor rows
     here deliberately share one ``tmdb_id`` under two different
-    ``identity_key`` values -- the pre-Task-6 twin state this job still has
+    ``identity_key`` values -- the pre-migration twin state this job still has
     to reconcile -- so a real ``_upsert_media_item(session, resolved)`` call
     for that ``tmdb_id`` would no longer land on either of them (it would
     mint a THIRD row for the one identity_key that tmdb_id now resolves to).
@@ -618,7 +618,7 @@ async def test_a_survivor_re_upserted_under_the_pass_is_skipped_and_nothing_is_l
     that render (``uq_render_item_kind``) as an uncaught IntegrityError, not
     a clean skip.
 
-    Adapted for identity-keyed upserts (Task 6) the same way the stale-side
+    Adapted for identity-keyed upserts the same way the stale-side
     test above is: a real ``_upsert_media_item`` for the shared ``tmdb_id``
     would no longer land on either twin row, so the race is simulated
     directly against the survivor's own ``updated_at``.
@@ -802,7 +802,7 @@ async def test_an_unhealthy_plex_refuses_the_applied_pass(session):
 async def test_the_session_is_not_idle_in_transaction_when_the_probe_runs(
     session, monkeypatch
 ):
-    """M1: the scan's six SELECTs (including a full media_items read) open a
+    """The scan's six SELECTs (including a full media_items read) open a
     transaction, and the probe below is a live Plex walk of minutes at this
     branch's own scale -- idle-in-transaction for that whole window pins a
     pooled connection and the vacuum horizon. One ``rollback()`` between the
@@ -1050,9 +1050,9 @@ async def test_the_named_fossils_are_capped_and_the_remainder_is_counted(session
 
 
 async def test_an_override_the_survivor_lacks_is_repointed(session):
-    """C2's carry rule. ``media_items`` children cascade, so an override left
+    """The carry rule: ``media_items`` children cascade, so an override left
     on the stale row dies with it -- silently, with no audit row and absent
-    from every count. That is exactly the defect the era's C1.2 carry rule
+    from every count. That is exactly the defect the carry rule
     exists to prevent and already had to fix once for ``parent_id``."""
     stale, survivor = await _pair(session)
     session.add(ItemMetadataOverride(item_id=stale.id, field="tagline", value="x"))

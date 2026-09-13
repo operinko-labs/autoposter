@@ -245,7 +245,7 @@ async def test_entry_point_gate_on_fires_and_the_second_pass_is_steady(
     assert imdb_parental.calls == ["tt0113277"]
 
     # (c) SECOND PASS: steady state. The client is asked again (this test
-    # double has no cache of its own -- Task 1's ProviderCache is what makes
+    # double has no cache of its own -- ProviderCache is what makes
     # a real second pass free), but the labels are already on the item, so
     # no second label write happens.
     plex_item.labels = [_Tag("Sex & Nudity: Mild"), _Tag("Violence & Gore: Severe")]

@@ -172,7 +172,7 @@ async def test_a_non_default_flag_is_counted_but_does_not_raise_the_total(
 async def test_two_rows_that_trip_the_same_flag_inside_the_window_count_as_two(
     session, config
 ):
-    """Review finding I1: every other test in this file seeds exactly one row,
+    """Every other test in this file seeds exactly one row,
     so `func.sum` is never discriminated from `func.max`/`bool_or` -- all of
     them still pass under that mutation. Counting N is the entire purpose of
     this function, and this is the one test that seeds two rows tripping the

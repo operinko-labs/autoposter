@@ -35,7 +35,7 @@ first; charts in the chart inventory's own order -- and a family that supplies
 none renders the plain two-part shape instead. The grounds are stated because
 an earlier draft got them wrong: (a) COLLATION-INDEPENDENCE -- an explicit
 zero-padded key makes within-block order ours regardless of Plex's collation,
-which Task 1's probe proved differs from Python's; and (b) the MEASURED Oscars
+which the sort probe proved differs from Python's; and (b) the MEASURED Oscars
 hand-order regression (``docs/research/collection-sort-probe/README.md`` §3a).
 NOT the Common Sense "Age 2+ after Age 18+" claim -- that was an unlabelled
 Python-collation inference the same probe's capture contradicts for leading
@@ -47,8 +47,8 @@ The two FORMULAS, by contrast, are transcribed and cited:
   ``Section separator for <<key_name>> Collections.`` --
   ``docs/research/kometa-collections.md:429``;
 - the sort title -- ``!<<collection_section>><<pre>><<order>><<title>>`` with
-  ``pre: "_"`` and an empty order, i.e. ``!<section>_<title>`` --
-  ``.superpowers/sdd/p-prefetch-upstream.md:386-388``. That empty-order
+  ``pre: "_"`` and an empty order, i.e. ``!<section>_<title>``, transcribed
+  from the same pinned upstream tree. That empty-order
   rendering is upstream's own and is our fallback case, when no ordering key
   applies; ``member_sort_title`` fills the slot for the families that have one.
   The separator template (``collections/reconcile.py:36-44``) is the same with
@@ -65,8 +65,8 @@ from dataclasses import dataclass
 # the honest place for "everything this table did not name".
 #
 # The tenth ("franchises") is OURS too: upstream files franchise.yml under
-# content, but 65 live franchise collections are a block, not a member list --
-# C2, p-dividers-facts.md. Universes were kept in content on the strength of
+# content, but 65 live franchise collections are a block, not a member list.
+# Universes were kept in content on the strength of
 # upstream's separate franchise/universe ART; on 2026-09-01 an operator
 # directive moved them and the DC pack here anyway -- the art keys are
 # unaffected (universe posters resolve from the definition's LIST REF through
@@ -120,7 +120,7 @@ _KEY_NAMES: dict[str, str] = {
 # separator for Collections." rather than doubling either.
 _OPERATOR_TITLE = "Collections"
 
-# The closing fence (C5): one more divider, after every managed block, so the
+# The closing fence: one more divider, after every managed block, so the
 # managed tab reads as a bounded region above Plex's own unprefixed tail (278
 # rows of it on the live Movies library, each franchise shown twice -- the
 # operator's double-vision note). The title is OURS; the section is PINNED at
@@ -172,7 +172,7 @@ SEPARATOR_POSTER_KEYS: dict[str, str] = {
 # TRANSCRIBED from ``$colors`` at ``create_default_posters.ps1:5538`` in
 # ``Kometa-Team/Defaults-Image-Creation@a9e02e9``, and confirmed against the
 # contents-API listing of ``Default-Images/separators/``, which agrees exactly
-# (2026-08-30, ``.superpowers/sdd/p-div-font.md`` §2d). ``@base`` is
+# (2026-08-30). ``@base`` is
 # deliberately absent: it is the TEXTLESS layer generation draws on, not a
 # style an operator can pick. Sorted, and a test pins that, so a future
 # addition files predictably.
@@ -208,9 +208,9 @@ def separator_poster_key(group: str, config) -> str:
 
 
 # The ordering key a leftovers/other bucket takes, so it files after the
-# buckets that name something. OURS (NOT_KOMETA, LAW Addendum 3): Kometa's own
+# buckets that name something. OURS (NOT_KOMETA): Kometa's own
 # ``~`` Not-Rated trick does the opposite of what its own live value needs --
-# Task 1's capture measured Plex filing ``!110_~Not Rated`` BEFORE
+# the sort probe's capture measured Plex filing ``!110_~Not Rated`` BEFORE
 # ``!110_01_Age 1+`` on this server, contradicting the ASCII-order assumption
 # the trick relies on. A plain zero-padded high key is verified instead,
 # against the same capture's ascending block: two digits, matching the age
@@ -320,7 +320,7 @@ def age_order(bucket_key: str) -> str:
     … ``"18"``) and the catch-all by ``"other"``, so this is the whole rule:
     two digits for an age, the leftovers sentinel for anything else. Padding is
     what makes ``Age 2+`` file before ``Age 13+`` without depending on whether
-    Plex collates a digit run numerically -- which Task 1 measured it doing for
+    Plex collates a digit run numerically -- which the probe measured it doing for
     LEADING runs and left unverified mid-string, and which is exactly the
     uncertainty an explicit key removes.
 
@@ -338,7 +338,7 @@ def year_order(year: int) -> str:
 
     Kometa hand-orders its ceremony collections newest-first
     (``'!130_Oscars !1'``, measured); a plain year would reverse that, which is
-    the one regression Task 1 measured rather than inferred. Subtracting from a
+    the one regression measured rather than inferred. Subtracting from a
     four-digit ceiling keeps the key a fixed width, so string order and year
     order stay the same relation for every ceremony in the dataset.
     """
@@ -455,7 +455,7 @@ def group_for(definition, index: dict[str, str], parent: str | None = None) -> s
     fell through to ``!100_``, unheaded, while ``engine._separators`` (which
     resolves from placeholders) never activated the operator divider above
     them. The parent only replaces the FALL-THROUGH: a unit whose own title or
-    builder resolves keeps its own answer, which is the C3 expansion trap's
+    builder resolves keeps its own answer, which is the expansion trap's
     rule unchanged (a ceremony year is an award because it says so, not
     because its placeholder does).
     """

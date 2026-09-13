@@ -107,7 +107,7 @@ def as_int(value: str | None) -> int | None:
 
 # The batched metadata read (roadmap row 197). Chunk default from phase 9a's
 # probe F (10 calls / 16.90s for 1955 movies at chunk=200, ~8ms/item flat
-# across chunk sizes -- .superpowers/sdd/archive/p9a-task-2-report.md) and
+# across chunk sizes) and
 # bounded by the URL-length cap the phase-B probe measured
 # (docs/research/plex-batch-probe/README.md, D2).
 TAG_BATCH_CHUNK = 200

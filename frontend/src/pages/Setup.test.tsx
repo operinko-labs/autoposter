@@ -5,8 +5,7 @@ import { ApiError } from "../api/client";
 import type { SetupProgress } from "../api/setup";
 import { Setup, setupErrorMessage } from "./Setup";
 
-// The keys facts Amendment 6 ratifies -- config_source is the one the brief's
-// original fixture predates, and it is what the wizard now reads to decide
+// config_source is the key the wizard reads to decide
 // whether to offer step 4, never the plain `config` boolean alone. Its pair
 // `database_source` says the same thing for the database step: the boolean
 // says the step is MET, the word says whether the operator may still change
@@ -260,13 +259,13 @@ describe("Setup", () => {
     );
     expect(screen.getByTestId("held-AUTOPOSTER_TMDB_TOKEN")).toHaveTextContent("Not set");
     expect(document.body.textContent).not.toContain("***REDACTED***");
-    // Facts C8: the held one is folded away, the required-and-missing one is
+    // The held one is folded away, the required-and-missing one is
     // open, and neither state was asked of or sent to the server.
     expect(screen.queryByTestId("accordion-body-mdblist")).toBeNull();
     expect(screen.getByTestId("accordion-body-tmdb")).toBeInTheDocument();
     // ...and no media server is among them: both cards live on the step
     // before this one, and the systems pane renders from `providers`, which
-    // carries neither server credential (review M2).
+    // carries neither server credential.
     expect(screen.queryByTestId("accordion-body-plex")).toBeNull();
     expect(screen.queryByTestId("accordion-body-jellyfin")).toBeNull();
   });
@@ -470,8 +469,8 @@ describe("Setup", () => {
 
   it("keeps a typed database URL on a 400 (the database step's designed-for refusal)", async () => {
     // /api/setup/database answers 400 by connecting and failing -- the single
-    // most likely outcome of this step, and the one Task 4 round 2 found
-    // wiped the whole connection string on every refusal.
+    // most likely outcome of this step, and the one that used to wipe the
+    // whole connection string on every refusal.
     vi.stubGlobal(
       "fetch",
       progressMock(PROGRESS, (path, init) =>
@@ -584,7 +583,7 @@ describe("Setup", () => {
   });
 
   it("shows the address the server holds as Stored, and takes an empty submit as keeping it", async () => {
-    // Facts C7 for the panes this task owns: the value is never sent back to
+    // The value is never sent back to
     // the page, so a step navigated back into shows an empty field -- and
     // without a pill and an enabled Continue, the only way forward from it is
     // to re-type an address the server already has.
@@ -744,7 +743,7 @@ describe("Setup", () => {
   });
 
   it("stages the configuration from inside the Plex card, not from a box beside it", async () => {
-    // Task 3 replaces the standalone "Plex server URL" field: the address is
+    // The standalone "Plex server URL" field is gone: the address is
     // the one the operator PICKED from their own account, and the tick-list
     // that comes with it is the same submit's `excluded_libraries`. This is the
     // case that field's coverage becomes -- the sign-in is offered where the
@@ -756,7 +755,7 @@ describe("Setup", () => {
 
     render(<Setup />);
     await goToServersStep();
-    // Its credential is held, so the card renders collapsed (facts C8) -- the
+    // Its credential is held, so the card renders collapsed -- the
     // sign-in lives inside it.
     fireEvent.click(screen.getByRole("button", { name: /Plex/ }));
 
@@ -795,7 +794,7 @@ describe("Setup", () => {
   });
 
   it("reaches the configuration document from the accordion's own two fields", async () => {
-    // Round-2 M13, and the positive half of the case above. The three pane
+    // The positive half of the case above. The three pane
     // cases render `SetupPlexPane` with `address`/`credentialValue` as PROPS;
     // nothing until now asserted that `Setup.tsx` actually HANDS the accordion's
     // fields to it. If that wiring were dropped the pane's own tests would all
@@ -1030,7 +1029,7 @@ describe("Setup", () => {
   });
 
   it("registers the *arr webhook from its own panel and reports it on the finish page", async () => {
-    // Task 4, through the real entry point rather than through the pane alone:
+    // Through the real entry point rather than through the pane alone:
     // the control lives in the SONARR accordion's children slot, the result is
     // held by `Setup` and it is the FINISH pane that renders it, so the three
     // pieces only meet here. A pane test would pass with the button wired to
@@ -1092,9 +1091,9 @@ describe("Setup", () => {
   });
 
   it("disables the register button while the call is in flight and shows the result beside it", async () => {
-    // Review I1: no `disabled` and no visible result meant a double press
-    // could fire two overlapping registrations -- the duplicate C2a exists to
-    // prevent -- and a success was invisible until the finish pane. Both are
+    // No `disabled` and no visible result meant a double press
+    // could fire two overlapping registrations -- the duplicate this guards
+    // against -- and a success was invisible until the finish pane. Both are
     // fixed on the SAME control the operator presses, through the real entry
     // point.
     let resolveRegister: ((value: Response) => void) | undefined;

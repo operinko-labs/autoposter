@@ -819,7 +819,7 @@ async def rebuild_action(
         await session.commit()
 
     # Sorted by Plex native id, the same order `rating_keys` used to guarantee
-    # (roadmap I2#4) -- not the item's own queue position, which is
+    # -- not the item's own queue position, which is
     # `Render.id` order and would otherwise leak the batch's internal shape.
     items_detail = sorted(
         ({"id": i, "refs": refs_by_item.get(i, {})} for i in item_ids),
@@ -867,8 +867,8 @@ async def _parked_by_latest_job(session) -> set[str]:
     key can coexist: ``uq_jobs_pending_dedupe`` only forbids two live
     pending/deferred rows for one key, not a parked row alongside a later one
     -- which is exactly what a press against a previously-parked item
-    produces. Membership in the parked *state* alone over-counts (roadmap:
-    the unscorable-floor investigation's M3); this asks for the state of the
+    produces. Membership in the parked *state* alone over-counts (the
+    unscorable-floor investigation); this asks for the state of the
     highest ``id`` per key instead. ``DISTINCT ON`` (Postgres) picks that row
     server-side rather than pulling every job row into Python.
     """
@@ -1056,8 +1056,8 @@ async def _select_backfill_batch(session, batch_size: int, config) -> list[Rende
     dropped, so the press reports ``enqueued: 0`` while unrelated unscored
     rows sit untouched elsewhere in the table -- a dead button.
 
-    Without the parked exclusion (roadmap: the unscorable-floor
-    investigation's M3, its third bullet), a press silently resets a failure
+    Without the parked exclusion (the unscorable-floor investigation's third
+    finding), a press silently resets a failure
     an operator has not yet seen: the item's job is sitting on Failures
     waiting for them, and re-selecting its row here mints a fresh job that
     starts the attempt cycle over. The Failures page's own retry/dismiss is

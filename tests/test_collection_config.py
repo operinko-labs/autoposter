@@ -111,7 +111,7 @@ def test_the_unknown_builder_error_names_the_builders_that_do_exist():
 
 
 def test_the_registry_names_every_builder_when_one_is_misspelled():
-    """T5 review, deferred minor: the "known builders" message was unpinned, so
+    """The "known builders" message was unpinned, so
     a builder added to the registry without a catalog row would have quietly
     stopped appearing in the one message an operator sees when they typo."""
     with pytest.raises(ValidationError) as caught:

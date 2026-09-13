@@ -1,6 +1,6 @@
 """Kometa's `<<variable>>` text grammar.
 
-Banked in `.superpowers/sdd/p-overlay-grammar-probe.md` sections 2.1 to 2.4:
+Banked by the overlay grammar probe, sections 2.1 to 2.4:
 the four variable families, the per-family modifier table, and the
 substitution order. Transcribed rather than reinvented, including the parts
 that look like bugs -- `%` truncates because `int()` truncates, and
@@ -16,8 +16,7 @@ from collections.abc import Mapping
 
 from num2words import num2words
 
-# Banked verbatim in `.superpowers/sdd/p-overlay-datasources-probe.md`
-# appendix 9.1, from `modules/overlay.py:19-49` at the pinned tag
+# Transcribed verbatim from `modules/overlay.py:19-49` at the pinned tag
 # (`Kometa-Team/Kometa` @ `498b3af6e921fc5e857dd081061000c87482489d`). 29
 # entries, in the source's own order.
 RATING_SOURCES = (

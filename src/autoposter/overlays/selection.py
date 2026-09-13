@@ -25,19 +25,19 @@ this view is built, `render/pipeline.py::apply_badges` has already called
 `badges/values.py::media_info_from_plex`, which reloads the item and walks
 `part.streams`, and it is handed `facts` and `plex_item` directly. So the
 collections table's per-attribute source tiers and `kinds` restrictions are
-LISTING constraints, and they do not bind here (the recon's adjudication
-A3b): a show simply has no `media`, which the tag missing-value rule already
-answers correctly, rather than needing a `kinds` column to forbid it. **T1
-review finding L-2, met here (sub-phase C2a):** that "do not bind" claim is
-about the `kinds` COLUMN specifically -- `resolution`'s `kinds=("movie",)` is
+LISTING constraints, and they do not bind here: a show simply has no
+`media`, which the tag missing-value rule already
+answers correctly, rather than needing a `kinds` column to forbid it. **That
+"do not bind" claim is
+about the `kinds` COLUMN specifically** -- `resolution`'s `kinds=("movie",)` is
 the one restriction this view has ever genuinely relaxed, because
 `parse_filters` never consults `kinds` at all (verified by reading the whole
 parse path). It says nothing about which attributes have an ACCESSOR:
 `duplicate` and `network` have none on this view and are refused by
 `OVERLAY_ATTRIBUTES` membership, a wholly different mechanism, and stay
 refused regardless of `kinds`. `versions` was the first attribute genuinely
-newly unlocked since C1 -- a real `filters.py` row, a real accessor, both
-dialects proven -- and sub-phase C2b added three more the same way: `aspect`
+newly unlocked after the original families -- a real `filters.py` row, a real
+accessor, both dialects proven -- and three more followed the same way: `aspect`
 (its own row, its own shared accessor, both dialects proven) and the two
 stream-language rows, which were already real `filters.py` rows and gained
 an accessor HERE without gaining one on the collections view, because the
@@ -289,8 +289,8 @@ def parse_condition(raw: object, *, field: str = "condition") -> FilterGroup:
        filter but that `OverlayItemView` cannot supply. That refusal has to
        be ours, because `filters.py` has no idea what this view reads.
 
-    A third, narrower case rides inside layer 1 (T1 review finding L-4, met
-    here): a SEARCH-ONLY attribute (`duplicate`, `unplayed`, ...) is refused
+    A third, narrower case rides inside layer 1: a SEARCH-ONLY attribute
+    (`duplicate`, `unplayed`, ...) is refused
     by `filters.py` with "Move it into the plex_search builder's `params`" --
     correct advice for a COLLECTION, meaningless for an overlay `condition:`
     block, which has no plex_search builder to move anything into. The

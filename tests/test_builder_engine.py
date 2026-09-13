@@ -1045,7 +1045,7 @@ async def test_a_filter_that_cannot_evaluate_says_so_not_the_source(
 # - the fetch is SCOPED to the resolved set, and happens once for it;
 # - the memo is the PASS's, so a second definition pays only for keys the
 #   first did not fetch (``ctx.run_cache``, engine.py:306 -- a fresh dict per
-#   definition would leave every T2 test below green and refetch the overlap);
+#   definition would leave every test below green and refetch the overlap);
 # - an item the batch did not answer for REFUSES the definition. Never
 #   "this item has no genres": that is a full, plausible, wrong membership,
 #   and the containment is a filter failure's -- empty items, "make no
@@ -1162,7 +1162,7 @@ async def test_two_tier2_definitions_share_the_run_cache(session, registry_entry
 async def test_an_item_missing_from_the_enrichment_refuses_the_definition(
     session, registry_entry
 ):
-    """THE REFUSAL LAW (facts C3). Plex answers the batch without ``103``. The
+    """THE REFUSAL LAW. Plex answers the batch without ``103``. The
     plausible-and-wrong reading is "then it has no genres", which would build
     this collection in full, minus one member, with nothing anywhere saying so.
     Instead the definition refuses: contained exactly as a filter that could not
@@ -1494,7 +1494,7 @@ async def test_the_preview_counts_respect_the_shape_rule(
 async def test_the_preview_counts_an_adoption_the_pass_will_carry_out(
     session, registry_entry
 ):
-    """Row 142(b), fix round. ``resolve_collision`` answers three ways, not
+    """Row 142(b). ``resolve_collision`` answers three ways, not
     two: ``ok`` is ``False`` both for a write the pass will REFUSE and for an
     eligible adoption held back only by ``dry_run`` -- a write the real pass
     WILL perform. Gating the preview on ``ok`` alone reported 0/0 for exactly the
@@ -1533,7 +1533,7 @@ async def test_the_preview_counts_an_adoption_the_pass_will_carry_out(
 async def test_the_preview_still_refuses_a_protected_collection_under_adopt(
     session, registry_entry
 ):
-    """The other half of row 142(b)'s fix round: turning ``adopt`` on must not
+    """The other half of row 142(b): turning ``adopt`` on must not
     turn the gate off. A protected collection is a refusal ``resolve_collision`` reaches
     BEFORE adoption, so the preview owes it zeros even though the collection
     also carries an ``adopt_from`` label."""
@@ -1616,7 +1616,7 @@ async def test_a_relative_date_filter_measures_every_item_against_one_date(
     against a later one, and produce a membership no single instant would.
 
     The clock read is ``datetime.now()`` with no timezone -- the run's MOMENT
-    in the runner's local clock, which since Task 4's oracle is what the date
+    in the runner's local clock, which is what the date
     operators compare against (Kometa's ``current_time`` is the same call).
     ``_Clock`` subclasses ``datetime`` and intercepts only the no-argument
     form, so the engine's own ``datetime.now(UTC)`` pass timestamp is

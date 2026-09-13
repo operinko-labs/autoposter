@@ -2,10 +2,8 @@
 
 Vendored, not recalled. Both tables were fetched ONCE from TMDb's public
 configuration endpoints and emitted here by script from the raw bytes
-(.superpowers/sdd/p-locnames-{countries,languages}.json, kept beside the
-kometa files; docs/research/tmdb-iso-names/README.md carries the whole
-provenance and the join measurement, and inlines the fetch script verbatim
-for regeneration):
+(docs/research/tmdb-iso-names/README.md carries the whole provenance and the
+join measurement, and inlines the fetch script verbatim for regeneration):
 
 - ``COUNTRY_NAMES``: /configuration/countries, fetched 2026-08-30,
   251 entries, source sha256 fb4609a1fb14d5b77aed0b65496c05f4c1d0018782b1c91cbc4c9f6bdf97d9e4.

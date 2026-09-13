@@ -43,7 +43,7 @@ class FakeMediaServer:
     not_found: set[str] = field(default_factory=set)
     path_mismatch: set[str] = field(default_factory=set)
     raise_on_upload: Exception | None = None
-    #: fix round 2, I4: a transport (or any other) error from resolve()
+    #: a transport (or any other) error from resolve()
     #: itself, mirroring raise_on_upload -- distinct from ItemNotFound/
     #: PathMismatch, which are answered by not_found/path_mismatch above.
     raise_on_resolve: Exception | None = None
@@ -53,7 +53,7 @@ class FakeMediaServer:
     cleared_logos: list[ServerItemRef] = field(default_factory=list)
     facts_written: list[tuple[ServerItemRef, object]] = field(default_factory=list)
     resolve_calls: int = 0
-    #: fix round 1, I5: configurable per instance, so a test can prove one
+    #: configurable per instance, so a test can prove one
     #: server's own exempting label never exempts a write on another server.
     labels: list[str] = field(default_factory=list)
 

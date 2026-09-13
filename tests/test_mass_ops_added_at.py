@@ -1,7 +1,6 @@
 """Roadmap row 227 -- ``mass_added_at_update``, under the explicit-source model.
 
-Kometa's transcription, which this row was blocked on and which
-``.superpowers/sdd/p-decision-rows-2-recon.md`` § 1.2 found:
+Kometa's transcription, which this row was blocked on, found:
 ``tmdb_digital`` = TMDb's digital release date, ``tmdb_premiere`` = the
 premiere, movie libraries only. The type codes and the all-regions ``min()``
 are read out of Kometa's own ``modules/operations.py`` at ``v2.4.8``.
@@ -62,7 +61,7 @@ def test_both_keys_are_settable_per_library():
 
 
 def test_added_at_is_a_facts_field_that_counts_towards_is_empty():
-    """C3: a mass-op WRITE value, not a badge input. It lives on
+    """A mass-op WRITE value, not a badge input. It lives on
     ``GatheredFacts`` and NOT in ``item_facts`` -- ``facts/models.py:19-26``
     states the rule, and a column would be a migration for a cache."""
     assert GatheredFacts().added_at is None
@@ -71,7 +70,7 @@ def test_added_at_is_a_facts_field_that_counts_towards_is_empty():
 
 
 def test_added_at_is_not_persisted_as_an_item_facts_column():
-    """The negative half of C3, asserted rather than assumed: no column means
+    """The negative half of that, asserted rather than assumed: no column means
     no alembic revision and no backfill for this row."""
     from autoposter.db.models import ItemFacts
 

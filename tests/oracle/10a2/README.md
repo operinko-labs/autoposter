@@ -1,6 +1,6 @@
-# The Common Sense grammar equivalence proof (phase 10a-2, Task 3)
+# The Common Sense grammar equivalence proof (phase 10a-2)
 
-`.superpowers/sdd/p10a-facts.md` Addendum 2, point 2 makes this proof the gate
+A recorded decision makes this proof the gate
 on the Common Sense write-path port. The golden fixture
 (`tests/fixtures/collections/golden_port.json`) records `updated_filters` --
 the plexapi CALL SHAPE the port removes -- so the moment the port stops calling
@@ -27,7 +27,7 @@ proof about the old table standing.
 
 ## The five premises
 
-Each is named in `member_sets.py` with its citation, so a reviewer can reject a
+Each is named in `member_sets.py` with its citation, so a reader can reject a
 premise rather than re-derive the whole thing.
 
 | | Premise | Evidence |
@@ -38,7 +38,7 @@ premise rather than re-derive the whole thing.
 | P4 | under `type=N`, `contentRating` and `<libtype>.contentRating` name one field | inference, with live corroboration: `show.network=126689` answered under `type=2` |
 | P5 | an unencoded `+` reaches the matcher as a SPACE (the **server's** decoder) | **live**: `studio=Columbia+Pictures` → **43**, the `%20` baseline exactly |
 
-P1's and P5's measurements are phase 10a-2 Task 3's own two read-only GETs,
+P1's and P5's measurements are phase 10a-2's own two read-only GETs,
 recorded at `docs/research/plex-dynamic-probe/README.md` §5. P2's and P4's are
 9b's (`docs/research/plex-search-probe/README.md`).
 
@@ -123,7 +123,7 @@ Three things to read off it:
 
 1. **The two grammars are not the same string.** plexapi comma-joins into one
    parameter (`contentRating=R%2CTV-MA`); this engine emits a
-   `push`/`or=1`/`pop` group. That difference is what claim C2 is about, and the
+   `push`/`or=1`/`pop` group. That difference is what the second claim is about, and the
    gate pins it so a change that accidentally made the two identical would have
    to say so.
 2. **The field spellings differ in the middle case** -- plexapi emits a bare
@@ -417,7 +417,7 @@ decode to `/`. So `gb/U`, `no/A` and their kin are equivalent.
 
 P5 is measured, so the partition above is the real one. But it is worth
 recording that the *finding* never depended on it, because that is the strongest
-form of it and the one Task 4 should act on:
+form of it and the one to act on:
 
 | | Model F (`+` → space; measured, and what this proof assumes) | Model R (`+` literal) |
 | --- | --- | --- |
@@ -513,9 +513,9 @@ marked: it asserted the subset shape as it stood, and it would red on the same
 fix, which is the same forcing function by another route. It was to be deleted
 with the markers.
 
-**That is what happened, in task 3.5.** All seventeen strict cases XPASSed, the
-unmarked one went red -- `18 failed, 18 passed`, recorded in
-`.superpowers/run-t35-equiv-xpass.log` -- and the three markers were deleted,
+**That is what happened.** All seventeen strict cases XPASSed, the
+unmarked one went red -- `18 failed, 18 passed`, recorded in the run log
+-- and the three markers were deleted,
 the fourth test with them. Its
 absolute pin -- the old query selects exactly the bucket, and never the control
 item -- moved into the mixed-bucket test rather than being lost, so that test

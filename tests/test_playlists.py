@@ -819,7 +819,7 @@ async def test_episode_level_members_are_allowed_when_every_library_is_a_show_on
 async def test_a_plex_search_playlist_at_episode_level_resolves_episodes(
     session, config_factory
 ):
-    """Facts C2: collections AND playlists. The playlist path carries its own
+    """Collections AND playlists: the playlist path carries its own
     ported copy of the engine's level logic (``playlists.py``, the
     declared-vs-result check and the Show-library guard), so ``plex_search``
     becoming level-aware has to be proven here too -- through the real
@@ -1508,7 +1508,7 @@ async def test_a_second_pass_writes_nothing_to_any_user(
 async def test_a_user_added_to_an_already_current_definition_still_gets_a_copy(
     session, config_factory
 ):
-    """C13 A5, proved through the real pass. The resolved user set is NOT in
+    """Proved through the real pass: the resolved user set is NOT in
     the members hash, so the admin half short-circuits on the second pass --
     and the new user still gets a copy, because the gate that matters for a
     user is their OWN row and a new user has none."""
@@ -1565,7 +1565,7 @@ async def test_no_account_token_is_reported_by_name(session, config_factory):
 async def test_a_non_owner_token_refuses_the_fan_out_and_the_admin_pass_lands(
     session, config_factory
 ):
-    """C13 A9 through the real pass, and the second half of the assertion is
+    """Through the real pass, the second half of the assertion is
     the point: the admin playlist is still reconciled. A refusal here is about
     other people's accounts, not about this one."""
     _Ids.ids = [("tmdb", "1")]
@@ -1593,7 +1593,7 @@ async def test_a_non_owner_token_refuses_the_fan_out_and_the_admin_pass_lands(
 async def test_a_user_dropped_from_sync_to_users_is_reported_while_the_switch_is_off(
     session, config_factory
 ):
-    """C13 A2's first removal event. ``delete_unconfigured`` off means
+    """The first removal event: ``delete_unconfigured`` off means
     REPORTED, exactly as it does for an admin playlist."""
     _Ids.ids = [("tmdb", "1"), ("tmdb", "2")]
     account = FakeAccount([
@@ -1821,13 +1821,13 @@ async def test_the_delete_cap_excludes_dry_run_reported_user_copies(
 async def test_the_delete_cap_still_refuses_the_whole_plan_with_the_user_gate_on(
     session, config_factory
 ):
-    """The other half of I-1's fix: when the per-user gate IS applied, the
+    """When the per-user gate IS applied, the
     six user copies are real deletions this pass would perform, so they must
     still count toward the cap and the whole plan -- admin playlist
     included -- still refuses.
 
-    Adjusted for I-3: ``max_deletes`` is now checked ONLY against the exact
-    post-walk count (a pre-walk estimate of it, tried in the first fix round,
+    ``max_deletes`` is now checked ONLY against the exact
+    post-walk count (a pre-walk estimate of it
     could refuse a plan forever once unreachable rows piled up -- see the two
     tests below). With ``max_users`` at its default of 25, six distinct
     stale-row users do not trip the read-cost pre-check, so this scenario now
@@ -1882,9 +1882,9 @@ async def test_the_delete_cap_still_refuses_the_whole_plan_with_the_user_gate_on
 async def test_i3_unreachable_stale_rows_never_deadlock_the_admin_delete(
     session, config_factory
 ):
-    """I-3: a stale row's object may already be gone, or its user
+    """A stale row's object may already be gone, or its user
     unreachable, and neither is ever a deletion nor ever retired -- so
-    counting the ROW toward ``max_deletes`` (the first fix round's pre-check)
+    counting the ROW toward ``max_deletes`` in a pre-walk check
     could refuse the same admin playlist forever. Five of six fanned-out
     users lose their token before the delete pass; only the sixth (alice)
     still has a live, reachable copy. Cap 5, default max_users: the admin

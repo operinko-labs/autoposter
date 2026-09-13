@@ -181,7 +181,7 @@ async def test_empty_trash_stays_server_wide_when_no_library_overrides_it(sessio
 
 
 async def test_empty_trash_runs_only_for_the_libraries_that_enable_it(session):
-    """THE entry-point test for maintenance (C4), through the job the
+    """THE entry-point test for maintenance, through the job the
     scheduler registers.
 
     ``Movies`` states ``empty_trash: true``; ``TV Shows`` states nothing and
@@ -266,7 +266,7 @@ async def test_a_library_that_wants_nothing_costs_no_section_request(session):
 
 
 async def test_a_same_value_library_override_still_narrows_the_sweep(session):
-    """Task 3 review, Important 1: the switch is on PRESENCE, not on value
+    """The switch is on PRESENCE, not on value
     difference. ``Movies`` states ``empty_trash: true``, which is the SAME
     value the global already has, and ``TV Shows`` states nothing and
     inherits that same ``true``. The old, buggy switch (``value !=

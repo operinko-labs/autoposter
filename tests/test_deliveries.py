@@ -61,12 +61,12 @@ async def test_pending_rows_become_due_and_are_re_delivered(session, config_with
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
 
     # `**kwargs` for what the retry pass passes and these stubs do not model:
-    # `http`/`mdblist`, `force` (fix round 3 round 2, R1) and the identity
-    # server's `server`/`ref` (round 3, N2).
+    # `http`/`mdblist`, `force` and the identity
+    # server's `server`/`ref`.
     async def fake_compose(session, config, render, item, **kwargs):  # bytes, no ImageMagick
         return b"badged"
 
-    # Task 19 extracts pipeline.compose_badged_bytes; it does not exist yet, so
+    # pipeline.compose_badged_bytes does not exist yet, so
     # this stub is added (raising=False) rather than replacing a real attribute.
     monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
     config_with_badges.badges.upload_to_jellyfin = True
@@ -206,11 +206,8 @@ async def test_library_override_gates_the_retry_per_row(session, monkeypatch):
     assert summary == "pending deliveries: 2 due, 1 uploaded, 0 still pending"
 
 
-# Fix round 3 (Phase 5 branch review).
-
-
 async def test_a_failed_delivery_keeps_the_renders_uploaded_at(session):
-    """I6: `record`'s conflict `set_` carried `uploaded_at=None` for every
+    """`record`'s conflict `set_` carried `uploaded_at=None` for every
     non-`uploaded` status, and `rollup` then wrote that NULL onto the render.
     A single failed Plex upload erased the "last delivered" timestamp the
     item page's Uploaded column shows -- the column an operator reads to tell
@@ -241,7 +238,7 @@ async def test_a_failed_delivery_keeps_the_renders_uploaded_at(session):
 async def test_a_database_error_on_one_row_does_not_abort_the_pass(
     session, session_factory, config_with_badges, monkeypatch,
 ):
-    """I2: "one row's failure never aborts the pass" held only for
+    """The rule that one row's failure never aborts the pass held only for
     pure-Python exceptions. A statement error -- `record`'s upsert, a `rollup`
     UPDATE, a dropped connection -- leaves the transaction aborted, so every
     remaining due row raised `PendingRollbackError` at its first execute and
@@ -311,7 +308,7 @@ async def test_a_database_error_on_one_row_does_not_abort_the_pass(
 async def test_nothing_left_to_compose_records_skipped_not_a_failed_upload(
     session, config_with_badges, monkeypatch,
 ):
-    """I3: a pending row outlives the state that created it. Badges turned
+    """A pending row outlives the state that created it. Badges turned
     off for the library, or a render that has since gone `failed`, makes
     `compose_badged_bytes` answer `None` -- which was passed straight into
     `upload_artwork`, producing a sticky `failed` row with a misleading
@@ -345,7 +342,7 @@ async def test_nothing_left_to_compose_records_skipped_not_a_failed_upload(
 
 
 async def test_a_migration_backfilled_row_is_never_due(session, config_with_badges):
-    """I5's other half: the Phase-2 migration backfills a `plex` row per
+    """The Phase-2 migration backfills a `plex` row per
     render with `next_attempt_at` NULL, and NULL never satisfies the due
     query. Load-bearing and, until now, untested -- every one of those rows
     is `pending` on a production database the moment the migration lands."""
@@ -372,13 +369,10 @@ async def test_a_migration_backfilled_row_is_never_due(session, config_with_badg
     assert row.status == "pending" and row.attempted_at is None
 
 
-# Fix round 3, round 3 (re-review findings).
-
-
 async def test_a_rolled_back_row_keeps_every_other_rows_work(
     session, session_factory, config_with_badges, monkeypatch,
 ):
-    """N1, the re-reviewer's own probe shape: THREE due rows with the
+    """This scenario probes three due rows with the
     database error on the FIRST.
 
     The previous fix rolled the whole session back in the handler. Nothing
@@ -449,7 +443,7 @@ async def test_a_rolled_back_row_keeps_every_other_rows_work(
 async def test_a_path_mismatch_on_the_identity_server_fails_rather_than_waiting_forever(
     session, config_with_badges,
 ):
-    """N6: `PathMismatch` subclasses `ItemNotFound`, so the identity
+    """`PathMismatch` subclasses `ItemNotFound`, so the identity
     re-resolve's broad handler recorded it as a `pending` on the 6h horizon
     -- retried forever against a mount mismatch no retry can fix (spec §6.2).
     The delivery server's own resolve has always recorded `failed` for it;

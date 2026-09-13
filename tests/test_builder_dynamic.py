@@ -4,8 +4,7 @@ The engine ``collections/buckets.py`` is one hardcoded instance of. It
 enumerates through ``LibraryTagResolver.choices``, derives its keys and titles
 with the two pure modules beside it, and writes each collection through the SAME
 reconciler ``smart_filter`` uses -- so there is one write path, one query
-grammar and one drift hash for every smart collection this service manages
-(10a decision C1).
+grammar and one drift hash for every smart collection this service manages.
 """
 import datetime as dt
 from types import SimpleNamespace
@@ -207,7 +206,7 @@ def test_an_unknown_type_refuses_at_load_and_lists_the_ones_that_exist():
 @pytest.mark.parametrize("key", ["test", "data", "sync", "other_template",
                                  "template", "template_variables"])
 def test_the_dead_upstream_knobs_refuse_by_name_with_the_reason(key):
-    """C5, plus the two this phase cannot mean anything by. Every one of them
+    """These, plus the two this bucket type cannot mean anything by. Every one of them
     is a key Kometa accepts, so an operator porting a config meets it -- and
     accepting it silently is the failure the refusal table exists to prevent."""
     with pytest.raises(ValueError) as refusal:
@@ -267,7 +266,7 @@ def test_a_non_mapping_addons_refuses_at_load():
     """``dynamic_keys._dictliststr`` raises a bare ``TypeError`` on a
     non-mapping, which would reach the engine as a crash rather than as
     something about this operator's config. The params model is what makes that
-    branch unreachable from YAML (T3 review carry)."""
+    branch unreachable from YAML."""
     with pytest.raises(ValueError, match="addons"):
         _definition(params={"type": "genre", "addons": ["1980s"]})
 
@@ -309,7 +308,7 @@ def test_a_token_nothing_resolves_refuses_at_load_and_names_it(params, token):
 
 
 def test_a_malformed_token_is_refused_like_a_wrong_one():
-    """T5 review, Minor 4. ``_TOKEN`` matches ``<<...>>`` and a half-written
+    """``_TOKEN`` matches ``<<...>>`` and a half-written
     ``<<value>`` matches nothing at all -- so it passed every validator and
     would have been POSTed into a live collection's name exactly as typed,
     which is the one outcome this whole family of refusals exists to prevent.
@@ -356,7 +355,7 @@ async def test_it_creates_one_smart_collection_per_enumerated_value(session):
 async def test_each_collection_asks_plex_for_its_own_value_under_an_any_base(session):
     """The emitted query is the 9b grammar and the base is ``any:`` -- which is
     upstream's (meta.py:950) and is what makes a bucket's several values an OR
-    rather than the ``all:`` AND that would match nothing (10a decision C2)."""
+    rather than the ``all:`` AND that would match nothing."""
     section = FakeSection()
     definition = _definition()
     await REGISTRY["dynamic"].apply(_ctx(session, section, definition))
@@ -370,9 +369,9 @@ async def test_each_collection_asks_plex_for_its_own_value_under_an_any_base(ses
 
 
 async def test_one_buckets_several_values_reach_plex_as_one_ord_query(session):
-    """Decision C2, byte for byte. The test above pins the ``push=1``/``pop=1``
+    """The test above pins the ``push=1``/``pop=1``
     envelope, but every key in it holds exactly ONE value, so it cannot see the
-    OR itself -- and the OR is the whole decision: row 182's probe answered 0
+    OR itself -- and the OR is the whole point: row 182's probe answered 0
     for the ``all:`` spelling and 442 for this one. An ``addons``-merged key is
     the shape that carries several, and its three terms have to arrive in ONE
     query joined by ``or=1``, not as three queries or as an AND."""
@@ -463,9 +462,9 @@ def test_the_route_this_builder_emits_through_refuses_a_decade_operator_form():
 
 
 async def test_a_family_labels_every_collection_it_creates(session):
-    """C4's mechanism: family membership is a LABEL, which is Kometa's own
+    """Family membership is a LABEL, which is Kometa's own
     handle for the same job (``append_label: str(map_name)``, meta.py:1421) and
-    is what 10a-2's sweep enumerates. Never an offline title list."""
+    is what the 10a-2 sweep enumerates. Never an offline title list."""
     section = FakeSection()
     definition = _definition()
     await REGISTRY["dynamic"].apply(_ctx(session, section, definition))
@@ -590,7 +589,7 @@ async def test_a_synthetic_addon_key_in_the_leftovers_bucket_refuses_rather_than
 
 
 async def test_a_bucket_refusal_does_not_leak_the_parsers_field_path(session):
-    """T5 review, deferred nit. ``parse_filters`` prefixes its refusals with the
+    """``parse_filters`` prefixes its refusals with the
     dotted config path it was given, so the operator's sentence read '... and
     params.year: 'Eighties' is not a whole number'. The prefix is this module's
     own argument, not anything the operator wrote."""
@@ -636,7 +635,7 @@ async def test_an_empty_addon_key_in_the_leftovers_bucket_refuses_the_same_way(s
 
 
 async def test_a_raw_other_tag_never_included_builds_fine(session):
-    """T5 review, other-key collision correction. A library value spelled
+    """A library value spelled
     ``other`` that the operator never `include`d is not a second titled entry
     keyed ``other`` -- it simply lands among the leftovers bucket's own
     ``values`` (``dynamic_keys.derive_keys``, ``dynamic_titles.family_titles``
@@ -658,7 +657,7 @@ async def test_a_raw_other_tag_never_included_builds_fine(session):
 
 
 async def test_two_titled_entries_keyed_other_refuses_the_collision(session):
-    """T4 review's actual finding (``progress.md:2831``, "OTHER_KEY 'other' can
+    """The actual collision ("OTHER_KEY 'other' can
     collide with a real enumerated key"), reconstructed: a real library value
     spelled ``other`` that IS `include`d gets its own titled entry keyed
     ``other`` (``derive_keys`` :156-165), and ``family_titles`` claims the
@@ -758,7 +757,7 @@ async def test_a_dead_filter_lookup_refuses_class_name_only(session):
 
 
 async def test_a_fan_out_past_the_cap_refuses_with_both_numbers(session):
-    """C8's refuse-over-surprise floor, at the scale the phase's live probe
+    """The refuse-over-surprise floor, at the scale a live probe
     actually measured: ``studio`` enumerates to 824 values on the production
     movie library, sixteen times the default cap. The operator raises the cap
     deliberately or narrows the family, and either way nothing is created
@@ -776,7 +775,7 @@ async def test_a_fan_out_past_the_cap_refuses_with_both_numbers(session):
 
 
 async def test_the_cap_refusal_counts_buckets_and_values_separately(session):
-    """T5 review, Minor N-3. The message said "%r enumerates that many values
+    """The message said "%r enumerates that many values
     there" while counting BUCKETS -- post-merge, post-drop -- so an addons-heavy
     family reported a number the library never said. Both numbers now, because
     the operator's next move (raise the cap, or narrow with `include:`) depends
@@ -1001,7 +1000,7 @@ async def test_a_key_at_the_minimum_is_created(session):
 
 async def test_no_minimum_costs_no_extra_plex_read(session):
     """The count is a Plex round trip per key. It is paid only by an operator
-    who asked for it -- ``reconcile_smart_collection`` does its own C8 probe on
+    who asked for it -- ``reconcile_smart_collection`` does its own fan-out probe on
     the create/update path, and doing it twice for every family in every pass
     would double the read cost of the default configuration."""
     definition = _definition()
@@ -1010,7 +1009,7 @@ async def test_no_minimum_costs_no_extra_plex_read(session):
 
     await DynamicBuilder().apply(ctx)
 
-    # Two keys, one probe each, from reconcile_smart_collection's own C8 gate.
+    # Two keys, one probe each, from reconcile_smart_collection's own fan-out gate.
     assert len(section.fetched) == 2
 
 
@@ -1020,7 +1019,7 @@ async def test_no_minimum_costs_no_extra_plex_read(session):
 async def test_the_absent_value_key_is_reported_rather_than_silently_dropped(
     session,
 ):
-    """10a-1 review, T4's deferred minor. ``ABSENT_KEY`` is Plex's "these items
+    """``ABSENT_KEY`` is Plex's "these items
     have no value for this field" and ``family_titles`` drops it, which is
     right -- but silently, so an operator whose library has 40 unrated films
     sees a family with no bucket for them and no reason why. And a real tag
@@ -1042,7 +1041,7 @@ async def test_the_absent_value_key_is_reported_rather_than_silently_dropped(
 
 
 async def test_narrowing_entries_the_library_never_reports_are_named(session):
-    """10a-1 review, Minor N-5. An ``include:``/``exclude:``/``addons:``/
+    """An ``include:``/``exclude:``/``addons:``/
     override entry naming a key the library does not hold is silently inert --
     upstream parity, and the all-excluded family does refuse, so this is not a
     correctness hole. It is a typo an operator cannot see: ``include: [Horor]``
@@ -1090,7 +1089,7 @@ async def test_an_addons_report_names_the_members_and_not_the_bucket(session):
 
 
 async def test_an_addons_key_with_every_member_absent_is_named_as_dead(session):
-    """T2 review, Minor M-3. A ``addons`` key whose every member is absent from
+    """A ``addons`` key whose every member is absent from
     the library builds no collection at all (dynamic_keys.py:144-146,
     ``test_a_synthetic_bucket_with_no_present_member_builds_nothing``), which
     looked identical in the old report to a bucket that merely lost one of
@@ -1227,7 +1226,7 @@ def test_a_bound_that_is_neither_a_year_nor_the_sentinel_refuses_at_load():
 
 
 def test_a_bound_of_the_wrong_shape_refuses_with_the_fixed_sentence_too():
-    """T2 review, folded finding 2. A `bool`, `None` or a list is a shape
+    """A `bool`, `None` or a list is a shape
     pydantic's own `str` coercion would refuse on its own terms ("Input
     should be a valid string"), never reaching the validator above at all --
     which tells an operator porting `year.yml` nothing about `data:`'s own
@@ -1260,7 +1259,7 @@ def test_a_bound_outside_the_believable_range_refuses_at_load(monkeypatch):
 
 
 def test_a_sentinel_that_resolves_outside_the_believable_range_refuses_at_load(monkeypatch):
-    """T2's open finding, closed. ``_a_bound_is_a_year_or_the_sentinel`` only
+    """``_a_bound_is_a_year_or_the_sentinel`` only
     checks a LITERAL bound's own value -- a sentinel is held as written and
     only becomes a year once resolved against a moment, so a window whose
     resolved bound falls outside 1800..next-year must be caught here too,
@@ -1305,7 +1304,7 @@ def test_a_window_wider_than_max_collections_refuses_at_load(monkeypatch):
 async def test_the_window_keeps_only_the_years_the_library_holds_inside_it(
     session, monkeypatch
 ):
-    """C5's three cases in one family: a year below the window is absent, a
+    """Three cases in one family: a year below the window is absent, a
     year above it is absent, the years inside it are present, and a year
     INSIDE the window that the library holds nothing from is absent too --
     which is where this diverges from upstream, whose `number` type
@@ -1333,8 +1332,8 @@ async def test_the_window_keeps_only_the_years_the_library_holds_inside_it(
 async def test_the_window_keeps_both_exact_bounds_and_drops_both_neighbours(
     session, monkeypatch
 ):
-    """T2 review, folded finding 3. The off-by-one case the inclusive range
-    (C2) promises: 2016 and 2026 are the window's own bounds and must be
+    """The off-by-one case the inclusive range
+    promises: 2016 and 2026 are the window's own bounds and must be
     built, 2015 and 2027 are one year outside either edge and must not be."""
     _frozen(monkeypatch, 2026)
     section = FakeSection(choices=YEARS)
@@ -1352,7 +1351,7 @@ async def test_the_window_keeps_both_exact_bounds_and_drops_both_neighbours(
 
 
 async def test_an_addon_key_outside_the_window_is_never_built(session, monkeypatch):
-    """T2 review, folded finding 1. The window is applied to the DERIVED key
+    """The window is applied to the DERIVED key
     set, after `addons:` has had its say -- `addons:` can introduce a key the
     library never enumerated at all (`dynamic_keys.derive_keys`'s `add_key
     not in present` branch only requires that the addon's MEMBERS be
@@ -1434,7 +1433,7 @@ async def test_a_window_the_library_answers_nothing_inside_refuses_the_family(
 async def test_next_january_the_oldest_year_leaves_the_familys_record(
     session, monkeypatch
 ):
-    """C3, pinned. `sync: true` upstream is a labelled delete sweep
+    """`sync: true` upstream is a labelled delete sweep
     (meta.py:1300, :1456-1461); this service runs that sweep for every builder
     instead, off the family label and the pass's generated record. So the
     whole of "the window slides" is that the oldest title stops being in the

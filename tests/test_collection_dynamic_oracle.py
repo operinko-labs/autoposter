@@ -1,4 +1,4 @@
-"""THE DYNAMIC-COLLECTIONS ORACLE -- phase 10a's acceptance for keys and titles.
+"""THE DYNAMIC-COLLECTIONS ORACLE -- acceptance for keys and titles.
 
 ``src/autoposter/collections/dynamic_keys.py`` and
 ``src/autoposter/collections/dynamic_titles.py`` are TRANSCRIPTIONS of Kometa's
@@ -9,10 +9,9 @@ full, plausible, WRONG family. Every other test in this phase asserts the
 transcription against itself.
 
 This file asserts it against Kometa. The driver is
-``tests/oracle/10a/kometa_dynamic.py`` -- under ``tests/``, not under
-``.superpowers/``, because this test READS it and ``.superpowers/`` is
-gitignored; a file an assertion depends on has to be in the checkout that runs
-the assertion. It imports nothing from this repository, and this file imports
+``tests/oracle/10a/kometa_dynamic.py`` -- under ``tests/`` rather than a
+gitignored location, because this test READS it and a file an assertion
+depends on has to be in the checkout that runs the assertion. It imports nothing from this repository, and this file imports
 nothing from it: the enumerations both need are shared BY VALUE, and a test
 below holds the two copies equal.
 
@@ -67,7 +66,7 @@ KEY_CASES = [
 
 # KOMETA'S OWN ANSWERS, pinned as data. Produced by
 # ``tests/oracle/10a/kometa_dynamic.py``, Kometa v2.4.8's ``meta.py`` key
-# derivation transcribed standalone. The raw run is in the Task 3 report.
+# derivation transcribed standalone.
 KOMETA_KEYS = {
     "plain": {
         "keys": [

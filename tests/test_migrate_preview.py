@@ -57,7 +57,7 @@ def test_preview_uses_root_folder_for_provider_less_movies():
 
 
 def test_preview_keys_seasons_and_episodes_on_their_shows_ids():
-    """C1: an adopted episode stored its OWN tvdb id, but the Plex resolver
+    """An adopted episode stored its OWN tvdb id, but the Plex resolver
     keys an episode on its SHOW's -- so the preview, like the migration,
     walks parent_id up to the show. Rows 22 and 23 carry different
     episode-level ids and therefore collide onto one identity; row 24's

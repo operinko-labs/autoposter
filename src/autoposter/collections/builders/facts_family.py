@@ -332,7 +332,7 @@ class FactsFamilyBuilder:
                     continue
                 enumerated.append((value, name))
         elif row.names == "keys":
-            # Row 196's normalisation decision (facts C2): our codes map UP
+            # Row 196's normalisation decision: our codes map UP
             # into TMDb's display names, so upstream's name-keyed grouping
             # tables (region.yml/continent.yml -- 647 member strings, zero
             # codes) apply verbatim. The DATABASE enumeration stays ISO --

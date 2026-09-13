@@ -22,8 +22,8 @@ necessary are the substance of the module:
 2. **No refusal this module raises echoes what the operator typed.** A value
    may be a summary with a URL in it or a pasted token, so **every 422 here is
    the bare exception class name** -- ``queue/worker.py::_served_reason``'s
-   rule for ``job.last_error``, and roadmap row 99's C3/C10 verbatim
-   ("class-name-only detail"). The unwritable-field branch raises
+   rule for ``job.last_error``, and roadmap row 99's own
+   "class-name-only detail". The unwritable-field branch raises
    ``OverrideValueError`` into the same ``except`` the parse uses, so there is
    ONE exit and one form; the message, which does name the field and the
    shape, reaches the pod log instead -- the trusted sink under row 207 -- and
@@ -220,8 +220,8 @@ async def put_metadata_override(
     the writer's diff is made in -- see ``plex/item_overrides.py`` for why
     those have to be the same string.
 
-    The re-enqueue is the standard reprocess. C10 says "the metadata-only pass
-    where one exists"; this application has exactly ONE job kind
+    The re-enqueue is the standard reprocess. Row 99 asks for "the
+    metadata-only pass where one exists"; this application has exactly ONE job kind
     (``app.py``'s ``handlers = {"process_item": process_item_handler}``), so
     that branch does not apply and the ordinary reprocess is what runs -- the
     same one the Re-run button and ``clear-override`` use, deduplicated on the
@@ -237,7 +237,7 @@ async def put_metadata_override(
         # honours and what the GET on the same resource already reports.
         _require_enabled(request, item.library)
         # ONE exit for every refusal about the field or the value, so all of
-        # them serve the same class-name-only detail (C3/C10). The unwritable
+        # them serve the same class-name-only detail. The unwritable
         # case raises rather than returning its own HTTPException precisely so
         # that the served FORM cannot drift between the two branches.
         try:
@@ -289,7 +289,7 @@ async def delete_metadata_override(
 ) -> dict:
     """Clear this override, unlock the field in Plex, and re-run the item.
 
-    Roadmap row 99's C9, option (b), and both halves are disclosed rather than
+    Roadmap row 99's option (b), and both halves are disclosed rather than
     only the tidy one. Everything this service writes is LOCKED, so a row that
     merely went away would leave a locked field nothing will ever refill. So
     ONE write sets ``{field}.locked = 0`` -- no value write -- and then:

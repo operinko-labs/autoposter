@@ -73,7 +73,7 @@ def upgrade() -> None:
             row['kind'], tmdb_id=tmdb_id, tvdb_id=tvdb_id, imdb_id=imdb_id,
             season_number=row['season_number'], episode_number=row['episode_number'],
             file_path=row['file_path'], root_folder=row['root_folder'],
-            # M1: ``rating_key`` is NOT NULL at this revision, but an empty
+            # ``rating_key`` is NOT NULL at this revision, but an empty
             # string would reach identity_key's raise; the row's own id is a
             # placeholder that always exists.
             legacy=row['rating_key'] or str(row['id']),

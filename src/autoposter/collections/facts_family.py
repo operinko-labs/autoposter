@@ -126,8 +126,8 @@ FACTS_FAMILY_TYPES: dict[str, FactsFamilyType] = {
         FactsFamilyType(
             "tmdb_collection", FACTS_FIELDS["tmdb_collection"], "tmdb_collection",
             "id", _BARE_KEY_TITLE,
-            "Roadmap row 192, keyed on the ID -- Task 1 §4's `FRANCHISE KEY: id` "
-            "verdict, read off `movie/franchise.yml`'s own integer-keyed "
+            "Roadmap row 192, keyed on the ID -- the franchise key is the id, "
+            "read off `movie/franchise.yml`'s own integer-keyed "
             "`addons`/`title_override` tables. The single-collection "
             "`tmdb_collection` builder shipped in phase 8b and is what each unit "
             "here runs, so the membership is the franchise's own `parts` rather "

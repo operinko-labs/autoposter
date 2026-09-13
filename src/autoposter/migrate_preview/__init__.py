@@ -57,7 +57,7 @@ def preview(rows: list[dict]) -> list[Collision]:
             row["kind"], tmdb_id=tmdb_id, tvdb_id=tvdb_id, imdb_id=imdb_id,
             season_number=row["season_number"], episode_number=row["episode_number"],
             file_path=row["file_path"], root_folder=row["root_folder"],
-            # M1: an empty rating_key would reach identity_key's raise; the
+            # An empty rating_key would reach identity_key's raise; the
             # row's own id is a placeholder that always exists, and is what
             # the migration itself uses.
             legacy=row["rating_key"] or str(row["id"]),

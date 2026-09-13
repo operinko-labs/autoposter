@@ -499,7 +499,7 @@ def test_collection_exposes_the_smart_flag_the_shape_check_reads():
 
 
 def test_collection_exposes_the_subtype_the_level_check_reads():
-    """Task 4 review I-1: ``smart._level_conflict`` branches on
+    """``smart._level_conflict`` branches on
     ``Collection.subtype``. Unlike ``smart`` above, plexapi reads it with NO
     default -- ``data.attrib.get('subtype')`` alone -- so absence means the
     running plexapi's XML no longer carries the attribute, not "no level
@@ -511,7 +511,8 @@ def test_collection_exposes_the_subtype_the_level_check_reads():
 
 
 def test_no_reconciler_reads_a_collections_content_echo():
-    r"""9c decision C10, asserted rather than promised.
+    r"""Asserted rather than promised: plexapi does not document this behavior
+    as a guarantee, so it is pinned here rather than relied on blind.
 
     ``Collection.content`` is Plex's echo of a smart collection's stored uri,
     and Kometa compares against it on every pass

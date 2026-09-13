@@ -193,8 +193,8 @@ async def test_the_summary_counts_every_flag_and_totals_the_default_population(
 async def test_near_miss_is_counted_in_the_summary_and_named_in_the_list(
     client, auth_headers, session
 ):
-    """Task 1 review I2: gated features need one test through the real entry
-    point, because a helper-level pass (`tests/test_action_flags.py`'s seven
+    """Gated features need one test through the real entry point, because a
+    helper-level pass (`tests/test_action_flags.py`'s seven
     `flags.predicate_for`/`flags.detail_for` calls) can pass while the wired
     path differs. `api/action_center.py`'s summary and list routes are
     registry-driven loops with no per-flag branch, so this exercises them
@@ -667,9 +667,9 @@ async def test_the_backfill_status_splits_out_rows_blocked_by_a_parked_job(
     whose item's most recent `process_item` job is `parked` cannot be moved
     by pressing this button -- only an operator acting on Failures can. It
     must be reported separately as `blocked` and excluded from `total`, or
-    `done >= total` never holds while it sits there (the M2 cohort: a press
-    resets the cycle, so a parked item's row would otherwise be re-selected
-    and re-counted as ordinary progress forever)."""
+    `done >= total` never holds while it sits there (a press resets the
+    cycle, so a parked item's row would otherwise be re-selected and
+    re-counted as ordinary progress forever)."""
     from datetime import datetime, timezone
 
     blocked_item, _ = await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
@@ -709,7 +709,7 @@ async def test_a_pending_jobs_item_is_not_counted_as_blocked(client, auth_header
 async def test_a_pending_job_newer_than_a_stale_parked_one_counts_as_queued_not_blocked(
     client, auth_headers, session
 ):
-    """Roadmap: the unscorable-floor investigation's M3. `uq_jobs_pending_dedupe`
+    """Roadmap: the unscorable-floor investigation. `uq_jobs_pending_dedupe`
     only forbids two live pending/deferred rows for the same key -- it does
     NOT forbid a stale `parked` row sitting alongside a fresher `pending` one,
     which is exactly what a press against a previously-parked item produces.

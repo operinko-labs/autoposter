@@ -76,8 +76,8 @@ class FakeHub:
 
 
 class FailingMoveHub(FakeHub):
-    """A hub whose visibility write succeeds but whose move fails -- the
-    fix round's partial-success case (item 2c)."""
+    """A hub whose visibility write succeeds but whose move fails -- a
+    partial-success case."""
 
     def move(self, after=None):
         raise RuntimeError("https://plex.local/hubs/move?token=SECRET failed")

@@ -19,7 +19,7 @@ async def _lowest_named_movie(api: JellyfinApi) -> dict:
     """The one movie V3/V4 write to, picked deterministically: the lowest
     ``Name`` in the Movies library. Sorted client-side rather than via
     ``sortBy``/``limit`` -- capture -> "/Items" -> get does not document
-    those parameters (task-17-addendum.md permits either)."""
+    those parameters."""
     movies = next(f for f in await api.virtual_folders() if f["CollectionType"] == "movies")
     items = await api.items(parentId=movies["ItemId"], recursive="true", includeItemTypes="Movie", fields="Path")
     return min(items, key=lambda item: item["Name"])
@@ -32,7 +32,7 @@ def _v3v4_movie():
     content_type_or_None)``, and restores the original (or ``delete_image``,
     if there was none) in teardown -- module-scoped so V3 and V4 share one
     capture/restore cycle rather than each capturing and restoring its own
-    (fix round 1, I2: a failed restore in one must not silently become the
+    (a failed restore in one must not silently become the
     other's baseline).
 
     Plain (non-async) module-scoped fixture using ``asyncio.run()`` for its
@@ -125,8 +125,9 @@ async def test_v3_set_image_accepts_a_base64_body(jellyfin_live, jpeg_bytes, _v3
     """V3 (spec §11): capture -> "/Items/{itemId}/Images/{imageType}" -> post.
 
     Writes to the one movie ``_v3v4_movie`` owns; that fixture captures and
-    restores its original Primary image once, shared with V4 (fix round 1,
-    I2) rather than each test capturing and restoring its own.
+    restores its original Primary image once, shared with V4 rather than each
+    test capturing and restoring its own -- so a failed restore in one cannot
+    silently become the other's baseline.
     """
     item_id, _, _ = _v3v4_movie
     url, key = jellyfin_live
@@ -144,8 +145,9 @@ async def test_v4_a_metadata_refresh_without_replace_leaves_our_image(jellyfin_l
     gained a matching section in this task).
 
     Writes to the one movie ``_v3v4_movie`` owns; that fixture captures and
-    restores its original Primary image once, shared with V3 (fix round 1,
-    I2) rather than each test capturing and restoring its own.
+    restores its original Primary image once, shared with V3 rather than each
+    test capturing and restoring its own -- so a failed restore in one cannot
+    silently become the other's baseline.
     """
     item_id, _, _ = _v3v4_movie
     url, key = jellyfin_live

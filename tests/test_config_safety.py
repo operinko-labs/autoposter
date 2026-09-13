@@ -508,7 +508,7 @@ async def test_an_export_round_trips_through_import(
 async def test_a_preview_of_a_migrated_section_envelope_is_not_refused(
     client, auth_headers, session
 ):
-    """M1: the import endpoint strips MIGRATED_SECTIONS before validating
+    """The import endpoint strips MIGRATED_SECTIONS before validating
     (`test_a_restore_strips_a_migrated_section`'s design trap, replayed on the
     envelope arm). The preview arm must strip identically, or a pre-migration
     backup carrying `version_check` 422s at the panel's preview gate and the

@@ -241,7 +241,7 @@ async def test_keys_resolve_answers_only_for_the_stored_key():
         assert "searchTerm" not in params, "keys_resolve must never search"
         path = request.url.path
         if path == "/Library/VirtualFolders":
-            # `_key_matches` also checks the item's library (I2) -- served
+            # `_key_matches` also checks the item's library -- served
             # once, for the coordinate-matching "m1" case only.
             return httpx.Response(200, json=[
                 {"Name": "Movies", "CollectionType": "movies", "Locations": ["/media/Movies"], "ItemId": "lib1"},

@@ -6,15 +6,14 @@ full-body replace, 204 on success, no partial-field editor route the way
 Plex's ``item.edit()`` has). That capture's "16 fields the client writes"
 list (Name, SortName, ForcedSortName, Overview, Genres, Studios,
 OfficialRating, Tags, LockedFields, ProviderIds, Path, IndexNumber,
-ParentIndexNumber, SeriesId, Id, Type) was scoped to Task 14a/15's needs and
-does not individually verify ``CriticRating``, ``CommunityRating``,
-``OriginalTitle`` or ``PremiereDate`` -- this module's use of them follows
-the task-16 controller addendum's ruling rather than that capture's verified
-list, and should be re-verified live before this write path is trusted in
-production.
+ParentIndexNumber, SeriesId, Id, Type) was scoped to the resolve/write work
+that preceded this module and does not individually verify ``CriticRating``,
+``CommunityRating``, ``OriginalTitle`` or ``PremiereDate`` -- this module
+writes them anyway, beyond that capture's verified list, and they should be
+re-verified live before this write path is trusted in production.
 
-Task 16 ruling: reuse ``plex.writer.plan_edits`` unmodified rather than
-reimplement the diff -- it already carries the provider-value diff, the
+``plex.writer.plan_edits`` is reused unmodified rather than
+reimplementing the diff -- it already carries the provider-value diff, the
 lock/unlock/remove verbs (``verb_edits``), the per-item override map
 (``override_edits``) and the parental-guide labels, all gated by
 ``WRITABLE_BY_KIND``. ``_DtoView`` is the adapter that lets a Jellyfin dict
@@ -37,8 +36,8 @@ KIND_TO_PLEX_TYPE = {"Movie": "movie", "Series": "show", "Season": "season", "Ep
 # genres) -> the Jellyfin DTO property it is written to. The three
 # override-only text fields (`title`, `summary`, `tagline`) are real DTO
 # properties too -- WRITABLE_BY_KIND permits an override to set any of them,
-# and dropping the value while still honouring its paired lock (review
-# finding I1) would lock Name/Overview to a STALE value, worse than not
+# and dropping the value while still honouring its paired lock
+# would lock Name/Overview to a STALE value, worse than not
 # writing at all. `tagline` has no lock representation (not in LOCKABLE --
 # not a captured MetadataField member) -- an override on it is value-only.
 EDIT_TO_DTO = {
@@ -150,8 +149,7 @@ class _DtoView:
     def rating(self) -> float | None:
         # Jellyfin's CriticRating is 0-100; Plex's `rating` -- and the
         # format_critic comparison plan_edits runs both sides through -- is
-        # 0-10. Task-16 addendum ruling: divide by 10 so the two compare like
-        # with like.
+        # 0-10, so this divides by 10 and the two compare like with like.
         value = self._dto.get("CriticRating")
         return None if value is None else value / 10
 
@@ -247,7 +245,7 @@ class _DtoView:
 def _log_non_lockable_verbs(view: _DtoView, operations) -> None:
     """One INFO line per field named in ``operations.field_verbs`` with a
     ``lock``/``unlock`` verb that Jellyfin's captured ``MetadataField`` enum
-    cannot represent (task-16 addendum ruling): the verb is accepted by
+    cannot represent: the verb is accepted by
     config (``operations`` already loaded), ``verb_edits`` computes an edit
     for it same as any other field, and that edit is silently unwritable on
     this server -- silence here would read as "it worked."

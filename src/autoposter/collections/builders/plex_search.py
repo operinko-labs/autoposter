@@ -205,7 +205,7 @@ class PlexSearchParams(BaseModel):
     # Set by ``_the_block_must_parse_as_a_search``, the one place the block is
     # parsed. ``build()`` reads it through the ``group`` property rather than
     # calling ``parse_filters`` a second time on the same block and the same
-    # arguments (Task 4 review, Minor 11).
+    # arguments.
     _group: Any = PrivateAttr(default=None)
 
     @model_validator(mode="before")
@@ -221,20 +221,20 @@ class PlexSearchParams(BaseModel):
         a reason here for the same reason.
 
         Every check below matches keys EXACTLY, not case-insensitively.
-        Before Task 4's fix round this matched case-insensitively while field
+        This once matched case-insensitively while field
         acceptance (``all``, ``any``, ``sort_by``, ``limit``, and
         ``extra="forbid"`` itself) always has not -- so ``All:`` satisfied
         "a base is present" here and was then rejected two validators later
         by pydantic's generic "Extra inputs are not permitted", losing the
-        tailored message anyway (Task 4 review, Minor 12). Matching exactly
+        tailored message anyway. Matching exactly
         is the stricter of the two and it is what makes this validator's
         verdict and pydantic's field lookup agree on every input.
 
         This is also the ONLY place the written base is known by name rather
         than inferred from which of ``self.all``/``self.any`` ended up
         non-``None`` -- which is why the two empty-base checks below live
-        here rather than in an ``after`` validator (Task 4 review, Important
-        1): ``{"all": None}`` and no base written at all are indistinguishable
+        here rather than in an ``after`` validator:
+        ``{"all": None}`` and no base written at all are indistinguishable
         once pydantic has applied the field defaults, because both leave
         ``self.all`` and ``self.any`` at ``None``.
         """
@@ -386,8 +386,8 @@ class PlexSearchBuilder:
         section = access.section()
 
         # No separate ``require_sort_for_libtype`` call here any more: it is
-        # the first statement of ``build_search_url`` itself now (Task 4
-        # review, ruling on Minor 1), which gives every caller the message
+        # the first statement of ``build_search_url`` itself now, which
+        # gives every caller the message
         # AND -- because it runs ahead of ``_render_group`` -- still costs
         # this builder zero ``listFilterChoices`` round-trips before a
         # wrong-libtype sort refuses.
@@ -396,7 +396,7 @@ class PlexSearchBuilder:
         # -- the same "one moment for the whole collection" reasoning
         # ``engine.py``'s own filters pass already uses, not a clock read per
         # value. ``build_search_url`` stays pure (roadmap row 171's
-        # ``plex_search`` half, controller ruling): a ``_CurrentYear``/
+        # ``plex_search`` half): a ``_CurrentYear``/
         # ``_Today`` sentinel left unresolved would reach its plain
         # ``str(value)``/``value.isoformat()`` branches and render either the
         # sentinel's own ``repr()`` or raise, rather than the year or date an
@@ -418,7 +418,7 @@ class PlexSearchBuilder:
         # Plex error, dropped connection -- ends the build the same way. The
         # resolver's finer split exists only because IT caches its verdict
         # for the rest of the pass and must not cache a coding bug as "Plex
-        # has no such filter" (Task 4 review, Minor 3 / Fix-round Carry 1).
+        # has no such filter".
         try:
             items = section.fetchItems(
                 f"/library/sections/{section.key}/all{url}"
@@ -480,9 +480,9 @@ class LibraryTagResolver:
         # a construction site that does not pass it stays byte-identical; two
         # do -- ``PlexSearchBuilder.build`` and ``smart_filter``'s
         # ``search_url``, because both can reach a ``builder_level`` other
-        # than the library's own (Task 2 review, Important 2). ``smart_filter``
-        # refuses the one attribute that would ever read this back (row 176
-        # ruling C5), so passing it there is defence in depth, not something
+        # than the library's own. ``smart_filter``
+        # refuses the one attribute that would ever read this back (row
+        # 176), so passing it there is defence in depth, not something
         # read today.
         self._search_type = search_type or libtype
 
@@ -509,8 +509,8 @@ class LibraryTagResolver:
         code (``pt``) here exactly as it will at evaluation. ``__call__``
         cannot answer that: its search semantics accept a regional value only
         under its own exact spelling, which is right for building a Plex
-        query and wrong for asking "is this word known" (Task 2 review,
-        Important 1). Every other attribute keeps ``__call__``'s existing
+        query and wrong for asking "is this word known".
+        Every other attribute keeps ``__call__``'s existing
         match.
         """
         scope, name = self._field_and_scope(attribute)
@@ -526,7 +526,7 @@ class LibraryTagResolver:
         # whose search semantics stay untouched. The two differ only for a
         # handful of characters (``ß``, final ``ς``), but row 158 promises
         # membership never narrows against what the evaluator would actually
-        # match (M2).
+        # match.
         wanted = str(value).casefold()
         return any(
             wanted in (str(choice.title).casefold(), str(choice.key).casefold())
@@ -701,8 +701,8 @@ class LibraryTagResolver:
             found = list(self._section.listFilterChoices(field=name, libtype=scope))
         # plexapi's own docstring for ``listFilterChoices`` names exactly these
         # two: ``NotFound`` for an unknown filter field, ``BadRequest`` for an
-        # invalid one. Narrower than ``except Exception`` on purpose (Task 4
-        # review, Minor 3) -- a blanket catch here does not just log a
+        # invalid one. Narrower than ``except Exception`` on purpose -- a
+        # blanket catch here does not just log a
         # failure, it MEMOISES one, for the rest of the pass, as a fact about
         # the LIBRARY ("Plex has no 'genre' filter..."). A ``TypeError`` from
         # this module's own code is not that fact, and telling the operator it
@@ -732,9 +732,8 @@ class LibraryTagResolver:
         # above because "Plex has no such filter" would be a FALSE claim about
         # the library for any of the three -- class-name-only, like the other
         # Plex exception this module wraps, because each can carry a tokenised
-        # URL in its own message (Task 4 review, Fix-round Carry 1: the
-        # narrowing above, alone, silently dropped this wrap and let that
-        # message reach the engine's logger intact).
+        # URL in its own message (the narrowing above, alone, would drop
+        # this wrap and let that message reach the engine's logger intact).
         except (PlexApiException, requests.RequestException, ElementTree.ParseError) as error:
             failure = PlexSearchUnavailable(
                 f"Plex would not answer the {attribute!r} filter lookup for "
@@ -751,8 +750,7 @@ class LibraryTagResolver:
         # agrees: ``validate_attribute`` calls its own ``get_search_choices``
         # as ``title=not plex_search`` (modules/builder.py:4412, v2.4.8), so
         # under a plex_search that argument is ``False`` and Kometa's own
-        # table is key-keyed too, not title-keyed (Task 4 review, closing
-        # item 2).
+        # table is key-keyed too, not title-keyed.
         table: dict[str, str] = {}
         for choice in self._raw_choices(attribute, scope, name):
             for spelling in (
@@ -770,8 +768,8 @@ class LibraryTagResolver:
         An EXACT value Plex reports (``es-419``, ``spa``) targets only itself;
         anything else expands to every library value that reduces to the same
         base code. Each becomes its own URL term -- and under an ``all:`` block
-        those terms are ANDed, which is Kometa's behaviour and is Task 5's
-        probe #2: an item is unlikely to carry three Spanish variants at once.
+        those terms are ANDed, which is Kometa's behaviour and is unprobed:
+        an item is unlikely to carry three Spanish variants at once.
         """
         exact: dict[str, str] = {}
         by_base: dict[str, list[str]] = {}

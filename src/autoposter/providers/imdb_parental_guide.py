@@ -27,8 +27,8 @@ This module's wrong answer costs one item its labels for one pass -- and
 library (the probe's own finding: an obscure title with no guide votes
 answers exactly this shape, indistinguishable at this layer from a title
 this endpoint has never heard of -- and that's fine, because our ids come
-from facts and are already existence-checked upstream; see roadmap row 85's
-C1.3). So every unrecognised shape -- a missing ``title``, a missing
+from facts and are already existence-checked upstream; see roadmap row 85).
+So every unrecognised shape -- a missing ``title``, a missing
 ``parentsGuide``, ``categories: null``, a malformed individual entry --
 returns ``None`` (or drops just that entry) with a DEBUG line, never a raise.
 """

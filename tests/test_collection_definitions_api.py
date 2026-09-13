@@ -188,7 +188,7 @@ async def test_a_corrupt_overrides_row_is_named_rather_than_an_opaque_500(
     assert "config overrides row is corrupt" in response.json()["detail"]
 
 
-# --- the parse endpoint (T2) ------------------------------------------------
+# --- the parse endpoint ------------------------------------------------------
 
 
 async def test_parse_source_requires_a_session(client):

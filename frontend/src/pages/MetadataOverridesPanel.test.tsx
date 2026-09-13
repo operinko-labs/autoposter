@@ -287,7 +287,7 @@ describe("MetadataOverridesPanel", () => {
   });
 
   it("states the affected count as one item, with no preview", async () => {
-    /* C5: an override is not a config edit, so there is nothing for
+    /* An override is not a config edit, so there is nothing for
      * `config/impact.py` to walk and no `_render_affecting` transition to
      * detect. The count is the literal 1. */
     vi.stubGlobal("fetch", mockFetch({

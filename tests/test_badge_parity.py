@@ -1,7 +1,7 @@
 """Parity against real production output.
 
 Both oracle pairs were pulled from the live Plex server: a base that our own
-Phase 1 pipeline produced, and the badged image the tool being replaced
+pipeline produced, and the badged image the tool being replaced
 uploaded for the same item. We cannot be byte-identical -- we encode our own
 WebP from our own base -- so the assertion is that badging the base moves it
 substantially *towards* the production output inside each badge region, and

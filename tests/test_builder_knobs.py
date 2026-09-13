@@ -751,7 +751,7 @@ class _EnumeratingSection(FakeSection):
 
 
 async def test_a_real_applys_record_is_what_the_sweep_deletes_against(session):
-    """T5-review gap, closed (10a-2 branch review I1). Every seeded test above
+    """Every seeded test above
     proves the sweep obeys ``run_cache``'s record; none of them proves a real
     ``apply`` writes a record the sweep can be trusted against -- their
     ``FakeSection.listFilterChoices`` always returns ``[]``, so a real ``apply``
@@ -862,7 +862,7 @@ async def test_a_family_that_did_not_run_protects_every_one_of_its_collections(
 async def test_a_collection_carrying_two_family_labels_is_protected_by_either(
     session,
 ):
-    """T1 review Important, closed. ``reconcile._apply_labels`` is additive by
+    """``reconcile._apply_labels`` is additive by
     default, so one collection can carry two families' labels at once -- an
     operator's config that has two ``dynamic`` definitions derive the same
     title (e.g. ``Genres A`` with ``include: [Horror]`` and ``Genres B`` with
@@ -928,7 +928,7 @@ async def test_a_collection_carrying_two_family_labels_is_protected_by_either(
 async def test_a_family_member_without_the_ownership_label_is_never_swept(
     session,
 ):
-    """T5 review Minor 3, closed. The 10a-1 branch put the family check ABOVE
+    """The 10a-1 branch put the family check ABOVE
     the ownership check, which was harmless while the branch only reported.
     Now that it deletes, a collection carrying the family label but NOT ours --
     an operator labelled it by hand, or stripped our label -- must fall out at

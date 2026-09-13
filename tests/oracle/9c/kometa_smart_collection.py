@@ -57,7 +57,7 @@ SECTION_KEY = "2"
 class Failed(Exception):
     """Kometa's own control-flow exception (modules/util.py). Its message text
     is Kometa's, verbatim, because the refusal wording is part of what this
-    oracle records -- ours is deliberately different, and Task 2 says why."""
+    oracle records -- ours is deliberately different, and the shipped writer says why."""
 
 
 def quote(value):
@@ -105,7 +105,7 @@ def test_smart_filter(item_count, uri_args):
 
     REMOVED: ``self.fetchItems(uri_args)``, the network read -- the caller
     supplies the count it would have returned. What is transcribed is the
-    VERDICT, because the verdict is the behaviour 9c adopts (C8): fewer than one
+    VERDICT, because the verdict is the behaviour 9c adopts: fewer than one
     item is a refusal, not an empty collection.
     """
     if item_count < 1:
@@ -126,7 +126,7 @@ def create_smart_collection(
     transport; the key is returned so it can be compared as a string.
 
     ``ignore_blank_results`` is transcribed because it is what Kometa's flow
-    DOES, and 9c refuses to offer it (C8) -- recording the switch here is what
+    DOES, and 9c refuses to offer it -- recording the switch here is what
     makes that refusal a deliberate divergence rather than an omission.
     """
     if not ignore_blank_results:

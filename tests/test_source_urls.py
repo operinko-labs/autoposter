@@ -1,6 +1,6 @@
 """``collections/source_urls.py``: every accepted shape and every refusal.
 
-Pure -- no app, no network. The parse is shape-only by design (facts C2):
+Pure -- no app, no network. The parse is shape-only by design:
 nothing here mocks a provider because nothing is fetched; a list that does
 not exist is the first pass's discovery, and sync semantics leave the
 collection untouched when it fails.
@@ -28,7 +28,7 @@ ACCEPTED = [
         "https://mdblist.com/lists/linaspurinis/top-watched-movies-of-the-week",
         "mdblist_list", {"list": "linaspurinis/top-watched-movies-of-the-week"},
     ),
-    # The TMDb entity family rides free on one params model (facts C2). A
+    # The TMDb entity family rides free on one params model. A
     # slugged segment's id is its leading digits.
     ("https://www.themoviedb.org/list/8136243", "tmdb_list", {"id": 8136243}),
     (
@@ -45,7 +45,7 @@ ACCEPTED = [
         "https://www.thetvdb.com/lists/marvel-cinematic-universe",
         "tvdb_list", {"slug": "marvel-cinematic-universe"},
     ),
-    # Bare shapes (facts C2): accepted where unambiguous.
+    # Bare shapes: accepted where unambiguous.
     ("ls055350410", "imdb_list", {"list": "ls055350410"}),
     ("ur00000001", "imdb_watchlist", {"user": "ur00000001"}),
     (

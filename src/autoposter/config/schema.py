@@ -1442,7 +1442,7 @@ class BadgesConfig(BaseModel):
             "and optional group."
         ),
     )
-    # Roadmap row 100, sub-phase C1. A family is a bundle of definitions this
+    # Roadmap row 100. A family is a bundle of definitions this
     # service ships, transcribed from the pinned Kometa tree
     # (`overlays/families.py`) -- ~40 content-rating definitions is not
     # something an operator writes by hand, so naming the family is the
@@ -3236,8 +3236,7 @@ _REFUSED_PLAYLIST_FIELDS: dict[str, str] = {
     "filters": (
         "the post-builder filter stage runs inside the collections engine "
         "(engine._run_one, with its tier-2 prefetch); giving playlists a second "
-        "copy of it is deliberately out of 98a's scope and is filed in roadmap "
-        "row 98's ledger"
+        "copy of it is a declared gap, recorded in roadmap row 98"
     ),
 }
 

@@ -3,7 +3,7 @@
 Measured 2026-08-30 on the development machine (Windows 11 + Docker Desktop /
 WSL2), during the hardening sweep's investigation of roadmap row 195. This
 directory exists so the measurement and its reproducer survive: the original
-artefacts lived under `.superpowers/`, which is gitignored, and a roadmap row
+artefacts lived outside the tree, and a roadmap row
 citing a gitignored path documents nothing.
 
 **What was measured:** Postgres `clock_timestamp()` and the test container's own
@@ -31,7 +31,7 @@ well have a monotonic clock. The suite is written to survive both.
 
 ## The measurement
 
-`.superpowers/run-p-hard1-t3-clockprobe.log`, in full — 120 s of sampling,
+the clock-probe log, in full — 120 s of sampling,
 11 646 samples, 8 backwards events (4 composite steps):
 
 ```
@@ -127,7 +127,7 @@ coincide.
 
 Save the script below to `<repo>/clockprobe.py`, then run it inside the test
 container, which supplies `AUTOPOSTER_MAINTENANCE_DATABASE_URL` (the script was
-actually run from `.superpowers/p-hard1-195-clockprobe.py`, a gitignored path;
+actually run from an untracked scratch path;
 the command below is the equivalent invocation for the version checked in here):
 
 ```bash

@@ -11,8 +11,7 @@ BACKGROUND_SIZE = "3840x2160"
 # and, until this bound existed, decoded and re-encoded it at whatever
 # resolution the provider served -- at Q16-HDRI's 16 bytes per RGBA pixel, held
 # twice, a 10000x10000 source is 3.2 GB in one process, and the pipeline runs
-# five of them concurrently. That is the demand side of the production OOM
-# (.superpowers/sdd/p-oom-investigation.md).
+# five of them concurrently. That is the demand side of the production OOM.
 #
 # Enforced with ImageMagick's ``>`` flag -- "resize only if larger than this" --
 # so a source already inside the box is not resized at all and the stamp writes

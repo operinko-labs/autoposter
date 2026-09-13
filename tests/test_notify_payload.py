@@ -1,4 +1,4 @@
-"""The notification payload contract (Phase 5a, Task 1).
+"""The notification payload contract.
 
 Both payload shapes are asserted as whole dicts, not key-by-key -- an extra
 or missing field is a contract change and must fail here. The mode gate lives

@@ -253,7 +253,7 @@ describe("the groups panel", () => {
   it("states the live-swap and churn sentences", async () => {
     await renderPanel();
 
-    // C5: the change is live with no restart and lands at the next pass…
+    // The change is live with no restart and lands at the next pass…
     expect(screen.getByText(/no restart/i)).toBeInTheDocument();
     // …and the first pass that sees it rewrites the moved groups' sort
     // titles, one write each, once.
@@ -425,7 +425,7 @@ describe("the style select", () => {
   });
 
   it("shows the unsaved badge above the style block, not below the preview", async () => {
-    // Divider review T4 M5: the badge used to render under the ~640px style
+    // The badge used to render under the ~640px style
     // preview, a screen away from the buttons that made the order dirty.
     await renderPanel();
 

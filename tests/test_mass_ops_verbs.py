@@ -4,7 +4,7 @@
 project holds no agent value to restore and has never called a Plex refresh
 (roadmap row 230, closed as won't-do). It is REFUSED at config load time
 (``OperationsConfig`` raises) rather than accepted and silently doing nothing
--- see the branch review's I1: an accepted-but-ignored verb was previously
+-- an accepted-but-ignored verb was previously
 indistinguishable from a working field write that had just been switched off,
 with no log line anywhere.
 
@@ -82,7 +82,7 @@ def test_unlock_is_steady_when_the_field_is_already_unlocked():
 
 
 def test_an_apply_flag_left_off_changes_nothing():
-    # Dry-run-by-default, per verb (facts C1.6).
+    # Dry-run-by-default, per verb.
     item = LockableItem(studio="Warner", locks=[("studio", True)])
     operations = OperationsConfig(field_verbs={"studio": "unlock"})
     assert verb_edits(item, operations) == {}
@@ -103,7 +103,7 @@ def test_remove_is_steady_on_an_already_empty_scalar():
 
 
 def test_removing_a_field_this_service_does_not_clear_logs_info_naming_it(caplog):
-    """Task-2 fix round 1, ruling on I-2: this fires once PER ITEM per pass
+    """This fires once PER ITEM per pass
     for a single library-wide config mistake -- the same per-item volume as
     the sibling "would %s %s on %s" line, which is already INFO. WARNING
     would cost one line per item, every pass, forever, for a 10k-item
@@ -143,7 +143,7 @@ def test_remove_on_genres_clears_every_held_genre_and_emits_no_lock_key():
 
 
 def test_remove_on_genres_clears_them_even_when_the_field_is_already_locked():
-    # Task 1 review finding I1: locked is not empty. Every item this service
+    # Locked is not empty. Every item this service
     # has previously written genres to already reports genre.locked=1 --
     # _apply_genre_edits calls addGenre(..., locked=True) and row 246's
     # _ensure_locked locks even the equal-value case -- so this is the most
@@ -206,7 +206,7 @@ def test_unlock_on_genres_uses_plexs_singular_lock_field_name():
 
 
 def test_reset_is_a_config_load_error():
-    # I1 fix: previously loaded and silently no-opped, switching off a
+    # Previously loaded and silently no-opped, switching off a
     # working ``studio`` write with no log line. Now refused at load time.
     with pytest.raises(ValueError, match="reset"):
         OperationsConfig(field_verbs={"studio": "reset"}, remove_apply=True)
@@ -405,8 +405,7 @@ async def test_the_genre_lock_reaches_plex_through_the_real_entry_point(
     equal to Plex's own value) so ``apply_metadata``'s own ``facts.is_empty()``
     short-circuit is not what keeps it green: ``apply_facts`` and ``plan_edits``
     are both reached, and what actually plays the gate is ``plan_edits``' ``and
-    genres`` term -- an item no provider has genres for is not touched (row 246
-    C3).
+    genres`` term -- an item no provider has genres for is not touched (row 246).
     """
     # (a) GATE OFF. The provider has no genres for this item, but it does
     # have a studio fact (equal to Plex's own value, so it writes nothing on
@@ -455,7 +454,7 @@ async def test_the_genres_remove_verb_through_the_real_entry_point(
     """
     # (a) GATE OFF. field_verbs unset: the item keeps its genres and nothing is
     # written. The provider has no genres either, so plan_edits' "and genres"
-    # term is what leaves the field alone (row 246 C3).
+    # term is what leaves the field alone (row 246).
     plex_item = RecordingPlexItem(studio="Warner", genres=["Crime", "Drama"], locks=[])
     await apply_metadata(
         session, config, media_item_id, _item(), RecordingServer(plex_item),
@@ -491,12 +490,12 @@ async def test_the_genres_remove_verb_through_the_real_entry_point(
     assert plex_item.saved == 1
 
 
-# --- I2: pipeline.py:1137's `p.name == "TVDB"` lookup, driven end to end ----
+# --- pipeline.py:1137's `p.name == "TVDB"` lookup, driven end to end -------
 #
 # Not through gather_facts directly (test_facts_gather.py already covers the
 # ``tvdb is None`` gate) but through ``process_item``, the real caller that
 # resolves ``tvdb`` out of the process's ``providers`` list before handing it
-# to ``apply_metadata``. This is the seam the branch review found untested.
+# to ``apply_metadata``. This is the seam that was previously untested.
 
 import httpx  # noqa: E402
 

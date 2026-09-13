@@ -78,8 +78,8 @@ async def test_the_stored_document_moves_no_render_version(client, auth_headers)
 
 
 async def test_a_real_library_name_is_not_an_unknown_setting(client, auth_headers):
-    """The defect T1's walk arm closed, proved where it would have been felt:
-    before it, this save answered 422 with `libraries.Movies` unknown."""
+    """Proved where it would have been felt: before this was fixed, this save
+    answered 422 with `libraries.Movies` unknown."""
     response = await _put(client, auth_headers, BLOCK)
     assert response.status_code == 200, response.text
 
@@ -172,8 +172,8 @@ async def test_an_emptied_library_block_is_refused_by_the_existing_guard(
 async def test_dropping_more_than_the_cap_needs_confirm_as_today(
     client, auth_headers,
 ):
-    """``OVERRIDE_DROP_CAP`` counts in ``document_paths`` units, and T1
-    pinned that walk as already correct for this shape -- so clearing a
+    """``OVERRIDE_DROP_CAP`` counts in ``document_paths`` units, and that walk
+    is already correct for this shape -- so clearing a
     four-leaf library row trips the existing refusal with no new cap, no new
     flag and no new code."""
     populated = {"libraries": {"Movies": {"operations": {

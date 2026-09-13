@@ -1,4 +1,4 @@
-"""The DB-backed enumeration seam (adjudication C6).
+"""The DB-backed enumeration seam.
 
 The ten shipped dynamic types enumerate through Plex's ``listFilterChoices``
 (``builders/plex_search.LibraryTagResolver``). These values are not in Plex at
@@ -187,7 +187,7 @@ async def test_membership_of_no_values_is_no_items(session):
 
 async def test_coverage_counts_attempts_and_not_rows(session):
     """The convergence story, measurable. ``facts_attempted_at`` is stamped by
-    every ``persist_facts`` call (C4), so an item TMDb had nothing for counts
+    every ``persist_facts`` call, so an item TMDb had nothing for counts
     as VISITED -- which is exactly the honesty the pack descriptions need."""
     seen = await _item(session, "a", tmdb_original_language="en")
     looked = await _item(session, "b")

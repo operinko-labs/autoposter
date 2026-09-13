@@ -145,7 +145,7 @@ def test_a_changed_rating_value_used_by_a_definition_moves_the_fingerprint():
 
 
 def test_a_none_valued_rating_produces_the_same_digest_as_an_absent_one():
-    """L-1, fix round 1: the digest guard keyed on key PRESENCE (`var in
+    """The digest guard keyed on key PRESENCE (`var in
     ratings`), not on the value being resolved, even though the docstring
     claims 'no (currently-resolved) rating token'. A token whose value is
     `None` -- present because a client is configured, but this item's own

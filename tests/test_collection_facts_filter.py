@@ -238,10 +238,10 @@ async def test_the_read_scopes_on_the_library(session):
 
     `media_items.rating_key` carries a UNIQUE index (the initial schema's
     `ix_media_items_rating_key`), so one key cannot exist in two libraries and
-    the brief's two-row form of this test is unschedulable against the real
+    a two-row form of this test is unschedulable against the real
     database. What the scope must still prevent is the same key ANSWERING from
     the wrong library: a key that lives only in Shows comes back all-None for
-    a Movies ask -- excluded by ruling C3's missing rule -- rather than
+    a Movies ask -- excluded by the missing-rule ruling -- rather than
     carrying the Shows row's band across.
     """
     await _seed(session, "7", library="Shows", facts={"content_rating": "16"})
@@ -339,7 +339,7 @@ async def test_a_facts_filter_selects_through_the_real_entry_point(session):
     """THE load-bearing test (standing memory: a gated feature needs one test
     through the real entry point). Three items in one pass, one of each state:
     a facts row carrying `13`, a facts row whose column is NULL, and no facts
-    row at all. Only the first is a member -- ruling C3's missing rule, seen
+    row at all. Only the first is a member -- the missing-rule ruling, seen
     from the outside."""
     await _seed(session, "101", facts={"content_rating": "13", "critic_rating": 8.1})
     await _seed(session, "102", facts={"content_rating": None, "critic_rating": None})
@@ -359,7 +359,7 @@ async def test_a_facts_filter_selects_through_the_real_entry_point(session):
 
 
 async def test_a_negated_facts_filter_still_excludes_the_ungathered(session):
-    """Ruling C3's sharp end, through the entry point rather than at the unit.
+    """The missing-rule ruling's sharp end, through the entry point rather than at the unit.
     `common_sense_rating.not: 13` keeps the item whose band is `16` and drops
     BOTH ungathered items -- where every other tag row in this table would
     have kept them, turning a cold library into a collection of everything."""
@@ -415,7 +415,7 @@ async def test_the_membership_moves_when_the_facts_arrive_between_passes(session
 
 
 async def test_a_failed_facts_read_refuses_the_definition_class_name_only(session):
-    """C4's failure shape, mirroring the tier-2 batched refusal at the same
+    """The failure shape, mirroring the tier-2 batched refusal at the same
     stage: the definition is FAILED, its items are emptied (which `lists.py`
     reads as "make no changes", so the collection is left exactly as it was
     rather than rewritten from a partial answer), and one action line names the

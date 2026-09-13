@@ -42,14 +42,14 @@ const DEFINITIONS_PATH = "collections.definitions";
  * point a screen reader at the reason it is disabled. */
 const GUARD_ID = "custom-file-guard";
 
-/** Facts C2: what Read URL, Check and Create actually verify -- shape,
+/** What Read URL, Check and Create actually verify -- shape,
  * never existence. */
 const SHAPE_ONLY_NOTE =
   "The URL is checked for shape only — whether the list exists is discovered " +
   "when the reconcile pass next runs it, and a source that fails leaves its " +
   "collection untouched rather than emptying it.";
 
-/** Facts C3: the orphan story on remove, one honest sentence. */
+/** The orphan story on remove, one honest sentence. */
 const REMOVE_NOTE =
   "Removing a definition only stops the pass building it — the collection " +
   "already in Plex follows collections.delete_unconfigured: reported as an " +
@@ -174,13 +174,13 @@ function refusalMessage(caught: unknown): string {
  * posture as the catalog and groups panels.
  *
  * Two refusals shape it, and they are not the same refusal. Create is refused
- * outright while any listed row comes from the mounted file (the guard above,
- * facts Addendum). And whatever is written is built from the STORED overrides
+ * outright while any listed row comes from the mounted file (the guard
+ * above). And whatever is written is built from the STORED overrides
  * document, never from the listing -- the listing supplies display, provenance
  * and the stored ordinal, nothing else.
  *
- * Remove exists only for override-provenance rows -- create's undo (facts
- * C3). A file row renders with a badge and no control.
+ * Remove exists only for override-provenance rows -- create's undo. A file
+ * row renders with a badge and no control.
  */
 export function CustomCollectionsPanel() {
   const [listing, setListing] = useState<DefinitionsListingResponse | null>(null);

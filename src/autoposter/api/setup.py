@@ -31,7 +31,7 @@ deployment IS a private address. What remains, said plainly rather than papered
 over: a holder of the setup token can learn whether an arbitrary host answers
 on an arbitrary port, as a boolean.
 
-One documented exception to "nothing it was given is served" (facts C6): the
+One documented exception to "nothing it was given is served": the
 Plex PIN code and the app.plex.tv auth URL. Both are minted by plex.tv, are
 public by design, and the sign-in is impossible without showing them -- a
 fourth category beside given, held and self-minted. The account token that
@@ -149,13 +149,13 @@ JELLYFIN_URL_NOT_AN_ADDRESS = (
     "the Jellyfin server URL must be an http:// or https:// address with a host, "
     "with no username or password in it, and with no query string or fragment"
 )
-# The shared address guard's refusal, and the one Task 2's check endpoint
+# The shared address guard's refusal, and the one the check endpoint
 # reuses. Three requirements in one sentence because they are one decision: an
 # address this service will connect to -- or hand to an *arr as a callback --
 # on a caller's say-so must be a web address, must not smuggle a credential
 # into a string that ends up in an *arr's database, its UI and its log lines,
 # and must not carry a query string or fragment that a path appended to it
-# would land after (facts C2: the registration URL never carries one).
+# would land after (the registration URL never carries one).
 PUBLIC_URL_NOT_AN_ADDRESS = (
     "this must be an http:// or https:// address with a host, with no "
     "username or password in it, and with no query string or fragment"
@@ -166,7 +166,7 @@ PUBLIC_URL_NOT_AN_ADDRESS = (
 EXAMPLE_CONFIG_UNREADABLE = "the shipped example configuration document could not be read"
 # The other side of _config_source/_config_ready: a deployment that already
 # resolves a document -- a mounted ConfigMap, compose's bind-mounted example --
-# is not offered this step at all (Amendment 6), and this is what enforces
+# is not offered this step at all, and this is what enforces
 # that as a server rule rather than a client courtesy that a direct POST can
 # route around. Refusing here also protects the write ordering finish depends
 # on: writing beside a document that already resolves would produce a second
@@ -228,7 +228,7 @@ NOT_A_SYSTEM_THIS_WIZARD_CHECKS = (
 )
 CHECK_NEEDS_AN_ADDRESS = "this system needs its own address before it can be checked"
 CHECK_TAKES_NO_ADDRESS = "this system's address is built in and cannot be supplied"
-# The typed-address rule (final review I1). Setup mode is entered when ANY ONE
+# The typed-address rule. Setup mode is entered when ANY ONE
 # hard secret fails to resolve, so a pod in it still holds every OTHER
 # credential from its environment or its state file -- and for the five systems
 # whose HOST the caller supplies too, "empty means keep" meant those held
@@ -243,14 +243,14 @@ CHECK_NEEDS_A_TYPED_CREDENTIAL = (
     "a credential this deployment already holds is never sent to an address a "
     "request names"
 )
-# The three outcomes, spelled once (facts C4). `system` is always one of
+# The three outcomes, spelled once. `system` is always one of
 # setup_checks.CHECK_SYSTEMS' own labels -- never the caller's key -- and the
 # third carries an exception class name, the database_answers precedent.
 CHECK_ANSWERED = "{system} answered."
 CHECK_REFUSED = "{system} refused the credential."
 CHECK_UNREACHABLE = "{system} could not be reached ({failure})."
 
-# The registration's own vocabulary (facts C2/C2a/C3). Two step names for the
+# The registration's own vocabulary. Two step names for the
 # values the registration needs and does not have, one refusal for a name it
 # does not register, and two outcome sentences -- the refusal one is the check
 # endpoint's own, reused rather than reworded, because it is the same fact about
@@ -265,8 +265,8 @@ NO_CHECKED_ADDRESS = (
 NO_DEPLOYMENT_URL = (
     "this deployment's own URL has not been given yet; go back to the address step first"
 )
-# `action` is "created" or "updated" -- facts C2a asks for the distinction on
-# the finish page -- and `failure` is a status marker or an exception class
+# `action` is "created" or "updated" -- the finish page draws the
+# distinction -- and `failure` is a status marker or an exception class
 # name, never the *arr's own text. The second sentence on acceptance is the
 # `forceSave` fact: the *arr's own connection test never ran (setup_arr's
 # docstring), so the operator must not be left thinking one already proved the
@@ -276,12 +276,11 @@ REGISTRATION_ACCEPTED = (
     "{system} will exercise the hook on its first real event."
 )
 REGISTRATION_REFUSED = "{system} would not accept the webhook registration ({failure})."
-# A second call for the same service while the first is still mid-flight
-# (review I1): the flag below refuses it outright rather than letting it list
-# and create a second time, which is the duplicate facts C2a exists to
-# prevent.
+# A second call for the same service while the first is still mid-flight:
+# the flag below refuses it outright rather than letting it list and create
+# a second time, which would leave the *arr holding a duplicate webhook.
 REGISTRATION_IN_PROGRESS = "{system}'s webhook registration is already in progress."
-# The residual, closed (final review I1, the controller's 2026-09-07 ruling).
+# The residual, closed (decided 2026-09-07).
 # A GENERATED secret that RESOLVES rather than being staged this session is
 # this deployment's own, not this wizard's -- so it may not follow wherever a
 # check happened to stage an address; it is bound instead to the address the
@@ -401,8 +400,8 @@ class SetupState:
     mode it belonged to.
 
     The database URL, the provider keys and the config document are STAGED
-    here and written at the finish step, never as they are collected (facts
-    Amendment 3). Persisting them step by step has one reachable failure that
+    here and written at the finish step, never as they are collected.
+    Persisting them step by step has one reachable failure that
     this ordering removes entirely: a wizard abandoned -- or a pod evicted --
     between the last hard secret landing and the config document landing
     leaves a deployment whose credentials all resolve and whose document does
@@ -431,10 +430,10 @@ class SetupState:
         # step is the only writer -- but it is NOT a credential: it lands in
         # the config document, not the secrets file. On a deployment whose
         # document already resolves it is used for the *arr registration and
-        # persisted nowhere, which the finish page says by name (facts C1).
+        # persisted nowhere, which the finish page says by name.
         self.public_url: str | None = None
         # System key -> the base address the operator typed for it, for the
-        # three systems whose address a caller supplies (Task 2 writes it).
+        # three systems whose address a caller supplies.
         # Same lifecycle as public_url: staged, stamped onto the document, or
         # used-and-not-persisted when a document already resolves.
         self.base_urls: dict[str, str] = {}
@@ -463,12 +462,12 @@ class SetupState:
         # this is the whole of "served once": the route below answers the value
         # while this is False and ``null`` forever after.
         self.webhook_secret_served = False
-        # The *arr services with a webhook registration in flight right now
-        # (review I1). Checked and added with no `await` between the two, so
-        # this is atomic under asyncio's cooperative scheduling: a second POST
-        # for a service already in this set is refused outright instead of
-        # listing and creating a second time, which is the duplicate facts
-        # C2a exists to prevent. Removed in a `finally`, so a raised or timed
+        # The *arr services with a webhook registration in flight right now.
+        # Checked and added with no `await` between the two, so this is
+        # atomic under asyncio's cooperative scheduling: a second POST for a
+        # service already in this set is refused outright instead of listing
+        # and creating a second time, which would leave the *arr holding a
+        # duplicate webhook. Removed in a `finally`, so a raised or timed
         # out registration frees the service too.
         self.registering: set[str] = set()
         # One persisting step at a time: merge_secrets_file is a
@@ -521,7 +520,7 @@ def _persist(write, *args) -> None:
     try:
         write(*args)
     except OSError as exc:
-        # The step name only -- C9 -- and the sentence carries the directory
+        # The step name only, and the sentence carries the directory
         # an operator sets, never a file name and never the errno text.
         logger.error("first-start setup: the state directory refused a write")
         raise HTTPException(
@@ -560,7 +559,7 @@ def _require_http_url(value: str, refusal: str) -> str:
     `https://autoposter.example.test/?x=1/webhook/sonarr` -- a string written
     into that *arr's database, its UI and its logs, and shown to the operator
     on the finish page. Refused here, once, rather than in each of the four
-    callers (facts C2: the registration URL never carries one).
+    callers (the registration URL never carries one).
     """
     cleaned = value.strip()
     scheme, separator, rest = cleaned.partition("://")
@@ -580,8 +579,8 @@ def _resolving_arr_base_url(service: str) -> str | None:
     -- or ``None`` when there is no resolving document, it fails to parse or
     validate, or it names no address for this service.
 
-    The one caller this exists for is the residual closed by final review I1:
-    a GENERATED webhook secret that RESOLVES rather than being staged this
+    The one caller this exists for is the residual closed at the *arr
+    registration: a GENERATED webhook secret that RESOLVES rather than being staged this
     session is this deployment's own, given by its environment or its state
     file and never by this wizard, so the address it may be sent to is bound
     to that SAME deployment's own document rather than to whatever a check
@@ -827,7 +826,7 @@ async def set_master_password(body: PasswordRequest, request: Request) -> dict:
             hashed = await asyncio.to_thread(hash_password, body.password)
             _persist(merge_secrets_file, {"AUTOPOSTER_ADMIN_PASSWORD_HASH": hashed})
         state.token = secrets_module.token_urlsafe(32)
-        # The step name and nothing else -- C9.
+        # The step name and nothing else.
         logger.info("first-start setup: the master password step completed")
         return {"token": state.token}
 
@@ -924,10 +923,10 @@ async def set_database_url(body: DatabaseRequest, request: Request) -> dict:
     error's own text carries the DSN, password included, and this string is a
     response body.
 
-    Staged rather than written (facts Amendment 3): the database URL is a hard
-    secret, and no hard secret reaches the state file before the finish step.
+    Staged rather than written: the database URL is a hard secret, and no
+    hard secret reaches the state file before the finish step.
 
-    An empty submit KEEPS what is already held (facts C7), the provider step's
+    An empty submit KEEPS what is already held, the provider step's
     rule at the step that shares its problem: this value is never sent back to
     the page, so a pane stepped back into renders an empty field beside a
     ``Stored`` pill, and the only way forward would otherwise be to re-type a
@@ -974,12 +973,12 @@ async def set_public_url(body: PublicUrlRequest, request: Request) -> dict:
     the finish step writes; on one whose document already resolves it is used
     for the registration and written nowhere, because
     ``POST /api/setup/config`` refuses to write beside a resolving document
-    (Amendment 6) and reversing that would produce a second file the next boot
+    and reversing that would produce a second file the next boot
     never opens. The finish page names that omission and the key it would have
-    been (facts C1).
+    been.
 
     An empty submit keeps the staged address, for the reason the database step
-    above gives at the same decision (facts C7). Empty with nothing staged is
+    above gives at the same decision. Empty with nothing staged is
     refused, because then there is nothing to keep.
     """
     if not body.url.strip() and request.app.state.setup.public_url is not None:
@@ -1026,7 +1025,8 @@ async def check_connection(body: CheckRequest, request: Request) -> dict:
     what the deployment WILL hold is Save's answer, not a question's.
 
     "Already holds" means two different things for the two halves of the table,
-    and the difference is review I1 (``CHECK_NEEDS_A_TYPED_CREDENTIAL``). For
+    and the difference is the typed-address rule
+    (``CHECK_NEEDS_A_TYPED_CREDENTIAL``). For
     the five systems with a compiled-in host it means ``_effective`` -- the
     environment, the state file and ``staged`` alike, since the caller cannot
     move where the value goes. For the five whose host the caller supplies it
@@ -1056,7 +1056,7 @@ async def check_connection(body: CheckRequest, request: Request) -> dict:
         raise HTTPException(status_code=400, detail=CHECK_TAKES_NO_ADDRESS)
 
     if check.host is None and check.credential is not None:
-        # The typed-address rule (review I1). The caller named the host, so the
+        # The typed-address rule. The caller named the host, so the
         # value that goes to it must have come from the caller too: the field
         # beside the button, or `staged` -- what THIS WIZARD was handed. Never
         # `_effective`, which merges the resolver's own answers in and cannot
@@ -1099,7 +1099,7 @@ async def mint_plex_pin(request: Request) -> dict:
 
     The PIN CODE and the ``app.plex.tv`` link ARE served, and that is the one
     documented exception to this module's "the only value it serves is one it
-    minted itself" rule (facts C6): both are minted by plex.tv, are public by
+    minted itself" rule: both are minted by plex.tv, are public by
     design, and the flow is impossible without showing them. The ``authToken``
     is not in that category -- the poll below answers a boolean.
 
@@ -1142,9 +1142,9 @@ async def poll_plex_pin(request: Request) -> dict:
 
     The account token never reaches this response. On success it goes straight
     into ``staged``, under BOTH ``AUTOPOSTER_PLEX_TOKEN`` and
-    ``AUTOPOSTER_PLEX_ACCOUNT_TOKEN`` and with no exchange: probe 1 established
-    that the OWNED server's ``accessToken`` equals the account token, which is
-    the ruling's own precondition. Servers shared to the account are out of
+    ``AUTOPOSTER_PLEX_ACCOUNT_TOKEN`` and with no exchange: a measured probe
+    established that the OWNED server's ``accessToken`` equals the account
+    token, which is this flow's own precondition. Servers shared to the account are out of
     scope, which is why the listing below filters them out server-side.
 
     No background poll on the server. A task outliving its request in an
@@ -1186,7 +1186,7 @@ async def list_plex_servers(request: Request) -> dict:
 
     ``owned == True`` is applied in ``setup_plex`` rather than here or on the
     page, because it is a scope decision: a shared server would need its own
-    per-resource token, which is the exchange path the ruling excludes.
+    per-resource token, which is the exchange path this flow excludes.
     """
     account_token = _effective(request).get("AUTOPOSTER_PLEX_ACCOUNT_TOKEN", "")
     if not account_token:
@@ -1230,12 +1230,12 @@ async def list_plex_libraries(body: PlexLibrariesRequest, request: Request) -> d
     The address goes through the same guard the check endpoint and the URL step
     use -- it is operator-supplied whether it was typed or picked, since a
     pick-list is a request body like any other. And the TOKEN is read under the
-    same rule, for the same reason (review I1): typed here or staged by the
+    same rule, for the same reason: typed here or staged by the
     sign-in, never one the boot resolver supplied.
     """
     base_url = _require_http_url(body.base_url, PUBLIC_URL_NOT_AN_ADDRESS)
     state = request.app.state.setup
-    # `/check`'s typed-address rule (review I1), applied here because this is
+    # `/check`'s typed-address rule, applied here because this is
     # the same shape: the caller names the host, so the token that goes to it
     # must be the caller's own -- typed into this request, or staged by the
     # sign-in above, which writes `AUTOPOSTER_PLEX_TOKEN`. Never `_effective`,
@@ -1273,8 +1273,8 @@ async def list_jellyfin_libraries(body: JellyfinLibrariesRequest, request: Reque
 
     ``/plex/libraries`` for the other server, with the one arrival Jellyfin
     has: there is no account sign-in to arrive from, so the address and the key
-    are always the operator's own -- which is the shape review I1's rule was
-    written for. The key is read the same way: typed into this request, or one
+    are always the operator's own -- which is the shape the typed-address
+    rule was written for. The key is read the same way: typed into this request, or one
     this WIZARD staged. Never ``_effective``, whose resolver half is the live
     key of a deployment that is in setup mode because some OTHER credential is
     blank, and whose destination this request would then be choosing.
@@ -1315,7 +1315,7 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     three refusals below are step names.
 
     **The webhook secret is the one credential that may still be RESOLVED
-    rather than staged (final review I1, the residual closed).** A deployment
+    rather than staged.** A deployment
     whose ``AUTOPOSTER_WEBHOOK_SECRET`` already resolves mints nothing at the
     provider step, so ``staged`` never holds it -- and refusing the
     registration outright on that shape would be a dead end no operator could
@@ -1327,7 +1327,7 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     secret -- this wizard's own mint -- carries no such bound and may follow
     whatever address a check staged, as it always has.
 
-    Never a 500 and never a blocker (facts C3). A registration that did not work
+    Never a 500 and never a blocker. A registration that did not work
     is answered with ``200`` and ``ok: false`` carrying one of two fixed
     sentences, because "the *arr would not take it" is a RESULT this step
     reports rather than an error in the request that asked for it -- and because
@@ -1342,8 +1342,8 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     A second call for the same service while the first is still mid-flight is
     refused with ``REGISTRATION_IN_PROGRESS`` and never reaches ``setup_arr``
     at all: two overlapping calls would both list an empty registration and
-    both create, which is the duplicate facts C2a exists to prevent (review
-    I1). A sequential second call is unaffected -- it lists the first's own
+    both create, leaving the *arr holding a duplicate webhook.
+    A sequential second call is unaffected -- it lists the first's own
     entry and updates it.
     """
     if body.service not in setup_arr.NAMES:
@@ -1357,15 +1357,15 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     if not state.public_url:
         raise HTTPException(status_code=400, detail=NO_DEPLOYMENT_URL)
 
-    # `staged` and not `_effective` for the API KEY (review I1): the address
+    # `staged` and not `_effective` for the API KEY: the address
     # below was staged by a check, and a check proves that a host ANSWERED --
     # never who owns it. So the same rule the check itself now applies holds
     # one step further on, and this cannot fall back to a key the boot resolver
     # supplied. The operator's remedy is the one the refusal names: type the
     # key at the provider step, which stages it.
     api_key = state.staged.get(f"AUTOPOSTER_{body.service.upper()}_APIKEY", "")
-    # The generated secret is read the OTHER way, deliberately (the residual,
-    # closed by the controller's ruling below). On a deployment whose
+    # The generated secret is read the OTHER way, deliberately (the
+    # residual closed by the rule below). On a deployment whose
     # `AUTOPOSTER_WEBHOOK_SECRET` already resolves, the provider step mints
     # nothing -- there is nothing to mint -- and `staged` never holds it, so a
     # staged-only rule here would refuse the registration with STEP_PROVIDERS
@@ -1376,7 +1376,7 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
     if not api_key or not secret:
         raise HTTPException(status_code=400, detail=STEP_PROVIDERS)
     if not staged_secret:
-        # Closed (final review I1, the controller's 2026-09-07 ruling): this
+        # Closed (decided 2026-09-07): this
         # secret is the deployment's own and not this wizard's, so it may only
         # follow the address the SAME deployment's own resolving document
         # names for this service -- never whatever address a check happened
@@ -1384,9 +1384,9 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
         if base_url != _resolving_arr_base_url(body.service):
             raise HTTPException(status_code=400, detail=RESOLVED_SECRET_ADDRESS_MISMATCH)
 
-    # The in-flight guard (review I1): a second POST for this service while
-    # the first is still mid-flight must not also list-and-create, which is
-    # the duplicate facts C2a exists to prevent. No `await` sits between the
+    # The in-flight guard: a second POST for this service while the first is
+    # still mid-flight must not also list-and-create, which would leave the
+    # *arr holding a duplicate webhook. No `await` sits between the
     # membership test and the add, so this is atomic under asyncio's
     # cooperative scheduling -- whichever call reaches here first wins, and
     # the other is refused without ever touching the *arr.
@@ -1403,7 +1403,7 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
         )
     finally:
         state.registering.discard(body.service)
-    # The step only -- C9/C10. Not the service's address, not which service, not
+    # The step only. Not the service's address, not which service, not
     # the outcome: the wizard's log lines name the STEP and nothing that would
     # let a reader of them reconstruct the deployment.
     logger.info("first-start setup: a webhook registration was attempted")
@@ -1495,14 +1495,14 @@ async def get_webhook_secret(request: Request) -> dict:
     """The generated webhook secret, once, for the pane that shows it.
 
     The only value this application ever serves, and the only route that
-    serves it. Once, in the v1 sense the Amendment ratified: the first call
+    serves it. Once, in the v1 sense: the first call
     answers the string, every later one answers ``null``, and ``/progress``
     reports it as presence thereafter. The page holds what it was given, so an
     operator stepping back from the last pane and forward again re-renders the
     value already served rather than asking for a second serve.
 
     Not logged, here or anywhere: a fixed step name is the most this module
-    says about any credential (facts C10), and this one is a credential the
+    says about any credential, and this one is a credential the
     deployment is about to sign its webhooks with.
     """
     state = request.app.state.setup
@@ -1570,14 +1570,14 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     acceptable: the Settings editor is where this document is edited from here
     on.
 
-    Written at the finish step and not here (facts Amendment 3), in front of
+    Written at the finish step and not here, in front of
     the secrets file -- see ``finish``. ``path`` is where it will land, which
     is what the page shows the operator.
 
     Row 98's plex.tv owner check is deliberately not in scope -- this step
     records a URL, it does not authenticate against it.
 
-    Refused outright when a document already resolves (Amendment 6): the
+    Refused outright when a document already resolves: the
     progress surface stops offering this step at that point, and this is what
     makes that a server rule rather than a client courtesy a direct POST could
     route around. A document this wizard merely STAGED is a different thing and
@@ -1595,14 +1595,14 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
         urls["jellyfin"] = _require_http_url(body.jellyfin_url, JELLYFIN_URL_NOT_AN_ADDRESS)
 
     if not urls:
-        # Facts C7, the rule /public-url and /database already hold: a staged
+        # The rule /public-url and /database already hold: a staged
         # document is never served back, so a step navigated into again shows
         # an empty field, and an empty submit there means "keep what you have".
         if state.config_document is not None:
             return {"path": str(state_config_path())}
         # Empty with nothing staged is the media-server step, unfinished. A
         # successful check is not the other half of this: since a probe stopped
-        # configuring a server (review I2), a body that names no address can
+        # configuring a server, a body that names no address can
         # only produce a document with no server block in it -- which is a 200
         # this route then refuses at `finish`, and the one shape its own
         # docstring says cannot exist.
@@ -1707,7 +1707,7 @@ def _apply_staged_urls(document: dict, state: SetupState) -> dict:
         # never reach here: only the five typed systems are ever staged, and
         # the account has no address of its own.
         #
-        # `setdefault` for an *arr and never for a server (review I2): a
+        # `setdefault` for an *arr and never for a server: a
         # checked address UPDATES a server the document already names -- the
         # back navigation this function exists for, an operator correcting the
         # address they saved -- and never ADDS one, because "Check connection"
@@ -1750,7 +1750,7 @@ async def finish(request: Request) -> JSONResponse:
     then hand the process over.
 
     The write order is the config document FIRST and the secrets file second,
-    each atomically (facts Amendment 3). Both orders have a window; only this
+    each atomically. Both orders have a window; only this
     one has a survivable window. Secrets-first crashing halfway leaves a
     deployment whose credentials all resolve and whose document does not, which
     ``boot`` reports as a configuration error and exits non-zero -- forever,
@@ -1800,7 +1800,7 @@ async def finish(request: Request) -> JSONResponse:
             )
         # An OSError here, after the document landed, is the same 503: the
         # document stays and the hard secrets stay ABSENT, which is the next
-        # boot back in setup mode -- the survivable half of Amendment 3's
+        # boot back in setup mode -- the survivable half of the write
         # ordering, reported rather than served as a 500.
         _persist(merge_secrets_file, state.staged)
 

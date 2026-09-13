@@ -12,13 +12,13 @@ meta.py:947, no limit) -- which Kometa turns into a query string with
 
 That is the grammar 9b's oracle transcribes and 9c's reconciler writes, which is
 why this engine emits 9b-grammar smart collections through
-``smart.reconcile_smart_collection`` and not a second write path (10a decision
-C1). Every row below therefore carries the same four things: what to enumerate,
+``smart.reconcile_smart_collection`` and not a second write path.
+Every row below therefore carries the same four things: what to enumerate,
 what key to write into the query, how to title the result, and how to order it.
 
-**Scope (decision C3).** Only the types ``listFilterChoices`` can enumerate
+**Scope.** Only the types ``listFilterChoices`` can enumerate
 TODAY, and -- for the two rows whose choices listing was unproven -- only after
-the phase's own read-only probe measured them
+a read-only probe measured them
 (``docs/research/plex-dynamic-probe/README.md``: ``network`` 91 values,
 ``country`` 63). That is an authoring RULE and it is enforced, not trusted:
 ``test_no_row_ships_on_a_library_type_the_probe_did_not_measure`` reads the
@@ -233,7 +233,7 @@ DYNAMIC_TYPES: dict[str, DynamicType] = {
             "search answers for both library types -- upstream's type table is "
             "the authority on which libraries get the family, and the attribute "
             "row is the authority on how to ask. Enumerability PROBED before it "
-            "shipped rather than assumed (T1 review carry): 63 values on the "
+            "shipped rather than assumed: 63 values on the "
             "production movie library, "
             "``docs/research/plex-dynamic-probe/README.md``. Its keys are "
             "opaque tag ids like ``genre``'s, so ``key_from`` is the title.",

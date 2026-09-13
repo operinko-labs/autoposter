@@ -1,4 +1,4 @@
-"""The shipped overlay families (roadmap row 100, sub-phases C1, C2a and C2b).
+"""The shipped overlay families (roadmap row 100).
 
 Flat `OverlayDefinition` lists, not templates. Kometa expresses each family
 as a templated YAML file whose `<<key>>` resolver this service does not
@@ -6,12 +6,11 @@ implement (and does not need: the recon's cut emits flat definitions), so
 every number here is the RESOLVED value, transcribed from the pinned
 v2.4.8 tree -- the same image digest `assets/badges/PROVENANCE.md` records.
 
-Six families ship: `direct_play` and the six content-rating regionals (C1),
-`versions` (C2a, adjudication A14 ruled -- the `collections/filters.py` row
-it needed now exists), `aspect` + `language_count` (C2b, adjudications A11
-and A-1 ruled the same way), and `status` (C2c, adjudications A-1/A-2/A-3 --
-two new `item_facts` columns, a migration, and a new `facts` source tier so
-the two rows it needs can exist). The last three are the families whose
+Six families ship: `direct_play` and the six content-rating regionals,
+`versions` (which needed the `collections/filters.py` row that now exists),
+`aspect` + `language_count`, and `status` (which needed two new `item_facts`
+columns, a migration, and a new `facts` source tier so the two rows it needs
+can exist). The last three are the families whose
 CORRECTNESS depends on group/weight resolution rather than merely benefiting
 from it: `aspect`'s 1.65 and 1.66 bands overlap, `language_count`'s Dual and
 Multi both match a 2-language item, and `status`'s AIRING both matches and
@@ -228,8 +227,8 @@ CONTENT_RATING_US_SHOW: list[OverlayDefinition] = [
 # own image `cr/uk12ac`) distinct from `12` -- confirmed by the vendored
 # `images/cr/uk12a*.png` files existing alongside `images/cr/uk12*.png`, and
 # by the uk* file count (16) only reconciling at 2 files per bucket across
-# EIGHT buckets. Task 2's report names this divergence from the plan's own
-# recon; this module transcribes the real file, not the recon's count.
+# EIGHT buckets. This module transcribes the real file, not the recon's
+# count.
 #
 # These eight buckets are NOT disjoint: `uk_12` and `uk_12a` share six
 # aliases ("PG-13 - Teens 13 or older", no/9, no/09, no/10, no/11, no/12),
@@ -663,7 +662,7 @@ CONTENT_RATING_NZ: list[OverlayDefinition] = [
 # episode-specific position (235/270) is the one positioning conditional in
 # the whole row-100 set that branches on `builder_level`, and this module
 # ships flat, resolved definitions rather than a template engine (the same
-# simplification C1 already made for every other family), so only the
+# simplification already made for every other family), so only the
 # non-episode position is reproduced.
 #
 # `horizontal_align="right"`, not the `"left"` every other row-100 family
@@ -671,9 +670,8 @@ CONTENT_RATING_NZ: list[OverlayDefinition] = [
 # template_variables.default` sets `horizontal_align: right` outright (and
 # its `conditionals.horizontal_align` block resolves to the same `right` in
 # both its listed conditions, so there is no path to `left` in this file at
-# all) -- confirmed by direct read of the vendored file in Task 2 Step 1, a
-# deviation from Task 2's own draft that this module transcribes rather than
-# repeats. `horizontal_offset=15` still holds either way: the vendored
+# all) -- confirmed by direct read of the vendored file, a deviation from an
+# earlier draft that this module transcribes rather than repeats. `horizontal_offset=15` still holds either way: the vendored
 # `conditionals.horizontal_offset` maps BOTH `left` and `right` to `15`.
 # `back_color="#00000099"` is explicit in the same vendored file (not
 # inherited); `back_radius` is NOT set anywhere in `versions.yml`, so it
@@ -725,12 +723,12 @@ VERSIONS: list[OverlayDefinition] = [
 # under `_confined` to `<fonts_root>/fonts/Inter-Medium.ttf`, which no
 # operator has, so transcribing the path literally would skip every aspect
 # badge for everyone. The pixels are identical -- it is the same face -- so
-# this is a spelling divergence in the source string, recorded here per the
-# plan's own Step 1 rule 1 rather than left as an unexplained difference
-# between two files a reader may compare.
+# this is a spelling divergence in the source string, recorded here rather
+# than left as an unexplained difference between two files a reader may
+# compare.
 #
-# GROUP AND WEIGHT ARE LOAD-BEARING HERE, unlike every C1/C2a family
-# (adjudication A-5): the 1.65 band (1.64-1.66) and the 1.66 band
+# GROUP AND WEIGHT ARE LOAD-BEARING HERE, unlike the earlier families:
+# the 1.65 band (1.64-1.66) and the 1.66 band
 # (1.65-1.67) genuinely OVERLAP, so a 1.655 item matches both and only the
 # shared group plus the descending weights make the answer deterministic --
 # 70 beats 60, the 1.65 badge draws, and `select` still records BOTH
@@ -876,7 +874,7 @@ LANGUAGE_COUNT: list[OverlayDefinition] = [
 #
 # `allowed_libraries: show` (`:39`) IS ACHIEVED BY CONSTRUCTION, not by a new
 # `OverlayDefinition` field, and this is the same "answered by construction"
-# argument C1's A3b made for the `kinds` column. A movie's `item_facts` row
+# argument already made for the `kinds` column. A movie's `item_facts` row
 # can never carry `tmdb_status` -- `facts/tmdb_facts.py::parse_movie_facts`
 # has no such field to write; a season has no facts row at all
 # (`facts/gather.py` returns empty for seasons); an episode's row carries

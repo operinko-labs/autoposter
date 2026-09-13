@@ -1,6 +1,6 @@
 """The mandatory equivalence proof for the Common Sense grammar unification.
 
-``.superpowers/sdd/p10a-facts.md`` Addendum 2, point 2: because the golden gate
+Because the golden gate
 records ``updated_filters`` -- the plexapi CALL SHAPE the port removes -- it
 stops covering the changed cell, so the proof that the port does not move a
 single item is this file and not that fixture.
@@ -8,7 +8,7 @@ single item is this file and not that fixture.
 Every bucket shape in the SHIPPED table, against two library types: a bucket
 that is its own key alone, one whose key the library does not hold and whose
 addons it does, one with several present addons, one that matches nothing at
-all (Addendum 3), and the ``other`` bucket's complement. For each: plexapi's
+all, and the ``other`` bucket's complement. For each: plexapi's
 real ``_buildSearchKey`` and this engine's real ``build_search_url``, decoded
 and evaluated to member sets over a fixture library, asserted equal.
 
@@ -313,7 +313,7 @@ def test_the_shipped_table_is_what_was_proven():
     assert len(TABLE["include"]) == len(TABLE["addons"])
     assert TABLE["include"], "an empty table would make every assertion vacuous"
     assert UNSAFE_RATINGS, "the encoding tests below would assert nothing"
-    # M3: an empty parametrize is a silent SKIP, not an error, so the
+    # An empty parametrize is a silent SKIP, not an error, so the
     # meaning-changing case would quietly stop covering anything.
     assert MEANING_CHANGING_RATINGS, "the meaning test below would assert nothing"
     # The mixed-bucket case is written against bucket 17 by hand; if a table

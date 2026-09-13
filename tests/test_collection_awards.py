@@ -344,7 +344,7 @@ async def test_uncovered_categories_is_empty_for_a_ceremony_with_no_category_fil
 
 
 async def test_a_drifted_category_logs_a_warning_and_still_builds(caplog):
-    """The BINDING shape (p-tails2-facts.md C1): WARNING to the pod log, not
+    """The BINDING shape: WARNING to the pod log, not
     a raise -- the collection still builds with whatever it DID match, so one
     renamed category does not take an otherwise-healthy ceremony's whole
     build down. Proven by mutating the registry's category tuple against the
@@ -379,8 +379,7 @@ async def test_a_drifted_category_logs_a_warning_and_still_builds(caplog):
 #
 # One ceremony's file can hold several award *groups*: BAFTA (``ev0000123``)
 # splits film, television and games under one event id. Kometa filters twice,
-# group then category (``modules/imdb.py`` ``_award``, transcribed in
-# ``.superpowers/sdd/archive/p8c-task-4-report.md``); until now this service
+# group then category (``modules/imdb.py`` ``_award``); until now this service
 # read every group. The fixture below gives two groups the *same* category
 # name, so a filter that silently did nothing would show up as extra ids
 # rather than as the same answer.
@@ -830,8 +829,7 @@ async def test_the_globes_director_award_is_not_the_oscars_one():
 # and the upstream ``events/ev0000292.yml``, then dedup­ing the result
 # first-occurrence-first (Kometa appends per category and lets Plex collapse
 # repeats; we dedupe in ``_dedupe``). Nothing from this repository ran in that
-# script. The full procedure, with the transcript, is in
-# ``.superpowers/sdd/task-4-report.md``.
+# script.
 #
 # ``ORACLE_GOLDEN_GLOBE_2026`` is an unrestricted comparison: a year
 # collection reads one year, and this is every winner Kometa lists for
@@ -994,8 +992,7 @@ async def test_a_ceremony_with_no_category_filter_reads_every_category():
 # cannes}.yml``, over the upstream ``event_validation.yml`` and event files.
 # Nothing from this repository ran in that script. Its output is deduped
 # first-occurrence-first -- Kometa appends per category and lets Plex collapse
-# repeats -- and that is the only adjustment. Full procedure and transcript:
-# ``.superpowers/sdd/task-2-report.md``.
+# repeats -- and that is the only adjustment.
 #
 # Why these three: the Emmys are the only Show-gated ceremony; Cannes is the
 # festival shape, an ``award_filter`` and no ``category_filter`` at all; BAFTA

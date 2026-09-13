@@ -84,12 +84,12 @@ async def test_retry_after_wins_over_the_configured_backoff(session):
 
 
 async def test_a_shorter_refusal_does_not_shorten_an_open_window(session):
-    """LAW C5's multi-pod trace: pod A's honoured 3600s window must survive
+    """The multi-pod trace: pod A's honoured 3600s window must survive
     pod B's no-Retry-After 429 landing second and falling back to the
     configured 60s. Before the fix, ``note_refusal`` overwrote unconditionally
     and this collapsed the hour to a minute regardless of which pod won the
     race -- this test writes the longer window first and the shorter one
-    second, the exact order the review's trace describes."""
+    second, the exact order that trace describes."""
     budget = TmdbRateBudget(session_factory_for(session), backoff_seconds=60)
     await budget.note_refusal(3600)
     await budget.note_refusal(None)

@@ -180,7 +180,7 @@ def _definition(**overrides):
 
 
 async def _managed_row(session, library, title, kind="smart"):
-    """The row the T2 reconciler writes, stamps and all -- which is to say
+    """The row the reconciler writes, stamps and all -- which is to say
     neither stamp.
 
     ``member_count`` and ``last_reconciled_at`` are spelled out as None rather
@@ -319,7 +319,7 @@ async def test_a_second_pass_writes_nothing(session):
 
 
 async def test_the_pass_run_cache_reaches_the_builder(session):
-    """C6's plumbing, observed rather than asserted on the dataclass: two
+    """The pass-run cache's plumbing, observed rather than asserted on the dataclass: two
     smart_filter definitions naming the same genre in one pass cost ONE
     ``listFilterChoices``."""
     calls = []
@@ -383,7 +383,7 @@ async def test_the_shape_conflict_still_fires_for_a_hash_current_definition(sess
 
 
 def test_a_smart_filter_definition_enumerates_its_own_title():
-    """C6's degenerate case. The builder declares no ``titles``, so the engine
+    """The builder declares no ``titles``, so the engine
     falls through to the definition's title -- and this is the assertion that
     goes red if that fallthrough is ever reverted to ``builder.titles(...)``."""
     assert definition_titles(
@@ -452,7 +452,7 @@ async def test_an_orphaned_smart_filter_collection_is_only_reported_by_default(s
 
 
 async def test_the_report_of_an_orphan_renders_its_null_stamps_as_null(session):
-    """The T2 carry, at the surface that reads the row.
+    """The carry, at the surface that reads the row.
 
     A smart row reaches the sweep with ``member_count`` and
     ``last_reconciled_at`` both NULL, and the report has to survive that without
@@ -518,7 +518,7 @@ async def test_a_protected_label_still_wins_over_the_sweep(session):
 
 
 async def test_a_list_collection_under_a_smart_definition_costs_one_definition(session):
-    """C11 through the engine: the refusal is one definition's action string,
+    """The refusal is one definition's action string,
     and the pass carries on. An exception here would reach
     ``reconcile_libraries``' per-library rollback and undo the rest of the
     library's work over one config edit."""

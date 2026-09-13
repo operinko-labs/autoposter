@@ -19,7 +19,7 @@ const NOTE =
   "pass, ahead of anything a provider says. It affects 1 item — this one — " +
   "and nothing else in the library.";
 
-/** C9's disclosure, both halves. An operator told only "the override was
+/** Both halves of the disclosure. An operator told only "the override was
  * removed" would not understand why the tagline they typed is still there. */
 const CLEAR_NOTE =
   "Clearing an override removes it and unlocks that field in Plex. A field a " +

@@ -979,7 +979,7 @@ async def test_a_refused_poster_url_reaches_neither_the_action_nor_the_log(
 async def test_a_transport_failure_fetching_the_poster_url_reaches_neither_the_action_nor_the_log(
     tmp_path, config_factory, session, caplog, public_resolver
 ):
-    """Task 2 review I-2, the sibling of
+    """The sibling of
     `test_a_refused_poster_url_reaches_neither_the_action_nor_the_log` on the
     OTHER except clause (`posters.py:539-549`, `except httpx.HTTPError`). That
     branch's own comment names the danger: httpx's exception messages -- and
@@ -991,7 +991,7 @@ async def test_a_transport_failure_fetching_the_poster_url_reaches_neither_the_a
     URL in ITS OWN message, deliberately -- so a mutation that formats `exc`
     into the returned string, or adds `exc_info=True` to the `logger.warning`
     call, is exactly what turns this test red. The second half needs its own
-    assertion (Task 3 review I-2): `caplog.records[...].getMessage()` never
+    assertion: `caplog.records[...].getMessage()` never
     renders what `exc_info` attaches, so the explicit `record_.exc_info is
     None` check below is what actually catches that mutant."""
     config = config_factory(assets_root=str(tmp_path), library_folders=True)
@@ -1015,7 +1015,7 @@ async def test_a_transport_failure_fetching_the_poster_url_reaches_neither_the_a
     # `getMessage()` never renders what `exc_info` attaches -- only a
     # `Formatter` does -- so the loop above cannot catch `exc_info=True`
     # being added to the `logger.warning` call. Assert on the record
-    # directly (Task 3 review I-2).
+    # directly.
     assert all(record_.exc_info is None for record_ in caplog.records)
     assert message.strip()
     assert collection.uploaded_bytes == []

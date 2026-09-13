@@ -367,7 +367,7 @@ else:
 
 ## 6. The `languages` double-application
 
-**What's configured** (per the task brief): `languages` is applied twice at movie level (and
+**What's configured** (per the operator's config): `languages` is applied twice at movie level (and
 similarly at show level) — once with default colors, once with `back_color` and `font_color` both
 set to `#FFFFFF00` (fully transparent).
 
@@ -382,7 +382,7 @@ gridded crop of both oracle files).
 **This directly contradicts the naive expectation.** `languages.yml`'s own file-level default sets
 `back_color: "#00000099"` (visible), so *whichever* of the two configured applications is the one
 actually producing the visible flag+text must, at render time, have a transparent `back_color` —
-not the "first, default-colored" one as the task brief's phrasing implies. We could not fully
+not the "first, default-colored" one as that configuration's phrasing implies. We could not fully
 resolve this from the YAML/source alone, for two structural reasons:
 
 1. `languages.yml`'s `flags` queue enforces **unique weights per queue** — two overlays in the same
@@ -397,7 +397,7 @@ resolve this from the YAML/source alone, for two structural reasons:
    *independent* — one for audio-language flags, one for subtitle-language flags — not a layered
    "redraw the same thing twice" trick.
 2. We do not have the actual production `overlay_files:`/config block for the second `languages`
-   entry — only the task brief's summary ("same overlay, back_color and font_color transparent").
+   entry — only a summary of it ("same overlay, back_color and font_color transparent").
    Without seeing its `use_subtitles`, `horizontal_position`/`vertical_position`, or `queue`
    overrides, we can't derive its exact effect from the YAML alone.
 

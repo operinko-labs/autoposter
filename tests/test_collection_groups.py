@@ -40,7 +40,7 @@ def test_canonical_order_is_the_ten_catalog_categories_plus_operator():
 
     assert groups.CANONICAL_ORDER[-1] == groups.OPERATOR_GROUP
     assert set(groups.CANONICAL_ORDER[:-1]) == set(CATEGORIES)
-    # franchises after content -- C2's placement, the natural reading order.
+    # franchises after content -- the natural reading order.
     # This renumbers every group behind it; the disclosure lives in
     # deploy/README.md's group_order entry and the golden needed no amendment
     # for it (no golden scenario reaches section 050).
@@ -317,8 +317,8 @@ def test_every_shipped_bucket_sorts_in_the_order_the_table_lists_them():
     from autoposter.collections.buckets import derive_buckets
 
     keys = [groups.age_order(bucket.key) for bucket in derive_buckets(set(), "Movie")]
-    # LAW Addendum 3: "99" is higher than every zero-padded age key this table
-    # produces, so this is a real leftovers-last pin against Task 1's measured
+    # "99" is higher than every zero-padded age key this table
+    # produces, so this is a real leftovers-last pin against the measured
     # ascending block -- unlike the dropped ``~`` sentinel, which that same
     # capture showed filing BEFORE the ages on this server's collation, the
     # opposite of what the requirement needs.
@@ -384,7 +384,7 @@ def test_a_ceremony_year_unit_orders_by_its_inverted_year():
     ordinary definition naming exactly one collection -- so its key is decided
     from the definition in hand, the same as a chart's. That is the one call
     site ``year_order`` has: without it, Kometa's measured newest-first
-    hand-order (the one regression Task 1 measured rather than inferred) would
+    hand-order (the one regression measured rather than inferred) would
     be replaced by an alphabetical block running oldest ceremony first.
     """
     for builder in ("imdb_award_years", "cannes_award_years"):
@@ -507,7 +507,7 @@ def test_the_module_imports_nothing_from_the_package_at_module_scope():
             assert not (node.module or "").startswith("autoposter")
 
 
-# --- the derived sort title, end to end (Task 4) -----------------------------
+# --- the derived sort title, end to end --------------------------------------
 
 
 async def test_a_chart_collection_gets_its_groups_prefix(session, chart_section):
@@ -527,7 +527,7 @@ async def test_a_chart_collection_gets_its_groups_prefix(session, chart_section)
 
 
 async def test_a_chart_collection_carries_its_inventory_position(session, chart_section):
-    """The ordering key travels the same road as the prefix (LAW Addendum 1/2).
+    """The ordering key travels the same road as the prefix.
 
     Without it a chart block would be alphabetical, which is not the order the
     chart inventory lists them in and not the order the probe measured.
@@ -604,7 +604,7 @@ async def test_a_smart_collection_gets_its_groups_prefix_and_then_settles(
 
     # Plex's own create marks the collection smart; ``FakeSection.collection``
     # is shape-agnostic, so without this the passes below meet ``shape_conflict``
-    # instead of the hash. Same story for ``subtype`` (Task 4 review I-1): a
+    # instead of the hash. Same story for ``subtype``: a
     # collection this fake creates carries no level of its own, so the passes
     # below would meet the level refusal instead of the hash without it.
     made.smart = True
@@ -700,7 +700,7 @@ def test_the_derived_value_changes_the_definition_hash_exactly_once():
 
     A pass short-circuits on this hash. If the derived sort title did not reach
     it, the first pass after row 49 would find every hash current, skip every
-    collection, and never write a sort title at all -- the trap C3 names.
+    collection, and never write a sort title at all.
 
     What this pins is that ``with_derived_sort_title``'s view REACHES
     ``definition_hash``, one call away. It is a characterization test, green
@@ -732,7 +732,7 @@ def test_the_derived_value_changes_the_definition_hash_exactly_once():
 
 
 def test_expansion_never_inherits_a_derived_sort_title():
-    """The other C3 trap. ``engine._completed`` fills an expanded unit from the
+    """The other placeholder-inheritance trap. ``engine._completed`` fills an expanded unit from the
     placeholder for every field the unit did not set -- reading
     ``model_fields_set``. A derived value written onto the placeholder would be
     marked set, and all five Oscars year collections would share one sort title
@@ -790,7 +790,7 @@ def test_group_listing_reorders_and_renumbers_under_group_order():
 
 
 def test_an_expanded_unit_falls_back_to_its_placeholders_group():
-    """The C1 misroute, at its mechanism. A facts_family unit carries the
+    """The misroute, at its mechanism. A facts_family unit carries the
     MEMBER's title and builder (facts_family.py:434-443), so both lookups miss
     and the unit filed under the operator group -- 65 live franchises under
     !100_, unheaded. The placeholder's group is the fall-through now; the
@@ -853,7 +853,7 @@ def test_sort_prefix_for_threads_the_parent_through():
     ) == groups.sort_prefix("content", groups.CANONICAL_ORDER)
 
 
-# --- the style-bearing poster key (C4) ---------------------------------------
+# --- the style-bearing poster key ---------------------------------------------
 
 
 def test_the_poster_key_carries_the_style_and_the_art_kind():
@@ -891,7 +891,7 @@ def test_separator_style_is_validated_against_the_styles():
     assert "sand" in message  # the refusal lists the valid set
 
 
-# --- the franchises group (C2) -----------------------------------------------
+# --- the franchises group -----------------------------------------------------
 
 
 def test_the_franchises_divider_follows_the_transcribed_formula():
@@ -904,7 +904,7 @@ def test_the_franchises_divider_follows_the_transcribed_formula():
 
 
 def test_a_franchise_family_unit_now_files_under_franchises():
-    """T1's fix and C2's group, composed: the placeholder's category moved to
+    """The fix and the franchises group, composed: the placeholder's category moved to
     'franchises', so the parent fall-through lands the members there."""
     index = groups.preset_groups(config(presets=["content_franchises"]), "Movie")
     assert index["Franchises"] == "franchises"
@@ -914,7 +914,7 @@ def test_a_franchise_family_unit_now_files_under_franchises():
     assert groups.group_for(unit, index, parent=index["Franchises"]) == "franchises"
 
 
-# --- the fence (C5) ----------------------------------------------------------
+# --- the fence -----------------------------------------------------------------
 
 
 def test_the_fence_closes_every_active_tab():

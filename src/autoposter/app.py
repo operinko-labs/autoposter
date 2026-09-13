@@ -261,9 +261,8 @@ def create_app(
             return all(health.healthy for health in health_by_server.values())
 
         def unhealthy_servers() -> list[str]:
-            # The prune sweep's own refusal names the servers that are out
-            # (fix round 3, M2); every other consumer only needs the boolean
-            # above.
+            # The prune sweep's own refusal names the servers that are out;
+            # every other consumer only needs the boolean above.
             return [name for name, health in health_by_server.items() if not health.healthy]
 
         # Replaces create_app's http=None placeholder with one that can
@@ -413,8 +412,8 @@ def create_app(
                     # Every configured server, rebuilt fresh per run for the
                     # same reason the PlexClient above is: an edited exclusion
                     # list (a FROZEN_SECTIONS entry) reaches this job on its
-                    # next run rather than waiting for a restart. Task 19: the
-                    # prune sweep is no longer Plex-only (spec §5.5).
+                    # next run rather than waiting for a restart. The prune
+                    # sweep is no longer Plex-only (spec §5.5).
                     by_name = {
                         "plex": PlexClient(
                             server_factory(), holder.current.plex.excluded_libraries
@@ -625,7 +624,7 @@ def create_app(
     #
     # FAIL CLOSED. An application that never went through `boot` -- every test
     # app, and an operator running `python -m autoposter.main` -- has no
-    # marker and answers False for every name, which is the C5 refusal. That
+    # marker and answers False for every name, which is the refusal. That
     # is deliberate: the refusal is the path a test gets for free and the
     # permission is the one a test has to opt into.
     app.state.secret_from_state_file = {
@@ -819,7 +818,7 @@ async def _handle_intent(
     # visible to the very next item a worker picks up. One read rather than
     # several also means a single job never straddles two generations.
     config = config_holder.current
-    # process_item's fifth positional is the whole registry now (Task 19):
+    # process_item's fifth positional is the whole registry now:
     # it resolves on every configured server itself, so there is no single
     # server to choose here any more.
     try:

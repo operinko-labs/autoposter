@@ -37,8 +37,7 @@ async def _known_item(session, rating_key, **columns):
     ``identity_key`` is synthesized from the rating key rather than computed
     from any external id a test also passes in: one fixture below builds two
     rows sharing one ``tmdb_id`` on purpose, an ambiguous re-key state a real
-    identity-keyed upsert can no longer produce (``identity_key`` is UNIQUE
-    since Task 6).
+    identity-keyed upsert can no longer produce (``identity_key`` is UNIQUE).
     """
     fields = dict(library="Movies", kind="movie", title="Item")
     fields.update(columns)
@@ -205,7 +204,7 @@ async def test_a_stale_row_in_a_different_library_is_not_the_guess(
     ITS intent -- so the discovered item was never enqueued at all, forever,
     and the wrong item was redundantly re-rendered on every sweep instead.
 
-    Per the C6 re-ruling, the guess predicate must be exactly as wide as the
+    The guess predicate must be exactly as wide as the
     pipeline's own re-key predicate -- kind + library + coordinates + id
     intersection -- so it takes the library being swept, not just the kind.
     Run both ways round: the stale row in "Movies" while sweeping "Movies 4K"

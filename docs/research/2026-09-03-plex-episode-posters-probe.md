@@ -5,8 +5,7 @@ Read-only, plexapi one-liner against the operator's own server
 keys, provider, selected only. No token in the output below or anywhere in
 this file.
 
-This is what answered adjudication A1 (`.superpowers/sdd/p-preview-fallback-facts.md`,
-C5): whether `posters()` exposes the frame Plex derives from the media file
+This is what answered the open question: whether `posters()` exposes the frame Plex derives from the media file
 itself, and what its listing entry looks like. It does — the **last** entry,
 `provider=None`, `ratingKey` prefixed `media://`. That entry is what
 `plex/artwork.generated_title_card_url` selects (`_generated_default`,
