@@ -81,6 +81,7 @@ from autoposter.db.models import (
     ManagedPlaylist,
     MediaItem,
     Render,
+    RenderDelivery,
     ScheduledRun,
 )
 from autoposter.db.models import Session as SessionModel
@@ -113,6 +114,7 @@ SCHEDULED_JOB_NAMES = frozenset({
     "plex_prune",
     "plex_merge",
     "stale_job_reclaim",
+    "pending_deliveries",
 })
 
 DEFAULT_EVENTS_LIMIT = 50
@@ -531,6 +533,21 @@ async def item_detail(
             .all()
         )
 
+        # One query for every render's deliveries, not one per render: the
+        # page shows every art kind at once, and a render can have one row
+        # per configured server.
+        deliveries_by_render: dict[int, list[RenderDelivery]] = {}
+        if renders:
+            delivery_rows = (
+                await session.execute(
+                    select(RenderDelivery).where(
+                        RenderDelivery.render_id.in_([render.id for render in renders])
+                    )
+                )
+            ).scalars().all()
+            for delivery in delivery_rows:
+                deliveries_by_render.setdefault(delivery.render_id, []).append(delivery)
+
         show = None
         if item.kind in ("season", "episode") and item.parent_id is not None:
             parent = (
@@ -601,6 +618,17 @@ async def item_detail(
                 "textless": render.textless,
                 "rendered_at": render.rendered_at,
                 "uploaded_at": render.uploaded_at,
+                "deliveries": [
+                    {
+                        "server": delivery.server,
+                        "status": delivery.status,
+                        "attempted_at": delivery.attempted_at,
+                        "uploaded_at": delivery.uploaded_at,
+                        "next_attempt_at": delivery.next_attempt_at,
+                        "detail": delivery.detail,
+                    }
+                    for delivery in deliveries_by_render.get(render.id, [])
+                ],
             }
             for render in renders
         ],

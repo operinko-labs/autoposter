@@ -9,7 +9,7 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ItemFacts, ManagedCollection, Render
+from autoposter.db.models import ItemFacts, ManagedCollection, Render, RenderDelivery
 
 from conftest import seed_media_item
 
@@ -236,6 +236,39 @@ async def test_item_detail_includes_facts_and_renders(client, auth_headers, sess
     assert render["badge_fingerprint"] == "def456"
     assert render["upload_status"] == "uploaded"
     assert render["adopted"] is True
+
+
+async def test_item_detail_nests_each_render_own_deliveries(client, auth_headers, session):
+    """One ``render_deliveries`` row per server the render is owed to, nested
+    under that render -- not a top-level list, and not one query per render
+    (see the item_detail handler's single ``RenderDelivery`` SELECT)."""
+    item = await _item(session, "rk1", "A")
+    item_id = item.id
+    render = Render(
+        item_id=item_id, art_kind="poster", status="rendered", asset_path="/x/a.jpg",
+    )
+    session.add(render)
+    await session.flush()
+    session.add_all([
+        RenderDelivery(
+            render_id=render.id, server="plex", status="uploaded",
+            uploaded_at=datetime(2026, 8, 2, tzinfo=UTC),
+        ),
+        RenderDelivery(
+            render_id=render.id, server="jellyfin", status="pending",
+            detail="ConnectError: connection refused",
+        ),
+    ])
+    await session.commit()
+
+    response = await client.get(f"/api/items/{item_id}", headers=auth_headers)
+    assert response.status_code == 200
+    deliveries = {d["server"]: d for d in response.json()["renders"][0]["deliveries"]}
+    assert len(deliveries) == 2
+    assert deliveries["plex"]["status"] == "uploaded"
+    assert deliveries["plex"]["uploaded_at"] is not None
+    assert deliveries["jellyfin"]["status"] == "pending"
+    assert deliveries["jellyfin"]["detail"] == "ConnectError: connection refused"
 
 
 async def test_item_detail_echoes_the_render_provider(client, auth_headers, session):

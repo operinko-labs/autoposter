@@ -556,6 +556,8 @@ describe("ItemDetail", () => {
       `${FINGERPRINT.slice(0, 12)}…`,
       `${BADGE_FINGERPRINT.slice(0, 12)}…`,
       "uploaded",
+      // No deliveries on this fixture's render row.
+      "—",
       formatTime("2026-08-01T09:15:00Z"),
       formatTime("2026-08-02T18:40:00Z"),
     ]);
@@ -567,9 +569,43 @@ describe("ItemDetail", () => {
       ),
     ).toEqual([FINGERPRINT, BADGE_FINGERPRINT]);
 
-    // Nine nowrapped columns cannot fit a phone, so the table carries its own
+    // Ten nowrapped columns cannot fit a phone, so the table carries its own
     // horizontal scrollbar rather than widening the page around it.
     expect(row!.closest("table")?.parentElement).toHaveClass("table-scroll");
+  });
+
+  it("shows a status chip per server a render has a delivery row for", async () => {
+    stubFetch(
+      movieRoutes({
+        "/api/items/3": () =>
+          json({
+            ...MOVIE,
+            renders: [
+              {
+                ...MOVIE.renders[0],
+                deliveries: [
+                  { server: "plex", status: "uploaded", attempted_at: null,
+                    uploaded_at: "2026-08-02T18:40:00Z", next_attempt_at: null, detail: null },
+                  { server: "jellyfin", status: "pending", attempted_at: null,
+                    uploaded_at: null, next_attempt_at: "2026-08-02T19:00:00Z",
+                    detail: "ConnectError: connection refused" },
+                ],
+              },
+            ],
+          }),
+      }),
+    );
+
+    await renderItem();
+
+    const row = document.querySelector(".render-table tbody tr");
+    const chips = [...row!.querySelectorAll(".pill")];
+    expect(chips.map((chip) => chip.textContent)).toEqual(["plex uploaded", "jellyfin pending"]);
+    expect(chips[0]).toHaveClass("pill-uploaded");
+    expect(chips[1]).toHaveClass("pill-pending");
+    // detail is the hover text, not shown on screen.
+    expect(chips[0].getAttribute("title")).toBeNull();
+    expect(chips[1].getAttribute("title")).toBe("ConnectError: connection refused");
   });
 
   it("re-runs by posting to /reprocess and reports the job the server queued", async () => {

@@ -284,6 +284,18 @@ export interface ItemFiltersResponse {
   statuses: string[];
 }
 
+/** One server's outcome for one render (`render_deliveries`), as nested under
+ * each row of `ItemRender.deliveries`. `status` is `uploaded` / `pending` /
+ * `failed` / `skipped`. */
+export interface ItemRenderDelivery {
+  server: string;
+  status: string;
+  attempted_at: string | null;
+  uploaded_at: string | null;
+  next_attempt_at: string | null;
+  detail: string | null;
+}
+
 /** One row of `renders`, as GET /api/items/{id} returns it. `(item_id,
  * art_kind)` is unique, so `art_kind` identifies a row within an item. */
 export interface ItemRender {
@@ -306,6 +318,9 @@ export interface ItemRender {
   /** Whether the base image carried no burned-in text. Null under a manual
    * override, where there was no candidate to ask. */
   textless: boolean | null;
+  /** Per-server delivery outcome, one entry per server this render has ever
+   * been owed to. */
+  deliveries: ItemRenderDelivery[];
 }
 
 /** One artwork option from one provider, as GET

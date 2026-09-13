@@ -56,6 +56,7 @@ from autoposter.scheduler.jobs import (
     make_credits_job,
     make_drift_job,
     make_maintenance_job,
+    make_pending_deliveries_job,
     make_stale_reclaim_job,
 )
 from autoposter.scheduler.merge import make_merge_job
@@ -361,7 +362,17 @@ def create_app(
         # or a second restart's boot reclaim missing what the first restart
         # just orphaned -- and disabling the maintenance passes must not also
         # disable that.
-        scheduler_jobs = [make_stale_reclaim_job()]
+        scheduler_jobs = [
+            make_stale_reclaim_job(),
+            # Also unconditional, and for the same reason: a pending delivery
+            # can exist against any configured server, so a Jellyfin-only
+            # deployment (scheduler.enabled off, or no Plex at all) still
+            # needs its deliveries retried. See make_pending_deliveries_job's
+            # docstring.
+            make_pending_deliveries_job(
+                holder, lambda: app.state.servers, http, app.state.mdblist
+            ),
+        ]
         if config.scheduler.enabled:
             # The playlists pass (roadmap row 98a) rides this job, and it is
             # gated on its OWN switch inside the job body -- so the job has to

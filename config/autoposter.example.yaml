@@ -723,6 +723,7 @@ scheduler:
   cleanup_days: 7 # orphaned asset cleanup cadence
   prune_days: 7 # media_items prune cadence
   merge_days: 7 # media_items twin merge cadence
+  pending_deliveries_minutes: 15 # pending-deliveries retry cadence; runs regardless of `enabled` above
   # cleanup_apply is not a setting here -- see cleanup.apply above, which
   # already governs whether the cleanup pass writes (dry run by default)
 
