@@ -3,16 +3,33 @@ import { describe, expect, it } from "vitest";
 import { canNavigate, farthestStep, stepAfter, visibleSteps, type StepId } from "./setupSteps";
 import type { SetupProgress } from "../api/setup";
 
+/** Neither server set up -- what a fresh deployment answers with. The two
+ * server credentials are not in `providers` at all: each is required exactly
+ * when ITS server is configured, so this line is the only place either one's
+ * presence is reported. */
+const NO_SERVERS = {
+  plex: { configured: false, credential: false, checked: false },
+  jellyfin: { configured: false, credential: false, checked: false },
+};
+
+/** One server complete, which is all the media-server step asks for: a
+ * deployment runs on Plex, on Jellyfin, or on both. */
+const PLEX_READY = {
+  ...NO_SERVERS,
+  plex: { configured: true, credential: true, checked: false },
+};
+
 const BASE: SetupProgress = {
   password: true,
   database: false,
   database_source: "missing",
-  providers: { AUTOPOSTER_PLEX_TOKEN: null },
-  required: ["AUTOPOSTER_PLEX_TOKEN"],
+  providers: { AUTOPOSTER_TMDB_TOKEN: null },
+  required: ["AUTOPOSTER_TMDB_TOKEN"],
   config: false,
   config_source: null,
   public_url: false,
   checked_systems: [],
+  servers: NO_SERVERS,
 };
 
 describe("visibleSteps", () => {
@@ -56,7 +73,20 @@ describe("stepAfter", () => {
     expect(stepAfter("url", { ...BASE, public_url: true })).toBe<StepId>("database");
     expect(
       stepAfter("url", { ...BASE, public_url: true, database: true, database_source: "resolved" }),
-    ).toBe<StepId>("systems");
+    ).toBe<StepId>("servers");
+  });
+
+  it("puts the media-server step between the database and the systems step", () => {
+    // The order the wizard walks: a deployment's media server is asked for
+    // before the provider credentials, because the configuration document the
+    // servers step writes is what every later step's deployment shape is read
+    // from.
+    expect(stepAfter("database", { ...BASE, public_url: true, database: true })).toBe<StepId>(
+      "servers",
+    );
+    expect(stepAfter("servers", { ...BASE, public_url: true, database: true })).toBe<StepId>(
+      "systems",
+    );
   });
 
   it("advances past a step that is not in the order at all", () => {
@@ -71,7 +101,7 @@ describe("stepAfter", () => {
         database: true,
         database_source: "resolved",
       }),
-    ).toBe<StepId>("systems");
+    ).toBe<StepId>("servers");
   });
 
   it("stops at the last step", () => {
@@ -92,10 +122,84 @@ describe("farthestStep", () => {
   it("does not run ahead of the server", () => {
     expect(farthestStep({ ...BASE, public_url: false })).toBe<StepId>("url");
     expect(farthestStep({ ...BASE, public_url: true, database: false })).toBe<StepId>("database");
-    expect(farthestStep({ ...BASE, public_url: true, database: true })).toBe<StepId>("systems");
+    expect(farthestStep({ ...BASE, public_url: true, database: true })).toBe<StepId>("servers");
     expect(
-      farthestStep({ ...BASE, public_url: true, database: true, required: [], config_source: "state" }),
+      farthestStep({ ...BASE, public_url: true, database: true, servers: PLEX_READY }),
+    ).toBe<StepId>("systems");
+    expect(
+      farthestStep({
+        ...BASE,
+        public_url: true,
+        database: true,
+        servers: PLEX_READY,
+        required: [],
+        config_source: "state",
+      }),
     ).toBe<StepId>("finish");
+  });
+
+  it("gates systems behind at least one configured server with a credential", () => {
+    // The step gate is `missing_server_setup`'s own rule, reported: EITHER
+    // server finishes the step, and neither half alone does. An address with
+    // no credential is a deployment the next boot refuses; a credential with
+    // no address is a token for a server nothing will talk to.
+    const ready = { ...BASE, public_url: true, database: true };
+    expect(farthestStep(ready)).toBe<StepId>("servers");
+    expect(
+      farthestStep({
+        ...ready,
+        servers: { ...NO_SERVERS, jellyfin: { configured: true, credential: false, checked: false } },
+      }),
+    ).toBe<StepId>("servers");
+    expect(
+      farthestStep({
+        ...ready,
+        servers: { ...NO_SERVERS, jellyfin: { configured: false, credential: true, checked: false } },
+      }),
+    ).toBe<StepId>("servers");
+    // Jellyfin alone is a finished step: the example's `plex:` block is not a
+    // requirement this deployment inherits.
+    expect(
+      farthestStep({
+        ...ready,
+        servers: { ...NO_SERVERS, jellyfin: { configured: true, credential: true, checked: false } },
+      }),
+    ).toBe<StepId>("systems");
+  });
+
+  it("keeps the step unmet while ANY configured server is missing its credential", () => {
+    // The gate's SECOND clause, and the one a "at least one server is done"
+    // reading gets wrong: `missing_server_setup` demands the credential of
+    // every server the document names, so a `plex:` block with no token is
+    // refused at the finish however complete Jellyfin is beside it. A page
+    // that waved this through would disagree with the step it leads to.
+    expect(
+      farthestStep({
+        ...BASE,
+        public_url: true,
+        database: true,
+        required: [],
+        config_source: "state",
+        servers: {
+          plex: { configured: true, credential: false, checked: false },
+          jellyfin: { configured: true, credential: true, checked: true },
+        },
+      }),
+    ).toBe<StepId>("servers");
+  });
+
+  it("never asks for a credential for a server this deployment does not run", () => {
+    // `checked` is a SESSION fact and false after a reload, so it must not
+    // gate anything: a wizard picked up in a second tab would be sent back to
+    // a step it had already finished.
+    expect(
+      farthestStep({
+        ...BASE,
+        public_url: true,
+        database: true,
+        servers: { ...NO_SERVERS, plex: { configured: true, credential: true, checked: false } },
+      }),
+    ).toBe<StepId>("systems");
   });
 
   it("counts a document the wizard staged as the config step answered", () => {
@@ -104,6 +208,7 @@ describe("farthestStep", () => {
         ...BASE,
         public_url: true,
         database: true,
+        servers: PLEX_READY,
         required: [],
         config_source: "staged",
       }),

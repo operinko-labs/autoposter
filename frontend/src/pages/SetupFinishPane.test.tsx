@@ -29,6 +29,14 @@ const PROGRESS: SetupProgress = {
   config_source: "staged",
   public_url: true,
   checked_systems: ["sonarr", "radarr"],
+  // A Plex deployment that never set Jellyfin up -- the shape the media-server
+  // block has to tell from a Jellyfin-only one. `checked` is a SESSION fact and
+  // false after a reload, which is why the line it produces says what happened
+  // during setup and never what is true of the address.
+  servers: {
+    plex: { configured: true, credential: true, checked: true },
+    jellyfin: { configured: false, credential: false, checked: false },
+  },
 };
 
 function renderPane(overrides: Partial<Parameters<typeof SetupFinishPane>[0]> = {}) {
@@ -118,6 +126,57 @@ describe("SetupFinishPane", () => {
 
     expect(screen.getByTestId("registration-sonarr")).toHaveTextContent("Not configured");
     expect(screen.getByTestId("registration-radarr")).toHaveTextContent("Not configured");
+  });
+
+  it("reports the server the wizard set up, and says the check was a setup-time one", () => {
+    // Review M1: "a check passed during setup" and never "this address was
+    // checked" -- `checked` is a session fact the server forgets, so the page
+    // must not report it as a property of the address.
+    renderPane();
+
+    expect(screen.getByTestId("server-plex")).toHaveTextContent(/a check passed during setup/i);
+  });
+
+  it("does not call a server unchecked a failure, because the check never gated anything", () => {
+    renderPane({
+      progress: {
+        ...PROGRESS,
+        servers: {
+          ...PROGRESS.servers,
+          plex: { configured: true, credential: true, checked: false },
+        },
+      },
+    });
+
+    expect(screen.getByTestId("server-plex")).toHaveTextContent(/no check/i);
+    expect(screen.getByTestId("server-plex")).not.toHaveTextContent(/failed/i);
+  });
+
+  it("files a server this deployment does not run under left for later", () => {
+    // The Jellyfin-only deployment's mirror image, and the reason the block
+    // exists: nothing else on this page says which server was configured, and
+    // "not configured" here is a deployment shape, not something the operator
+    // forgot.
+    renderPane();
+
+    expect(screen.getByTestId("server-jellyfin")).toHaveTextContent(/left for later/i);
+  });
+
+  it("names a configured server whose credential never landed", () => {
+    // The step gate's second clause at the end of the wizard: a document that
+    // names a server the secrets file has no credential for is a deployment
+    // the next boot refuses, and this is the last page that can say so.
+    renderPane({
+      progress: {
+        ...PROGRESS,
+        servers: {
+          ...PROGRESS.servers,
+          jellyfin: { configured: true, credential: false, checked: false },
+        },
+      },
+    });
+
+    expect(screen.getByTestId("server-jellyfin")).toHaveTextContent(/credential/i);
   });
 
   it("lists every credential left empty by its human label and its environment name", () => {
