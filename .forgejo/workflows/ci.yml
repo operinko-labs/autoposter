@@ -376,9 +376,9 @@ jobs:
         # can read this script and assert on what each lane actually asks for.
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            markers="not imagemagick and not deep"
+            markers="not imagemagick and not deep and not jellyfin"
           else
-            markers="not imagemagick"
+            markers="not imagemagick and not jellyfin"
           fi
           echo "lane: -m '${markers}'"
           pytest tests/ -q -m "$markers" -n auto --dist loadgroup

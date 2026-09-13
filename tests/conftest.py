@@ -463,3 +463,11 @@ def session_factory_for(session):
         yield session
 
     return factory
+
+
+@pytest.fixture
+def jellyfin_live():
+    url, key = os.environ.get("AUTOPOSTER_TEST_JELLYFIN_URL"), os.environ.get("AUTOPOSTER_TEST_JELLYFIN_APIKEY")
+    if not (url and key):
+        pytest.skip("set AUTOPOSTER_TEST_JELLYFIN_URL and AUTOPOSTER_TEST_JELLYFIN_APIKEY")
+    return url.rstrip("/"), key
