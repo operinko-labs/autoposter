@@ -200,6 +200,26 @@ narrowing to one season. `200` response schema: `BaseItemDtoQueryResult`
 properties total; the ones the client writes are quoted under `POST` below).
 Security: `CustomAuthentication: [DefaultAuthorization]`.
 
+**Verified live, 2026-09-13, against 12.0.0: `userId` is optional in the
+document only.** The route is served by `UserLibraryController.GetItem`, which
+calls `UserManager.GetUserById` with the query's user id; an API-key caller
+has no user, so the id is empty and the server answers `400 Error processing
+request.` (its own log: `System.ArgumentException: Guid can't be empty
+(Parameter 'id')`). With `userId=<an administrator's id>` the same request
+answers `200` with the full DTO (57 keys on the probed movie, `Overview`,
+`Genres` and `LockedFields` included). `GET /Items?ids=<id>&fields=Tags` needs
+no user but returns the trimmed list DTO (22 keys), which a read-modify-write
+must not post back. The client therefore reads every single item as one user,
+resolved once from `/Users`.
+
+## jellyfin-openapi-12.json → paths → "/Users" → get
+
+`operationId: "GetUsers"`. Query parameters `isHidden` and `isDisabled`
+(boolean, optional). `200` response schema: array of `UserDto`; the client
+reads `Id` and `Policy.IsAdministrator` and prefers an administrator, who sees
+every library. Security: `CustomAuthentication: [DefaultAuthorization]`.
+Verified live: an API key lists the server's users.
+
 ## jellyfin-openapi-12.json → paths → "/Items/{itemId}" → post
 
 ```json
