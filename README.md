@@ -2,13 +2,13 @@
 
 # autoposter
 
-Event-driven artwork and metadata automation for a Plex library, replacing
-[Posterizarr](https://github.com/fscorrupt/Posterizarr) and
+Event-driven artwork and metadata automation for a Plex or Jellyfin library,
+replacing [Posterizarr](https://github.com/fscorrupt/Posterizarr) and
 [Kometa](https://kometa.wiki/) with a single service.
 
-Radarr and Sonarr webhooks drive a per-item pipeline: resolve the item in Plex,
-fetch textless artwork, composite a poster with ImageMagick, and write it into
-the shared asset tree. Work is queued in PostgreSQL and processed by a worker
+Radarr and Sonarr webhooks drive a per-item pipeline: resolve the item on every
+configured media server, fetch textless artwork, composite a poster with
+ImageMagick, and write it into the shared asset tree. Work is queued in PostgreSQL and processed by a worker
 pool, so a season-pack import becomes one pass per affected item rather than a
 full-library scan.
 
@@ -35,9 +35,10 @@ one item is one row across both servers, keyed by its provider ids rather than
 by either server's own id, and one render is delivered to each server that has
 the item. What Jellyfin does not get is the features written against Plex-only
 API surface — collections, playlists, the adoption cutover, the ID mismatch
-scan and the metadata backup — which are gated rather than half-working, and
-which the Web UI hides on a deployment with no Plex. See "Media servers" in
-[`deploy/README.md`](deploy/README.md).
+scan and the metadata backup — which are gated rather than half-working: each
+route refuses with one sentence, and the Web UI hides the three sidebar entries
+that lead to one (Collections, ID mismatches, Run modes). See "Media servers"
+in [`deploy/README.md`](deploy/README.md).
 
 ## Web UI
 
@@ -89,8 +90,9 @@ instead of migrating and starting the application; credentials all present
 with no document is instead a configuration error, logged and non-zero, not
 the wizard. The wizard itself walks through the master password, this
 deployment's own address, the database URL, the media servers — one card each
-for Plex and Jellyfin, either of which finishes the step — and the provider
-keys, then restarts the service into the application.
+for Plex and Jellyfin; either server finishes the step, provided no server the
+document names is left without its credential — and the provider keys, then
+restarts the service into the application.
 
 **Every GitOps/ExternalSecrets deployment supplies every hard credential and
 never sees any of this.** In this project's own Kubernetes deployment that

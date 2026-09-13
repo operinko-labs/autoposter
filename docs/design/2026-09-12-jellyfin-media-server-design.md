@@ -414,7 +414,7 @@ Each entry supersedes the section it names; the body above is left as approved
 so that what changed, and why, stays readable. Dated by the day the change
 landed on the branch.
 
-### Identity and the migration (§4)
+### The protocol, identity and the migration (§3, §4, §6.5)
 
 - **2026-09-12, §3.** `MediaServer.fetch_artwork` returns `tuple[bytes, str] | None` — the bytes and the upstream content type — not `bytes | None`. `api/artwork.py` builds its HTTP response's media type from that content type and now routes through `server.fetch_artwork`, `plex_artwork.fetch_artwork` already returned the pair, and Jellyfin's image GET carries a `Content-Type`. Applies to the protocol, `FakeMediaServer`, `PlexClient` and the conformance case.
 - **2026-09-12, §6.5.** The collision merge re-points **every** child table of `media_items` — `item_facts`, `item_credits`, `item_metadata_overrides`, `action_dismissals`, `renders` — deduping on each table's own real unique key rather than on `item_id` alone. §6.5's enumeration omitted `action_dismissals`, and its "overrides re-pointed" was not what the migration actually does.
@@ -425,7 +425,7 @@ landed on the branch.
 - **2026-09-13, §4.1.** **One ref per `(item, server)` is an invariant**, not an allowance: `upsert_server_ref` deletes the item's other refs for that server, and `_merge_into` drops the stale row's refs for servers the survivor already has. The "several rows per server" wording is withdrawn.
 - **2026-09-13, §4.2/§4.6.** The same Plex ref plus the same `kind:provider:id:coords` prefix with a **different** file slot is a file replacement: the existing row is re-keyed in place, keeping its overrides, dismissals and renders. A *different* ref with the same prefix stays a separate item — that is the 4K/HD pair. Legacy promotion is this same mechanism's special case.
 - **2026-09-13, §4.4 step 2.** The basename lookup is **deferred**. `RenderIntent` carries no path, so nothing can drive it; the index entries it would have needed are removed. Revisit if intents ever carry a path.
-- **2026-09-13, §4.4 step 6.** `LibraryIndex` auto-invalidates once `built_at` is `max_age_seconds=3600` old (monotonic), and `JellyfinClient` exposes `invalidate()`. The full pass calls `servers.jellyfin.invalidate()` at pass start.
+- **2026-09-13, §4.4 step 6.** `LibraryIndex` auto-invalidates once `built_at` is `max_age_seconds=3600` old (monotonic), and `JellyfinClient` exposes `invalidate()`. The full pass invalidates at pass start — iterating every server in the registry and duck-typing the method (`getattr(server, "invalidate", None)`) rather than naming Jellyfin, because a server with no index to go stale simply has nothing to call. The ledger's `servers.jellyfin.invalidate()` was the shape, not the call.
 - **2026-09-13, §4.7.** `migrate_preview.preview()` selects `root_folder` and passes it to `identity_key`, so its report matches what the migration computes. The plan's "run it against the dev database before the migration" step was not performed here: the lane's databases are per-worker scratch, and the operator's production database is the real target — the command is named in the Phase 2 PR body instead.
 
 ### The Jellyfin client (§1.1, §11)

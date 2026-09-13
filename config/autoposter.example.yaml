@@ -723,7 +723,7 @@ scheduler:
   cleanup_days: 7 # orphaned asset cleanup cadence
   prune_days: 7 # media_items prune cadence
   merge_days: 7 # media_items twin merge cadence
-  pending_deliveries_minutes: 15 # pending-deliveries retry cadence; inside `enabled` above, but the one pass not gated on Plex
+  pending_deliveries_minutes: 15 # pending-deliveries retry cadence; inside `enabled` above; not gated on Plex, like the drift, cleanup and asset-stats passes
   # cleanup_apply is not a setting here -- see cleanup.apply above, which
   # already governs whether the cleanup pass writes (dry run by default)
 

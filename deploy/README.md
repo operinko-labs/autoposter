@@ -191,8 +191,8 @@ returned 200.
    This is also the step that writes the configuration document, and it is
    **refused outright on a deployment that already resolves one** (a mounted
    ConfigMap, compose's bind-mounted example): writing beside a document the
-   next boot never opens is exactly the failure the finish step's write order
-   exists to avoid. The cards there read the addresses out of that document and
+   next boot never opens is exactly the failure this step's own refusal exists
+   to prevent. The cards there read the addresses out of that document and
    collect only the credentials. If such a document names no media server at
    all, this step cannot be finished from this page — the pane says so, and the
    way out is the document itself.
@@ -816,9 +816,10 @@ What that leaves is worth knowing before you schedule Jellyfin's own library
 scans. An image this service uploaded survives a routine scan and a
 `Default`-mode metadata refresh — verified against a live 12.0.0 instance, the
 uploaded image still reads back afterwards. Replacement is opt-in per refresh
-call: `POST /Items/{id}/Refresh` replaces images only when given
-`metadataRefreshMode=FullRefresh` **and** `replaceAllImages=true`. That
-combination is what to keep off a schedule, not scanning as such.
+call: `POST /Items/{id}/Refresh` replaces images only on a `FullRefresh`
+refresh given `replaceAllImages=true` — the spec documents that parameter as
+"only applicable if mode is FullRefresh". That combination is what to keep off
+a schedule, not scanning as such.
 
 ### One item, one row, across both servers
 
@@ -884,11 +885,14 @@ of being retried inline, and a scheduled pass picks it up.
 
 `scheduler.pending_deliveries_minutes` (default `15`) is its cadence, floored
 at 60 seconds. Each run takes the due rows — `pending`, with `next_attempt_at`
-in the past, oldest first, at most 500 — and re-resolves each on the **one**
-server it is still owed to. Only that one: the other servers already have
+in the past, oldest first, at most 500 — and **delivers** each to the one
+server it is still owed to, and only that one: the other servers already have
 their own delivery row, and re-running them here would be a second,
-uncoordinated delivery pass racing the one the next webhook triggers. A row
-that still does not resolve stays `pending` and is deferred six hours. A
+uncoordinated delivery pass racing the one the next webhook triggers. It does
+read the identity server as well, where that is a different one, to sample the
+media info the badge needs — composing without it would put visibly different
+artwork on the retried server until the next full pass. A row that still does
+not resolve stays `pending` and is deferred six hours. A
 compose or upload that throws is recorded `failed`, with a category and an
 exception class name and never a URL. One row's own failure never takes the
 rest of the pass down with it.
@@ -899,10 +903,12 @@ existing query and dashboard that reads it keeps working. The precedence is
 failing is worth surfacing even while every other server has succeeded, and a
 delivery still in flight means the render is not done yet.
 
-Like the other maintenance passes this one is registered only when
-`scheduler.enabled` is `true` (see "Periodic scheduler" below). Unlike them it
-is **not** gated on Plex: a pending delivery can exist against any configured
-server, and a Jellyfin-only deployment needs this pass exactly as much.
+Like every other maintenance pass this one is registered only when
+`scheduler.enabled` is `true` (see "Periodic scheduler" below). It is **not**
+gated on Plex — a pending delivery can exist against any configured server, and
+a Jellyfin-only deployment needs this pass exactly as much — which puts it with
+the drift, cleanup and asset-stats passes rather than with the Plex-gated ones
+listed above.
 
 ## Secrets
 
@@ -2268,12 +2274,16 @@ See `config/autoposter.example.yaml` for the full block.
 
 ## Periodic scheduler
 
-The `scheduler:` block in `autoposter.yaml` controls five periodic passes —
-the Common Sense collections reconcile, the ratings-drift sweep, the
-orphaned-asset cleanup, the `media_items` prune, and the Radarr/Sonarr sync
-with its safety net (see
-"Radarr and Sonarr sync" below) — each run by a single background task (the same `run(stop_event)` shape as
-the Plex health probe) started from the app lifespan. Their schedule lives in
+The `scheduler:` block in `autoposter.yaml` controls **ten** periodic passes —
+the collections reconcile (which carries the playlists pass), the ratings-drift
+sweep, the library-credits scan, the Plex maintenance pass, the orphaned-asset
+cleanup, the asset-size backfill, the `media_items` prune, the twin merge, the
+pending-deliveries retry, and the Radarr/Sonarr sync with its safety net (see
+"Radarr and Sonarr sync" below). An eleventh job, the stale-job reclaim, is
+registered whether or not this block is enabled, because it is queue
+correctness rather than maintenance. All eleven are run by a single background
+task (the same `run(stop_event)` shape as the Plex health probe) started from
+the app lifespan. Their schedule lives in
 the database, not process memory: `scheduled_runs` records each job's last
 start/finish time and outcome (`last_status`, `last_detail`), so a restart
 does not re-run everything, and two replicas coordinate through
@@ -2285,11 +2295,12 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   FROM scheduled_runs;
 ```
 
-- `enabled` (default `true`) — master switch for all five passes. Off means
-  none of them run at all, including as a dry run — **including the
-  Radarr/Sonarr sync and its safety net**: an operator turning the scheduler
-  off to silence the collections or cleanup passes also stops the Arr sync,
-  and a missed webhook then never converges.
+- `enabled` (default `true`) — master switch for all ten. Off means none of
+  them run at all, including as a dry run — **including the Radarr/Sonarr sync
+  and its safety net**: an operator turning the scheduler off to silence the
+  collections or cleanup passes also stops the Arr sync, and a missed webhook
+  then never converges. The stale-job reclaim is the exception, and is
+  registered whether this is on or off.
 - `poll_seconds` (default `60`) — how often the scheduler checks whether
   anything is due; not the interval of any individual job.
 - `collections_hours` (default `24`) — cadence for the Common Sense
@@ -2353,9 +2364,9 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
 - `pending_deliveries_minutes` (default `15`) — cadence for the
   pending-deliveries retry pass, which re-attempts an artwork delivery a
   server could not take yet. Minutes rather than days because the thing it
-  waits on is a library scan, not a week's drift. It is the one pass here that
-  is not gated on Plex. See "The pending-deliveries pass" under "Media
-  servers" above for what a run does.
+  waits on is a library scan, not a week's drift. Not gated on Plex, like the
+  drift, cleanup and asset-stats passes above it. See "The pending-deliveries
+  pass" under "Media servers" above for what a run does.
 
 ### Orphaned-asset cleanup: what it can and cannot find
 
