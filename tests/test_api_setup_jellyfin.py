@@ -266,6 +266,46 @@ async def test_the_config_step_refuses_a_submit_that_names_no_server(setup_clien
     assert response.json()["detail"] == setup_api.STEP_SERVERS
 
 
+async def test_a_check_alone_does_not_answer_the_config_step(setup_client, monkeypatch):
+    """The invariant this route's docstring states, with the one escape that
+    contradicted it removed: a submit that names no address is refused, and a
+    passed check is not a second way to answer the step.
+
+    Since a probe stopped configuring a server (review I2), the escape could
+    only ever stage a document with no server block -- a 200 that `finish`
+    then refuses, which is exactly the shape "there is no shape in which this
+    step accepts a document the next boot then rejects" rules out.
+    """
+
+    async def passes(system, base_url, credentials, transport=None):
+        return setup_checks.CheckOutcome(ok=True, refused=False, failure=None)
+
+    monkeypatch.setattr(setup_checks, "run_check", passes)
+    token = await _authenticate(setup_client)
+    checked = await setup_client.post(
+        "/api/setup/check",
+        json={
+            "system": "jellyfin",
+            "base_url": JELLYFIN_URL,
+            "credential_value": JELLYFIN_KEY,
+        },
+        headers=_headers(token),
+    )
+    assert checked.json()["ok"] is True, checked.text
+
+    response = await setup_client.post(
+        "/api/setup/config", json={}, headers=_headers(token)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.STEP_SERVERS
+    progress = (await setup_client.get("/api/setup/progress", headers=_headers(token))).json()
+    assert progress["config"] is False
+    assert progress["servers"]["jellyfin"] == {
+        "configured": False, "credential": False, "checked": True,
+    }
+
+
 async def test_a_jellyfin_only_document_does_not_inherit_the_example_plex_block(
     setup_client, setup_app
 ):

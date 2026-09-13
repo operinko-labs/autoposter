@@ -1594,15 +1594,18 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     if body.jellyfin_url:
         urls["jellyfin"] = _require_http_url(body.jellyfin_url, JELLYFIN_URL_NOT_AN_ADDRESS)
 
-    # Facts C7, the rule /public-url and /database already hold: a staged
-    # document is never served back, so a step navigated into again shows an
-    # empty field, and an empty submit there means "keep what you have".
-    if not urls and state.config_document is not None:
-        return {"path": str(state_config_path())}
-    # Empty with nothing staged is the media-server step, unfinished -- unless
-    # a check already staged an address, which is the other way this step is
-    # answered and the one the tick-list arrives by.
-    if not urls and not any(name in state.base_urls for name in _SERVERS):
+    if not urls:
+        # Facts C7, the rule /public-url and /database already hold: a staged
+        # document is never served back, so a step navigated into again shows
+        # an empty field, and an empty submit there means "keep what you have".
+        if state.config_document is not None:
+            return {"path": str(state_config_path())}
+        # Empty with nothing staged is the media-server step, unfinished. A
+        # successful check is not the other half of this: since a probe stopped
+        # configuring a server (review I2), a body that names no address can
+        # only produce a document with no server block in it -- which is a 200
+        # this route then refuses at `finish`, and the one shape its own
+        # docstring says cannot exist.
         raise HTTPException(status_code=400, detail=STEP_SERVERS)
 
     try:
