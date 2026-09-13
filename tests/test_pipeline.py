@@ -2412,3 +2412,81 @@ async def test_an_absent_row_is_left_alone_by_a_later_write(session, config_with
     row = (await session.execute(select(MetadataWrite))).scalar_one()
     assert row.status == "absent" and row.detail == ABSENT_DETAIL
     assert jf.facts_written == [], "an absent row must never be written to"
+
+
+async def test_a_dual_registry_pass_writes_metadata_written_and_pending_per_server(
+    session, config_with_badges, monkeypatch,
+):
+    """Task 4 review I1: the branch matrix above is exercised directly against
+    `apply_metadata`; this proves the same outcomes through the real entry
+    point, `process_item`, on a dual registry -- Plex accepts the write,
+    Jellyfin's `apply_facts` raises -- and that the artwork path (an
+    unrelated seam) still completes for both servers regardless."""
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.operations.write_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers()
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise RuntimeError("jellyfin refused it")
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert poster.upload_status == "uploaded", "the artwork path must still complete for both servers"
+    assert plex.uploads and jf.uploads
+    from autoposter.db.models import MetadataWrite
+
+    rows = {row.server: row for row in (await session.execute(select(MetadataWrite))).scalars()}
+    assert rows["plex"].status == "written"
+    assert rows["jellyfin"].status == "pending"
+    assert rows["jellyfin"].attempts == 1
+    assert rows["jellyfin"].detail == "error: RuntimeError"
+
+
+async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
+    session, monkeypatch,
+):
+    """Task 4 review I1's second case: the same guard as the direct-call
+    absent test above, now proven through `process_item` -- presence has
+    already stamped Jellyfin's row `absent` for this item, and a pass that
+    resolves it there anyway (this double still has it in `jf.items`) must
+    never call `apply_facts` on Jellyfin or move the row off `absent`."""
+    from autoposter import deliveries
+    from autoposter.db.models import MetadataWrite
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config = load_config(EXAMPLE)
+    config.operations.write_to_jellyfin = True
+    # This test is about the metadata write loop, not badges -- disabled so
+    # the badge stage never runs at all (the established pattern above, in
+    # test_metadata_fan_out_reaches_every_resolved_server_with_its_own_ref).
+    config.badges.enabled = False
+    servers, plex, jf = _two_servers()
+    plex_item = plex.items[INTENT.dedupe_key]
+
+    media_item = await pipeline_module._upsert_media_item(session, plex_item)
+    await deliveries.record_metadata(session, media_item.id, "jellyfin", "absent", detail=ABSENT_DETAIL)
+    await session.commit()
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    await pipeline_module.process_item(
+        session, config, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    assert jf.facts_written == [], "an absent row must never be written to, even through the real pass"
+    row = (
+        await session.execute(
+            select(MetadataWrite).where(
+                MetadataWrite.item_id == media_item.id, MetadataWrite.server == "jellyfin",
+            )
+        )
+    ).scalar_one()
+    assert row.status == "absent" and row.detail == ABSENT_DETAIL
