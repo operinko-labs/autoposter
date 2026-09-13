@@ -60,9 +60,10 @@ async def test_pending_rows_become_due_and_are_re_delivered(session, config_with
     jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
 
-    # `force` (fix round 3 round 2, R1) is what the retry pass passes; every
-    # stub here takes it so it stands in for the real signature.
-    async def fake_compose(session, config, render, item, http, mdblist, force=False):  # bytes, no ImageMagick
+    # `**kwargs` for what the retry pass passes and these stubs do not model:
+    # `http`/`mdblist`, `force` (fix round 3 round 2, R1) and the identity
+    # server's `server`/`ref` (round 3, N2).
+    async def fake_compose(session, config, render, item, **kwargs):  # bytes, no ImageMagick
         return b"badged"
 
     # Task 19 extracts pipeline.compose_badged_bytes; it does not exist yet, so
@@ -137,7 +138,7 @@ async def test_upload_exception_records_failed_not_pending(session, config_with_
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
     jf.raise_on_upload = httpx.ConnectError("upload failed")
 
-    async def fake_compose(session, config, render, item, http, mdblist, force=False):
+    async def fake_compose(session, config, render, item, **kwargs):
         return b"badged"
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
@@ -190,7 +191,7 @@ async def test_library_override_gates_the_retry_per_row(session, monkeypatch):
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", library="Movies")
     jf.items["process_item:movie:tmdb2"] = resolved("jellyfin", "j2", library="TV Shows")
 
-    async def fake_compose(session, config, render, item, http, mdblist, force=False):
+    async def fake_compose(session, config, render, item, **kwargs):
         return b"badged"
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
@@ -267,7 +268,7 @@ async def test_a_database_error_on_one_row_does_not_abort_the_pass(
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
     jf.items["process_item:movie:tmdb2"] = resolved("jellyfin", "j2", file_path="/m2.mkv")
 
-    async def fake_compose(session, config, render, item, http, mdblist, force=False):
+    async def fake_compose(session, config, render, item, **kwargs):
         return b"badged"
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
@@ -324,7 +325,7 @@ async def test_nothing_left_to_compose_records_skipped_not_a_failed_upload(
     jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
 
-    async def compose_nothing(session, config, render, item, http, mdblist, force=False):
+    async def compose_nothing(session, config, render, item, **kwargs):
         return None
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", compose_nothing, raising=False)
@@ -369,3 +370,77 @@ async def test_a_migration_backfilled_row_is_never_due(session, config_with_badg
         )
     ).one()
     assert row.status == "pending" and row.attempted_at is None
+
+
+# Fix round 3, round 3 (re-review findings).
+
+
+async def test_a_rolled_back_row_keeps_every_other_rows_work(
+    session, session_factory, config_with_badges, monkeypatch,
+):
+    """N1, the re-reviewer's own probe shape: THREE due rows with the
+    database error on the FIRST.
+
+    The previous fix rolled the whole session back in the handler. Nothing
+    commits until the end of the pass, so that threw away every earlier row's
+    `record`/`rollup` too -- and it expired every object the `due` query
+    returned, so the row after next died reading its own id and rolled the
+    session back again. Measured: two uploads on the server, nothing
+    committed, `1 uploaded` reported. A SAVEPOINT per row reaches only the
+    row that failed."""
+    from sqlalchemy import text
+
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    renders = []
+    for index in (1, 2, 3):
+        row = await pipeline._upsert_media_item(
+            session, resolved("plex", str(index), tmdb_id=index, file_path=f"/m{index}.mkv")
+        )
+        renders.append(await pipeline._get_or_create_render(session, row, "poster", f"/a/p{index}.jpg"))
+    await session.commit()
+    # Ordered by next_attempt_at, so the exploding row is squarely first.
+    for offset, render in zip((-900, -600, -300), renders, strict=True):
+        await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=offset)
+    await session.commit()
+    ids = [render.id for render in renders]
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    for index in (1, 2, 3):
+        jf.items[f"process_item:movie:tmdb{index}"] = resolved(
+            "jellyfin", f"j{index}", file_path=f"/m{index}.mkv"
+        )
+
+    async def fake_compose(session, config, render, item, **kwargs):
+        return b"badged"
+
+    monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
+
+    real_record = deliveries.record
+
+    async def exploding_record(db, render_id, server, status, **kwargs):
+        if render_id == ids[0]:
+            await db.execute(text("SELECT 1 / 0"))
+        await real_record(db, render_id, server, status, **kwargs)
+
+    monkeypatch.setattr(deliveries, "record", exploding_record)
+    config_with_badges.badges.upload_to_jellyfin = True
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
+    )
+
+    assert summary == "pending deliveries: 3 due, 2 uploaded, 1 still pending"
+    assert [u[0].native_id for u in jf.uploads] == ["j1", "j2", "j3"], (
+        "every row must still be attempted"
+    )
+    # A separate session: the point is that rows 2 and 3 were COMMITTED, not
+    # merely written and then erased by a neighbour's rollback.
+    async with session_factory() as fresh:
+        committed = dict(
+            (await fresh.execute(
+                select(RenderDelivery.render_id, RenderDelivery.status)
+            )).all()
+        )
+    assert committed == {ids[0]: "pending", ids[1]: "uploaded", ids[2]: "uploaded"}

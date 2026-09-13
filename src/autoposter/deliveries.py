@@ -168,131 +168,154 @@ async def retry_pending_deliveries(
     )).all()
 
     uploaded = still_pending = 0
-    rolled_back = False
     for delivery, render, item in due:
         # One row's own failure -- a bug, a bad refs_for lookup, anything not
         # already turned into a delivery outcome below -- must not take the
         # rest of the pass down with it; every other due row still deserves
         # its own attempt.
         #
-        # `render_id`/`server_name` are read inside the try and used by its
-        # `except`: a rollback expires every object the `due` query returned,
-        # and an expired attribute read outside an await is a MissingGreenlet
-        # rather than a reload -- which would turn the handler that exists to
-        # contain a failure into a second one.
-        render_id: int | None = None
-        server_name: str | None = None
+        # A SAVEPOINT per row (fix round 3 round 3, N1) is what makes that
+        # true of a DATABASE failure too, which is the likeliest thing to
+        # land in the handler below -- a statement error out of `record`'s
+        # upsert, a `rollup` UPDATE, a dropped connection -- and which
+        # leaves the transaction aborted. `ROLLBACK TO SAVEPOINT` un-aborts
+        # it while reaching only this row's own work: nothing commits until
+        # the end of the pass, so a plain `session.rollback()` here threw
+        # away every EARLIER row's `record`/`rollup` as well, and expired
+        # every object the `due` query returned along with them -- which is
+        # how the row after next came to die reading its own id. Rolling the
+        # savepoint back is automatic on the way out of this block, and
+        # leaves every other row's work, and every object, untouched.
+        render_id, server_name = render.id, delivery.server
         try:
-            if rolled_back:
-                # The previous row rolled back, so this row's three objects
-                # are expired. Reloaded here, in an await, for the same
-                # reason -- and only on the path that actually needs it, so
-                # an ordinary pass pays nothing.
-                for expired in (delivery, render, item):
-                    await session.refresh(expired)
-                rolled_back = False
-            render_id, server_name = render.id, delivery.server
-            server = servers.get(delivery.server)
-            if server is None:
-                # The config that named this server is gone (an operator
-                # removed the block); no amount of retrying resolves that,
-                # unlike an ItemNotFound or a transport hiccup.
-                await record(session, render.id, delivery.server, "failed", detail="config: server removed")
-                await rollup(session, render.id)
-                continue
+            async with session.begin_nested():
+                server = servers.get(delivery.server)
+                if server is None:
+                    # The config that named this server is gone (an operator
+                    # removed the block); no amount of retrying resolves that,
+                    # unlike an ItemNotFound or a transport hiccup.
+                    await record(session, render.id, delivery.server, "failed", detail="config: server removed")
+                    await rollup(session, render.id)
+                    continue
 
-            # Per-library, exactly like apply_badges (render/pipeline.py)
-            # resolves before reading any badges.* setting: a library
-            # override must gate a retry the same way it gated the delivery
-            # this row is a retry OF.
-            row_config = config_for_library(config, item.library)
+                # Per-library, exactly like apply_badges (render/pipeline.py)
+                # resolves before reading any badges.* setting: a library
+                # override must gate a retry the same way it gated the delivery
+                # this row is a retry OF.
+                row_config = config_for_library(config, item.library)
 
-            if not getattr(row_config.badges, f"upload_to_{delivery.server}", False):
-                await record(session, render.id, delivery.server, "skipped")
-                await rollup(session, render.id)
-                continue
-
-            refs = await refs_for(session, item.id)
-            try:
-                resolved_item = await server.resolve(_intent_for(item, refs))
-            except PathMismatch as exc:
-                # A path-mapping mismatch that no retry fixes (spec §6.2).
-                # Fix round 3, M4: the detail goes through `failure_detail`
-                # like every other one -- category plus class name, never the
-                # exception's own message, which carries an operator path.
-                await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
-                await rollup(session, render.id)
-                continue
-            except ItemNotFound:
-                # Not on this server yet -- keep waiting, no cap (spec §5.3).
-                await record(session, render.id, delivery.server, "pending", retry_in=RETRY_SECONDS)
-                still_pending += 1
-                await rollup(session, render.id)
-                continue
-            except Exception as exc:
-                # A transport error: the server may simply be down right now.
-                logger.warning("delivery to %s failed to resolve (%s)", delivery.server, failure_detail(exc))
-                await record(
-                    session, render.id, delivery.server, "pending",
-                    detail=failure_detail(exc), retry_in=RETRY_SECONDS,
-                )
-                still_pending += 1
-                await rollup(session, render.id)
-                continue
-
-            await upsert_server_ref(session, item.id, resolved_item)
-
-            try:
-                data = await _pipeline.compose_badged_bytes(
-                    session, row_config, render, item, http=http, mdblist=mdblist,
-                    # Fix round 3 round 2, R1: a due row means THIS server
-                    # does not have these bytes, so the unchanged-fingerprint
-                    # gate -- which answers for the servers that DO -- must
-                    # not turn this pass into a no-op. The three "not a badge
-                    # candidate" checks still apply, and a `None` from one of
-                    # those is the `skipped` below.
-                    force=True,
-                )
-                if data is None:
-                    # Fix round 3, I3: a pending row outlives the state that
-                    # created it. Badges turned off for this library, or a
-                    # render that has since gone `failed`, leaves nothing to
-                    # compose -- and uploading `None` would turn that into a
-                    # sticky `failed` row with a misleading detail. `skipped`
-                    # is the honest outcome, the same one `deliver` records
-                    # for a server there is nothing to send to.
+                if not getattr(row_config.badges, f"upload_to_{delivery.server}", False):
                     await record(session, render.id, delivery.server, "skipped")
                     await rollup(session, render.id)
                     continue
-                await server.upload_artwork(
-                    resolved_item.ref, data, render.art_kind,
-                    row_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities,
-                )
-            except Exception as exc:
-                # The item DID resolve; compositing or the upload itself is
-                # what failed. That is not "not there yet" -- it is a real
-                # problem against an item we found, the same distinction
-                # apply_badges' own upload except clause draws (records
-                # `failed`, not another `pending`).
-                logger.warning("delivery to %s failed (%s)", delivery.server, failure_detail(exc))
-                await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
-                await rollup(session, render.id)
-                continue
 
-            await record(session, render.id, delivery.server, "uploaded")
-            uploaded += 1
-            await rollup(session, render.id)
+                refs = await refs_for(session, item.id)
+                try:
+                    resolved_item = await server.resolve(_intent_for(item, refs))
+                except PathMismatch as exc:
+                    # A path-mapping mismatch that no retry fixes (spec §6.2).
+                    # Fix round 3, M4: the detail goes through `failure_detail`
+                    # like every other one -- category plus class name, never the
+                    # exception's own message, which carries an operator path.
+                    await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                    await rollup(session, render.id)
+                    continue
+                except ItemNotFound:
+                    # Not on this server yet -- keep waiting, no cap (spec §5.3).
+                    await record(session, render.id, delivery.server, "pending", retry_in=RETRY_SECONDS)
+                    still_pending += 1
+                    await rollup(session, render.id)
+                    continue
+                except Exception as exc:
+                    # A transport error: the server may simply be down right now.
+                    logger.warning("delivery to %s failed to resolve (%s)", delivery.server, failure_detail(exc))
+                    await record(
+                        session, render.id, delivery.server, "pending",
+                        detail=failure_detail(exc), retry_in=RETRY_SECONDS,
+                    )
+                    still_pending += 1
+                    await rollup(session, render.id)
+                    continue
+
+                await upsert_server_ref(session, item.id, resolved_item)
+
+                # The identity the FULL pass composes from (fix round 3 round
+                # 3, N2): `process_item` samples live media info and native
+                # ratings off Plex alone and passes `None` when this pass
+                # resolved no Plex item (see `compose_badged_bytes`' own
+                # docstring), and those values feed both the badge and the
+                # fingerprint. Composing here without them produced a poster
+                # missing the resolution/format overlays every other server
+                # already has -- visibly different artwork on the retried
+                # server until the next full pass. So the same identity is
+                # re-resolved here, and reused for free when it IS the server
+                # this row is owed to.
+                identity_name = "plex" if "plex" in refs and servers.get("plex") is not None else None
+                identity_item = resolved_item if identity_name == delivery.server else None
+                if identity_name is not None and identity_item is None:
+                    try:
+                        identity_item = await servers.get(identity_name).resolve(_intent_for(item, refs))
+                    except Exception as exc:
+                        # Never deliver overlay-less bytes: not being able to
+                        # sample the identity server is a wait, exactly like
+                        # the delivery server's own miss above, and the row
+                        # keeps its normal horizon.
+                        logger.warning(
+                            "delivery to %s waits on %s (%s)",
+                            delivery.server, identity_name, failure_detail(exc),
+                        )
+                        await record(
+                            session, render.id, delivery.server, "pending",
+                            detail=None if isinstance(exc, ItemNotFound) else failure_detail(exc),
+                            retry_in=RETRY_SECONDS,
+                        )
+                        still_pending += 1
+                        await rollup(session, render.id)
+                        continue
+
+                try:
+                    data = await _pipeline.compose_badged_bytes(
+                        session, row_config, render, item, http=http, mdblist=mdblist,
+                        server=servers.get(identity_name) if identity_item is not None else None,
+                        ref=identity_item.ref if identity_item is not None else None,
+                        # Fix round 3 round 2, R1: a due row means THIS server
+                        # does not have these bytes, so the unchanged-fingerprint
+                        # gate -- which answers for the servers that DO -- must
+                        # not turn this pass into a no-op. The three "not a badge
+                        # candidate" checks still apply, and a `None` from one of
+                        # those is the `skipped` below.
+                        force=True,
+                    )
+                    if data is None:
+                        # Fix round 3, I3: a pending row outlives the state that
+                        # created it. Badges turned off for this library, or a
+                        # render that has since gone `failed`, leaves nothing to
+                        # compose -- and uploading `None` would turn that into a
+                        # sticky `failed` row with a misleading detail. `skipped`
+                        # is the honest outcome, the same one `deliver` records
+                        # for a server there is nothing to send to.
+                        await record(session, render.id, delivery.server, "skipped")
+                        await rollup(session, render.id)
+                        continue
+                    await server.upload_artwork(
+                        resolved_item.ref, data, render.art_kind,
+                        row_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities,
+                    )
+                except Exception as exc:
+                    # The item DID resolve; compositing or the upload itself is
+                    # what failed. That is not "not there yet" -- it is a real
+                    # problem against an item we found, the same distinction
+                    # apply_badges' own upload except clause draws (records
+                    # `failed`, not another `pending`).
+                    logger.warning("delivery to %s failed (%s)", delivery.server, failure_detail(exc))
+                    await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                    await rollup(session, render.id)
+                    continue
+
+                await record(session, render.id, delivery.server, "uploaded")
+                uploaded += 1
+                await rollup(session, render.id)
         except Exception as exc:
-            # Fix round 3, I2: rolled back FIRST. The likeliest failure to
-            # land here is a database one -- a statement error out of
-            # `record`'s upsert, a `rollup` UPDATE, a dropped connection --
-            # which leaves the transaction aborted, so without this every
-            # remaining due row would raise `PendingRollbackError` at its
-            # first execute and the closing commit would take the whole pass
-            # with it. "One row's failure never aborts the pass" only holds
-            # for pure-Python exceptions otherwise.
-            await session.rollback()
-            rolled_back = True
             logger.warning(
                 "delivery retry for render %s/%s failed unexpectedly (%s)",
                 render_id, server_name, type(exc).__name__,
