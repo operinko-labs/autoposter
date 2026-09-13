@@ -141,6 +141,14 @@ PLEX_URL_NOT_AN_ADDRESS = (
     "the Plex server URL must be an http:// or https:// address with a host, "
     "with no username or password in it, and with no query string or fragment"
 )
+# Its twin for the other server, and a separate constant rather than one
+# sentence naming both: the page renders `detail` beside the field that was
+# refused, so an operator who mistyped a JELLYFIN address must not be told
+# about Plex. Row 213's rule is that a fixed refusal describes the refusal.
+JELLYFIN_URL_NOT_AN_ADDRESS = (
+    "the Jellyfin server URL must be an http:// or https:// address with a host, "
+    "with no username or password in it, and with no query string or fragment"
+)
 # The shared address guard's refusal, and the one Task 2's check endpoint
 # reuses. Three requirements in one sentence because they are one decision: an
 # address this service will connect to -- or hand to an *arr as a callback --
@@ -722,10 +730,13 @@ def _servers_progress(request: Request) -> dict:
     operator just typed read the same. ``checked`` is the session fact
     ``checks_passed`` records.
 
-    This is the step gate's own input, reported: ``_unmet_step`` refuses the
-    finish step with ``STEP_SERVERS`` exactly when no server has both of the
-    first two, so the page can say WHICH half is missing without the finish
-    step and the page disagreeing.
+    This is the step gate's own input, reported. The gate is
+    ``missing_server_setup``'s and has two arms, not one: the step is unmet
+    while NO server has both ``configured`` and ``credential``, AND it is unmet
+    while ANY server that is ``configured`` lacks its ``credential``. A
+    deployment whose document names Plex without a token is refused even with a
+    complete Jellyfin beside it -- so a page that reads "one server is done, we
+    are finished" off these booleans would disagree with the finish step.
     """
     state = request.app.state.setup
     document = _document_for_boot(request) or {}
@@ -1541,10 +1552,12 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     address and follows no successful check is refused with ``STEP_SERVERS``,
     which is the same sentence the finish step refuses on -- there is no shape
     in which this step accepts a document the next boot then rejects. The
-    blocks that survive are the ones the operator actually configured: the
-    example ships a ``plex:`` block with a placeholder address, and a
-    Jellyfin-only deployment must not inherit it, or ``missing_server_setup``
-    would demand a Plex token forever.
+    blocks that survive are the ones the operator actually configured: the two
+    cards on this step may be saved in one body or one at a time, so a server
+    this body does not name keeps whatever THIS SESSION staged for it and
+    loses only the example's placeholder block -- which a Jellyfin-only
+    deployment must not inherit, or ``missing_server_setup`` would demand a
+    Plex token forever.
 
     Each address is checked here as well as validated, because ``url`` on both
     server models is a bare ``str``: an empty or hostless one passes the model
@@ -1578,7 +1591,7 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     if body.plex_url:
         urls["plex"] = _require_http_url(body.plex_url, PLEX_URL_NOT_AN_ADDRESS)
     if body.jellyfin_url:
-        urls["jellyfin"] = _require_http_url(body.jellyfin_url, PLEX_URL_NOT_AN_ADDRESS)
+        urls["jellyfin"] = _require_http_url(body.jellyfin_url, JELLYFIN_URL_NOT_AN_ADDRESS)
 
     # Facts C7, the rule /public-url and /database already hold: a staged
     # document is never served back, so a step navigated into again shows an
@@ -1611,18 +1624,30 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     # which applies the staged map a second time -- cannot put it back.
     for name, url in urls.items():
         document.setdefault(name, {})["url"] = url
+    for name in _SERVERS:
+        # What this submit says about the server it did NOT name. The document
+        # is re-derived from the example every time, so there are three
+        # possible sources for a block and only one of them is this
+        # deployment's: an address this submit typed (above), an address a
+        # check staged (`_apply_staged_urls`, left alone here), and an address
+        # an EARLIER SUBMIT of this session staged -- which is one card of the
+        # servers step saved before the other, and is restored here. What is
+        # left is the example's own `plex:` block, with its placeholder
+        # address, and it is dropped: `boot` would read it as a Plex
+        # deployment missing its token, forever, on a Jellyfin-only pod.
+        if name in urls or name in state.base_urls:
+            continue
+        previous = (state.config_document or {}).get(name) or {}
+        if previous.get("url"):
+            document[name] = previous
+        else:
+            document.pop(name, None)
+    # After the restore, so a tick-list submitted for a server this body did
+    # not re-address still lands on that server's own block.
     if body.excluded_libraries is not None and "plex" in document:
         document["plex"]["excluded_libraries"] = body.excluded_libraries
     if body.jellyfin_excluded_libraries is not None and "jellyfin" in document:
         document["jellyfin"]["excluded_libraries"] = body.jellyfin_excluded_libraries
-    for name in _SERVERS:
-        # A server this submit did not configure, and no check staged an
-        # address for, is not this deployment's -- and the example's own
-        # `plex:` block is exactly that on a Jellyfin-only deployment. Dropped
-        # rather than left with its placeholder address, which `boot` would
-        # read as a Plex deployment missing its token.
-        if name not in urls and name not in state.base_urls:
-            document.pop(name, None)
     try:
         build_config(document)
     except Exception as exc:

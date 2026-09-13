@@ -22,7 +22,7 @@ from autoposter.db.models import MediaItem, MediaItemServerRef
 # everything, and nothing is published from a run that skipped any of it.
 #
 # Chosen by measurement rather than by taste. A serial run of the whole suite
-# spends 459.7s inside tests; these 22 files are 299.7s of that -- about two
+# spends 459.7s inside tests; these 23 files are 299.7s of that -- about two
 # thirds of the time for 525 of the 4,170 non-ImageMagick tests. They have one
 # cause in common, which is also why nothing cheaper is on the list: each of
 # these tests builds the ASGI application and drives it against a real
@@ -90,7 +90,7 @@ DEEP_SUITES = frozenset(
 )
 
 # The other answer to the same question: a `test_api_*.py` suite that is
-# cheap enough to keep on both lanes. Empty today -- every one of the 22 builds
+# cheap enough to keep on both lanes. Empty today -- every one of the 23 builds
 # the ASGI app against a real database, which is what the deep lane *is* -- and
 # it exists so that the answer "this one stays fast" can be given explicitly
 # rather than by omission. tests/test_ci_path_filters.py asserts every
@@ -102,8 +102,8 @@ FAST_API_SUITES: frozenset[str] = frozenset()
 def pytest_collection_modifyitems(items):
     """Apply the ``deep`` marker to every test in ``DEEP_SUITES``.
 
-    ``pytestmark = pytest.mark.deep`` in each of the 22 modules would say the
-    same thing, but it would say it in 22 places while the lane is one decision;
+    ``pytestmark = pytest.mark.deep`` in each of the 23 modules would say the
+    same thing, but it would say it in 23 places while the lane is one decision;
     here the whole of it is readable at once and CI's ``-m`` expression has a
     single thing to point at.
 
