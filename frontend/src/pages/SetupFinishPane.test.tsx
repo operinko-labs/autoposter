@@ -160,6 +160,9 @@ describe("SetupFinishPane", () => {
     renderPane();
 
     expect(screen.getByTestId("server-jellyfin")).toHaveTextContent(/left for later/i);
+    // "saved", not "given": an address typed and checked but never submitted
+    // lands here too, because a probed server is not a configured one.
+    expect(screen.getByTestId("server-jellyfin")).toHaveTextContent(/no address was saved/i);
   });
 
   it("names a configured server whose credential never landed", () => {

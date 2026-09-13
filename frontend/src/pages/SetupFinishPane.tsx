@@ -24,9 +24,14 @@ const MEDIA_SERVERS = [
  * nothing was written for it and nothing is missing. The wizard is finishable
  * with either server (spec 8), which is what makes this a shape and not an
  * omission -- and saying so here is what tells a Jellyfin-only operator that
- * the empty Plex card was read as an answer. */
+ * the empty Plex card was read as an answer.
+ *
+ * SAVED, not given: a server whose address was typed and CHECKED but never
+ * submitted is this state too, since a probed server is no longer configured
+ * by the check alone (branch review I2). "No address was given" would be read
+ * as "you never typed one" by the operator likeliest to see this line. */
 const SERVER_LEFT =
-  "Left for later — no address was given for it, so the configuration names it nowhere.";
+  "Left for later — no address was saved for it, so the configuration names it nowhere.";
 
 /** Its address is in the document and its credential is not stored. The next
  * boot refuses this (`missing_server_setup`), and this is the last page that
