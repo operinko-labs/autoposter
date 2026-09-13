@@ -10,6 +10,7 @@ or apply_facts.
 """
 from __future__ import annotations
 
+import base64
 import functools
 import logging
 
@@ -91,9 +92,13 @@ class JellyfinApi:
 
     async def set_image(self, item_id: str, image_type: str, data: bytes, content_type: str) -> None:
         # capture → "/Items/{itemId}/Images/{imageType}" → post: requestBody is
-        # image/* raw bytes, not multipart and not JSON. (V3 in the design doc.)
+        # documented as image/* raw bytes, not multipart and not JSON. V3
+        # (design doc §11), resolved live 2026-09-13 against Jellyfin 12.0.0:
+        # raw bytes get a 500 -- the wire body must be base64-encoded, same as
+        # the "known behaviour of earlier versions" the design doc flagged as
+        # open. Content-Type stays the real image mime; only the body changes.
         response = await self._http.post(
-            f"{self.base_url}/Items/{item_id}/Images/{image_type}", content=data,
+            f"{self.base_url}/Items/{item_id}/Images/{image_type}", content=base64.b64encode(data),
             headers={**self.headers(), "Content-Type": content_type},
         )
         response.raise_for_status()

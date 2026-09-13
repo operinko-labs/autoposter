@@ -317,6 +317,31 @@ raw `image/*` bytes, no JSON schema. No `security` block on this operation
 }
 ```
 
+## jellyfin-openapi-12.json → paths → "/Items/{itemId}/Refresh" → post
+
+```json
+{
+ "tags": ["Library"],
+ "summary": "Refreshes metadata for an item.",
+ "operationId": "RefreshItem",
+ "parameters": [
+  {"name": "itemId", "in": "path", "description": "Item id.", "required": true, "schema": {"type": "string", "format": "uuid"}},
+  {"name": "metadataRefreshMode", "in": "query", "description": "(Optional) Specifies the metadata refresh mode.", "schema": {"enum": ["None", "ValidationOnly", "Default", "FullRefresh"], "default": "None"}},
+  {"name": "imageRefreshMode", "in": "query", "description": "(Optional) Specifies the image refresh mode.", "schema": {"enum": ["None", "ValidationOnly", "Default", "FullRefresh"], "default": "None"}},
+  {"name": "replaceAllMetadata", "in": "query", "description": "(Optional) Determines if metadata should be replaced. Only applicable if mode is FullRefresh.", "schema": {"type": "boolean", "default": false}},
+  {"name": "replaceAllImages", "in": "query", "description": "(Optional) Determines if images should be replaced. Only applicable if mode is FullRefresh.", "schema": {"type": "boolean", "default": false}},
+  {"name": "regenerateTrickplay", "in": "query", "description": "(Optional) Determines if trickplay images should be replaced. Only applicable if mode is FullRefresh.", "schema": {"type": "boolean", "default": false}}
+ ],
+ "responses": {
+  "204": {"description": "Item metadata refresh queued."},
+  "404": {"description": "Item to refresh not found."}
+ },
+ "security": [{"CustomAuthentication": ["RequiresElevation"]}]
+}
+```
+
+`replaceAllMetadata`/`replaceAllImages`/`regenerateTrickplay` are each documented "Only applicable if mode is FullRefresh" — a `Default`-mode call (this document's `metadataRefreshMode=Default, imageRefreshMode=Default, replaceAllImages=false`) is the routine-scan shape V4 (§11) checks against; `FullRefresh` + `replaceAllImages=true` is the destructive form V4 names but this task does not exercise, to keep the write scope to one deterministic movie. `204` on success, no body — same "queued", not synchronous, shape as the rest of this API's mutating calls.
+
 ## MetadataField enum (verbatim)
 
 ```json

@@ -61,9 +61,12 @@ async def test_items_returns_empty_list_when_items_key_is_absent():
     assert items == []
 
 
-async def test_set_image_posts_raw_bytes_with_the_image_content_type():
+async def test_set_image_posts_a_base64_body_with_the_image_content_type():
     # capture → paths → "/Items/{itemId}/Images/{imageType}" → post, body image/*
-    # V3 in the design doc: if the live instance wants base64, change JellyfinApi.set_image only.
+    # (documented). V3 (design doc §11), resolved live 2026-09-13 against
+    # Jellyfin 12.0.0: raw bytes get a 500; the body must be base64-encoded,
+    # Content-Type stays the real image mime.
+    import base64
     seen = {}
     async def handler(request):
         seen["path"], seen["ct"], seen["body"] = request.url.path, request.headers["Content-Type"], request.content
@@ -71,7 +74,7 @@ async def test_set_image_posts_raw_bytes_with_the_image_content_type():
     api, http = _api(handler)
     async with http:
         await api.set_image("m1", "Primary", b"\x89PNG", "image/png")
-    assert seen == {"path": "/Items/m1/Images/Primary", "ct": "image/png", "body": b"\x89PNG"}
+    assert seen == {"path": "/Items/m1/Images/Primary", "ct": "image/png", "body": base64.b64encode(b"\x89PNG")}
 
 
 async def test_update_item_posts_the_whole_dto():

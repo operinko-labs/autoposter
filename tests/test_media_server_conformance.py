@@ -3,6 +3,8 @@
 ``impl`` yields ``(server, seed)`` where ``seed(intent, native_id)`` makes the
 server hold that item. Task 3 adds the Plex arm; Task 14 adds Jellyfin.
 """
+import base64
+
 import httpx
 import pytest
 import pytest_asyncio
@@ -121,7 +123,12 @@ class _JellyfinMock:
         if len(parts) == 5 and parts[1] == "Items" and parts[3] == "Images":
             item_id, image_type = parts[2], parts[4]
             if request.method == "POST":
-                self.images[item_id, image_type] = (request.content, request.headers["Content-Type"])
+                # V3 (spec §11), resolved live 2026-09-13: real Jellyfin wants
+                # a base64-encoded body (JellyfinApi.set_image encodes it) and
+                # decodes it on write, so a later GET serves the real bytes
+                # back -- matched here, or this double would round-trip a
+                # base64 string where the real server round-trips an image.
+                self.images[item_id, image_type] = (base64.b64decode(request.content), request.headers["Content-Type"])
                 return httpx.Response(204)
             stored = self.images.get((item_id, image_type))
             if stored is None:
