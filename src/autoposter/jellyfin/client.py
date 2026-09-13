@@ -176,29 +176,43 @@ class JellyfinClient:
     async def exists_many(self, intents) -> list[bool]:
         return [await self._index.exists(intent) for intent in intents]
 
-    def _key_matches(self, dto: dict, intent) -> bool:
+    async def _key_matches(self, dto: dict, intent) -> bool:
         """Whether a live-fetched ``dto`` is still the item ``intent``'s
         stored native id names -- plex/client.py:~396's type+coordinate
         check, with the ``Type`` interpretation delegated to the index's own
         ``kind_of``/``_pid`` rather than re-read here (the ruling's "falls
-        back to the index")."""
+        back to the index").
+
+        Also requires the item's own library to still be one of the index's
+        non-excluded, right-typed folders -- plex/client.py:411-419's own
+        check (there, an item whose ``librarySectionTitle`` is not among the
+        caller's already-filtered ``sections`` is refused the same way). A
+        stale key that now names a real item moved into an excluded library
+        (or one Jellyfin no longer places under any known root) must not be
+        accepted just because its type and coordinates still match.
+        """
         from autoposter.jellyfin.index import _pid
 
         kind = self._index.kind_of(dto)
         if kind != intent.kind:
             return False
         if kind == "season":
-            return dto.get("IndexNumber") == intent.season_number
-        if kind == "episode":
-            return (
+            matches_coords = dto.get("IndexNumber") == intent.season_number
+        elif kind == "episode":
+            matches_coords = (
                 dto.get("ParentIndexNumber") == intent.season_number
                 and dto.get("IndexNumber") == intent.episode_number
             )
-        wanted = [
-            (ns, v) for ns, v in
-            (("tmdb", intent.tmdb_id), ("tvdb", intent.tvdb_id), ("imdb", intent.imdb_id)) if v
-        ]
-        return not wanted or any(str(_pid(dto, ns)) == str(v) for ns, v in wanted)
+        else:
+            wanted = [
+                (ns, v) for ns, v in
+                (("tmdb", intent.tmdb_id), ("tvdb", intent.tvdb_id), ("imdb", intent.imdb_id)) if v
+            ]
+            matches_coords = not wanted or any(str(_pid(dto, ns)) == str(v) for ns, v in wanted)
+        if not matches_coords:
+            return False
+        await self._index.rebuild()  # no-op once already built and fresh
+        return self._index._folder_of(dto) is not None
 
     async def keys_resolve(self, intents) -> list[bool]:
         out = []
@@ -215,8 +229,14 @@ class JellyfinClient:
                     continue
                 logger.warning("jellyfin: keys_resolve failed (%s)", type(exc).__name__)
                 raise
-            out.append(self._key_matches(dto, intent))
+            out.append(await self._key_matches(dto, intent))
         return out
+
+    def invalidate(self) -> None:
+        """Forces the next resolve/exists/list_items to rebuild the library
+        index from scratch (spec §4.4 step 6). The full pass calls this at
+        its start; wiring that call site is Task 19's, not this one's."""
+        self._index.invalidate()
 
     async def list_items(self, kind: str) -> list[SectionItem]:
         return await self._index.list_items(kind)
@@ -265,6 +285,14 @@ class JellyfinClient:
         # bytes `fetch_artwork`'s own `image()` call already has in hand are
         # enough -- no second HTTP round trip the way Plex's URL-based
         # probe_exif needs.
+        #
+        # Unlike plex/artwork.py's own artwork_provenance -- which swallows
+        # every failure and always answers None, so a Plex hiccup costs one
+        # redundant upload rather than an exception -- this one, wrapped by
+        # `_guard`, RAISES on a non-404 transport error (logged by class name)
+        # rather than answering None. Callers already wrap this call the same
+        # way they wrap any other server operation, so the divergence is
+        # deliberate rather than a gap to close here.
         from autoposter.plex.exif import PROVENANCE_TAG, parse_provenance, read_exif_from_header, read_exif_from_tail
 
         data = await self._api.image(ref.native_id, IMAGE_SLOT[art_kind])

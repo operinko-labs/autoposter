@@ -5,6 +5,7 @@ server hold that item. Task 3 adds the Plex arm; Task 14 adds Jellyfin.
 """
 import httpx
 import pytest
+import pytest_asyncio
 
 from autoposter.intake.arr import RenderIntent
 from autoposter.jellyfin.client import JellyfinApi, JellyfinClient
@@ -130,31 +131,40 @@ class _JellyfinMock:
         return httpx.Response(404)
 
 
-@pytest.fixture(params=["fake-plex", "fake-jellyfin", "plex", "jellyfin"])
-def impl(request):
+@pytest_asyncio.fixture(params=["fake-plex", "fake-jellyfin", "plex", "jellyfin"])
+async def impl(request):
     if request.param == "fake-plex":
         server = FakeMediaServer(name="plex")
-    elif request.param == "fake-jellyfin":
+
+        def seed(intent, native_id):
+            server.items[intent.dedupe_key] = resolved(server.name, native_id, tmdb_id=intent.tmdb_id)
+
+        yield server, seed
+        return
+    if request.param == "fake-jellyfin":
         server = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
-    elif request.param == "jellyfin":
+
+        def seed(intent, native_id):
+            server.items[intent.dedupe_key] = resolved(server.name, native_id, tmdb_id=intent.tmdb_id)
+
+        yield server, seed
+        return
+    if request.param == "jellyfin":
         mock = _JellyfinMock()
         http = httpx.AsyncClient(transport=httpx.MockTransport(mock.handler))
         api = JellyfinApi(http, "https://jf.example", api_key="k", version="v1")
         server = JellyfinClient(api, excluded_libraries=[], library_map={}, replace_thumb_with_backdrop=False)
-        return server, mock.seed
-    else:
-        section = _PlexSection()
-        server = PlexClient(_PlexServer(section), excluded_libraries=[])
+        yield server, mock.seed
+        await http.aclose()
+        return
 
-        def seed(intent, native_id):
-            section.items[native_id] = _PlexItem(native_id, section)
-
-        return server, seed
+    section = _PlexSection()
+    server = PlexClient(_PlexServer(section), excluded_libraries=[])
 
     def seed(intent, native_id):
-        server.items[intent.dedupe_key] = resolved(server.name, native_id, tmdb_id=intent.tmdb_id)
+        section.items[native_id] = _PlexItem(native_id, section)
 
-    return server, seed
+    yield server, seed
 
 
 def test_it_is_a_media_server(impl):

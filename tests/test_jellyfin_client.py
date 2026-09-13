@@ -3,6 +3,7 @@ Every path and parameter here is quoted from that document; nothing is recalled.
 import httpx
 import pytest
 
+from autoposter.intake.arr import RenderIntent
 from autoposter.jellyfin.client import IMAGE_SLOT, JELLYFIN_CAPABILITIES, JellyfinApi, JellyfinClient
 from autoposter.servers.base import CAP_LOCK_ARTWORK, ServerItemRef
 
@@ -208,3 +209,100 @@ async def test_lock_true_is_refused_not_ignored():
     async with http:
         with pytest.raises(UnsupportedOnServer):
             await client.upload_artwork(ServerItemRef("jellyfin", "m1", "Movies", "movie"), b"", "poster", lock=True)
+
+
+async def test_no_thumb_post_when_the_setting_is_off():
+    posted = []
+    async def handler(request):
+        posted.append(request.url.path)
+        return httpx.Response(204)
+    api, http = _api(handler)
+    client = JellyfinClient(api, excluded_libraries=[], library_map={}, replace_thumb_with_backdrop=False)
+    ref = ServerItemRef("jellyfin", "m1", "Movies", "movie")
+    async with http:
+        await client.upload_artwork(ref, b"jpg", "background", lock=False)
+    assert posted == ["/Items/m1/Images/Backdrop"]
+
+
+async def test_keys_resolve_answers_only_for_the_stored_key():
+    """The twin merge's survivor election (scheduler/merge.py), which
+    ``exists_many`` cannot make -- see plex/client.py's own
+    ``test_keys_resolve_answers_only_for_the_stored_key`` (tests/test_plex.py)
+    for the shared reasoning. ``keys_resolve`` asks only whether THIS row's
+    stored native id still names the item it thinks it does, and must never
+    fall through to a search on a miss -- that is the very fallback it exists
+    to bypass."""
+    async def handler(request):
+        params = dict(request.url.params)
+        assert "searchTerm" not in params, "keys_resolve must never search"
+        path = request.url.path
+        if path == "/Library/VirtualFolders":
+            # `_key_matches` also checks the item's library (I2) -- served
+            # once, for the coordinate-matching "m1" case only.
+            return httpx.Response(200, json=[
+                {"Name": "Movies", "CollectionType": "movies", "Locations": ["/media/Movies"], "ItemId": "lib1"},
+            ])
+        if path == "/Items/m1":
+            return httpx.Response(200, json={
+                "Id": "m1", "Type": "Movie", "ProviderIds": {"Tmdb": "693134"},
+                "Path": "/media/Movies/Dune Part Two (2024)/dune.mkv",
+            })
+        if path == "/Items/m2":
+            # A real item, but a different movie -- the stale key's story.
+            return httpx.Response(200, json={
+                "Id": "m2", "Type": "Movie", "ProviderIds": {"Tmdb": "1"},
+                "Path": "/media/Movies/Other (2020)/other.mkv",
+            })
+        if path == "/Items":
+            # The index's own build walk (`_key_matches`'s library check
+            # rebuilds it); no movie needs to be indexed for this test.
+            return httpx.Response(200, json={"Items": []})
+        return httpx.Response(404)
+    api, http = _api(handler)
+    client = JellyfinClient(api, [], {}, False)
+
+    live = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134, refs={"jellyfin": "m1"})
+    stale = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134, refs={"jellyfin": "m2"})
+    gone = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134, refs={"jellyfin": "missing"})
+    async with http:
+        assert await client.keys_resolve([live, stale, gone]) == [True, False, False]
+
+
+async def test_keys_resolve_refuses_an_intent_with_no_stored_key():
+    async def handler(request):
+        raise AssertionError("no stored key means no request at all")
+    api, http = _api(handler)
+    client = JellyfinClient(api, [], {}, False)
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134)
+    async with http:
+        assert await client.keys_resolve([intent]) == [False]
+        assert await client.keys_resolve([]) == []
+
+
+async def test_keys_resolve_refuses_a_key_whose_item_moved_to_an_excluded_library():
+    """plex/client.py:411-419's own check, mirrored: a stored key can still
+    name a real, right-typed, coordinate-matching item that Jellyfin has
+    since moved into a library this deployment excludes -- accepting it
+    would elect a survivor this service is not supposed to touch."""
+    async def handler(request):
+        path = request.url.path
+        if path == "/Library/VirtualFolders":
+            return httpx.Response(200, json=[
+                {"Name": "Movies", "CollectionType": "movies", "Locations": ["/media/Movies"], "ItemId": "lib1"},
+                {"Name": "Kids", "CollectionType": "movies", "Locations": ["/media/Kids"], "ItemId": "lib2"},
+            ])
+        if path == "/Items/m1":
+            return httpx.Response(200, json={
+                "Id": "m1", "Type": "Movie", "ProviderIds": {"Tmdb": "693134"},
+                "Path": "/media/Kids/Dune Part Two (2024)/dune.mkv",
+            })
+        if path == "/Items":
+            # "Kids" is excluded, so the build walk never asks for it -- only
+            # the "Movies" folder's (empty) listing is fetched.
+            return httpx.Response(200, json={"Items": []})
+        return httpx.Response(404)
+    api, http = _api(handler)
+    client = JellyfinClient(api, excluded_libraries=["Kids"], library_map={}, replace_thumb_with_backdrop=False)
+    intent = RenderIntent(kind="movie", title="Dune: Part Two", tmdb_id=693134, refs={"jellyfin": "m1"})
+    async with http:
+        assert await client.keys_resolve([intent]) == [False]

@@ -28,6 +28,16 @@ by-basename index entry on a provider-id miss, but ``RenderIntent`` carries
 no path for this index to match against, so nothing can ever call it
 (ledgered).
 
+Freshness (spec §4.4 step 6): "rebuilt at the start of each full pass and on
+a fixed interval otherwise". ``invalidate()`` is the full-pass hook (wired by
+Task 19, not this module) -- an unconditional "forget everything, the next
+lookup rebuilds" regardless of age. The fixed interval is ``max_age_seconds``:
+``rebuild()`` stamps ``built_at`` (a monotonic clock reading) on every
+successful build, and treats an index older than that as not built at all, so
+every lookup path (``_top_level``, ``list_items``) can simply call
+``rebuild()`` unconditionally and let it decide whether a real rebuild is
+due -- still all-or-nothing under the same lock.
+
 ``kind_of`` returns ``""`` for a ``Type`` this module does not recognise
 (e.g. ``BoxSet``), and such a dto is never indexed under any kind -- a
 collection sharing a movie's provider id must never be filed as that movie.
@@ -35,12 +45,19 @@ collection sharing a movie's provider id must never be filed as that movie.
 from __future__ import annotations
 
 import asyncio
+import time
 
 from autoposter.render.naming import derive_root_folder  # the same helper plex/client.py uses
 from autoposter.servers.base import ItemNotFound, PathMismatch, ResolvedItem, SectionItem
 
 KIND_OF = {"Movie": "movie", "Series": "show", "Season": "season", "Episode": "episode"}
 TYPE_OF = {"movie": "Movie", "show": "Series"}
+
+#: Bound to a module-level name, like plex/client.py's own ``_sleep``, so a
+#: test can advance the clock by patching ``autoposter.jellyfin.index
+#: ._monotonic`` without reaching through to the shared ``time`` module and
+#: skewing every other module's notion of elapsed time in the same process.
+_monotonic = time.monotonic
 
 
 def _pid(dto: dict, ns: str):
@@ -61,7 +78,10 @@ def _as_int(v):
 
 
 class LibraryIndex:
-    def __init__(self, api, excluded: set[str], library_map: dict[str, str] | None = None):
+    def __init__(
+        self, api, excluded: set[str], library_map: dict[str, str] | None = None,
+        max_age_seconds: float = 3600,
+    ):
         self._api = api
         # Matched on the raw Jellyfin folder name -- a different name space
         # from `_map` below, and on purpose: exclusion happens before any
@@ -77,6 +97,8 @@ class LibraryIndex:
         self._by_id: dict[str, dict] = {}
         self._children: dict[str, tuple[list[dict], list[dict]]] = {}  # series id -> (seasons, episodes)
         self.built = False
+        self.built_at: float | None = None
+        self._max_age_seconds = max_age_seconds
         self._lock = asyncio.Lock()
 
     # --- shape helpers the client also uses ---
@@ -98,12 +120,17 @@ class LibraryIndex:
         return self._map.get(name, name)
 
     # --- build ---
+    def _stale(self) -> bool:
+        return self.built_at is not None and (_monotonic() - self.built_at) >= self._max_age_seconds
+
     async def rebuild(self) -> None:
         async with self._lock:
-            if self.built:
-                # Another caller already won the race to build (or this is a
-                # redundant explicit call); `invalidate()` is how a caller
-                # asks for a real rebuild.
+            if self.built and not self._stale():
+                # Another caller already won the race to build a still-fresh
+                # index (or this is a redundant explicit call); `invalidate()`
+                # forces a real rebuild regardless of age, and an index past
+                # `max_age_seconds` is treated as not built here too (spec
+                # §4.4 step 6's fixed interval).
                 return
             # capture -> "/Library/VirtualFolders" -> get
             folders = [f for f in await self._api.virtual_folders()
@@ -117,8 +144,9 @@ class LibraryIndex:
                     self._index_one(dto, by_key, by_id)
             # All-or-nothing: nothing below this line runs if any await above
             # raised, so a failed build leaves the previous index (or the
-            # empty one) exactly as it was, and `built` untouched.
+            # empty one) exactly as it was, and `built`/`built_at` untouched.
             self._folders, self._by_key, self._by_id, self._children = folders, by_key, by_id, {}
+            self.built_at = _monotonic()
             self.built = True
 
     def _index_one(self, dto: dict, by_key: dict, by_id: dict) -> None:
@@ -139,8 +167,7 @@ class LibraryIndex:
 
     # --- lookup ---
     async def _top_level(self, intent) -> dict | None:
-        if not self.built:
-            await self.rebuild()
+        await self.rebuild()  # no-op when already built and still fresh
         kind = "movie" if intent.kind == "movie" else "show"
         for ns, v in (("tmdb", intent.tmdb_id), ("tvdb", intent.tvdb_id), ("imdb", intent.imdb_id)):
             if v and (dto := self._by_key.get((kind, ns, str(v)))):
@@ -265,8 +292,7 @@ class LibraryIndex:
             return False
 
     async def list_items(self, kind: str) -> list[SectionItem]:
-        if not self.built:
-            await self.rebuild()
+        await self.rebuild()  # no-op when already built and still fresh
         want = "movie" if kind == "movie" else "show"
         out = []
         for dto in self._by_id.values():

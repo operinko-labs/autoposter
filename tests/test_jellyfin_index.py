@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from autoposter.intake.arr import RenderIntent
+from autoposter.jellyfin import index as jellyfin_index
 from autoposter.jellyfin.client import JellyfinApi
 from autoposter.jellyfin.index import LibraryIndex
 from autoposter.servers.base import ItemNotFound, PathMismatch
@@ -260,3 +261,29 @@ async def test_kind_of_is_empty_for_an_unknown_type_and_it_is_never_indexed():
         assert index.kind_of(boxset) == ""
         item = await index.resolve(RenderIntent(kind="movie", title="The Matrix", tmdb_id=603))
     assert item.native_id == "m1"
+
+
+async def test_the_index_rebuilds_after_max_age_seconds(monkeypatch):
+    """I3 / spec §4.4 step 6: "rebuilt at the start of each full pass and on
+    a fixed interval otherwise". A fresh index answers repeated resolves with
+    no further build call; once the clock has moved past ``max_age_seconds``,
+    the next resolve pays for exactly one fresh build."""
+    clock = [1000.0]
+    monkeypatch.setattr(jellyfin_index, "_monotonic", lambda: clock[0])
+    api, http, calls = _api()
+    index = LibraryIndex(api, excluded=set(), max_age_seconds=60)
+    intent = RenderIntent(kind="movie", title="The Matrix", tmdb_id=603)
+    async with http:
+        await index.resolve(intent)
+        assert len([c for c in calls if c[0] == "/Library/VirtualFolders"]) == 1
+
+        await index.resolve(intent)
+        assert len([c for c in calls if c[0] == "/Library/VirtualFolders"]) == 1, (
+            "still fresh: no second build"
+        )
+
+        clock[0] += 61  # past max_age_seconds
+        await index.resolve(intent)
+        assert len([c for c in calls if c[0] == "/Library/VirtualFolders"]) == 2, (
+            "stale: the next lookup must rebuild"
+        )
