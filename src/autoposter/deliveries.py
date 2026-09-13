@@ -46,6 +46,61 @@ def failure_detail(exc: Exception) -> str:
     return f"error: {type(exc).__name__}"
 
 
+async def _upsert_outcome(
+    session: AsyncSession, model, constraint: str, key: dict[str, object], status: str, *,
+    detail: str | None, retry_in: float | None, count_attempt: bool,
+    terminal_status: str, terminal_at: str, extra_terminal: dict[str, object] | None = None,
+) -> int:
+    """Shared upsert body for ``record`` and ``record_metadata`` (spec §1/§2).
+
+    ``terminal_status``/``terminal_at`` are ``"uploaded"``/``"uploaded_at"``
+    for deliveries and ``"written"``/``"written_at"`` for metadata writes;
+    ``extra_terminal`` is the one further column that rides along with the
+    terminal timestamp (``fingerprint``, deliveries only). Both are stamped
+    only on a terminal-status call and, on conflict, never erased by a later
+    non-terminal one -- see ``record``'s own docstring for why.
+    """
+    now = datetime.now(timezone.utc)
+    counted = count_attempt and status in ("pending", "failed")
+    is_terminal = status == terminal_status
+    values = dict(
+        **key, status=status, detail=detail,
+        attempted_at=now,
+        next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
+        attempts=1 if counted else 0,
+    )
+    values[terminal_at] = now if is_terminal else None
+    for column, value in (extra_terminal or {}).items():
+        values[column] = value if is_terminal else None
+    stmt = insert(model).values(**values)
+    updatable = {k: v for k, v in values.items() if k not in key}
+    if not is_terminal:
+        # A failed, skipped or pending outcome must never
+        # erase what this server DID deliver/write last time. ``rollup`` reads
+        # ``uploaded_at`` back into ``renders.uploaded_at``, which the item
+        # page's Uploaded column shows, and an operator reads a blank there as
+        # "never delivered" rather than "delivered, then broke" -- the
+        # distinction the single-server code kept by leaving the column alone
+        # on a failure.
+        updatable.pop(terminal_at)
+        for column in (extra_terminal or {}):
+            updatable.pop(column)
+    if counted:
+        # The EXISTING row's value plus one: naming the column in `set_`
+        # renders `attempts = <table>.attempts + 1`, which is what makes the
+        # increment atomic against a concurrent pass.
+        updatable["attempts"] = model.attempts + 1
+    elif status in ("pending", "failed"):
+        updatable.pop("attempts")
+    stmt = stmt.on_conflict_do_update(
+        constraint=constraint,
+        set_=updatable,
+    ).returning(model.attempts)
+    attempts = (await session.execute(stmt)).scalar_one()
+    await session.flush()
+    return attempts
+
+
 async def record(
     session: AsyncSession, render_id: int, server: str, status: str, *,
     detail: str | None = None, retry_in: float | None = None,
@@ -70,41 +125,13 @@ async def record(
     a later non-``uploaded`` outcome, because the catch-up's "is this row
     behind the render" question is about what this server IS serving.
     """
-    now = datetime.now(timezone.utc)
-    counted = count_attempt and status in ("pending", "failed")
-    values = dict(
-        render_id=render_id, server=server, status=status, detail=detail,
-        attempted_at=now,
-        uploaded_at=now if status == "uploaded" else None,
-        next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
-        fingerprint=fingerprint if status == "uploaded" else None,
-        attempts=1 if counted else 0,
+    return await _upsert_outcome(
+        session, RenderDelivery, "uq_delivery_render_server",
+        {"render_id": render_id, "server": server}, status,
+        detail=detail, retry_in=retry_in, count_attempt=count_attempt,
+        terminal_status="uploaded", terminal_at="uploaded_at",
+        extra_terminal={"fingerprint": fingerprint},
     )
-    stmt = insert(RenderDelivery).values(**values)
-    updatable = {k: v for k, v in values.items() if k not in ("render_id", "server")}
-    if status != "uploaded":
-        # A failed, skipped or pending outcome must never
-        # erase what this server DID deliver last time. ``rollup`` reads these
-        # values back into ``renders.uploaded_at``, which the item page's
-        # Uploaded column shows, and an operator reads a blank there as "never
-        # delivered" rather than "delivered, then broke" -- the distinction
-        # the single-server code kept by leaving the column alone on a failure.
-        updatable.pop("uploaded_at")
-        updatable.pop("fingerprint")
-    if counted:
-        # The EXISTING row's value plus one: naming the column in `set_`
-        # renders `attempts = render_deliveries.attempts + 1`, which is what
-        # makes the increment atomic against a concurrent pass.
-        updatable["attempts"] = RenderDelivery.attempts + 1
-    elif status in ("pending", "failed"):
-        updatable.pop("attempts")
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_delivery_render_server",
-        set_=updatable,
-    ).returning(RenderDelivery.attempts)
-    attempts = (await session.execute(stmt)).scalar_one()
-    await session.flush()
-    return attempts
 
 
 async def record_metadata(
@@ -118,30 +145,12 @@ async def record_metadata(
     where artwork says ``uploaded`` and ``written_at`` where it says
     ``uploaded_at``. Keyed on the ITEM: a metadata write has no art kind.
     """
-    now = datetime.now(timezone.utc)
-    counted = count_attempt and status in ("pending", "failed")
-    values = dict(
-        item_id=item_id, server=server, status=status, detail=detail,
-        attempted_at=now,
-        written_at=now if status == "written" else None,
-        next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
-        attempts=1 if counted else 0,
+    return await _upsert_outcome(
+        session, MetadataWrite, "uq_metadata_write_item_server",
+        {"item_id": item_id, "server": server}, status,
+        detail=detail, retry_in=retry_in, count_attempt=count_attempt,
+        terminal_status="written", terminal_at="written_at",
     )
-    stmt = insert(MetadataWrite).values(**values)
-    updatable = {k: v for k, v in values.items() if k not in ("item_id", "server")}
-    if status != "written":
-        updatable.pop("written_at")
-    if counted:
-        updatable["attempts"] = MetadataWrite.attempts + 1
-    elif status in ("pending", "failed"):
-        updatable.pop("attempts")
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_metadata_write_item_server",
-        set_=updatable,
-    ).returning(MetadataWrite.attempts)
-    attempts = (await session.execute(stmt)).scalar_one()
-    await session.flush()
-    return attempts
 
 
 async def rollup(session: AsyncSession, render_id: int) -> str:
@@ -342,7 +351,7 @@ async def retry_pending_deliveries(
                         await record(
                             session, render.id, delivery.server, "pending",
                             detail=None if isinstance(exc, ItemNotFound) else failure_detail(exc),
-                            retry_in=RETRY_SECONDS,
+                            retry_in=RETRY_SECONDS, count_attempt=False,
                         )
                         still_pending += 1
                         await rollup(session, render.id)

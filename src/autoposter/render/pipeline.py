@@ -2204,7 +2204,13 @@ async def deliver(
                     )
                 ).scalar_one_or_none()
                 if existing_status in (None, "pending", "failed"):
-                    await deliveries.record(session, render.id, name, "pending", retry_in=0)
+                    # A re-arm, not an attempt: this pass composed no new
+                    # bytes for this server, so nothing was actually tried
+                    # against it -- only the retry pass below actually
+                    # delivers, and that is where the budget is spent.
+                    await deliveries.record(
+                        session, render.id, name, "pending", retry_in=0, count_attempt=False,
+                    )
                     recorded = True
                 continue
             if await _already_delivered(

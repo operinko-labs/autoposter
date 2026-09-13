@@ -126,6 +126,36 @@ async def test_transport_error_during_resolve_stays_pending(session, config_with
     assert await deliveries.rollup(session, render.id) == "pending"
 
 
+async def test_identity_resolution_wait_leaves_the_budget_alone(session, config_with_badges):
+    """The identity server (Plex) failing to resolve is a wait for the
+    DELIVERY server's row too -- the branch's own comment says it is "exactly
+    like the delivery server's own miss above" (the `ItemNotFound` branch,
+    which IS `count_attempt=False`) -- so it must not spend this row's
+    retry budget either."""
+    from autoposter.db.models import MediaItemServerRef
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    render = await _render(session)
+    session.add(MediaItemServerRef(item_id=render.item_id, server="plex", native_id="p1", library="Movies"))
+    seeded_attempts = await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
+    plex = FakeMediaServer(name="plex", raise_on_resolve=httpx.ConnectError("plex is down"))
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf, "plex": plex}), config_with_badges, now=datetime.now(timezone.utc)
+    )
+
+    assert summary == "pending deliveries: 1 due, 0 uploaded, 1 still pending"
+    row = (await session.execute(select(RenderDelivery.status, RenderDelivery.attempts))).one()
+    assert row.status == "pending"
+    assert row.attempts == seeded_attempts
+
+
 async def test_upload_exception_records_failed_not_pending(session, config_with_badges, monkeypatch):
     """The item DID resolve; the composite/upload itself failed. That mirrors
     apply_badges' own upload except clause (render/pipeline.py), which
