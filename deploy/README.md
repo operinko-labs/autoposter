@@ -99,9 +99,12 @@ manifests rather than assumed:
   never one facing the internet.
 - The admin password hash is supplied by the SOPS-held Secret, not the
   ExternalSecret that can render empty — and so is the database URL
-  (`secret.sops.yaml`). The ExternalSecret supplies four of the six hard
-  names instead: `AUTOPOSTER_PLEX_TOKEN`, `AUTOPOSTER_TMDB_TOKEN`,
-  `AUTOPOSTER_TVDB_APIKEY` and `AUTOPOSTER_FANART_APIKEY`. The only reachable
+  (`secret.sops.yaml`). The ExternalSecret supplies four names instead:
+  `AUTOPOSTER_TMDB_TOKEN`, `AUTOPOSTER_TVDB_APIKEY` and
+  `AUTOPOSTER_FANART_APIKEY` — three of the five hard names — plus
+  `AUTOPOSTER_PLEX_TOKEN`, which is not a hard name but is required because
+  this deployment's document configures Plex, and whose absence puts the boot
+  into setup mode just the same (see "Media servers" below). The only reachable
   way into setup mode here is that ExternalSecret blanking one of those four
   — the admin hash and the database URL still resolve regardless. So step 1
   on this deployment is **verify-only**: an unauthenticated caller on the
@@ -113,7 +116,7 @@ The genuinely unbounded case is a true first start, where nobody has ever set
 a password anywhere: whoever arrives first becomes admin there, which is what
 any first-start wizard accepts.
 
-### The five steps
+### The six steps
 
 Every step past the first has a **Back** button. Back is free and entirely
 client-side: the server already holds everything a re-render needs (a stored
@@ -149,40 +152,24 @@ returned 200.
    environment or the state file. Validated by connecting before it is kept,
    so a well-formed URL pointing at nothing is refused here rather than
    passing this step and failing hours later with the wizard already gone.
-   Staged in memory, not written, until step 5.
-4. **Systems.** One collapsible panel per system: Plex, the Plex account,
-   TMDb, TVDB, Fanart, MDBList, Radarr, Sonarr, Tracearr. A system
-   this deployment cannot boot without opens by default; one whose credential
-   is already stored collapses with a **Stored** pill on its header; the rest
-   collapse. Open or closed is never sent to the server and never persisted.
+   Staged in memory, not written, until step 6.
+4. **Media servers.** One card per server — Plex and Jellyfin — each holding
+   that server's address, its credential, its own **Check connection** and its
+   own library tick-list; the unticked libraries become that server's
+   `excluded_libraries`. The two are independent rather than a choice between
+   them: a card submits only its own pair of fields, so saving one leaves the
+   other's block alone, and a deployment can finish with either server or with
+   both. What it cannot finish with is neither, or with a server it names and
+   holds no credential for — the same `missing_server_setup` rule the next boot
+   applies, asked here rather than as a second expression that happens to agree
+   with it today. See "Media servers" below for what each block then means.
 
-   - **Check connection.** Every panel has one. It goes to a single
-     token-gated endpoint whose targets are a compiled-in table: the caller
-     names a system key from a ten-entry allowlist and, for the four whose
-     address is not built in (Plex, Radarr, Sonarr, Tracearr), a base address
-     — never a path, a method or a header. The answer is one of three fixed
-     sentences, the third carrying an exception's class name, and never the
-     other service's own response. Every probe is bounded at five seconds.
+   Only one card opens at a time: the one the document names and holds no
+   credential for, or Plex's on a deployment with nothing configured yet. The
+   Plex card carries a whole sign-in flow, and two open cards would be the
+   longest pane in the wizard for an operator who runs one server.
 
-     There is deliberately **no private-IP denylist**: every correct target on
-     every shipped deployment *is* a private address (`http://sonarr`,
-     `http://plex:32400`), so a denylist would refuse the only right answers.
-     What that leaves, stated rather than papered over: someone holding the
-     setup token can learn whether an arbitrary host answers on an arbitrary
-     port, as a boolean. The token is minted only by the master password, and
-     that step is rate-limited.
-
-     A boolean, and nothing more than a boolean: for those same four systems
-     the credential the probe sends must have arrived with the address — typed
-     into the field beside the button, or staged earlier by this wizard. One
-     the deployment already holds from its environment or its state file is
-     never sent to an address a request names, and pressing Check with the
-     field empty answers a fixed sentence asking for the key instead. (Setup
-     mode is entered when *any one* hard credential fails to resolve, so a pod
-     in it still holds all the others.) The six systems with a built-in
-     address are unaffected: an empty field there still means "check the key
-     you already have".
-   - **Plex signs in rather than being pasted.** The panel starts a PIN flow
+   - **Plex signs in rather than being pasted.** The card starts a PIN flow
      against plex.tv (a strong PIN — plex.tv mints a long, opaque code rather
      than the four-character one a typed sign-in uses, so there is nothing to
      type; the link already carries it), shows the code and a sign-in link,
@@ -195,6 +182,54 @@ returned 200.
      Servers shared *to* the account are out of scope and the pick-list omits
      them. You then choose the server (its local address first) and tick the
      libraries to manage; the unticked ones become `plex.excluded_libraries`.
+   - **Jellyfin is an address and a key.** There is no account sign-in to
+     arrive from, so both are always typed here. Its check is a
+     `GET /System/Info` — authenticated, not the public variant, so the probe
+     proves the API key and not merely that the host answered — and the same
+     key then reads the library tick-list.
+
+   This is also the step that writes the configuration document, and it is
+   **refused outright on a deployment that already resolves one** (a mounted
+   ConfigMap, compose's bind-mounted example): writing beside a document the
+   next boot never opens is exactly the failure this step's own refusal exists
+   to prevent. The cards there read the addresses out of that document and
+   collect only the credentials. If such a document names no media server at
+   all, this step cannot be finished from this page — the pane says so, and the
+   way out is the document itself.
+5. **Systems.** One collapsible panel per system: the Plex account, TMDb,
+   TVDB, Fanart, MDBList, Radarr, Sonarr, Tracearr. The two media servers are
+   not here — they have their own step above. A system this deployment cannot
+   boot without opens by default; one whose credential is already stored
+   collapses with a **Stored** pill on its header; the rest collapse. Open or
+   closed is never sent to the server and never persisted.
+
+   - **Check connection.** Every panel has one, and so does every card on the
+     media-server step above. It goes to a single token-gated endpoint whose
+     targets are a compiled-in table: the caller names a system key from a
+     ten-entry allowlist and, for the five whose address is not built in (Plex,
+     Jellyfin, Radarr, Sonarr, Tracearr), a base address — never a path, a
+     method or a header. The answer is one of three fixed sentences, the third
+     carrying an exception's class name, and never the other service's own
+     response. Every probe is bounded at five seconds.
+
+     There is deliberately **no private-IP denylist**: every correct target on
+     every shipped deployment *is* a private address (`http://sonarr`,
+     `http://plex:32400`), so a denylist would refuse the only right answers.
+     What that leaves, stated rather than papered over: someone holding the
+     setup token can learn whether an arbitrary host answers on an arbitrary
+     port, as a boolean. The token is minted only by the master password, and
+     that step is rate-limited.
+
+     A boolean, and nothing more than a boolean: for those same five systems
+     the credential the probe sends must have arrived with the address — typed
+     into the field beside the button, or staged earlier by this wizard. One
+     the deployment already holds from its environment or its state file is
+     never sent to an address a request names, and pressing Check with the
+     field empty answers a fixed sentence asking for the key instead. (Setup
+     mode is entered when *any one* hard credential fails to resolve, or when
+     no media server is usable, so a pod in it still holds all the others.) The
+     five systems with a built-in address are unaffected: an empty field there
+     still means "check the key you already have".
    - **Register the webhook for me.** Radarr's and Sonarr's panels each carry
      this. It creates — or updates in place, matched on name *and*
      implementation — a `Webhook` connection named `Autoposter - Radarr` /
@@ -227,14 +262,14 @@ returned 200.
    Sonarr/Radarr webhook secret, minted the first time the step completes with
    none on record, and shown **once**, on the finish page. Submitting one
    yourself is refused outright.
-5. **Finish.** Three blocks: the generated secret, once, with the warning that
+6. **Finish.** Three blocks: the generated secret, once, with the warning that
    it will not return; one row per *arr saying `created`, `updated`, the
    refusal sentence, or `not attempted`, with the URL that was registered (not
    the header value); and everything left for later — each credential left
    empty by name, the database step if the environment already resolved one,
    and `public_url` if a supplied document meant it could not be written.
 
-   Then the write. Steps 2–4 are staged in memory rather than persisted as
+   Then the write. Steps 2–5 are staged in memory rather than persisted as
    they are collected. This step writes the config document **first**, then
    the secrets file, each atomically, then re-runs the same CONFIGURED check
    the next boot will run — over what was actually just written, not over what
@@ -271,18 +306,19 @@ one. Writes are atomic (temp file in the same directory, `fsync`,
 **Precedence, in one line: the environment wins.** A name set in the
 environment is used even when the file also carries it, so adding an
 ExternalSecret later takes effect at the next restart with no need to edit or
-delete anything under `/state` for the six hard names themselves — with one
+delete anything under `/state` for the five hard names themselves — with one
 exception among them: `AUTOPOSTER_WEBHOOK_SECRET` must be **carried over from
 `secrets.env`, never regenerated**. The wizard mints it, shows it exactly once
 and it is the value Sonarr and Radarr were given; a fresh one in the Secret
 wins over the file, and every webhook then fails verification silently until
 both applications are updated. Copy the existing line out of `secrets.env`
 into the Secret. It is not free for the SOFT names the wizard writes either:
-once all six hard names resolve from the environment, `resolve_secret_values`
+once all five hard names resolve from the environment, `resolve_secret_values`
 never opens `secrets.env` again, for any name. A deployment the wizard configured, whose
 hard names are later handed to an ExternalSecret, must carry every soft name
 the wizard wrote into the environment (or the Secret) in that same change:
-`AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, and every provider key step 3
+`AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, the media-server credential the
+media-server step collected, and every provider key the Systems step
 collected — `AUTOPOSTER_MDBLIST_APIKEY`, `AUTOPOSTER_RADARR_APIKEY`,
 `AUTOPOSTER_SONARR_APIKEY`,
 `AUTOPOSTER_PLEX_ACCOUNT_TOKEN` and `AUTOPOSTER_TRACEARR_APIKEY` — or they are
@@ -312,9 +348,9 @@ environment and roll the deployment, exactly as for every other credential.
 ### Kubernetes
 
 Add a PVC and mount it; nothing else changes, and the deployment stays
-env-configured — every hard name plus the admin hash already comes from
-`envFrom: secretRef`, so it enters setup mode only if one of those six names
-stops resolving from the environment. That is one reachable case and it is
+env-configured — every hard name plus the Plex token and the admin hash
+already comes from `envFrom: secretRef`, so it enters setup mode only if one
+of those seven names stops resolving from the environment. That is one reachable case and it is
 bounded: see "The unauthenticated-form question" above, where the four
 ExternalSecret-supplied names are the door and the SOPS-held admin hash makes
 step 1 verify-only. The two manifest changes are:
@@ -368,7 +404,10 @@ in `frontend/`) so `frontend/dist` exists. That stack's `api` service also
 already sets `AUTOPOSTER_CONFIG` to the example config bind-mounted in from
 the repository (`.:/app`), so a document always resolves there — what a
 compose deployment is actually missing, when it is missing anything, is
-credentials, and the wizard's step 4 is never offered on it.
+credentials. The media-server step is therefore the constrained one on it: the
+document already names `plex:`, `POST /api/setup/config` is refused while a
+document resolves, and what that step collects there is the token, not the
+address.
 
 ### A note on TLS
 
@@ -683,17 +722,210 @@ this: it counts only `version` and `skip_tba` changes today, so a
 library-only edit — including a `badges` one — always shows no re-renders,
 whether or not one is coming.
 
+## Media servers
+
+This service manages **Plex, Jellyfin, or both**. The `plex:` and `jellyfin:`
+blocks in `autoposter.yaml` are independent and each is optional: the
+deployment is usable as soon as one of them names an address and that server's
+own credential resolves. A document that names neither is not configured at
+all — `python -m autoposter.boot` logs `no usable media server` and serves the
+first-start wizard instead of the application, because that is a shape the
+wizard can fix. A half-configured server is refused by the same rule: a
+document naming `jellyfin:` with no `AUTOPOSTER_JELLYFIN_APIKEY` does not boot
+even with a complete `plex:` beside it, so a server this config names is always
+a server this service can reach. An existing Plex-only document is valid
+unchanged and behaves exactly as it did before any of this existed.
+
+Jellyfin **12.x** only. The client is written against the 12.0 OpenAPI
+document captured at `docs/reference/2026-09-jellyfin-openapi-12.md` and
+verified against a live 12.0.0 server. An older major version is not refused
+with a friendly message — it simply answers differently.
+
+### The `jellyfin:` block
+
+```yaml
+jellyfin:
+  url: https://<jellyfin-host>
+  excluded_libraries: []
+  library_map: {}
+  replace_thumb_with_backdrop: false
+  liveness_interval_seconds: 60
+```
+
+- `url` — the Jellyfin server's base URL this service manages.
+- `excluded_libraries` (default `[]`) — Jellyfin libraries this service never
+  touches, skipped by every walk and sync. Matched on the **Jellyfin** folder
+  name, before any translation `library_map` performs, so name a library here
+  exactly as Jellyfin's own library list names it.
+- `library_map` (default `{}`) — **the Plex library name on the left, the
+  Jellyfin one on the right**, and only for libraries the two servers name
+  differently; a library not listed is matched by its own name. The left-hand
+  name is the one the rest of this config speaks — `collections.libraries`,
+  the per-library overrides — and this mapping is the only place a
+  Jellyfin-side name appears at all.
+- `replace_thumb_with_backdrop` (default `false`) — also upload the background
+  into Jellyfin's `Thumb` slot, which some views show instead of the backdrop.
+  This is Posterizarr's `ReplaceThumbwithBackdrop` under another name. It is a
+  second upload of the same bytes for every background, which is why it is
+  opt-in rather than on.
+- `liveness_interval_seconds` (default `60`) — how often the background health
+  check asks Jellyfin for `/System/Info`.
+
+### The credential
+
+`AUTOPOSTER_JELLYFIN_APIKEY` — a **server** API key (Jellyfin's own Dashboard,
+under API Keys), not a user password. It rides the
+`Authorization: MediaBrowser Token="<key>"` header on every request; the
+legacy `X-Emby-Token` header answers `401` on 12.0 and is not used.
+
+Add it to the ExternalSecret beside the others. It is required exactly when
+`jellyfin:` is configured and ignored when it is not — the same posture
+`AUTOPOSTER_PLEX_TOKEN` now has for `plex:`. Neither is a *hard* name any more
+(see "Secrets" below): a deployment running one server has no business being
+refused for the other server's missing credential.
+
+### The twin switches
+
+Every surface that writes to a server has one switch per server, and the two
+are independent:
+
+| Switch | Default | What it governs |
+|---|---|---|
+| `operations.write_to_plex` | `true` | writing the gathered metadata to Plex |
+| `operations.write_to_jellyfin` | `true` | writing the gathered metadata to Jellyfin |
+| `badges.upload_to_plex` | `false` | uploading the composed, badged artwork to Plex |
+| `badges.upload_to_jellyfin` | `false` | uploading the composed, badged artwork to Jellyfin |
+
+Off, each one still gathers and stores the facts, or composes and fingerprints
+the artwork — it withholds only the write, which is the safe setting while
+another tool still owns those fields. All four can be set per library (see
+"Per-library overrides" above); `operations.enabled` and `badges.enabled`
+remain the master switches above them.
+
+### Artwork on Jellyfin has no lock
+
+`badges.lock_artwork` (default `true`) locks the Plex artwork field after
+upload so another agent cannot reclaim it. Jellyfin has no equivalent — its
+`LockedFields` vocabulary names no image field at all — so on Jellyfin the
+switch has no effect: each upload asks the server whether it has the
+capability and passes the lock only to one that does. A Jellyfin upload is
+never refused because the switch is on, and there is nothing to turn off for
+it.
+
+What that leaves is worth knowing before you schedule Jellyfin's own library
+scans. An image this service uploaded survives a routine scan and a
+`Default`-mode metadata refresh — verified against a live 12.0.0 instance, the
+uploaded image still reads back afterwards. Replacement is opt-in per refresh
+call: `POST /Items/{id}/Refresh` replaces images only on a `FullRefresh`
+refresh given `replaceAllImages=true` — the spec documents that parameter as
+"only applicable if mode is FullRefresh". That combination is what to keep off
+a schedule, not scanning as such.
+
+### One item, one row, across both servers
+
+An item is keyed by its **identity** — its provider ids, TMDB first, then
+TVDB, then IMDb, or its on-disk path when it has none — rather than by any one
+server's own id, and `media_item_server_refs` then carries one ref per server
+for that row. That is what lets one render be delivered to both servers and
+one item page show both.
+
+The consequence for a dual deployment: **the two servers have to agree on the
+provider ids**, or the same film becomes two rows that never meet. A Plex item
+carrying a TMDB id and a Jellyfin item carrying only a TVDB id key differently,
+because the first id in that order wins. Where both servers mount the same
+storage and neither item has a provider id, the shared path keys them
+together, so that shape works — but a provider id on one side only does not.
+Fix the disagreement in whichever server is wrong; there is no override for it
+here.
+
+### What a Plex-less deployment does not have
+
+Everything this service does per item — resolve, render, composite badges,
+write metadata, upload artwork — works on Jellyfin alone. What does not are
+the features written against `plexapi` surface Jellyfin's API has no
+counterpart for, and they are gated rather than left half-working. Each is
+registered or served only when `plex:` is configured:
+
+- **Collections**, every builder — including the two with their own sections
+  below, "Common Sense collections config" and "IMDb chart and Oscars
+  collections".
+- **Playlists.**
+- **The adoption cutover**, `python -m autoposter.adopt` — see "Adopting an
+  existing library (cutover)" below.
+- **The ID mismatch scan** (`GET /api/id-mismatches`, the ID mismatches page).
+- **The metadata backup** (`POST /api/metadata-backup`, see "Volumes" above)
+  and the run modes beside it: artwork backup, restore, revert, reset and the
+  two logo actions.
+- **Clearing a per-item metadata override**
+  (`DELETE /api/items/{id}/metadata-overrides/{field}`), which exists to
+  *unlock* the field in Plex again and has nothing to unlock elsewhere.
+- **The library credits scan** and the **Plex maintenance** pass.
+- **The Radarr/Sonarr registration sync.**
+- **The `media_items` prune and the twin merge.** The prune sweep itself is
+  server-neutral — it asks every configured server whether a row still
+  resolves — but its job is still registered only when Plex is configured, so
+  a Jellyfin-only deployment runs no prune today. That is a follow-up, not a
+  decision.
+
+None of this fails on a Plex-less deployment. The scheduler logs one INFO line
+per pass it skips, naming the job exactly as the dashboard does
+(`collections_reconcile`, `credits_scan`, `plex_maintenance`, `plex_prune`,
+`plex_merge`, `arr_sync`), and each gated route answers `409` with
+`This needs Plex, and no Plex server is configured.` `GET /api/status` reports
+which servers the document configures under `capabilities`, and the Web UI
+reads that to hide the Plex-only sidebar entries — Collections, ID mismatches
+and Run modes — rather than offering a page that can only refuse.
+
+### The pending-deliveries pass
+
+A server can be reachable and still not hold the item yet: Jellyfin has not
+scanned the new file, or the *arr moved it a moment ago. That is not a
+failure, so the delivery is recorded `pending` against that one server instead
+of being retried inline, and a scheduled pass picks it up.
+
+`scheduler.pending_deliveries_minutes` (default `15`) is its cadence, floored
+at 60 seconds. Each run takes the due rows — `pending`, with `next_attempt_at`
+in the past, oldest first, at most 500 — and **delivers** each to the one
+server it is still owed to, and only that one: the other servers already have
+their own delivery row, and re-running them here would be a second,
+uncoordinated delivery pass racing the one the next webhook triggers. It does
+read the identity server as well, where that is a different one, to sample the
+media info the badge needs — composing without it would put visibly different
+artwork on the retried server until the next full pass. A row that still does
+not resolve stays `pending` and is deferred six hours. A
+compose or upload that throws is recorded `failed`, with a category and an
+exception class name and never a URL. One row's own failure never takes the
+rest of the pass down with it.
+
+The per-server rows roll up into the render's `upload_status`, so every
+existing query and dashboard that reads it keeps working. The precedence is
+`failed` over `pending` over `uploaded` over `skipped` — one server still
+failing is worth surfacing even while every other server has succeeded, and a
+delivery still in flight means the render is not done yet.
+
+Like every other maintenance pass this one is registered only when
+`scheduler.enabled` is `true` (see "Periodic scheduler" below). It is **not**
+gated on Plex — a pending delivery can exist against any configured server, and
+a Jellyfin-only deployment needs this pass exactly as much — which puts it with
+the drift, cleanup and asset-stats passes rather than with the Plex-gated ones
+listed above.
+
 ## Secrets
 
 Secrets come from an ExternalSecret providing the `AUTOPOSTER_*` environment
 variables:
 
 - `AUTOPOSTER_DATABASE_URL`
-- `AUTOPOSTER_PLEX_TOKEN`
 - `AUTOPOSTER_TMDB_TOKEN`
 - `AUTOPOSTER_TVDB_APIKEY`
 - `AUTOPOSTER_FANART_APIKEY`
 - `AUTOPOSTER_WEBHOOK_SECRET`
+- `AUTOPOSTER_PLEX_TOKEN` / `AUTOPOSTER_JELLYFIN_APIKEY` — the media-server
+  credentials, and the only two that are conditional on the config document:
+  each is required exactly when its own block is configured, and at least one
+  server must be. They are therefore not among the five *hard* names above —
+  a Jellyfin-only deployment supplies no Plex token and is complete without
+  one. See "Media servers" above.
 - `AUTOPOSTER_MDBLIST_APIKEY` — optional. Unset, only the `content_rating`
   metadata field is skipped; every other metadata operation (ratings, genres,
   studio, release date) still runs (see `app.py`'s `_build_mdblist`), and any
@@ -2042,12 +2274,16 @@ See `config/autoposter.example.yaml` for the full block.
 
 ## Periodic scheduler
 
-The `scheduler:` block in `autoposter.yaml` controls five periodic passes —
-the Common Sense collections reconcile, the ratings-drift sweep, the
-orphaned-asset cleanup, the `media_items` prune, and the Radarr/Sonarr sync
-with its safety net (see
-"Radarr and Sonarr sync" below) — each run by a single background task (the same `run(stop_event)` shape as
-the Plex health probe) started from the app lifespan. Their schedule lives in
+The `scheduler:` block in `autoposter.yaml` controls **ten** periodic passes —
+the collections reconcile (which carries the playlists pass), the ratings-drift
+sweep, the library-credits scan, the Plex maintenance pass, the orphaned-asset
+cleanup, the asset-size backfill, the `media_items` prune, the twin merge, the
+pending-deliveries retry, and the Radarr/Sonarr sync with its safety net (see
+"Radarr and Sonarr sync" below). An eleventh job, the stale-job reclaim, is
+registered whether or not this block is enabled, because it is queue
+correctness rather than maintenance. All eleven are run by a single background
+task (the same `run(stop_event)` shape as the Plex health probe) started from
+the app lifespan. Their schedule lives in
 the database, not process memory: `scheduled_runs` records each job's last
 start/finish time and outcome (`last_status`, `last_detail`), so a restart
 does not re-run everything, and two replicas coordinate through
@@ -2059,11 +2295,12 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   FROM scheduled_runs;
 ```
 
-- `enabled` (default `true`) — master switch for all five passes. Off means
-  none of them run at all, including as a dry run — **including the
-  Radarr/Sonarr sync and its safety net**: an operator turning the scheduler
-  off to silence the collections or cleanup passes also stops the Arr sync,
-  and a missed webhook then never converges.
+- `enabled` (default `true`) — master switch for all ten. Off means none of
+  them run at all, including as a dry run — **including the Radarr/Sonarr sync
+  and its safety net**: an operator turning the scheduler off to silence the
+  collections or cleanup passes also stops the Arr sync, and a missed webhook
+  then never converges. The stale-job reclaim is the exception, and is
+  registered whether this is on or off.
 - `poll_seconds` (default `60`) — how often the scheduler checks whether
   anything is due; not the interval of any individual job.
 - `collections_hours` (default `24`) — cadence for the Common Sense
@@ -2124,6 +2361,12 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   `scheduler` setting** — see `merge.apply` below, which defaults to `false`
   (dry run: report which pairs would merge). The scan itself asks Plex
   nothing, so the dry-run report is readable even while Plex is down.
+- `pending_deliveries_minutes` (default `15`) — cadence for the
+  pending-deliveries retry pass, which re-attempts an artwork delivery a
+  server could not take yet. Minutes rather than days because the thing it
+  waits on is a library scan, not a week's drift. Not gated on Plex, like the
+  drift, cleanup and asset-stats passes above it. See "The pending-deliveries
+  pass" under "Media servers" above for what a run does.
 
 ### Orphaned-asset cleanup: what it can and cannot find
 

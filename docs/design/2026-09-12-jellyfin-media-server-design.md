@@ -1,7 +1,7 @@
 # Jellyfin as a media server — design
 
 **Date:** 2026-09-12
-**Status:** Approved design, pre-implementation
+**Status:** Approved design, implemented over 2026-09-12/13 — §15 records what implementation amended
 **Roadmap:** row 267 (`docs/design/2026-08-22-full-parity-roadmap.md`)
 **Scope of this document:** sub-projects 1 and 2 of row 267 — the server
 abstraction, the Jellyfin 12.x client, artwork delivery, and server-neutral item
@@ -406,3 +406,47 @@ Jellyfin-only and dual paths through the wizard's real routes to `POST /finish`.
 5. Delivery fan-out, deliveries recording, pending retry pass, roll-up; the three end-to-end runs.
 6. Wizard media-server phase; moved assertions.
 7. Docs: example config, deploy README, `.env.example`, roadmap row 267 closed against this spec.
+
+## 15. Amendments recorded during implementation
+
+What implementation decided that this document did not, or decided differently.
+Each entry supersedes the section it names; the body above is left as approved
+so that what changed, and why, stays readable. Dated by the day the change
+landed on the branch.
+
+### The protocol, identity and the migration (§3, §4, §6.5)
+
+- **2026-09-12, §3.** `MediaServer.fetch_artwork` returns `tuple[bytes, str] | None` — the bytes and the upstream content type — not `bytes | None`. `api/artwork.py` builds its HTTP response's media type from that content type and now routes through `server.fetch_artwork`, `plex_artwork.fetch_artwork` already returned the pair, and Jellyfin's image GET carries a `Content-Type`. Applies to the protocol, `FakeMediaServer`, `PlexClient` and the conformance case.
+- **2026-09-12, §6.5.** The collision merge re-points **every** child table of `media_items` — `item_facts`, `item_credits`, `item_metadata_overrides`, `action_dismissals`, `renders` — deduping on each table's own real unique key rather than on `item_id` alone. §6.5's enumeration omitted `action_dismissals`, and its "overrides re-pointed" was not what the migration actually does.
+- **2026-09-12, §4.2.** A show or season with no provider id keys on the path branch with the file slot filled by its root folder (`show:path:::<root_folder>`, `season:path::s2:<root_folder>`): the folder is shared storage and therefore server-neutral. The legacy key stays migration-only, and the raise remains for an item with truly nothing to key on.
+- **2026-09-12, §4.2.** `adopt/walk._resolved_episode` fills `file_path` from the plexapi episode's media parts exactly as the resolver does, so an adopted episode and a resolved one key identically.
+- **2026-09-12, §4.2 ("Episode parents").** The parent model is unchanged: an episode's `parent_id` is its **season** row and a season's is its show. `parent_identity_key_for(episode)` returns the season's key (the show's provider ids plus `s{n}`), and `adopt/walk._resolved_season` takes the show's guids so adopted and resolved seasons key identically. The plan's "episode parents to the show" test was a slip, not a design change.
+- **2026-09-12, §4.2 (second amendment, superseding the first).** The file slot is the basename of `file_path` for a **movie only**; it is empty for show, season and episode, because no producer supplies an episode file — one Plex episode is one item. A provider-less episode therefore keys as `episode:path::s2e3:<root_folder>`. Adopted episodes revert to `file_path=None`; adopted seasons and episodes carry the show's guids as their parent ids. The bare-key promotion introduced above is removed (nothing produces the shape it caught); the legacy-key promotion is kept and gated on `server == "plex"`.
+- **2026-09-13, §4.1.** **One ref per `(item, server)` is an invariant**, not an allowance: `upsert_server_ref` deletes the item's other refs for that server, and `_merge_into` drops the stale row's refs for servers the survivor already has. The "several rows per server" wording is withdrawn.
+- **2026-09-13, §4.2/§4.6.** The same Plex ref plus the same `kind:provider:id:coords` prefix with a **different** file slot is a file replacement: the existing row is re-keyed in place, keeping its overrides, dismissals and renders. A *different* ref with the same prefix stays a separate item — that is the 4K/HD pair. Legacy promotion is this same mechanism's special case.
+- **2026-09-13, §4.4 step 2.** The basename lookup is **deferred**. `RenderIntent` carries no path, so nothing can drive it; the index entries it would have needed are removed. Revisit if intents ever carry a path.
+- **2026-09-13, §4.4 step 6.** `LibraryIndex` auto-invalidates once `built_at` is `max_age_seconds=3600` old (monotonic), and `JellyfinClient` exposes `invalidate()`. The full pass invalidates at pass start — iterating every server in the registry and duck-typing the method (`getattr(server, "invalidate", None)`) rather than naming Jellyfin, because a server with no index to go stale simply has nothing to call. The ledger's `servers.jellyfin.invalidate()` was the shape, not the call.
+- **2026-09-13, §4.7.** `migrate_preview.preview()` selects `root_folder` and passes it to `identity_key`, so its report matches what the migration computes. The plan's "run it against the dev database before the migration" step was not performed here: the lane's databases are per-worker scratch, and the operator's production database is the real target — the command is named in the Phase 2 PR body instead.
+
+### The Jellyfin client (§1.1, §11)
+
+- **2026-09-13, §1.1 / V1.** `Authorization: MediaBrowser Token="<key>"` is accepted on 12.0 with or without the `Client`/`Device`/`DeviceId`/`Version` fields; the legacy `X-Emby-Token` header answers `401` and is not used. Verified live against a 12.0.0 instance.
+- **2026-09-13, §1.1 / V3.** `POST /Items/{itemId}/Images/{imageType}` answers `500` for the raw image bytes the spec's `requestBody` describes. The body must be **base64-encoded**, with the real image `Content-Type` unchanged; `JellyfinApi.set_image` encodes accordingly. This is a live-server behaviour the spec does not state anywhere.
+
+### Delivery (§5)
+
+- **2026-09-13, §5.** **One intent is one row.** The first server that resolves the intent — Plex when this deployment has one — sets the item's identity; every other server adds a ref to that row and never a row of its own.
+- **2026-09-13, §5.2.** **Render once.** The unchanged-work gate keys on the render fingerprint alone, not on the fingerprint plus an `uploaded` status. A `failed` delivery is re-armed `pending` once per full pass — it costs no ImageMagick work for the servers that already hold the bytes — while `uploaded` and `skipped` are left alone.
+- **2026-09-13, §5.3.** The retry pass composes from the **identity server** (Plex when the item has a Plex ref) and never writes the fingerprint; the fingerprint stays the full pass's to write.
+- **2026-09-13, §5.3.** On retry, a resolution miss stays `pending` with backoff, while a compose or upload exception records `failed` — the distinction the pipeline itself already draws. One row's unexpected exception never aborts the pass.
+- **2026-09-13, §5.3.** On an **unchanged** fingerprint, any configured server with no delivery row for that render (or a `pending` one) is recorded `pending` with `retry_in=0`, so the pending-deliveries pass delivers it from the already-badged asset. A server enabled after the fact catches up without anything being re-badged.
+- **2026-09-13, §5.2.** `uploaded_at` survives a later failed delivery: a `failed`, `skipped` or `pending` outcome never erases what that server did deliver last time, and the roll-up carries the column forward rather than overwriting it with `NULL`.
+- **2026-09-13, §5.4.** Adoption ignores the delivery rows the identity migration backfilled.
+- **2026-09-13, §5.5.** The prune sweep retires refs per server only in an **apply** pass, and only past the cap. Its job registration is still gated on Plex, so a Jellyfin-only deployment runs no prune yet; that is a follow-up row, not a decision.
+
+### The wizard (§8)
+
+- **2026-09-13, §8.** The media-server step's gate is `config/schema.missing_server_setup` itself — at least one server configured, and every configured server's credential held — asked by the step rather than restated as a second expression that happens to agree with `boot.is_configured` today.
+- **2026-09-13, §8.** `checked` is a per-system **session** fact (`checks_passed`), reported beside `configured` and `credential` and never persisted. A successful check is not a second way to answer the step: a probe is not a decision to run a server.
+- **2026-09-13, §8.** A card saved on its own keeps the other server's block. The two cards may be submitted in one body or one at a time, and a server the submitted body does not name keeps whatever an earlier submit of the same session staged for it — while losing the example document's placeholder block, and losing a block for a server that was only checked.
+- **2026-09-13, §8.** The `jellyfin` check is `GET /System/Info` — authenticated, not `/System/Info/Public` — for the same reason Plex's is `/library/sections`: the probe has to prove the credential, not merely that the host answered.

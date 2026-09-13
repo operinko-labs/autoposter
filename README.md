@@ -2,13 +2,13 @@
 
 # autoposter
 
-Event-driven artwork and metadata automation for a Plex library, replacing
-[Posterizarr](https://github.com/fscorrupt/Posterizarr) and
+Event-driven artwork and metadata automation for a Plex or Jellyfin library,
+replacing [Posterizarr](https://github.com/fscorrupt/Posterizarr) and
 [Kometa](https://kometa.wiki/) with a single service.
 
-Radarr and Sonarr webhooks drive a per-item pipeline: resolve the item in Plex,
-fetch textless artwork, composite a poster with ImageMagick, and write it into
-the shared asset tree. Work is queued in PostgreSQL and processed by a worker
+Radarr and Sonarr webhooks drive a per-item pipeline: resolve the item on every
+configured media server, fetch textless artwork, composite a poster with
+ImageMagick, and write it into the shared asset tree. Work is queued in PostgreSQL and processed by a worker
 pool, so a season-pack import becomes one pass per affected item rather than a
 full-library scan.
 
@@ -27,6 +27,18 @@ full-library scan.
 
 Phase 1 (Posterizarr parity) is implemented. Rendered output is byte-identical
 to the tool it replaces, verified against the production asset tree.
+
+A deployment manages **Plex, Jellyfin 12, or both**. The `plex:` and
+`jellyfin:` config blocks are independent and each is optional, so a Plex-only
+document is valid unchanged and a Jellyfin-only one is a complete deployment:
+one item is one row across both servers, keyed by its provider ids rather than
+by either server's own id, and one render is delivered to each server that has
+the item. What Jellyfin does not get is the features written against Plex-only
+API surface — collections, playlists, the adoption cutover, the ID mismatch
+scan and the metadata backup — which are gated rather than half-working: each
+route refuses with one sentence, and the Web UI hides the three sidebar entries
+that lead to one (Collections, ID mismatches, Run modes). See "Media servers"
+in [`deploy/README.md`](deploy/README.md).
 
 ## Web UI
 
@@ -76,9 +88,11 @@ database, which stays exactly as reachable or unreachable as it always was.
 Missing a credential serves a first-start setup wizard on the same port
 instead of migrating and starting the application; credentials all present
 with no document is instead a configuration error, logged and non-zero, not
-the wizard. The wizard itself walks through the master password, the
-database URL, the provider keys and the Plex server URL, then restarts the
-service into the application.
+the wizard. The wizard itself walks through the master password, this
+deployment's own address, the database URL, the media servers — one card each
+for Plex and Jellyfin; either server finishes the step, provided no server the
+document names is left without its credential — and the provider keys, then
+restarts the service into the application.
 
 **Every GitOps/ExternalSecrets deployment supplies every hard credential and
 never sees any of this.** In this project's own Kubernetes deployment that
@@ -93,20 +107,22 @@ page on a fresh checkout — see "Docker Compose" in `deploy/README.md`.
 Every **credential** the wizard collects goes to `$AUTOPOSTER_STATE_DIR`
 (default `/state`) — into `secrets.env` there, never into the config document
 and never into the database — and **the process environment always wins over
-that file**. (Step 4 does write a config document, to
+that file**. (The media-server step does write a config document, to
 `$AUTOPOSTER_STATE_DIR/autoposter.yaml`, when the deployment has none: it
-holds the Plex URL and nothing secret.) Adding an ExternalSecret later takes
-effect at the next restart, but once ALL six hard names resolve
+holds the server addresses and nothing secret.) Adding an ExternalSecret later
+takes effect at the next restart, but once ALL five hard names resolve
 from the environment the state file stops being read at all, for any name —
-at that point also carry every soft name the wizard wrote into the
-environment (or the Secret) in the same change: `AUTOPOSTER_ADMIN_PASSWORD_HASH`
-and every provider key step 3 collected (`AUTOPOSTER_MDBLIST_APIKEY`,
+at that point also carry every other name the wizard wrote into the
+environment (or the Secret) in the same change: `AUTOPOSTER_ADMIN_PASSWORD_HASH`,
+the media-server credential (`AUTOPOSTER_PLEX_TOKEN` or
+`AUTOPOSTER_JELLYFIN_APIKEY`, whichever this deployment configures), and every
+provider key the Systems step collected (`AUTOPOSTER_MDBLIST_APIKEY`,
 `AUTOPOSTER_RADARR_APIKEY`, `AUTOPOSTER_SONARR_APIKEY`,
 `AUTOPOSTER_PLEX_ACCOUNT_TOKEN`, `AUTOPOSTER_TRACEARR_APIKEY`), or they are
 silently dropped. A hand-added
 `AUTOPOSTER_API_KEY` is subject to the same rule, though the wizard never
 writes it. See "First-start setup" in `deploy/README.md` for the
-five steps, the file modes and the rotation story, and for the one bound this
+six steps, the file modes and the rotation story, and for the one bound this
 project's own deployment relies on: the wizard, unauthenticated until a
 master password exists, is reachable only over an internal gateway route,
 and — because the admin password hash there is supplied by environment
