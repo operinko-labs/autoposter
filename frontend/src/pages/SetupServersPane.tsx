@@ -37,6 +37,13 @@ const HELD = "***REDACTED***";
  * server's own rule (`farthestStep`), never by this pane: one complete server,
  * and no configured server left without its credential.
  *
+ * One shape neither card can answer is called out above them: a configuration
+ * document the deployment supplies (or an earlier finish wrote) that names no
+ * server at all. `POST /api/setup/config` is refused there, so `configured`
+ * can never become true and the step can never be finished from this page --
+ * the only way out is the document itself, and nothing else on the pane says
+ * so (branch review I1).
+ *
  * One card opens: the one the document names and holds no credential for --
  * the one shape on this step an operator MUST act on -- or, on a deployment
  * with nothing configured at all, Plex's, which is the pane the Plex-only
@@ -65,6 +72,11 @@ export function SetupServersPane({
     jellyfinExcludedLibraries: string[] | null,
   ) => Promise<boolean>;
 }) {
+  // `setupSteps.ts`'s guard, for the same reason: `farthestStep` reads this
+  // same line on every render and falls back to an empty map rather than
+  // throwing out of the page, so the pane that renders the step must not
+  // disagree with the function that gates it.
+  const servers = progress.servers ?? {};
   // A deployment with NO server configured at all is a first run, and the card
   // it opens is Plex's: that is where the Plex-only operator used to land --
   // the token was a required provider key, so its accordion came up expanded
@@ -72,7 +84,13 @@ export function SetupServersPane({
   // Continue is the one visible thing this step changed about that walk
   // (review M3). A deployment the document already names keeps the split
   // below: the card that opens is the one missing its credential.
-  const firstRun = SERVER_CARDS.every((card) => !progress.servers[card.name]?.configured);
+  const noServerConfigured = SERVER_CARDS.every((card) => !servers[card.name]?.configured);
+  // A document the wizard cannot write to, naming no server: the one state on
+  // this step that neither card can answer, and the only one the pane speaks
+  // for itself about (branch review I1).
+  const documentNamesNone =
+    noServerConfigured &&
+    (progress.config_source === "configured" || progress.config_source === "state");
 
   return (
     <section className="setup-pane" data-testid="servers-step">
@@ -84,8 +102,18 @@ export function SetupServersPane({
         runs, give it an address and its credential, and pick the libraries it should manage — one
         finished card is enough to carry on.
       </p>
+      {documentNamesNone && (
+        <p className="setup-hint" data-testid="servers-document-names-none">
+          This deployment&apos;s configuration document names no media server, and the wizard
+          cannot write to a document it did not create — so neither card below can finish this
+          step. Add a <code className="mono setup-field-env">plex.url</code> or a{" "}
+          <code className="mono setup-field-env">jellyfin.url</code> to that document and restart
+          this service; the wizard comes back with the card for whichever one it names. Do that
+          first: the restart loses anything typed here, credentials included.
+        </p>
+      )}
       {SERVER_CARDS.map((card) => {
-        const state = progress.servers[card.name] ?? {
+        const state = servers[card.name] ?? {
           configured: false,
           credential: false,
           checked: false,
@@ -94,7 +122,7 @@ export function SetupServersPane({
           <SetupAccordion
             key={card.name}
             credential={card.credential}
-            defaultOpen={firstRun && card.name === "plex"}
+            defaultOpen={noServerConfigured && card.name === "plex"}
             held={state.credential ? HELD : null}
             label={card.label}
             needsAddress={SYSTEMS_WITH_AN_ADDRESS.has(card.name)}

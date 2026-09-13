@@ -115,9 +115,15 @@ describe("SetupJellyfinPane", () => {
   });
 
   it("shows the server's fixed sentence when the read is refused", async () => {
+    // `CHECK_NEEDS_A_TYPED_CREDENTIAL` verbatim (api/setup.py): the read is
+    // refused when no key is typed and none is staged, and the page renders
+    // `detail` as it stands -- which is only safe because it is fixed, carries
+    // no value and names no host. An invented sentence here would pass while
+    // proving nothing about what an operator actually reads (review M1).
     const detail =
-      "a credential must be typed here, or saved first: this check does not read the one the " +
-      "deployment already holds";
+      "a check against an address you supply must carry the key typed beside it; " +
+      "a credential this deployment already holds is never sent to an address a " +
+      "request names";
     vi.stubGlobal("fetch", vi.fn(async () => respond({ detail }, 400)));
     render(<SetupJellyfinPane address={ADDRESS} credentialValue="" onSelect={async () => true} />);
 

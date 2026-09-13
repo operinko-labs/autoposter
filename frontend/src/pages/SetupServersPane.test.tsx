@@ -63,6 +63,38 @@ describe("SetupServersPane", () => {
     expect(screen.getByRole("button", { name: "Sign in with Plex" })).toBeInTheDocument();
   });
 
+  it("says what to do when a resolving document names no media server at all", () => {
+    // Branch review I1. `POST /api/setup/config` is refused while a document
+    // resolves, and `configured` is read off that document -- so on one that
+    // names neither server the step can never be answered from this page: both
+    // cards say the address is read from the document, which is true and is
+    // not an instruction. The only way out is the document itself, and this is
+    // the only place that says so.
+    const named = renderPane({ progress: { ...PROGRESS, config_source: "configured" } });
+
+    const hint = screen.getByTestId("servers-document-names-none");
+    expect(hint).toHaveTextContent("plex.url");
+    expect(hint).toHaveTextContent("jellyfin.url");
+    expect(hint).toHaveTextContent(/restart this service/i);
+    named.unmount();
+
+    // A document that DOES name a server: the card for it is the instruction.
+    const withServer = renderPane({
+      progress: {
+        ...PROGRESS,
+        config_source: "configured",
+        servers: { ...NO_SERVERS, jellyfin: { configured: true, credential: false, checked: false } },
+      },
+    });
+    expect(screen.queryByTestId("servers-document-names-none")).toBeNull();
+    withServer.unmount();
+
+    // No document resolving at all: this pane's own submit writes one, which
+    // is the ordinary first run and not a dead end.
+    renderPane();
+    expect(screen.queryByTestId("servers-document-names-none")).toBeNull();
+  });
+
   it("opens neither card once a server is configured, because the split decides then", () => {
     // A deployment the document already names is not a first run: what opens
     // there is the card missing its credential, and a complete server opens
