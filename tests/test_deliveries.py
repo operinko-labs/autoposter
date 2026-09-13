@@ -444,3 +444,39 @@ async def test_a_rolled_back_row_keeps_every_other_rows_work(
             )).all()
         )
     assert committed == {ids[0]: "pending", ids[1]: "uploaded", ids[2]: "uploaded"}
+
+
+async def test_a_path_mismatch_on_the_identity_server_fails_rather_than_waiting_forever(
+    session, config_with_badges,
+):
+    """N6: `PathMismatch` subclasses `ItemNotFound`, so the identity
+    re-resolve's broad handler recorded it as a `pending` on the 6h horizon
+    -- retried forever against a mount mismatch no retry can fix (spec §6.2).
+    The delivery server's own resolve has always recorded `failed` for it;
+    the identity's now does too."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    render = await _render(session)
+    # Ten minutes in the past rather than `retry_in=0`: this machine's
+    # container clock steps backwards a few seconds at a time.
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=-600)
+    await session.commit()
+
+    plex = FakeMediaServer(name="plex")
+    plex.path_mismatch.add("process_item:movie:tmdb1")
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
+    config_with_badges.badges.upload_to_jellyfin = True
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"plex": plex, "jellyfin": jf}), config_with_badges,
+        now=datetime.now(timezone.utc),
+    )
+
+    assert summary == "pending deliveries: 1 due, 0 uploaded, 0 still pending"
+    assert jf.uploads == [], "nothing may be delivered when the identity cannot be sampled"
+    # Column-only select -- see the note in test_server_removed_from_config_
+    # fails_the_delivery on why a full-entity select would read stale.
+    row = (await session.execute(select(RenderDelivery.status, RenderDelivery.detail))).one()
+    assert row.status == "failed" and row.detail == "error: PathMismatch"

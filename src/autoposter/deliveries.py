@@ -255,6 +255,16 @@ async def retry_pending_deliveries(
                 if identity_name is not None and identity_item is None:
                     try:
                         identity_item = await servers.get(identity_name).resolve(_intent_for(item, refs))
+                    except PathMismatch as exc:
+                        # `PathMismatch` subclasses `ItemNotFound`, so without
+                        # this clause a mount mismatch on the identity server
+                        # became an unbounded `pending` retried forever (fix
+                        # round 3 round 4, N6). No retry fixes one (spec
+                        # §6.2) -- the same `failed` the delivery server's own
+                        # resolve records two blocks above.
+                        await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                        await rollup(session, render.id)
+                        continue
                     except Exception as exc:
                         # Never deliver overlay-less bytes: not being able to
                         # sample the identity server is a wait, exactly like
