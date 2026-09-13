@@ -7,9 +7,14 @@ own -- these tests only exercise the job's name, its cadence and that it
 wraps the retry pass, the same shape ``test_scheduler_drift_job.py`` and
 friends use for their own job factories.
 """
+import asyncio
 from types import SimpleNamespace
 
+from sqlalchemy import select
+
 from autoposter.config.holder import ConfigHolder
+from autoposter.db.models import ScheduledRun
+from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import make_pending_deliveries_job
 
 
@@ -33,3 +38,37 @@ def test_the_cadence_floors_at_sixty_seconds():
     job = make_pending_deliveries_job(holder, lambda: {}, http=None, mdblist=None)
 
     assert job.current_interval() == 60
+
+
+async def test_the_job_records_a_scheduled_run_through_the_real_scheduler(session_factory):
+    """Gap 5 (fix round 3): the addendum's "its runs ARE recorded" half.
+
+    ``tests/test_app.py`` proves the job is registered and the assertion
+    ``"pending_deliveries" not in UNRECORDED`` is a naming check; this drives
+    the real ``Scheduler`` over the real job and reads the ``scheduled_runs``
+    row back. The wait is on the behaviour rather than on the clock, the
+    shape ``tests/test_scheduler_core.py`` uses for the same reason (roadmap
+    row 119), and the ``finally`` stops the scheduler on both paths."""
+    holder = ConfigHolder(_config(minutes=7))
+    job = make_pending_deliveries_job(holder, lambda: {}, http=None, mdblist=None)
+
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [job], poll_seconds=0.01)
+    task = asyncio.create_task(scheduler.run(stop))
+    row = None
+    try:
+        async with asyncio.timeout(60):
+            while row is None or row.last_finished_at is None:
+                await asyncio.sleep(0.01)
+                async with session_factory() as check:
+                    row = (await check.execute(select(ScheduledRun))).scalar_one_or_none()
+    except TimeoutError:
+        pass
+    finally:
+        stop.set()
+        await task
+
+    assert row is not None, "the registered job never recorded a run"
+    assert row.name == "pending_deliveries"
+    assert row.last_status == "ok"
+    assert row.last_detail.startswith("pending deliveries: 0 due")
