@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../api/client";
@@ -18,15 +18,32 @@ const PROGRESS: SetupProgress = {
   password: true,
   database: false,
   database_source: "missing",
+  // No media-server credential here: neither is a provider key any more.
+  // Each is required exactly when ITS server is configured, so both are
+  // collected on the media-server step and reported by `servers` below.
   providers: {
-    AUTOPOSTER_PLEX_TOKEN: "***REDACTED***",
+    AUTOPOSTER_MDBLIST_APIKEY: "***REDACTED***",
     AUTOPOSTER_TMDB_TOKEN: null,
   },
   required: ["AUTOPOSTER_TMDB_TOKEN"],
-  config: false,
-  config_source: null,
+  config: true,
+  config_source: "staged",
   public_url: false,
   checked_systems: [],
+  // A deployment whose Plex the wizard has already set up, so that a test
+  // whose subject is a LATER pane is not blocked by the media-server step --
+  // the same reason `database_source` is answered here.
+  servers: {
+    plex: { configured: true, credential: true, checked: false },
+    jellyfin: { configured: false, credential: false, checked: false },
+  },
+};
+
+/** Neither server set up: a genuinely fresh deployment, for the tests whose
+ * subject IS the media-server step. */
+const NO_SERVERS = {
+  plex: { configured: false, credential: false, checked: false },
+  jellyfin: { configured: false, credential: false, checked: false },
 };
 
 function respond(body: unknown, status = 200): Response {
@@ -67,10 +84,25 @@ async function submitDatabaseStep(value = "postgresql+asyncpg://u:p@db:5432/auto
   fireEvent.click(screen.getByRole("button", { name: "Test and continue" }));
 }
 
-async function goToSystemsStep() {
+async function goToServersStep() {
   await goToUrlStep();
   await submitPublicUrlStep();
   await submitDatabaseStep();
+  await waitFor(() => screen.getByTestId("servers-step"));
+}
+
+/** The media-server step's own Continue, which is the only thing that leaves
+ * it. Its two cards submit a credential and a configuration document and
+ * deliberately do NOT advance the step: an operator who runs both servers
+ * fills in the second card after the first has been saved. */
+async function passServersStep() {
+  await waitFor(() => screen.getByTestId("servers-step"));
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+}
+
+async function goToSystemsStep() {
+  await goToServersStep();
+  await passServersStep();
   await waitFor(() => screen.getByTestId("systems-step"));
 }
 
@@ -125,6 +157,7 @@ function secretMock() {
 async function goToFinishStepThroughProviders() {
   await goToUrlStep();
   await submitPublicUrlStep();
+  await passServersStep();
   await waitFor(() => screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"));
   fireEvent.change(screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"), {
     target: { value: "pasted-value" },
@@ -223,14 +256,19 @@ describe("Setup", () => {
     await goToSystemsStep();
 
     await waitFor(() =>
-      expect(screen.getByTestId("held-AUTOPOSTER_PLEX_TOKEN")).toHaveTextContent("Stored"),
+      expect(screen.getByTestId("held-AUTOPOSTER_MDBLIST_APIKEY")).toHaveTextContent("Stored"),
     );
     expect(screen.getByTestId("held-AUTOPOSTER_TMDB_TOKEN")).toHaveTextContent("Not set");
     expect(document.body.textContent).not.toContain("***REDACTED***");
     // Facts C8: the held one is folded away, the required-and-missing one is
     // open, and neither state was asked of or sent to the server.
-    expect(screen.queryByTestId("accordion-body-plex")).toBeNull();
+    expect(screen.queryByTestId("accordion-body-mdblist")).toBeNull();
     expect(screen.getByTestId("accordion-body-tmdb")).toBeInTheDocument();
+    // ...and no media server is among them: both cards live on the step
+    // before this one, and the systems pane renders from `providers`, which
+    // carries neither server credential (review M2).
+    expect(screen.queryByTestId("accordion-body-plex")).toBeNull();
+    expect(screen.queryByTestId("accordion-body-jellyfin")).toBeNull();
   });
 
   it("offers the database step once the address is set, while it is the unfinished one", async () => {
@@ -275,6 +313,7 @@ describe("Setup", () => {
     render(<Setup />);
     await goToUrlStep();
     await submitPublicUrlStep();
+    await passServersStep();
     await waitFor(() => screen.getByTestId("systems-step"));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -331,6 +370,7 @@ describe("Setup", () => {
     render(<Setup />);
     await goToUrlStep();
     await submitPublicUrlStep();
+    await passServersStep();
     await waitFor(() => screen.getByLabelText("AUTOPOSTER_TMDB_TOKEN"));
 
     // Still on the systems pane: nothing has asked for the value yet, so a
@@ -657,7 +697,7 @@ describe("Setup", () => {
     await goToUrlStep();
     await submitPublicUrlStep();
 
-    await waitFor(() => expect(screen.getByTestId("systems-step")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("servers-step")).toBeInTheDocument());
     expect(screen.queryByLabelText("Database URL")).toBeNull();
   });
 
@@ -690,10 +730,10 @@ describe("Setup", () => {
   it("goes back into the database step it answered itself, with a Stored pill", async () => {
     // The step's own submit is what made `database` true, so keying the order
     // on the boolean deleted the step at the moment it was answered: Back from
-    // the systems pane landed on the address pane and a mistyped DSN could not
+    // the pane after it landed on the address pane and a mistyped DSN could not
     // be corrected for the life of the process.
     render(<Setup />);
-    await goToSystemsStep();
+    await goToServersStep();
 
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
 
@@ -703,21 +743,22 @@ describe("Setup", () => {
     expect(screen.getByRole("button", { name: "Test and continue" })).not.toBeDisabled();
   });
 
-  it("stages the configuration from inside the Plex accordion, not from a box beside it", async () => {
+  it("stages the configuration from inside the Plex card, not from a box beside it", async () => {
     // Task 3 replaces the standalone "Plex server URL" field: the address is
     // the one the operator PICKED from their own account, and the tick-list
     // that comes with it is the same submit's `excluded_libraries`. This is the
     // case that field's coverage becomes -- the sign-in is offered where the
-    // Plex credential is, and it is the whole of the configuration step now.
+    // Plex credential is, which since the media-server step is its own card.
     vi.stubGlobal(
       "fetch",
       progressMock({ ...PROGRESS, config: true, config_source: "staged" }),
     );
 
     render(<Setup />);
-    await goToSystemsStep();
-    // Held, so it renders collapsed (facts C8) -- the sign-in lives inside it.
-    fireEvent.click(screen.getByRole("button", { name: /Plex token/ }));
+    await goToServersStep();
+    // Its credential is held, so the card renders collapsed (facts C8) -- the
+    // sign-in lives inside it.
+    fireEvent.click(screen.getByRole("button", { name: /Plex/ }));
 
     await waitFor(() =>
       expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument(),
@@ -741,8 +782,8 @@ describe("Setup", () => {
     );
 
     render(<Setup />);
-    await goToSystemsStep();
-    fireEvent.click(screen.getByRole("button", { name: /Plex token/ }));
+    await goToServersStep();
+    fireEvent.click(screen.getByRole("button", { name: /Plex/ }));
 
     await waitFor(() => expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument());
     expect(screen.getByTestId("plex-configured")).toBeInTheDocument();
@@ -783,8 +824,8 @@ describe("Setup", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Setup />);
-    await goToSystemsStep();
-    fireEvent.click(screen.getByRole("button", { name: /Plex token/ }));
+    await goToServersStep();
+    fireEvent.click(screen.getByRole("button", { name: /Plex/ }));
     await waitFor(() => expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument());
 
     fireEvent.change(screen.getByLabelText("Plex address"), {
@@ -821,6 +862,173 @@ describe("Setup", () => {
     });
   });
 
+  it("holds the wizard at the media-server step until one server is set up", async () => {
+    // Spec 8's gate, through the real entry point: a deployment runs on Plex,
+    // on Jellyfin, or on both, and on NEITHER it is a deployment the next boot
+    // refuses. Continue is what leaves this pane, and the server owns whether
+    // it may be pressed.
+    vi.stubGlobal("fetch", progressMock({ ...PROGRESS, servers: NO_SERVERS }));
+
+    render(<Setup />);
+    await goToServersStep();
+
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(screen.queryByTestId("systems-step")).toBeNull();
+  });
+
+  it("reaches the configuration document from the Jellyfin card's own two fields", async () => {
+    // The Jellyfin-only walk, through the page rather than the pane: the card
+    // holds the address and the API key, the pane reads the libraries with
+    // both, and the submit names ONLY this server -- a body carrying a
+    // `plex_url` here would write the example's Plex block into a deployment
+    // that does not run Plex, and `missing_server_setup` would then demand a
+    // Plex token forever.
+    const fetchMock = progressMock(
+      { ...PROGRESS, config: false, config_source: null, servers: NO_SERVERS },
+      (path, init) => {
+        if (path === "/api/setup/jellyfin/libraries" && init?.method === "POST") {
+          return respond({
+            libraries: [
+              { id: "lib1", name: "Movies", type: "movies" },
+              { id: "lib2", name: "Photos", type: "photos" },
+            ],
+          });
+        }
+        if (path === "/api/setup/config" && init?.method === "POST") {
+          return respond({ path: "/state/autoposter.yaml" });
+        }
+        return undefined;
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await goToServersStep();
+    fireEvent.click(screen.getByRole("button", { name: /Jellyfin/ }));
+    await waitFor(() => expect(screen.getByTestId("accordion-body-jellyfin")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText("Jellyfin address"), {
+      target: { value: "https://jellyfin.invalid:8096" },
+    });
+    fireEvent.change(screen.getByLabelText("AUTOPOSTER_JELLYFIN_APIKEY"), {
+      target: { value: "row-267-typed-api-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Read libraries" }));
+    await waitFor(() => expect(screen.getByLabelText("Photos")).toBeChecked());
+
+    const read = fetchMock.mock.calls.find(([path]) => path === "/api/setup/jellyfin/libraries");
+    expect(JSON.parse(String(read?.[1]?.body))).toEqual({
+      base_url: "https://jellyfin.invalid:8096",
+      credential_value: "row-267-typed-api-key",
+    });
+
+    fireEvent.click(screen.getByLabelText("Photos"));
+    fireEvent.click(screen.getByRole("button", { name: "Use this server" }));
+
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([path]) => path === "/api/setup/config")).toBe(true),
+    );
+    const staged = fetchMock.mock.calls.find(([path]) => path === "/api/setup/config");
+    expect(JSON.parse(String(staged?.[1]?.body))).toEqual({
+      jellyfin_url: "https://jellyfin.invalid:8096",
+      jellyfin_excluded_libraries: ["Photos"],
+    });
+  });
+
+  it("shows the Jellyfin address's own refusal, which names Jellyfin and not Plex", async () => {
+    // The server answers each address's refusal with its own sentence, so an
+    // operator who mistyped a Jellyfin address is never told about Plex. The
+    // page renders `detail` verbatim, which is what makes that reach them.
+    const detail =
+      "the Jellyfin server URL must be an http:// or https:// address with a host, with no " +
+      "username or password in it, and with no query string or fragment";
+    const fetchMock = progressMock(
+      { ...PROGRESS, config: false, config_source: null, servers: NO_SERVERS },
+      (path, init) => {
+        if (path === "/api/setup/jellyfin/libraries" && init?.method === "POST") {
+          return respond({ libraries: [{ id: "lib1", name: "Movies", type: "movies" }] });
+        }
+        if (path === "/api/setup/config" && init?.method === "POST") {
+          return respond({ detail }, 400);
+        }
+        return undefined;
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await goToServersStep();
+    fireEvent.click(screen.getByRole("button", { name: /Jellyfin/ }));
+    await waitFor(() => screen.getByTestId("accordion-body-jellyfin"));
+    fireEvent.change(screen.getByLabelText("Jellyfin address"), {
+      target: { value: "jellyfin.invalid:8096" },
+    });
+    fireEvent.change(screen.getByLabelText("AUTOPOSTER_JELLYFIN_APIKEY"), {
+      target: { value: "row-267-typed-api-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Read libraries" }));
+    await waitFor(() => screen.getByLabelText("Movies"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Use this server" }));
+
+    await waitFor(() => expect(screen.getByText(detail)).toBeInTheDocument());
+  });
+
+  it("stages a server card's credential and reads the pill back from the servers line", async () => {
+    // The ruling this task implements: the card's Save is the provider route,
+    // and the pill beside it is `/progress.servers[card].credential` -- the
+    // save deliberately does NOT echo the credential back, so a page that read
+    // the pill off the save's own answer would show "Not set" for a key the
+    // deployment now holds.
+    let saved = false;
+    const fetchMock = progressMock(
+      { ...PROGRESS, config: false, config_source: null, servers: NO_SERVERS },
+      (path, init) => {
+        if (path === "/api/setup/providers" && init?.method === "POST") {
+          saved = true;
+          return respond({ providers: {} });
+        }
+        if (path === "/api/setup/progress" && saved) {
+          return respond({
+            ...PROGRESS,
+            public_url: true,
+            database: true,
+            database_source: "staged",
+            config: false,
+            config_source: null,
+            servers: {
+              ...NO_SERVERS,
+              jellyfin: { configured: false, credential: true, checked: false },
+            },
+          });
+        }
+        return undefined;
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Setup />);
+    await goToServersStep();
+    fireEvent.click(screen.getByRole("button", { name: /Jellyfin/ }));
+    await waitFor(() => screen.getByTestId("accordion-body-jellyfin"));
+    expect(screen.getByTestId("held-AUTOPOSTER_JELLYFIN_APIKEY")).toHaveTextContent("Not set");
+
+    fireEvent.change(screen.getByLabelText("AUTOPOSTER_JELLYFIN_APIKEY"), {
+      target: { value: "row-267-typed-api-key" },
+    });
+    fireEvent.click(
+      within(screen.getByTestId("accordion-body-jellyfin")).getByRole("button", { name: "Save" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("held-AUTOPOSTER_JELLYFIN_APIKEY")).toHaveTextContent("Stored"),
+    );
+    const posted = fetchMock.mock.calls.find(([path]) => path === "/api/setup/providers");
+    expect(JSON.parse(String(posted?.[1]?.body))).toEqual({
+      values: { AUTOPOSTER_JELLYFIN_APIKEY: "row-267-typed-api-key" },
+    });
+  });
+
   it("registers the *arr webhook from its own panel and reports it on the finish page", async () => {
     // Task 4, through the real entry point rather than through the pane alone:
     // the control lives in the SONARR accordion's children slot, the result is
@@ -832,10 +1040,7 @@ describe("Setup", () => {
         ...PROGRESS,
         database: true,
         database_source: "resolved",
-        providers: {
-          AUTOPOSTER_PLEX_TOKEN: "***REDACTED***",
-          AUTOPOSTER_SONARR_APIKEY: "***REDACTED***",
-        },
+        providers: { AUTOPOSTER_SONARR_APIKEY: "***REDACTED***" },
         required: [],
         config: true,
         config_source: "staged",
@@ -857,6 +1062,7 @@ describe("Setup", () => {
     render(<Setup />);
     await goToUrlStep();
     await submitPublicUrlStep();
+    await passServersStep();
     await waitFor(() => screen.getByTestId("systems-step"));
     fireEvent.click(screen.getByRole("button", { name: /Sonarr API key/ }));
     await waitFor(() => expect(screen.getByTestId("accordion-body-sonarr")).toBeInTheDocument());
@@ -897,10 +1103,7 @@ describe("Setup", () => {
         ...PROGRESS,
         database: true,
         database_source: "resolved",
-        providers: {
-          AUTOPOSTER_PLEX_TOKEN: "***REDACTED***",
-          AUTOPOSTER_SONARR_APIKEY: "***REDACTED***",
-        },
+        providers: { AUTOPOSTER_SONARR_APIKEY: "***REDACTED***" },
         required: [],
         config: true,
         config_source: "staged",
@@ -920,6 +1123,7 @@ describe("Setup", () => {
     render(<Setup />);
     await goToUrlStep();
     await submitPublicUrlStep();
+    await passServersStep();
     await waitFor(() => screen.getByTestId("systems-step"));
     fireEvent.click(screen.getByRole("button", { name: /Sonarr API key/ }));
     await waitFor(() => expect(screen.getByTestId("accordion-body-sonarr")).toBeInTheDocument());

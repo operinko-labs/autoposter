@@ -29,6 +29,14 @@ const PROGRESS: SetupProgress = {
   config_source: "staged",
   public_url: true,
   checked_systems: ["sonarr", "radarr"],
+  // A Plex deployment that never set Jellyfin up -- the shape the media-server
+  // block has to tell from a Jellyfin-only one. `checked` is a SESSION fact and
+  // false after a reload, which is why the line it produces says what happened
+  // during setup and never what is true of the address.
+  servers: {
+    plex: { configured: true, credential: true, checked: true },
+    jellyfin: { configured: false, credential: false, checked: false },
+  },
 };
 
 function renderPane(overrides: Partial<Parameters<typeof SetupFinishPane>[0]> = {}) {
@@ -120,6 +128,60 @@ describe("SetupFinishPane", () => {
     expect(screen.getByTestId("registration-radarr")).toHaveTextContent("Not configured");
   });
 
+  it("reports the server the wizard set up, and says the check was a setup-time one", () => {
+    // Review M1: "a check passed during setup" and never "this address was
+    // checked" -- `checked` is a session fact the server forgets, so the page
+    // must not report it as a property of the address.
+    renderPane();
+
+    expect(screen.getByTestId("server-plex")).toHaveTextContent(/a check passed during setup/i);
+  });
+
+  it("does not call a server unchecked a failure, because the check never gated anything", () => {
+    renderPane({
+      progress: {
+        ...PROGRESS,
+        servers: {
+          ...PROGRESS.servers,
+          plex: { configured: true, credential: true, checked: false },
+        },
+      },
+    });
+
+    expect(screen.getByTestId("server-plex")).toHaveTextContent(/no check/i);
+    expect(screen.getByTestId("server-plex")).not.toHaveTextContent(/failed/i);
+  });
+
+  it("files a server this deployment does not run under left for later", () => {
+    // The Jellyfin-only deployment's mirror image, and the reason the block
+    // exists: nothing else on this page says which server was configured, and
+    // "not configured" here is a deployment shape, not something the operator
+    // forgot.
+    renderPane();
+
+    expect(screen.getByTestId("server-jellyfin")).toHaveTextContent(/left for later/i);
+    // "saved", not "given": an address typed and checked but never submitted
+    // lands here too, because a probed server is not a configured one.
+    expect(screen.getByTestId("server-jellyfin")).toHaveTextContent(/no address was saved/i);
+  });
+
+  it("names a configured server whose credential never landed", () => {
+    // The step gate's second clause at the end of the wizard: a document that
+    // names a server the secrets file has no credential for is a deployment
+    // the next boot refuses, and this is the last page that can say so.
+    renderPane({
+      progress: {
+        ...PROGRESS,
+        servers: {
+          ...PROGRESS.servers,
+          jellyfin: { configured: true, credential: false, checked: false },
+        },
+      },
+    });
+
+    expect(screen.getByTestId("server-jellyfin")).toHaveTextContent(/credential/i);
+  });
+
   it("lists every credential left empty by its human label and its environment name", () => {
     renderPane();
 
@@ -151,20 +213,23 @@ describe("SetupFinishPane", () => {
     expect(skipped).toHaveTextContent(/registrations above but not written/i);
   });
 
-  it("says what a resolving document did and did not keep from the Plex panel", () => {
+  it("says what a resolving document did and did not keep from the media-server card", () => {
     // Facts C1 and the Task 3 review's third point. Three separate facts, and
     // the operator leaves believing the tick-list took effect unless all three
-    // are said: `public_url` was used and not written; the Plex address and the
+    // are said: `public_url` was used and not written; the address and the
     // ticked libraries were recorded NOWHERE (`base_urls` dies with the setup
-    // state at `execv`); and the account token DID persist, into the secrets
-    // file, under both names.
+    // state at `execv`); and the credential DID persist, into the secrets file.
+    //
+    // Neither server is named: the block above already says which one this
+    // deployment was set up with, and on the Jellyfin-only walk a paragraph
+    // about Plex contradicts it on screen (review I1).
     renderPane({ progress: { ...PROGRESS, config_source: "configured" } });
 
     const skipped = screen.getByTestId("skipped-list");
-    expect(skipped).toHaveTextContent(/Plex address/i);
+    expect(skipped).toHaveTextContent(/media-server address/i);
     expect(skipped).toHaveTextContent(/libraries/i);
     expect(skipped).toHaveTextContent(/were not recorded/i);
-    expect(skipped).toHaveTextContent(/Plex token was stored/i);
+    expect(skipped).toHaveTextContent(/credential was stored/i);
   });
 
   it("does not claim public_url was skipped when the wizard is writing the document", () => {

@@ -293,17 +293,18 @@
   padding: 0.9rem;
 }
 
-/* The Plex sign-in, the server pick-list and the library ticks, inside the
-   Plex accordion's body. Its own column rather than the body's, because the
-   radios and checkboxes are inline labels that would otherwise run together
-   into one paragraph of addresses. */
-.setup-plex {
+/* One media server's own controls inside its card's body: the Plex sign-in,
+   the server pick-list and, on both cards, the library ticks. Its own column
+   rather than the body's, because the radios and checkboxes are inline labels
+   that would otherwise run together into one paragraph of addresses. One class
+   for both cards -- what it lays out is the same list either way. */
+.setup-server {
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
 }
 
-.setup-plex fieldset {
+.setup-server fieldset {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   display: flex;
@@ -312,7 +313,7 @@
   padding: 0.7rem 0.9rem;
 }
 
-.setup-plex label {
+.setup-server label {
   align-items: center;
   display: flex;
   gap: 0.5rem;

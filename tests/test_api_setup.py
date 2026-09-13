@@ -42,6 +42,9 @@ MASTER_PASSWORD = "row-121-master-passphrase-e41b"
 # look for the part that must never survive a refusal.
 FAKE_DB_URL = "postgresql+asyncpg://autoposter:row-121-db-secret@db.invalid:5432/autoposter"
 FAKE_PLEX_TOKEN = "row-121-plex-token-7f31"
+# A provider key with the same property: obviously fake, and distinctive enough
+# for the no-echo sweeps to search a whole response body for.
+FAKE_MDBLIST_KEY = "row-121-mdblist-key-2c08"
 PLEX_URL = "http://plex.example.test:32400"
 # \x85 is a line separator to str.splitlines -- which read_secrets_file parses
 # with -- and to nothing an eye would notice. The tail is a second NAME=value
@@ -495,8 +498,15 @@ def test_the_admin_hash_and_the_api_key_are_not_provider_credentials():
     assert "AUTOPOSTER_ADMIN_PASSWORD_HASH" not in setup_api._PROVIDER_ENV
     assert "AUTOPOSTER_API_KEY" not in setup_api._PROVIDER_ENV
     assert "AUTOPOSTER_DATABASE_URL" not in setup_api._PROVIDER_ENV
+    # The two server credentials have their own step and their own progress
+    # field: each is required only when ITS server is configured, and the
+    # servers step asks for it beside that server's address. In the provider
+    # set they would be a second field for the same credential, on a step whose
+    # every other name is a third party's.
+    assert "AUTOPOSTER_PLEX_TOKEN" not in setup_api._PROVIDER_ENV
+    assert "AUTOPOSTER_JELLYFIN_APIKEY" not in setup_api._PROVIDER_ENV
     # ...and it is still the provider set, not an empty tuple.
-    assert "AUTOPOSTER_PLEX_TOKEN" in setup_api._PROVIDER_ENV
+    assert "AUTOPOSTER_TMDB_TOKEN" in setup_api._PROVIDER_ENV
     assert "AUTOPOSTER_MDBLIST_APIKEY" in setup_api._PROVIDER_ENV
 
 
@@ -514,7 +524,7 @@ async def test_progress_reports_presence_and_never_a_value(setup_client):
     assert response.status_code == 200, response.text
     assert set(body) == {
         "password", "database", "database_source", "providers", "required", "config",
-        "config_source", "public_url", "checked_systems",
+        "config_source", "public_url", "checked_systems", "servers",
     }
     assert body["password"] is True
     assert body["database"] is False
@@ -536,13 +546,13 @@ async def test_progress_reports_presence_and_never_a_value(setup_client):
 async def test_progress_redacts_a_provider_it_holds(monkeypatch, setup_client):
     """The other arm of the presence map: a set name is ***REDACTED***, which
     is a presence claim and not the credential."""
-    monkeypatch.setenv("AUTOPOSTER_PLEX_TOKEN", "row-121-plex-token-9c2a")
+    monkeypatch.setenv("AUTOPOSTER_MDBLIST_APIKEY", "row-121-mdblist-key-9c2a")
     token = await _authenticate(setup_client)
 
     response = await setup_client.get("/api/setup/progress", headers=_headers(token))
 
-    assert response.json()["providers"]["AUTOPOSTER_PLEX_TOKEN"] == setup_api.REDACTED
-    assert "row-121-plex-token-9c2a" not in response.text
+    assert response.json()["providers"]["AUTOPOSTER_MDBLIST_APIKEY"] == setup_api.REDACTED
+    assert "row-121-mdblist-key-9c2a" not in response.text
 
 
 def test_the_redaction_string_is_the_one_the_config_endpoint_serves():
@@ -653,13 +663,15 @@ async def test_an_empty_configuration_submit_keeps_the_document_the_wizard_holds
     """Facts C7 at the third one-field pane, for the reason the other two have
     it: the staged document is never served back, so a step navigated into
     again shows an empty field, and an empty submit means keep. Empty with
-    nothing staged still falls through to the address refusal."""
+    nothing staged still falls through to a refusal -- the media-server step's
+    own, now that an empty field names no server rather than naming a bad
+    address."""
     token = await _authenticate(setup_client)
     refused = await setup_client.post(
         "/api/setup/config", json={"plex_url": ""}, headers=_headers(token)
     )
     assert refused.status_code == 400
-    assert refused.json()["detail"] == setup_api.PLEX_URL_NOT_AN_ADDRESS
+    assert refused.json()["detail"] == setup_api.STEP_SERVERS
 
     await setup_client.post(
         "/api/setup/config", json={"plex_url": PLEX_URL}, headers=_headers(token)
@@ -767,15 +779,41 @@ async def test_provider_keys_are_staged_and_served_only_as_a_presence_map(setup_
 
     response = await setup_client.post(
         "/api/setup/providers",
-        json={"values": {"AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN}},
+        json={"values": {"AUTOPOSTER_MDBLIST_APIKEY": FAKE_MDBLIST_KEY}},
         headers=_headers(token),
     )
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["providers"]["AUTOPOSTER_PLEX_TOKEN"] == setup_api.REDACTED
+    assert body["providers"]["AUTOPOSTER_MDBLIST_APIKEY"] == setup_api.REDACTED
     assert body["providers"]["AUTOPOSTER_TMDB_TOKEN"] is None
+    assert FAKE_MDBLIST_KEY not in response.text
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert "AUTOPOSTER_MDBLIST_APIKEY" not in held
+
+
+async def test_a_server_credential_is_staged_by_the_same_submit_and_reported_elsewhere(
+    setup_client,
+):
+    """The servers step's two credentials ride this route -- ``staged`` has one
+    writer -- and are absent from the presence map it answers with, because the
+    step that asked for them is the one that reports them (/progress's
+    ``servers``). Without that split the systems step would render an accordion
+    asking a second time for the token the Plex card already took."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/providers",
+        json={"values": {"AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN}},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert "AUTOPOSTER_PLEX_TOKEN" not in response.json()["providers"]
     assert FAKE_PLEX_TOKEN not in response.text
+    progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
+    assert progress.json()["servers"]["plex"]["credential"] is True
+    assert FAKE_PLEX_TOKEN not in progress.text
     held = state_module.read_secrets_file(state_module.secrets_file_path())
     assert "AUTOPOSTER_PLEX_TOKEN" not in held
 
@@ -784,7 +822,7 @@ async def test_an_omitted_provider_key_leaves_the_staged_one_alone(setup_client)
     token = await _authenticate(setup_client)
     await setup_client.post(
         "/api/setup/providers",
-        json={"values": {"AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN}},
+        json={"values": {"AUTOPOSTER_MDBLIST_APIKEY": FAKE_MDBLIST_KEY}},
         headers=_headers(token),
     )
 
@@ -795,9 +833,9 @@ async def test_an_omitted_provider_key_leaves_the_staged_one_alone(setup_client)
     )
 
     providers = response.json()["providers"]
-    assert providers["AUTOPOSTER_PLEX_TOKEN"] == setup_api.REDACTED
+    assert providers["AUTOPOSTER_MDBLIST_APIKEY"] == setup_api.REDACTED
     assert providers["AUTOPOSTER_TMDB_TOKEN"] == setup_api.REDACTED
-    assert FAKE_PLEX_TOKEN not in response.text
+    assert FAKE_MDBLIST_KEY not in response.text
     assert "row-121-tmdb-token-4b7e" not in response.text
 
 
@@ -970,17 +1008,17 @@ async def test_the_presence_map_is_readable_on_its_own(setup_client):
     token = await _authenticate(setup_client)
     await setup_client.post(
         "/api/setup/providers",
-        json={"values": {"AUTOPOSTER_PLEX_TOKEN": FAKE_PLEX_TOKEN}},
+        json={"values": {"AUTOPOSTER_MDBLIST_APIKEY": FAKE_MDBLIST_KEY}},
         headers=_headers(token),
     )
 
     response = await setup_client.get("/api/setup/providers", headers=_headers(token))
 
-    assert response.json()["providers"]["AUTOPOSTER_PLEX_TOKEN"] == setup_api.REDACTED
+    assert response.json()["providers"]["AUTOPOSTER_MDBLIST_APIKEY"] == setup_api.REDACTED
     # The presence map is the whole of what this route answers: the generated
     # value has its own route, and no step that COLLECTS credentials serves it.
     assert set(response.json()) == {"providers"}
-    assert FAKE_PLEX_TOKEN not in response.text
+    assert FAKE_MDBLIST_KEY not in response.text
 
 
 async def test_the_providers_step_never_serves_the_secret_it_minted(setup_client):
@@ -1184,8 +1222,10 @@ async def test_a_plex_url_that_is_not_an_address_is_refused_with_a_fixed_sentenc
 ):
     """PlexConfig.url is a bare str, so an empty one VALIDATES -- and a
     deployment whose plex.url is blank reaches every job and fails there, with
-    the wizard already gone. The one field an operator types into this step is
-    checked here instead."""
+    the wizard already gone. Neither field an operator types into this step can
+    produce one: a blank address is a server not configured, so no block is
+    staged for it at all, and a malformed one is refused by the address guard
+    (the userinfo test below)."""
     token = await _authenticate(setup_client)
 
     response = await setup_client.post(
@@ -1193,7 +1233,7 @@ async def test_a_plex_url_that_is_not_an_address_is_refused_with_a_fixed_sentenc
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == setup_api.PLEX_URL_NOT_AN_ADDRESS
+    assert response.json()["detail"] == setup_api.STEP_SERVERS
     progress = await setup_client.get("/api/setup/progress", headers=_headers(token))
     assert progress.json()["config"] is False
 
@@ -1344,7 +1384,7 @@ async def test_the_progress_surface_reports_the_url_as_presence_and_never_as_a_v
 
     assert set(response.json()) == {
         "password", "database", "database_source", "providers", "required",
-        "config", "config_source", "public_url", "checked_systems",
+        "config", "config_source", "public_url", "checked_systems", "servers",
     }
     assert PUBLIC_URL not in response.text
 
@@ -1611,7 +1651,7 @@ async def _complete_every_step(client, token, monkeypatch) -> None:
         json={
             "values": {
                 name: (FAKE_PLEX_TOKEN if name == "AUTOPOSTER_PLEX_TOKEN" else "value")
-                for name in HARD
+                for name in (*HARD, "AUTOPOSTER_PLEX_TOKEN")
                 if name not in _NOT_PASTED
             }
         },
@@ -1749,7 +1789,13 @@ async def test_finish_writes_no_state_document_when_the_deployment_has_one(
     )
     await setup_client.post(
         "/api/setup/providers",
-        json={"values": {name: "value" for name in HARD if name not in _NOT_PASTED}},
+        json={
+            "values": {
+                name: "value"
+                for name in (*HARD, "AUTOPOSTER_PLEX_TOKEN")
+                if name not in _NOT_PASTED
+            }
+        },
         headers=_headers(token),
     )
     calls: list[list[str]] = []

@@ -58,6 +58,24 @@ export interface SetupProgress {
    * ("Not configured") from one that is configured but simply was not
    * registered yet ("Not attempted"). */
   checked_systems: string[];
+  /** Per media server, keyed the way the configuration document keys it. The
+   * ONLY place either server credential's presence is reported: neither is in
+   * `providers` and neither is in `required`, because each is required
+   * exactly when ITS server is configured (spec 8) -- which is a question
+   * about the document, not about the credential. */
+  servers: Record<string, ServerProgress>;
+}
+
+/** One media server's three booleans, and never an address and never a value.
+ *
+ * `configured` is read off the document the next boot will read, `credential`
+ * off what this deployment resolves for that server's own secret, and
+ * `checked` is a SESSION fact -- false again after a reload, which is why
+ * nothing is gated on it. */
+export interface ServerProgress {
+  configured: boolean;
+  credential: boolean;
+  checked: boolean;
 }
 
 let setupToken: string | null = null;
@@ -219,7 +237,7 @@ export function fetchPlexServers(): Promise<{ servers: PlexServer[] }> {
  * token typed beside the address, or `null` to read with the one the deployment
  * already holds. It is what lets the MANUAL arrival -- a typed address and a
  * pasted token, on a deployment that cannot complete a plex.tv sign-in -- reach
- * the same tick-list, and the same `submitPlexSelection` below, that the
+ * the same tick-list, and the same `submitServerSelection` below, that the
  * pick-list reaches. The server uses it for that one read and stages it
  * nowhere. */
 export function fetchPlexLibraries(
@@ -232,18 +250,57 @@ export function fetchPlexLibraries(
   });
 }
 
-/** The configuration step, driven from the Plex accordion. `excludedLibraries`
- * is the tick-list's COMPLEMENT -- the schema's field is
- * `plex.excluded_libraries` -- and `null` means "unchanged", the same "empty
- * means keep" every other step here has. */
-export function submitPlexSelection(
-  plexUrl: string,
-  excludedLibraries: string[] | null,
-): Promise<{ path: string }> {
-  return setupFetch("/api/setup/config", {
+export interface JellyfinLibrary {
+  id: string;
+  name: string;
+  type: string;
+}
+
+/** `fetchPlexLibraries` for the other server, with the one arrival Jellyfin
+ * has: there is no account sign-in to pick a server from, so the address and
+ * the key are always the operator's own -- the manual arrival, as the only
+ * arrival. `credentialValue` keeps its meaning exactly: the key typed beside
+ * the address, or `null` to read with the one the wizard already staged. */
+export function fetchJellyfinLibraries(
+  baseUrl: string,
+  credentialValue: string | null = null,
+): Promise<{ libraries: JellyfinLibrary[] }> {
+  return setupFetch("/api/setup/jellyfin/libraries", {
     method: "POST",
-    body: JSON.stringify({ plex_url: plexUrl, excluded_libraries: excludedLibraries }),
+    body: JSON.stringify({ base_url: baseUrl, credential_value: credentialValue }),
   });
+}
+
+/** The configuration step, driven from the media-server cards. Each
+ * `excludedLibraries` is that server's tick-list COMPLEMENT -- the schema's
+ * fields are `plex.excluded_libraries` and `jellyfin.excluded_libraries` --
+ * and `null` means "unchanged", the same "empty means keep" every other step
+ * here has.
+ *
+ * A server this body does not NAME is left out of it entirely, which is what
+ * makes a Jellyfin-only deployment expressible: the route keeps whatever this
+ * session staged for the other server and drops the example's placeholder
+ * block, so a document written from the Jellyfin card alone does not demand a
+ * Plex token forever. The two go together per card and never apart -- the
+ * route reads a body with no url at all as "keep what you have" and ignores a
+ * tick-list that arrives on its own.
+ */
+export function submitServerSelection(
+  plexUrl: string | null,
+  excludedLibraries: string[] | null,
+  jellyfinUrl: string | null,
+  jellyfinExcludedLibraries: string[] | null,
+): Promise<{ path: string }> {
+  const body: Record<string, unknown> = {};
+  if (plexUrl !== null) {
+    body.plex_url = plexUrl;
+    body.excluded_libraries = excludedLibraries;
+  }
+  if (jellyfinUrl !== null) {
+    body.jellyfin_url = jellyfinUrl;
+    body.jellyfin_excluded_libraries = jellyfinExcludedLibraries;
+  }
+  return setupFetch("/api/setup/config", { method: "POST", body: JSON.stringify(body) });
 }
 
 export interface ArrRegistration {

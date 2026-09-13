@@ -186,7 +186,7 @@ export function SetupPlexPane({
   }
 
   return (
-    <div className="setup-plex">
+    <div className="setup-server">
       {configSource === "configured" && (
         <p className="setup-hint" data-testid="plex-configured">
           {CONFIGURED_DOCUMENT}

@@ -1150,7 +1150,9 @@ async def test_a_failed_registration_never_blocks_finish(setup_client, setup_sta
 
     # The finish gate is unchanged: it reads credentials and the document, and
     # has never had an opinion about registrations.
-    unmet = setup_api._unmet_step(setup_state.staged, config_ready=True)
+    unmet = setup_api._unmet_step(
+        setup_state.staged, config_ready=True, document=setup_state.config_document
+    )
 
     assert unmet == setup_api.STEP_DATABASE  # the database, not the registration
 

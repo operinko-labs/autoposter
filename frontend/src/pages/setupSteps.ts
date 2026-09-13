@@ -9,22 +9,23 @@
  * Pure, and exported separately from the page, so the rule can be tested
  * without rendering anything.
  */
-import type { SetupProgress } from "../api/setup";
+import type { ServerProgress, SetupProgress } from "../api/setup";
 
-export type StepId = "password" | "url" | "database" | "systems" | "finish";
+export type StepId = "password" | "url" | "database" | "servers" | "systems" | "finish";
 
 /** The rail's labels, in order. */
 export const STEP_LABELS: Record<StepId, string> = {
   password: "Password",
   url: "Address",
   database: "Database",
+  servers: "Media servers",
   systems: "Systems",
   finish: "Finish",
 };
 
 /** Every step the wizard has, in order; `visibleSteps` is this list less the
  * ones a given deployment does not need. */
-const ALL_STEPS: StepId[] = ["password", "url", "database", "systems", "finish"];
+const ALL_STEPS: StepId[] = ["password", "url", "database", "servers", "systems", "finish"];
 
 /** Which steps this deployment has at all.
  *
@@ -83,8 +84,37 @@ export function farthestStep(progress: SetupProgress | null): StepId {
   if (progress === null) return "password";
   if (!progress.public_url) return "url";
   if (!progress.database) return "database";
+  if (!serversDone(progress.servers ?? {})) return "servers";
   if (progress.required.length > 0 || progress.config_source === null) return "systems";
   return "finish";
+}
+
+/** Whether the media-server step is answered: `missing_server_setup`'s rule,
+ * read off the booleans /progress reports it from.
+ *
+ * TWO clauses, not one. A deployment is finishable with either server and
+ * with both and not with neither, so one complete server is what the step
+ * asks for -- and a server the document NAMES is a server the next boot
+ * demands a credential for, so a `plex:` block with no token keeps the step
+ * unmet however complete Jellyfin is beside it. Read as "one server is done,
+ * we are finished", this page would hand an operator a Continue that the
+ * finish step then refuses with a sentence about a step they had left.
+ *
+ * `checked` is deliberately not asked: it is a session fact the server
+ * forgets, so gating on it would send a wizard picked up in a second tab back
+ * to a step it had already finished.
+ *
+ * An EMPTY map is the unmet answer, which is what a progress body with no
+ * `servers` line at all falls back to at the call above. `farthestStep` runs
+ * on every render, so a throw here would be a white screen with no way out --
+ * and "no server is set up" is the safe reading of a surface that did not say.
+ */
+function serversDone(servers: Record<string, ServerProgress>): boolean {
+  const all = Object.values(servers);
+  return (
+    all.some((server) => server.configured && server.credential) &&
+    all.every((server) => !server.configured || server.credential)
+  );
 }
 
 /** Whether `candidate` may be navigated to, given how far the server says the
