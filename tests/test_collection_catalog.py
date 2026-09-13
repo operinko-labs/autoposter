@@ -3146,7 +3146,7 @@ def test_the_catalog_has_a_franchises_category_and_the_preset_moved():
 # Read off ``CATALOG`` rather than a list written here: a preset added later is
 # held to this contract on the day it lands, not on the day somebody remembers
 # to add it.
-_BANNED_IN_COPY = ("`", "--", "—", "–", ".yml", ".py","defaults/")
+_BANNED_IN_COPY = ("`", "--", "—", "–", ".yml", ".py", "defaults/")
 _ROW_OR_PHASE = re.compile(r"\b(?:rows?|phases?)\b[^.\n]{0,8}?\d", re.IGNORECASE)
 # A full stop that is not followed by whitespace or the end of the string: a
 # file name, a dotted config path, a decimal, or an abbreviation. Forbidding
