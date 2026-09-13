@@ -1323,3 +1323,36 @@ def test_the_job_name_is_in_the_hand_trigger_allowlist():
     job = make_prune_job(ConfigHolder(_config()), lambda: FakePlex(), lambda: [])
 
     assert job.name in SCHEDULED_JOB_NAMES
+
+
+async def test_a_refs_own_library_is_what_its_servers_exclusions_are_matched_against(session):
+    """M1 (fix round 3): the scan compares the REF's library -- the name that
+    server knows the item by (spec §4.1) -- against that server's own
+    ``excluded_libraries``, not the identity server's ``media_items.library``.
+    The two diverge on any server whose folder names differ from Plex's,
+    which is the whole reason the column exists.
+
+    Plex still resolves the row, so nothing is pruned; only the ref whose own
+    library the operator excluded on ITS server is retired."""
+    item = await _add_item(session, "10", library="Movies")
+    session.add(MediaItemServerRef(
+        item_id=item.id, server="jellyfin", native_id="j10", library="JF Movies",
+    ))
+    await session.commit()
+
+    config = _config(apply=True)
+    config.jellyfin = SimpleNamespace(excluded_libraries=["JF Movies"])
+
+    summary = await _job(
+        config, FakePlex(live={"10"}),
+        extra_servers={"jellyfin": FakePlex(live={"j10"}, name="jellyfin")},
+    ).run(session)
+
+    assert "pruned 0 of 1" in summary
+    assert "refs retired: 1" in summary
+    session.expire_all()
+    refs = {
+        (row.server, row.native_id)
+        for row in (await session.execute(select(MediaItemServerRef))).scalars().all()
+    }
+    assert refs == {("plex", "10")}, "only the ref whose OWN library is excluded goes"

@@ -1844,7 +1844,9 @@ async def compose_badged_bytes(
     ``retry_pending_deliveries`` is its only caller: a due row means one
     server does not have these bytes, so "nothing has changed since the last
     delivery" is true of every OTHER server and no answer at all for that
-    one. See the gate's own comment for the contract this half of.
+    one. See the gate's own comment for the contract this half of. It also
+    leaves ``render.badge_fingerprint`` alone (fix round 3 round 3, N2): a
+    forced compose delivers, it does not decide -- see the write itself.
     """
     # Roadmap row 92, and it must be ABOVE the `badges.enabled` gate: see the
     # old `apply_badges`' own note, still true here.
@@ -2049,8 +2051,15 @@ async def compose_badged_bytes(
         definitions=usable_definitions, resolved_images=resolved_images,
         fonts_root=config.fonts_root,
     )
-    render.badge_fingerprint = fingerprint
-    await session.flush()
+    if not force:
+        # Fix round 3 round 3, N2: a forced compose is a compose FOR
+        # DELIVERY -- one server is owed bytes the others already have -- and
+        # the column belongs to the pass that decided what this render should
+        # look like. Writing it here would hand the next full pass a
+        # fingerprint it did not compute, so it would recompose and re-upload
+        # to every server to get back to the one it did.
+        render.badge_fingerprint = fingerprint
+        await session.flush()
     return data
 
 
@@ -2230,16 +2239,42 @@ async def deliver(
                     session, render.id, name, "failed",
                     detail=deliveries.failure_detail(exc),
                 )
-            else:
-                await deliveries.record(
-                    session, render.id, name, "pending", retry_in=deliveries.RETRY_SECONDS,
+                recorded = True
+                continue
+            # Fix round 3 round 3, N4: a row that is ALREADY `pending` with a
+            # horizon keeps it. Re-recording it every full pass pushed
+            # `next_attempt_at` forward by RETRY_SECONDS (6 h) each time, and
+            # the measured full pass is ~3.5 h -- so the row the horizon was
+            # written for, a server that has not scanned this item for many
+            # passes, could never mature and the retry pass never saw it.
+            existing = (
+                await session.execute(
+                    select(RenderDelivery.status, RenderDelivery.next_attempt_at).where(
+                        RenderDelivery.render_id == render.id,
+                        RenderDelivery.server == name,
+                    )
                 )
+            ).one_or_none()
+            if existing is not None and existing.status == "pending" and existing.next_attempt_at is not None:
+                continue
+            await deliveries.record(
+                session, render.id, name, "pending", retry_in=deliveries.RETRY_SECONDS,
+            )
             recorded = True
     if not recorded:
         # Fix round 3, M7: nothing was written for this render, so the
         # roll-up would recompute the status it already has. Skipping it (and
         # the commit) is what keeps an unchanged full pass free of an
         # UPDATE + COMMIT per render, as the old `apply_badges` was.
+        #
+        # Fix round 3 round 3, N3: the commit is still owed when a compose
+        # actually happened. `compose_badged_bytes` set and flushed
+        # `render.badge_fingerprint` before handing the bytes over, and the
+        # badge stage's own `except Exception: await session.rollback()`
+        # would otherwise discard a compose that finished -- costing the next
+        # pass a re-render of bytes this one already produced.
+        if data is not None:
+            await session.commit()
         return
     await deliveries.rollup(session, render.id)
     await session.commit()

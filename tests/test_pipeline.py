@@ -1361,6 +1361,16 @@ async def test_a_path_mismatch_on_one_server_fails_that_delivery_only(
 
     poster = next(r for r in renders if r.art_kind == "poster")
     assert poster.upload_status == "failed" and plex.uploads
+    # M4: category plus class name, never the exception's own message -- which
+    # for a PathMismatch is a filesystem path (spec §5.2).
+    detail = (
+        await session.execute(
+            select(RenderDelivery.detail).where(
+                RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin",
+            )
+        )
+    ).scalar_one()
+    assert detail == "error: PathMismatch"
 
 
 async def test_no_server_resolving_still_defers_the_job(session, config_with_badges, monkeypatch):
@@ -1933,6 +1943,17 @@ async def test_one_permanently_pending_server_does_not_recompose_every_pass(
     poster = next(r for r in renders if r.art_kind == "poster")
     assert composes == ["poster"] and len(plex.uploads) == 1
 
+    async def _jellyfin_horizon():
+        return (
+            await session.execute(
+                select(RenderDelivery.next_attempt_at).where(
+                    RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin",
+                )
+            )
+        ).scalar_one()
+
+    horizon = await _jellyfin_horizon()
+
     await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
 
     assert composes == ["poster"], "an unchanged fingerprint must not recompose"
@@ -1944,6 +1965,11 @@ async def test_one_permanently_pending_server_does_not_recompose_every_pass(
         ).scalars()
     }
     assert rows == {("plex", "uploaded"), ("jellyfin", "pending")}
+    # N4: the horizon is NOT pushed forward by a pass that learned nothing
+    # new. RETRY_SECONDS is 6h and the measured full pass is ~3.5h, so
+    # re-stamping it every pass meant the row could never mature and the
+    # retry pass never saw the population it was written for.
+    assert await _jellyfin_horizon() == horizon, "a miss must not defer the row again"
 
 
 # Fix round 3, round 2 (controller rulings R1 and R2).
@@ -2066,3 +2092,143 @@ async def test_a_server_missing_a_metadata_method_propagates_rather_than_being_c
             session, config, None, servers, [], INTENT,
             tmdb_facts=_FakeTMDBFacts(), mdblist=NullMDBListClient(),
         )
+
+
+# Fix round 3, round 3 (re-review findings N2).
+
+
+def _identity_plex():
+    """A Plex double `compose_badged_bytes` can sample live media info from.
+
+    The bare `FakeMediaServer` has no `fetch_item`, which the real
+    `compose_badged_bytes` calls whenever it is handed a `server`/`ref` --
+    and `process_item` re-raises `AttributeError` rather than containing it.
+    """
+
+    class _NoMediaPlex(FakeMediaServer):
+        async def fetch_item(self, native_id):
+            return None
+
+    plex = _NoMediaPlex(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    return plex
+
+
+async def test_a_retry_composes_from_the_identity_server_and_leaves_the_fingerprint(
+    session, config_with_badges, monkeypatch,
+):
+    """N2: the retry pass composed with neither ``server`` nor ``ref``, so
+    `plex_item` was `None` -- an empty `MediaInfo`, no native ratings, and a
+    digest that differs from the full pass's. The retried server got a poster
+    missing the resolution/format overlays every other server already has,
+    and the media-less digest was then written to `render.badge_fingerprint`,
+    so the NEXT full pass recomposed and re-uploaded to everyone.
+
+    Both halves, through `retry_pending_deliveries`: the compose is handed
+    the identity server's own resolved item even though the row being
+    retried belongs to the other server, and the column does not move."""
+    from datetime import datetime, timezone
+
+    from autoposter import deliveries
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.badges.adopt_from_plex = False
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(
+        pipeline_module, "compose_badges", lambda *a, **k: b"badged",
+    )
+
+    sampled: list[tuple[object, object]] = []
+    real_compose = pipeline_module.compose_badged_bytes
+
+    async def spy_compose(*args, **kwargs):
+        sampled.append((kwargs.get("server"), kwargs.get("ref")))
+        return await real_compose(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", spy_compose)
+
+    plex = _identity_plex()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items[INTENT.dedupe_key] = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+    jf.raise_on_upload = httpx.ConnectError("jellyfin refused the upload")
+    servers = Servers({"plex": plex, "jellyfin": jf})
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+    poster_id = next(r for r in renders if r.art_kind == "poster").id
+    jf.raise_on_upload = None
+    # The second pass re-arms the failed jellyfin row `pending`, due now.
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    async def _fingerprint():
+        return (
+            await session.execute(
+                select(Render.badge_fingerprint).where(Render.id == poster_id)
+            )
+        ).scalar_one()
+
+    before = await _fingerprint()
+    assert before is not None
+    calls_before = len(sampled)
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert summary == "pending deliveries: 1 due, 1 uploaded, 0 still pending"
+    assert len(jf.uploads) == 1
+    sampled_server, sampled_ref = sampled[calls_before]
+    assert sampled_server is plex, "the retry must sample the identity server, not nothing"
+    assert sampled_ref is not None and sampled_ref.server == "plex" and sampled_ref.native_id == "p1"
+    assert await _fingerprint() == before, (
+        "a compose FOR DELIVERY must not move the column the full pass owns"
+    )
+
+
+async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
+    session, config_with_badges, monkeypatch,
+):
+    """N2's other half: if the identity server cannot be resolved this pass,
+    the retry must WAIT rather than deliver overlay-less bytes. The row keeps
+    its normal horizon and is reported still pending; nothing is uploaded."""
+    from datetime import datetime, timezone
+
+    from autoposter import deliveries
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.badges.adopt_from_plex = False
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+
+    plex = _identity_plex()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    servers = Servers({"plex": plex, "jellyfin": jf})
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+    # Jellyfin can see it now; Plex -- the identity -- cannot.
+    jf.items[INTENT.dedupe_key] = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+    plex.not_found.add(INTENT.dedupe_key)
+    # Ten minutes in the past, not `retry_in=0`: this machine's container
+    # clock steps backwards a few seconds at a time, and a horizon stamped at
+    # exactly "now" can land after the `now` the pass below reads.
+    await deliveries.record(session, poster.id, "jellyfin", "pending", retry_in=-600)
+    await session.commit()
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert summary == "pending deliveries: 1 due, 0 uploaded, 1 still pending"
+    assert jf.uploads == [], "overlay-less bytes must never be delivered"
+    row = (
+        await session.execute(
+            select(RenderDelivery.status).where(
+                RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin",
+            )
+        )
+    ).scalar_one()
+    assert row == "pending"
