@@ -1,9 +1,9 @@
-"""One check-connection endpoint, nine subjects, and the bound on all of them.
+"""One check-connection endpoint, ten subjects, and the bound on all of them.
 
 The surface this file guards is the one the wizard could not avoid having: a
 form behind the setup token that makes an outbound request to an address a
-caller supplies. Four of the nine subjects take such an address (Plex, Radarr,
-Sonarr, Tracearr); five hit a compiled-in host. What is deliberately NOT here
+caller supplies. Five of the ten subjects take such an address (Plex, Jellyfin,
+Radarr, Sonarr, Tracearr); five hit a compiled-in host. What is deliberately NOT here
 is a private-IP denylist -- every correct answer on every shipped deployment IS
 a private address, so a denylist would refuse `http://sonarr` and nothing else.
 The bound is instead: an allowlisted system key, a fixed path per system, no
@@ -50,12 +50,14 @@ FAKE_TOKEN = "row-121-check-token-a19f"
 FAKE_APIKEY = "row-121-check-apikey-b73c"
 SONARR_BASE = "http://sonarr.invalid:8989"
 PLEX_BASE = "http://plex.invalid:32400"
+JELLYFIN_BASE = "http://jellyfin.invalid:8096"
 # What a provider's own error body would carry, and which must never reach the
 # wizard's response.
 PROVIDER_BODY = "row-121-provider-said-this"
 
 CREDENTIALS = {
     "AUTOPOSTER_PLEX_TOKEN": FAKE_TOKEN,
+    "AUTOPOSTER_JELLYFIN_APIKEY": FAKE_APIKEY,
     "AUTOPOSTER_PLEX_ACCOUNT_TOKEN": FAKE_TOKEN,
     "AUTOPOSTER_TMDB_TOKEN": FAKE_TOKEN,
     "AUTOPOSTER_TVDB_APIKEY": FAKE_APIKEY,
@@ -66,7 +68,7 @@ CREDENTIALS = {
     "AUTOPOSTER_TRACEARR_APIKEY": FAKE_APIKEY,
 }
 
-TYPED = ("plex", "radarr", "sonarr", "tracearr")
+TYPED = ("plex", "jellyfin", "radarr", "sonarr", "tracearr")
 
 
 def _transport(status: int, body=None, headers=None):
@@ -83,6 +85,8 @@ def _transport(status: int, body=None, headers=None):
 def _address_for(system: str) -> str | None:
     if system == "plex":
         return PLEX_BASE
+    if system == "jellyfin":
+        return JELLYFIN_BASE
     return SONARR_BASE if system in TYPED else None
 
 
@@ -93,6 +97,7 @@ def test_the_allowlist_is_exactly_the_ten_systems_the_wizard_shows():
     assert set(setup_checks.CHECK_SYSTEMS) == {
         "plex",
         "plex_account",
+        "jellyfin",
         "tmdb",
         "tvdb",
         "fanart",
@@ -105,7 +110,7 @@ def test_the_allowlist_is_exactly_the_ten_systems_the_wizard_shows():
 
 def test_no_check_lets_a_caller_choose_a_path_a_method_or_a_header():
     """The property that makes this a `check` endpoint rather than a proxy:
-    every field except the base address of four subjects is compiled in."""
+    every field except the base address of five subjects is compiled in."""
     for system, check in setup_checks.CHECK_SYSTEMS.items():
         assert check.method in {"GET", "POST"}, system
         assert (check.host is None) == (system in TYPED), system
@@ -117,6 +122,7 @@ def test_no_check_lets_a_caller_choose_a_path_a_method_or_a_header():
     [
         "plex",
         "plex_account",
+        "jellyfin",
         "tmdb",
         "tvdb",
         "fanart",
@@ -137,7 +143,7 @@ async def test_a_two_hundred_is_the_answered_outcome(system):
 
 
 @pytest.mark.parametrize("status", [401, 403])
-@pytest.mark.parametrize("system", ["plex", "tmdb", "sonarr", "tracearr"])
+@pytest.mark.parametrize("system", ["plex", "jellyfin", "tmdb", "sonarr", "tracearr"])
 async def test_a_401_or_403_is_the_credential_refusal(system, status):
     outcome = await setup_checks.run_check(
         system,
@@ -213,7 +219,7 @@ async def test_tracearr_two_hundred_without_its_rate_limit_header_never_reached_
 
 
 async def test_no_provider_body_text_survives_any_outcome():
-    """The sweep. Nine subjects, one assertion: whatever the third party said,
+    """The sweep. Ten subjects, one assertion: whatever the third party said,
     the wizard reports a boolean and a class name."""
     for system in setup_checks.CHECK_SYSTEMS:
         for status in (200, 401, 500):

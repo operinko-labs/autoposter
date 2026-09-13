@@ -809,7 +809,13 @@ async def test_the_manual_path_reaches_the_document_and_then_finish(
     )
     await setup_client.post(
         "/api/setup/providers",
-        json={"values": {name: "value" for name in HARD if name not in _NOT_PASTED}},
+        json={
+            "values": {
+                name: "value"
+                for name in (*HARD, "AUTOPOSTER_PLEX_TOKEN")
+                if name not in _NOT_PASTED
+            }
+        },
         headers=_headers(token),
     )
 

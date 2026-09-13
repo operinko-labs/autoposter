@@ -78,6 +78,7 @@ DEEP_SUITES = frozenset(
         "test_api_setup.py",
         "test_api_setup_arr.py",
         "test_api_setup_check.py",
+        "test_api_setup_jellyfin.py",
         "test_api_setup_plex.py",
         "test_api_stats_runs.py",
         "test_api_stats_storage.py",
