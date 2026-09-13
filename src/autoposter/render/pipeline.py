@@ -1654,11 +1654,7 @@ async def apply_metadata(
         # Jellyfin was attempted at all, and a Jellyfin one propagated out of
         # this function into `process_item`'s containment -- whose rollback
         # discards THIS item's `persist_facts` above and, before C1, its refs
-        # with it. `AttributeError` is deliberately inside the catch here and
-        # not re-raised the way `process_item` re-raises its own: a server
-        # that does not implement `item_labels`/`apply_facts` is one server's
-        # wiring, and this loop's whole point is that it costs no other
-        # server its write.
+        # with it.
         try:
             exempt = exemption_reason(
                 config.operations, ref_item.native_id, ref_item.imdb_id,
@@ -1668,6 +1664,13 @@ async def apply_metadata(
                 logger.info("%s: skipped writing %s: %s", target_server.name, ref_item.native_id, exempt)
             else:
                 await target_server.apply_facts(ref_item.ref, facts, config.operations, parental_categories, overrides)
+        except AttributeError:
+            # The convention both of `process_item`'s containments follow
+            # (fix round 3 round 2, R2): a server missing `item_labels` or
+            # `apply_facts` is a wiring bug -- a programming error, not the
+            # runtime server failure this `except` is for -- and must not be
+            # silently contained as a per-server warning.
+            raise
         except Exception as exc:
             logger.warning(
                 "%s: metadata write failed for %s (%s)",
@@ -1785,6 +1788,7 @@ async def compose_badged_bytes(
     ref: ServerItemRef | None = None,
     facts=None,
     solo_delivery: tuple[str, object, ServerItemRef] | None = None,
+    force: bool = False,
 ) -> bytes | None:
     """Compose one render's badged bytes, or ``None`` when there is nothing to
     compose -- badges off for this library, a background (never badged), a
@@ -1832,8 +1836,15 @@ async def compose_badged_bytes(
     that matters. On a match, this function records the delivery itself
     (there is no ``data`` for ``deliver`` to act on) and returns ``None``;
     ``deliver`` still runs afterward, sees the row already there, and leaves
-    it alone (its own ``data is None`` catch-up only acts on a MISSING or
-    ``pending`` row).
+    it alone (its own ``data is None`` catch-up only acts on a MISSING,
+    ``pending`` or ``failed`` row).
+
+    ``force`` (fix round 3 round 2, R1) skips the unchanged-fingerprint gate
+    alone -- never the three "not a badge candidate" checks above it.
+    ``retry_pending_deliveries`` is its only caller: a due row means one
+    server does not have these bytes, so "nothing has changed since the last
+    delivery" is true of every OTHER server and no answer at all for that
+    one. See the gate's own comment for the contract this half of.
     """
     # Roadmap row 92, and it must be ABOVE the `badges.enabled` gate: see the
     # old `apply_badges`' own note, still true here.
@@ -1966,10 +1977,20 @@ async def compose_badged_bytes(
     # Jellyfin over a large library -- would keep this gate from ever firing
     # and recompose every render, every pass, then re-upload it to the
     # servers that already had the bytes. "Render once" is the fingerprint's
-    # question. Which servers still need those bytes is `deliver`'s own
-    # per-server bookkeeping, and its `data is None` catch-up already keeps a
-    # still-pending server pending without any image work here.
-    if fingerprint == render.badge_fingerprint:
+    # question.
+    #
+    # Which servers still need those bytes is `deliver`'s own per-server
+    # bookkeeping, and the contract between the two is this (fix round 3
+    # round 2, R1): on an unchanged fingerprint `deliver` composes nothing
+    # and uploads nothing itself, but re-arms every server whose row is
+    # missing, `pending` or `failed` as `pending` with no delay, leaving
+    # `uploaded` and `skipped` alone. The next `retry_pending_deliveries`
+    # pass is then what actually delivers to that one server -- which is
+    # why it, and only it, passes `force`: it is asking for bytes for a
+    # server that does not have them, so an unchanged fingerprint is no
+    # reason to answer `None`. A failed upload is therefore retried once
+    # per full pass, exactly as the single-server code retried it.
+    if not force and fingerprint == render.badge_fingerprint:
         return None
 
     # Fix round 1, I2: the single-server adoption shortcut, checked BEFORE
@@ -2068,11 +2089,14 @@ async def deliver(
 
     ``data is None`` (``compose_badged_bytes`` had nothing new to send -- the
     render is not a badge candidate at all, or its fingerprint has not moved)
-    is a no-op for every RESOLVED server: nothing changed, nothing to record,
-    matching the old ``apply_badges``' own silent early return. A server that
-    MISSED this pass still gets its ``pending``/``failed`` row regardless --
-    that outcome depends only on resolution, never on whether new bytes
-    exist.
+    composes and uploads nothing here, but it is not silent: a resolved
+    server whose row is missing, ``pending`` or ``failed`` is re-armed
+    ``pending`` with no delay, so the next ``retry_pending_deliveries`` pass
+    delivers to that one server (fix round 3 round 2, R1 -- see the branch's
+    own comment). ``uploaded`` and ``skipped`` rows are left exactly as they
+    are. A server that MISSED this pass still gets its ``pending``/``failed``
+    row regardless -- that outcome depends only on resolution, never on
+    whether new bytes exist.
 
     A background render, a render that never produced a base image, or a
     library with badges off entirely is a no-op here TOO -- the exact same
@@ -2151,10 +2175,20 @@ async def deliver(
                 # with `skipped`. A server with no row yet, or one still
                 # `pending`, gets a fresh `pending` row with NO delay
                 # (`retry_in=0`), so the very next `retry_pending_deliveries`
-                # pass delivers it straight from the already-badged asset --
-                # the catch-up a server whose `upload_to_<name>` was only
-                # just turned ON, or one newly added to the config, needs
-                # for a render whose fingerprint had already settled.
+                # pass delivers it -- the catch-up a server whose
+                # `upload_to_<name>` was only just turned ON, or one newly
+                # added to the config, needs for a render whose fingerprint
+                # had already settled.
+                #
+                # A `failed` row is re-armed the same way (fix round 3 round
+                # 2, R1). The single-server code retried a failed upload on
+                # every full pass, because its gate also required
+                # `upload_status == "uploaded"`; with the gate on the
+                # fingerprint alone (I7) nothing would ever retry one again,
+                # and `retry_pending_deliveries` only selects `pending`. So
+                # the retry stays once per full pass, and it costs no
+                # ImageMagick work for the servers that already have the
+                # bytes. `uploaded` and `skipped` are still left alone.
                 existing_status = (
                     await session.execute(
                         select(RenderDelivery.status).where(
@@ -2163,7 +2197,7 @@ async def deliver(
                         )
                     )
                 ).scalar_one_or_none()
-                if existing_status is None or existing_status == "pending":
+                if existing_status in (None, "pending", "failed"):
                     await deliveries.record(session, render.id, name, "pending", retry_in=0)
                     recorded = True
                 continue

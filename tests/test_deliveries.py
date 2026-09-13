@@ -60,7 +60,9 @@ async def test_pending_rows_become_due_and_are_re_delivered(session, config_with
     jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
 
-    async def fake_compose(session, config, render, item, http, mdblist):  # bytes, no ImageMagick
+    # `force` (fix round 3 round 2, R1) is what the retry pass passes; every
+    # stub here takes it so it stands in for the real signature.
+    async def fake_compose(session, config, render, item, http, mdblist, force=False):  # bytes, no ImageMagick
         return b"badged"
 
     # Task 19 extracts pipeline.compose_badged_bytes; it does not exist yet, so
@@ -135,7 +137,7 @@ async def test_upload_exception_records_failed_not_pending(session, config_with_
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
     jf.raise_on_upload = httpx.ConnectError("upload failed")
 
-    async def fake_compose(session, config, render, item, http, mdblist):
+    async def fake_compose(session, config, render, item, http, mdblist, force=False):
         return b"badged"
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
@@ -188,7 +190,7 @@ async def test_library_override_gates_the_retry_per_row(session, monkeypatch):
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", library="Movies")
     jf.items["process_item:movie:tmdb2"] = resolved("jellyfin", "j2", library="TV Shows")
 
-    async def fake_compose(session, config, render, item, http, mdblist):
+    async def fake_compose(session, config, render, item, http, mdblist, force=False):
         return b"badged"
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
@@ -265,7 +267,7 @@ async def test_a_database_error_on_one_row_does_not_abort_the_pass(
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
     jf.items["process_item:movie:tmdb2"] = resolved("jellyfin", "j2", file_path="/m2.mkv")
 
-    async def fake_compose(session, config, render, item, http, mdblist):
+    async def fake_compose(session, config, render, item, http, mdblist, force=False):
         return b"badged"
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
@@ -322,7 +324,7 @@ async def test_nothing_left_to_compose_records_skipped_not_a_failed_upload(
     jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
     jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
 
-    async def compose_nothing(session, config, render, item, http, mdblist):
+    async def compose_nothing(session, config, render, item, http, mdblist, force=False):
         return None
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", compose_nothing, raising=False)

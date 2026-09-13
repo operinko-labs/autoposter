@@ -1944,3 +1944,125 @@ async def test_one_permanently_pending_server_does_not_recompose_every_pass(
         ).scalars()
     }
     assert rows == {("plex", "uploaded"), ("jellyfin", "pending")}
+
+
+# Fix round 3, round 2 (controller rulings R1 and R2).
+
+
+async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
+    session, config_with_badges, monkeypatch,
+):
+    """R1: with the unchanged-work gate on the fingerprint alone (I7), a
+    `failed` delivery row would never be retried again -- the single-server
+    code retried one on every full pass, because its gate also required
+    `upload_status == "uploaded"`, and `retry_pending_deliveries` only
+    selects `pending`.
+
+    So `deliver`'s catch-up re-arms a `failed` row as `pending` with no
+    delay: the second pass composes ZERO times and uploads nothing itself,
+    and the retry pass is what re-delivers to that one server."""
+    from datetime import datetime, timezone
+
+    from autoposter import deliveries
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.badges.adopt_from_plex = False
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    composes: list[str] = []
+
+    def _spy(base_path, art_kind, *args, **kwargs):
+        composes.append(art_kind)
+        return b"badged"
+
+    monkeypatch.setattr(pipeline_module, "compose_badges", _spy)
+
+    class _NoMediaPlex(FakeMediaServer):
+        async def fetch_item(self, native_id):
+            return None
+
+    plex = _NoMediaPlex(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items[INTENT.dedupe_key] = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+    jf.raise_on_upload = httpx.ConnectError("https://jellyfin.internal/Items/j1/Images")
+    servers = Servers({"plex": plex, "jellyfin": jf})
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert composes == ["poster"] and len(plex.uploads) == 1 and jf.uploads == []
+    assert {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    } == {("plex", "uploaded"), ("jellyfin", "failed")}
+
+    # The second pass, with the upload no longer failing and the fingerprint
+    # unchanged: no image work, no upload from `deliver` itself, and the
+    # failed row re-armed due.
+    jf.raise_on_upload = None
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    assert composes == ["poster"], "a re-armed failure must not cost a recompose"
+    assert len(plex.uploads) == 1 and jf.uploads == []
+    row = (
+        await session.execute(
+            select(RenderDelivery.status, RenderDelivery.next_attempt_at).where(
+                RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin",
+            )
+        )
+    ).one()
+    # Stamped, but deliberately NOT compared against the host clock (the
+    # suite-discipline rule: this machine's container clock steps backwards
+    # under it). That the stamp is DUE is proved behaviourally instead, by
+    # the retry pass below reporting the row as `1 due`.
+    assert row.status == "pending" and row.next_attempt_at is not None
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert summary == "pending deliveries: 1 due, 1 uploaded, 0 still pending"
+    assert [u[0].native_id for u in jf.uploads] == ["j1"]
+    assert len(plex.uploads) == 1, "the retry pass owes nothing to the server that has the bytes"
+    assert {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    } == {("plex", "uploaded"), ("jellyfin", "uploaded")}
+
+
+async def test_a_server_missing_a_metadata_method_propagates_rather_than_being_contained(
+    session, monkeypatch,
+):
+    """R2: I4's per-server containment must not swallow an `AttributeError`.
+    A server missing `item_labels`/`apply_facts` is a wiring bug -- a
+    programming error, not the runtime server failure that `except` is for --
+    and both of `process_item`'s own containments already re-raise it."""
+    config = load_config(EXAMPLE)
+    config.operations.write_to_plex = True
+    config.badges.enabled = False
+    plex = FakeMediaServer(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    servers = Servers({"plex": plex})
+
+    async def no_such_method(*args, **kwargs):
+        raise AttributeError("'PlexClient' object has no attribute 'apply_facts'")
+
+    monkeypatch.setattr(plex, "apply_facts", no_such_method)
+
+    class _FakeTMDBFacts:
+        async def movie(self, tmdb_id):
+            return GatheredFacts(audience_rating=6.3, sources={"audience_rating": "tmdb"})
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    with pytest.raises(AttributeError, match="apply_facts"):
+        await pipeline_module.process_item(
+            session, config, None, servers, [], INTENT,
+            tmdb_facts=_FakeTMDBFacts(), mdblist=NullMDBListClient(),
+        )

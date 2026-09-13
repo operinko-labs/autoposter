@@ -245,6 +245,13 @@ async def retry_pending_deliveries(
             try:
                 data = await _pipeline.compose_badged_bytes(
                     session, row_config, render, item, http=http, mdblist=mdblist,
+                    # Fix round 3 round 2, R1: a due row means THIS server
+                    # does not have these bytes, so the unchanged-fingerprint
+                    # gate -- which answers for the servers that DO -- must
+                    # not turn this pass into a no-op. The three "not a badge
+                    # candidate" checks still apply, and a `None` from one of
+                    # those is the `skipped` below.
+                    force=True,
                 )
                 if data is None:
                     # Fix round 3, I3: a pending row outlives the state that
