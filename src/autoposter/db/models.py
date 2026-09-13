@@ -255,6 +255,47 @@ class RenderDelivery(Base):
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     detail: Mapped[str | None] = mapped_column(Text)
+    # How many times this row has been ATTEMPTED and not succeeded. Reset to 0
+    # by any terminal-for-now outcome (`uploaded`, `skipped`, `absent`), so the
+    # budget is about the current streak of trouble and not about the row's
+    # whole history. `scheduler.delivery_attempts` (Task 8) is the cap.
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    # The badge fingerprint the last successful upload actually delivered.
+    # NULL means "never uploaded, or uploaded before this column existed" --
+    # which the catch-up (Task 11) treats as behind, costing one redundant
+    # upload per pre-existing row on the first catch-up and nothing after.
+    fingerprint: Mapped[str | None] = mapped_column(String(64))
+
+
+class MetadataWrite(Base):
+    """One server's metadata outcome for one item (spec §1) -- the sibling of
+    ``render_deliveries``, keyed on the ITEM rather than on a render because a
+    metadata write has no art kind.
+
+    ``status``: ``written`` (the server took the edits), ``pending`` (refused,
+    unreachable, or not resolved there yet -- retried), ``failed`` (the budget
+    ran out), ``skipped`` (an exemption, or ``operations.write_to_<server>``
+    off -- ``detail`` says which), ``absent`` (the item's library is not
+    carried by this server; never resolved, never retried).
+
+    ``detail`` is an exemption reason or a ``deliveries.failure_detail``
+    class-name string. Never a URL (spec §1).
+    """
+
+    __tablename__ = "metadata_writes"
+    __table_args__ = (UniqueConstraint("item_id", "server", name="uq_metadata_write_item_server"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    item_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+    )
+    server: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(24), default="pending", server_default="pending")
+    detail: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    written_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Job(Base):

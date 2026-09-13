@@ -4,7 +4,7 @@ import httpx
 from sqlalchemy import select
 
 from autoposter import deliveries
-from autoposter.db.models import Render, RenderDelivery
+from autoposter.db.models import MetadataWrite, Render, RenderDelivery
 from autoposter.render import pipeline
 from media_server_doubles import resolved
 
@@ -474,3 +474,20 @@ async def test_a_path_mismatch_on_the_identity_server_fails_rather_than_waiting_
     # fails_the_delivery on why a full-entity select would read stale.
     row = (await session.execute(select(RenderDelivery.status, RenderDelivery.detail))).one()
     assert row.status == "failed" and row.detail == "error: PathMismatch"
+
+
+async def test_metadata_write_is_unique_per_item_and_server(session):
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-mw", title="A")
+    session.add(MetadataWrite(item_id=item.id, server="jellyfin", status="pending"))
+    await session.commit()
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.attempts == 0 and row.written_at is None and row.detail is None
+
+
+async def test_render_delivery_carries_attempts_and_the_delivered_fingerprint(session):
+    render = await _render(session)
+    session.add(RenderDelivery(render_id=render.id, server="plex", status="uploaded", fingerprint="abc"))
+    await session.commit()
+    row = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert row.attempts == 0 and row.fingerprint == "abc"
