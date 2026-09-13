@@ -514,25 +514,28 @@ async def test_configured_mdblist_key_builds_the_real_client_without_warning(sec
     )
 
 
-async def test_handle_intent_passes_the_artwork_probe_through_to_process_item():
-    """The badge stage's provenance read is only useful if it is actually
-    wired: app.py builds the partial, _handle_intent has to carry it."""
+async def test_handle_intent_passes_the_whole_registry_through_to_process_item():
+    """Task 19: process_item resolves on every configured server itself, so
+    _handle_intent no longer picks one server out of the registry (the old
+    ``servers.plex or next(iter(servers.values()), None)`` interim) -- it
+    passes ``servers`` straight through, unchanged."""
     seen = {}
 
     async def capture(*args, **kwargs):
-        seen.update(kwargs)
+        seen["kwargs"] = kwargs
+        seen["positional"] = args
 
-    probe = object()
     config = load_config(EXAMPLE)
+    servers = Servers({})
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr("autoposter.app.process_item", capture)
         await _handle_intent(
             None, RenderIntent(kind="movie", title="Dune", tmdb_id=1),
-            config_holder=ConfigHolder(config), http=None, servers=Servers({}),
-            providers=[], artwork_probe=probe,
+            config_holder=ConfigHolder(config), http=None, servers=servers,
+            providers=[],
         )
 
-    assert seen["artwork_probe"] is probe
+    assert seen["positional"][3] is servers
 
 
 async def test_the_wired_artwork_probe_reads_provenance_for_one_plex_item(monkeypatch):

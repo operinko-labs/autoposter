@@ -34,6 +34,7 @@ from autoposter.facts.tmdb_budget import TmdbRateBudget
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.arr import RenderIntent
 from autoposter.intake.routes import router
+from autoposter.jellyfin.client import JellyfinApi, JellyfinClient
 from autoposter.jellyfin.health import JellyfinHealth
 from autoposter.notify.dispatch import NullNotifier, build_notifier
 from autoposter.plex.client import PlexClient
@@ -270,23 +271,14 @@ def create_app(
         if reclaimed:
             logger.info("reclaimed %d stale job(s)", reclaimed)
 
-        # Reads our own EXIF provenance back off whatever artwork Plex is
-        # currently serving, so the badge stage can tell that the correct image
-        # is already there and skip the upload -- see pipeline._already_in_plex.
-        # None when this deployment has no Plex: there is nothing to probe,
-        # and apply_badges already treats an unset probe as "skip this check".
-        artwork_probe = (
-            functools.partial(_artwork_provenance_probe, app.state.plex)
-            if config.plex is not None else None
-        )
         # The plex-preview fallback (roadmap row 241): when no provider has
         # a title_card, ask Plex for the frame it derived from the media
         # file itself (posters(), the media://-prefixed entry -- never our
         # own upload:// or an agent guess, see
         # plex/artwork.generated_title_card_url and the probe banked at
         # docs/research/2026-09-03-plex-episode-posters-probe.md). Built
-        # here, once, so render_artifact never holds the token -- the same
-        # shape as artwork_probe just above. None for the same reason.
+        # here, once, so render_artifact never holds the token. None when
+        # this deployment has no Plex: there is nothing to fall back to.
         plex_generated_base = (
             functools.partial(
                 fetch_plex_generated_base, http, app.state.plex,
@@ -304,7 +296,7 @@ def create_app(
             _handle_intent, config_holder=app.state.config_holder, http=http,
             servers=app.state.servers, providers=app.state.providers,
             tmdb_facts=app.state.tmdb_facts, mdblist=app.state.mdblist,
-            artwork_probe=artwork_probe, imdb_parental=app.state.imdb_parental,
+            imdb_parental=app.state.imdb_parental,
             plex_generated_base=plex_generated_base,
         )
 
@@ -410,11 +402,32 @@ def create_app(
                 # worker pool takes one: an unhealthy Plex must be seen at the
                 # moment the pass starts, and for THIS job it means refuse, not
                 # wait.
+                def _prune_servers_factory():
+                    # Every configured server, rebuilt fresh per run for the
+                    # same reason the PlexClient above is: an edited exclusion
+                    # list (a FROZEN_SECTIONS entry) reaches this job on its
+                    # next run rather than waiting for a restart. Task 19: the
+                    # prune sweep is no longer Plex-only (spec §5.5).
+                    by_name = {
+                        "plex": PlexClient(
+                            server_factory(), holder.current.plex.excluded_libraries
+                        ),
+                    }
+                    if holder.current.jellyfin is not None:
+                        api = JellyfinApi(
+                            http, holder.current.jellyfin.url, secrets.jellyfin_api_key,
+                            version=_running_version(),
+                        )
+                        by_name["jellyfin"] = JellyfinClient(
+                            api, holder.current.jellyfin.excluded_libraries,
+                            holder.current.jellyfin.library_map,
+                            holder.current.jellyfin.replace_thumb_with_backdrop,
+                        )
+                    return Servers(by_name)
+
                 scheduler_jobs.append(make_prune_job(
                     holder,
-                    lambda: PlexClient(
-                        server_factory(), holder.current.plex.excluded_libraries
-                    ),
+                    _prune_servers_factory,
                     is_healthy,
                 ))
                 # The twin merge takes the same PlexClient the prune does, and for
@@ -780,37 +793,22 @@ def _build_mdblist(
     return NullMDBListClient()
 
 
-async def _artwork_provenance_probe(plex, ref, art_kind):
-    """``artwork_probe``'s callable shape, built over ``server.artwork_provenance``.
-
-    ``plex`` is captured as a plain argument, like ``plex_generated_base``'s own
-    partial captures it, rather than read off ``app.state`` at partial-construction
-    time -- a test's ``servers_factory`` can hand back a bare stand-in that has no
-    such method, and this must not touch it until the probe is actually called.
-    """
-    return await plex.artwork_provenance(ref, art_kind)
-
-
 async def _handle_intent(
     session, intent, *, config_holder, http, servers, providers, tmdb_facts=None, mdblist=None,
-    artwork_probe=None, imdb_parental=None, plex_generated_base=None,
+    imdb_parental=None, plex_generated_base=None,
 ):
     # Dereferenced once per job, at the top: process_item takes a config per
     # call already, so one read here is all it takes for a config swap to be
     # visible to the very next item a worker picks up. One read rather than
     # several also means a single job never straddles two generations.
     config = config_holder.current
-    # process_item's fifth positional is still named `plex` and still takes
-    # exactly one server -- the fan-out across every configured server is
-    # Task 19's job, not this one's. Until then: the Plex server when this
-    # deployment has one, otherwise whichever server the registry does hold
-    # (one server, chosen deterministically), so a Jellyfin-only deployment
-    # still has something to resolve against rather than nothing at all.
-    plex = servers.plex or next(iter(servers.values()), None)
+    # process_item's fifth positional is the whole registry now (Task 19):
+    # it resolves on every configured server itself, so there is no single
+    # server to choose here any more.
     try:
         await process_item(
-            session, config, http, plex, providers, intent,
-            tmdb_facts=tmdb_facts, mdblist=mdblist, artwork_probe=artwork_probe,
+            session, config, http, servers, providers, intent,
+            tmdb_facts=tmdb_facts, mdblist=mdblist,
             imdb_parental=imdb_parental, plex_generated_base=plex_generated_base,
         )
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:

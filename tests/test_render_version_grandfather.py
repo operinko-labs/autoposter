@@ -50,6 +50,7 @@ from autoposter.render.pipeline import (
 )
 from autoposter.render import naming
 from autoposter.render.textfit import FitResult
+from autoposter.servers.registry import Servers
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 POSTER_URL = "https://img/poster.jpg"
@@ -285,7 +286,7 @@ async def test_a_whole_item_re_renders_through_process_item(session, tmp_path, m
 
     async with _http(png) as http:
         renders = await process_item(
-            session, config, http, _RecordingPlex(), [_Provider()],
+            session, config, http, Servers({"plex": _RecordingPlex()}), [_Provider()],
             RenderIntent(kind="movie", title="A Movie", tmdb_id=550),
         )
 

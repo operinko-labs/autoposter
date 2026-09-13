@@ -31,6 +31,7 @@ from autoposter.providers.base import ArtCandidate
 from autoposter.render import pipeline as pipeline_module
 from autoposter.render.pipeline import process_item
 from autoposter.render.textfit import FitResult
+from autoposter.servers.registry import Servers
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -138,7 +139,7 @@ async def _pass(session, config, *intents) -> dict[str, tuple[str, str | None]]:
     """
     async with _http() as http:
         for intent in intents or INTENTS:
-            await process_item(session, config, http, _Plex(), [_Provider()], intent)
+            await process_item(session, config, http, Servers({"plex": _Plex()}), [_Provider()], intent)
     rows = (await session.execute(select(Render))).scalars().all()
     return {row.art_kind: (row.fingerprint, row.detail) for row in rows}
 

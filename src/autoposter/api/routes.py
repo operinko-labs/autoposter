@@ -1031,6 +1031,19 @@ async def run_full_pass(
     idempotent (see above); reusing an already-open row instead would mean a
     single row nothing ever closed could suppress every future pass's history.
     """
+    # Spec §4.4 step 6: a Jellyfin index built once and reused between passes
+    # (see jellyfin/index.py) would otherwise answer a full pass with
+    # whatever library shape it happened to hold at the last resolve --
+    # invalidated here so every server that keeps one rebuilds on its next
+    # resolve, in this pass. `getattr(..., None)` rather than a capability
+    # check: only Jellyfin's client currently defines `invalidate`, and a
+    # server with no such concept (Plex resolves live, no index to go stale)
+    # simply has nothing to call.
+    for server in request.app.state.servers.values():
+        invalidate = getattr(server, "invalidate", None)
+        if invalidate is not None:
+            invalidate()
+
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         rows = (

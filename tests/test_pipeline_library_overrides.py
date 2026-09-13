@@ -45,12 +45,13 @@ from autoposter.db.models import Render
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
-from autoposter.render.pipeline import apply_badges, apply_metadata, process_item
+from autoposter.render.pipeline import apply_metadata, process_item
+from autoposter.servers.registry import Servers
 
 from conftest import seed_media_item
 from test_mass_ops_fields import FakeTMDB, _item
 from test_mass_ops_verbs import FakePlexServer, RecordingPlexItem, RecordingServer
-from test_overlay_entrypoint import BASE, REF, FakeServer, _FakePlexItem, _Facts, _render
+from test_overlay_entrypoint import BASE, REF, FakeServer, _FakePlexItem, _Facts, _render, apply_badges
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -203,7 +204,7 @@ async def test_process_item_uses_the_library_value_for_operations(
         movies_item = RecordingPlexItem(audienceRating=None, locks=[])
         await process_item(
             session, config, http,
-            FakePlexServer(_item(library="Movies"), movies_item), [],
+            Servers({"plex": FakePlexServer(_item(library="Movies"), movies_item)}), [],
             _intent(), tmdb_facts=_facts(), mdblist=NullMDBListClient(),
         )
         assert movies_item.edits == [], (
@@ -213,7 +214,7 @@ async def test_process_item_uses_the_library_value_for_operations(
         shows_item = RecordingPlexItem(audienceRating=None, locks=[])
         await process_item(
             session, config, http,
-            FakePlexServer(_item(native_id="2", library="TV Shows"), shows_item), [],
+            Servers({"plex": FakePlexServer(_item(native_id="2", library="TV Shows"), shows_item)}), [],
             _intent(), tmdb_facts=_facts(), mdblist=NullMDBListClient(),
         )
         assert shows_item.edits != [], (
@@ -238,26 +239,31 @@ async def test_process_item_uses_the_library_value_for_badges(
     config = _config({"Movies": {"badges": {"enabled": False}}})
     badged: list[str] = []
 
-    async def fake_apply_badges(session_, config_, render, item, *args, **kwargs):
+    # Task 19: process_item calls compose_badged_bytes (never a function
+    # named apply_badges) inside its own `if library_config.badges.enabled:`
+    # gate -- so THAT gate is what this test is actually pinning; the fake
+    # itself no longer needs to care about the library at all.
+    async def fake_compose_badged_bytes(session_, config_, render, item, **_kwargs):
         badged.append(item.library)
+        return None
 
     monkeypatch.setattr(
-        "autoposter.render.pipeline.apply_badges", fake_apply_badges,
+        "autoposter.render.pipeline.compose_badged_bytes", fake_compose_badged_bytes,
     )
 
     async with offline_http as http:
         await process_item(
             session, config, http,
-            FakePlexServer(_item(library="Movies"), RecordingPlexItem(locks=[])), [],
+            Servers({"plex": FakePlexServer(_item(library="Movies"), RecordingPlexItem(locks=[]))}), [],
             _intent(),
         )
         assert badged == [], "Movies' badges.enabled: false never reached the gate"
 
         await process_item(
             session, config, http,
-            FakePlexServer(
+            Servers({"plex": FakePlexServer(
                 _item(native_id="2", library="TV Shows"), RecordingPlexItem(locks=[]),
-            ),
+            )}),
             [], _intent(),
         )
 

@@ -9,7 +9,8 @@ from conftest import decodable_png
 from sqlalchemy import select
 
 from autoposter.config.loader import load_config, render_version_for
-from autoposter.db.models import MediaItem, Render
+from autoposter.db.models import MediaItem, Render, RenderDelivery
+from autoposter.intake.arr import RenderIntent
 from autoposter.plex.client import ResolvedItem
 from autoposter.providers.base import ArtCandidate
 from autoposter.render import naming
@@ -20,6 +21,9 @@ from autoposter.render.pipeline import (
     render_artifact, title_text_for,
 )
 from autoposter.render.textfit import FitResult, prepare_text
+from autoposter.servers.base import ItemNotFound
+from autoposter.servers.registry import Servers
+from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved as fake_resolved
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -1243,3 +1247,122 @@ def test_library_language_overrides_are_per_library_and_per_art_kind():
     assert language_order_for(overridden, "Movies", "poster") == (
         overridden.artwork.poster.language_order
     )
+
+
+# Task 19, spec §10.6: process_item resolves on every configured server,
+# renders once, and delivers per server. `render_artifact` and
+# `compose_badged_bytes` are both faked here -- neither ImageMagick nor a
+# real provider fetch is what these tests are about, and a fake
+# `render_artifact` still upserts a REAL `media_items`/`renders` row (via the
+# same `_upsert_media_item`/`_get_or_create_render` helpers the real one
+# uses), which is what gives `deliveries.record` a real `render_id` to key on.
+INTENT = RenderIntent(kind="movie", title="Title", tmdb_id=1, year=2020)
+
+
+async def _fake_render_artifact(session, config, http, item, art_kind, providers, **_kwargs):
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    render = await pipeline_module._get_or_create_render(
+        session, media_item, art_kind, f"/tmp/{art_kind}.jpg"
+    )
+    render.status = "rendered"
+    await session.commit()
+    return render
+
+
+async def _fake_compose(session, config, render, media_item, **_kwargs):
+    return b"badged"
+
+
+def _two_servers(plex_has=True, jelly_has=True):
+    plex = FakeMediaServer(name="plex")
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    if plex_has:
+        plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    if jelly_has:
+        jf.items[INTENT.dedupe_key] = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+    return Servers({"plex": plex, "jellyfin": jf}), plex, jf
+
+
+async def test_dual_delivery_records_each_server_and_rolls_up(session, config_with_badges, monkeypatch):
+    config_with_badges.badges.upload_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers()
+
+    renders = await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert [u[0].server for u in plex.uploads] == ["plex"]
+    assert [u[0].server for u in jf.uploads] == ["jellyfin"]
+    rows = {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    }
+    assert rows == {("plex", "uploaded"), ("jellyfin", "uploaded")}
+    assert poster.upload_status == "uploaded"
+
+
+async def test_an_unresolved_jellyfin_goes_pending_and_never_holds_plex(
+    session, config_with_badges, monkeypatch
+):
+    config_with_badges.badges.upload_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers(jelly_has=False)
+
+    renders = await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert plex.uploads and not jf.uploads
+    rows = {
+        (d.server, d.status)
+        for d in (
+            await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
+        ).scalars()
+    }
+    assert rows == {("plex", "uploaded"), ("jellyfin", "pending")}
+    assert poster.upload_status == "pending"
+
+
+async def test_jellyfin_only_delivers_once_and_refuses_nothing(
+    session, config_with_badges, monkeypatch
+):
+    config_with_badges.badges.upload_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items[INTENT.dedupe_key] = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, Servers({"jellyfin": jf}), [], INTENT,
+    )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert len(jf.uploads) >= 1
+    assert poster.upload_status == "uploaded"
+
+
+async def test_a_path_mismatch_on_one_server_fails_that_delivery_only(
+    session, config_with_badges, monkeypatch
+):
+    config_with_badges.badges.upload_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers()
+    jf.path_mismatch.add(INTENT.dedupe_key)
+
+    renders = await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert poster.upload_status == "failed" and plex.uploads
+
+
+async def test_no_server_resolving_still_defers_the_job(session, config_with_badges, monkeypatch):
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers(plex_has=False, jelly_has=False)
+
+    with pytest.raises(ItemNotFound):
+        await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
