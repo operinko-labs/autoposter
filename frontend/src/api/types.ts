@@ -55,6 +55,10 @@ export interface Status {
   jobs_by_state: Record<JobState, number>;
   workers: number;
   processed_last_24h: number;
+  /** Which media servers this deployment's config configures (spec §9) --
+   * not which ones this process actually connected to. The sidebar hides a
+   * Plex-only entry when `plex` is false. */
+  capabilities: { plex: boolean; jellyfin: boolean };
   scheduled_jobs: ScheduledRun[];
 }
 
