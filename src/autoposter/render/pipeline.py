@@ -1641,7 +1641,7 @@ async def apply_metadata(
     has_parental = parental_categories is not None
     has_overrides = bool(overrides)
 
-    async def _write(name: str, target_server, ref_item: ResolvedItem) -> None:
+    async def _write(name: str, target_server, ref_item: ResolvedItem, absent_servers: set[str]) -> None:
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
         # facts above are still gathered and persisted for an exempt item,
         # because the badge stage reads the persisted row rather than this
@@ -1661,12 +1661,9 @@ async def apply_metadata(
         # write to. Without this, a resolve that finds the item anyway (a
         # cross-library id match, a run that predates this pass's presence
         # refresh) would flip the row back out of `absent` on the next write.
-        current_status = (await session.execute(
-            select(MetadataWrite.status).where(
-                MetadataWrite.item_id == media_item_id, MetadataWrite.server == name,
-            )
-        )).scalar_one_or_none()
-        if current_status == "absent":
+        # `absent_servers` is read ONCE per item, by the caller below, rather
+        # than by a SELECT here on every one of this loop's calls.
+        if name in absent_servers:
             return
         if not getattr(config.operations, f"write_to_{name}", False):
             await deliveries.record_metadata(
@@ -1713,12 +1710,20 @@ async def apply_metadata(
             )
 
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:
-        await _write(item.server, server, item)
+        # One query per ITEM, not one per server per item: every `_write`
+        # call below shares this same set rather than each asking its own
+        # SELECT (review M1).
+        absent_servers = set((await session.execute(
+            select(MetadataWrite.server).where(
+                MetadataWrite.item_id == media_item_id, MetadataWrite.status == "absent",
+            )
+        )).scalars())
+        await _write(item.server, server, item, absent_servers)
         if servers is not None and resolved_on is not None:
             for name, resolved_item in resolved_on.items():
                 if name == item.server:
                     continue  # already written just above, via `server`
-                await _write(name, servers.get(name), resolved_item)
+                await _write(name, servers.get(name), resolved_item, absent_servers)
 
     # Row 269. A released sort position is acted on ONCE: the clear above
     # was sent -- or the item is exempt, row 99's own ruling for its DELETE
