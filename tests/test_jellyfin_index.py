@@ -196,6 +196,33 @@ async def test_library_map_translates_the_jellyfin_folder_name_to_the_plex_name(
         item = await index.resolve(RenderIntent(kind="movie", title="The Matrix", tmdb_id=603))
     assert item.library == "Movies"
     assert item.root_folder == "The Matrix (1999)"
+    # library_names() must report the same translated name, not the raw
+    # Jellyfin folder name (spec §1's absent rule reads this set).
+    assert index.library_names() == {"Movies"}
+
+
+async def test_library_names_excludes_the_excluded_and_non_movie_show_folders():
+    """The behavioural half of servers/presence.py's absent rule (spec §1):
+    an excluded folder and a non-movie/show CollectionType must both be
+    absent from library_names() -- conformance's isinstance check alone
+    cannot prove this, since it never calls the method."""
+    folders = [
+        {"Name": "Films", "CollectionType": "movies", "Locations": ["/media/Films"], "ItemId": "lib-f"},
+        {"Name": "TV", "CollectionType": "tvshows", "Locations": ["/media/TV"], "ItemId": "lib-t"},
+        {"Name": "Music", "CollectionType": "music", "Locations": ["/media/Music"], "ItemId": "lib-mu"},
+    ]
+    async def handler(request):
+        p = request.url.path
+        if p == "/Library/VirtualFolders":
+            return httpx.Response(200, json=folders)
+        if p == "/Items":
+            return httpx.Response(200, json={"Items": []})
+        return httpx.Response(404)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    index = LibraryIndex(JellyfinApi(http, "https://jf", "k", "v1"), excluded={"TV"}, library_map={"Movies": "Films"})
+    async with http:
+        await index.rebuild()
+    assert index.library_names() == {"Movies"}
 
 
 async def test_concurrent_first_resolves_rebuild_the_index_only_once():

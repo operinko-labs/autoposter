@@ -278,6 +278,28 @@ async def test_no_thumb_post_when_the_setting_is_off():
     assert posted == ["/Items/m1/Images/Backdrop"]
 
 
+async def test_library_names_excludes_and_translates_through_the_map():
+    """The behavioural half of servers/presence.py's absent rule (spec §1):
+    JellyfinClient.library_names() must apply the same exclusion/type/
+    library_map rules as every other index-backed lookup, not just report
+    every VirtualFolder verbatim."""
+    async def handler(request):
+        path = request.url.path
+        if path == "/Library/VirtualFolders":
+            return httpx.Response(200, json=[
+                {"Name": "Films", "CollectionType": "movies", "Locations": ["/media/Films"], "ItemId": "lib1"},
+                {"Name": "Kids", "CollectionType": "movies", "Locations": ["/media/Kids"], "ItemId": "lib2"},
+                {"Name": "Music", "CollectionType": "music", "Locations": ["/media/Music"], "ItemId": "lib3"},
+            ])
+        if path == "/Items":
+            return httpx.Response(200, json={"Items": []})
+        return httpx.Response(404)
+    api, http = _api(handler)
+    client = JellyfinClient(api, excluded_libraries=["Kids"], library_map={"Movies": "Films"}, replace_thumb_with_backdrop=False)
+    async with http:
+        assert await client.library_names() == {"Movies"}
+
+
 async def test_keys_resolve_answers_only_for_the_stored_key():
     """The twin merge's survivor election (scheduler/merge.py), which
     ``exists_many`` cannot make -- see plex/client.py's own
