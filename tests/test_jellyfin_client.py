@@ -95,15 +95,65 @@ def test_capabilities_and_slots():
     assert IMAGE_SLOT == {"poster": "Primary", "season_poster": "Primary", "title_card": "Primary", "background": "Backdrop"}
 
 
-async def test_item_fetches_a_single_item_by_id():
-    # capture → paths → "/Items/{itemId}" → get
+USERS = [
+    {"Id": "u-plain", "Name": "viewer", "Policy": {"IsAdministrator": False}},
+    {"Id": "u-admin", "Name": "admin", "Policy": {"IsAdministrator": True}},
+]
+
+
+def _server_with_users(users, calls):
+    # What Jellyfin 12.0.0 does (verified live 2026-09-13): the single-item
+    # read without a userId is a 400, because the user-library controller
+    # looks the user up and an API key has none.
     async def handler(request):
-        assert request.url.path == "/Items/m1"
-        return httpx.Response(200, json={"Id": "m1", "Name": "Title"})
+        calls.append(request.url.path)
+        if request.url.path == "/Users":
+            return httpx.Response(200, json=users)
+        if request.url.path.startswith("/Items/"):
+            if "userId" not in request.url.params:
+                return httpx.Response(400, text="Error processing request.")
+            item_id = request.url.path.rsplit("/", 1)[1]
+            return httpx.Response(200, json={"Id": item_id, "Name": "Title", "Overview": "full dto"})
+        return httpx.Response(404)
+    return handler
+
+
+async def test_item_reads_as_an_administrator_resolved_once():
+    # capture → paths → "/Items/{itemId}" → get, with the userId the live
+    # server requires of an API-key caller; "/Users" → get supplies it.
+    calls, seen = [], {}
+    base = _server_with_users(USERS, calls)
+    async def handler(request):
+        if request.url.path.startswith("/Items/"):
+            seen[request.url.path] = request.url.params.get("userId")
+        return await base(request)
     api, http = _api(handler)
     async with http:
-        item = await api.item("m1")
-    assert item["Id"] == "m1"
+        first = await api.item("m1")
+        second = await api.item("m2")
+    assert first["Id"] == "m1" and second["Overview"] == "full dto"
+    assert seen == {"/Items/m1": "u-admin", "/Items/m2": "u-admin"}
+    assert calls.count("/Users") == 1
+
+
+async def test_item_falls_back_to_the_first_user_without_an_administrator():
+    seen = {}
+    base = _server_with_users([USERS[0]], [])
+    async def handler(request):
+        if request.url.path.startswith("/Items/"):
+            seen["userId"] = request.url.params.get("userId")
+        return await base(request)
+    api, http = _api(handler)
+    async with http:
+        await api.item("m1")
+    assert seen["userId"] == "u-plain"
+
+
+async def test_item_refuses_plainly_when_the_server_lists_no_user():
+    api, http = _api(_server_with_users([], []))
+    async with http:
+        with pytest.raises(RuntimeError, match="lists no user"):
+            await api.item("m1")
 
 
 async def test_seasons_asks_the_series_for_provider_ids_and_paths():
@@ -240,6 +290,8 @@ async def test_keys_resolve_answers_only_for_the_stored_key():
         params = dict(request.url.params)
         assert "searchTerm" not in params, "keys_resolve must never search"
         path = request.url.path
+        if path == "/Users":
+            return httpx.Response(200, json=[{"Id": "u-admin", "Policy": {"IsAdministrator": True}}])
         if path == "/Library/VirtualFolders":
             # `_key_matches` also checks the item's library -- served
             # once, for the coordinate-matching "m1" case only.

@@ -46,6 +46,8 @@ class JellyfinApi:
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._version = version
+        # The user every single-item read is made as; see `reading_user_id`.
+        self._user_id: str | None = None
 
     def headers(self) -> dict[str, str]:
         # capture → securitySchemes.CustomAuthentication: an apiKey named
@@ -76,8 +78,35 @@ class JellyfinApi:
         # BaseItemDtoQueryResult.Items is optional on the wire; absent means none.
         return (await self._get("/Items", **query)).json().get("Items") or []
 
+    async def users(self) -> list[dict]:                      # capture → "/Users" → get
+        return (await self._get("/Users")).json() or []
+
+    async def reading_user_id(self) -> str:
+        """The user id every single-item read carries.
+
+        `GET /Items/{itemId}` is served by Jellyfin's user-library controller,
+        which looks the user up even when the query names none; an API key has
+        no user, so the lookup gets an empty id and the server answers 400
+        ("Guid can't be empty") -- verified live against 12.0.0, 2026-09-13,
+        and recorded in the capture. The list route (`GET /Items?ids=`) needs
+        no user but returns the trimmed DTO, and the writer posts the DTO back
+        whole, so a trimmed read would erase what it did not carry. Hence one
+        user, resolved once per client from `/Users`: an administrator when
+        there is one (administrators see every library), else the first user
+        the server lists.
+        """
+        if self._user_id is None:
+            users = await self.users()
+            admins = [u for u in users if (u.get("Policy") or {}).get("IsAdministrator")]
+            chosen = (admins or users or [{}])[0].get("Id")
+            if not chosen:
+                raise RuntimeError("jellyfin: the server lists no user to read items as")
+            self._user_id = str(chosen)
+        return self._user_id
+
     async def item(self, item_id: str) -> dict:               # capture → "/Items/{itemId}" → get
-        return (await self._get(f"/Items/{item_id}")).json()
+        user_id = await self.reading_user_id()
+        return (await self._get(f"/Items/{item_id}", userId=user_id)).json()
 
     async def seasons(self, series_id: str) -> list[dict]:    # capture → "/Shows/{seriesId}/Seasons" → get
         return (await self._get(f"/Shows/{series_id}/Seasons", fields="ProviderIds,Path")).json().get("Items") or []

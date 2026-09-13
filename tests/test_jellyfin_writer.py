@@ -34,8 +34,13 @@ class _Recorder:
         self.posted: dict | None = None
 
     async def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/Users":
+            # The single-item read is made as a user (an API key has none);
+            # one administrator answers that once per client.
+            return httpx.Response(200, json=[{"Id": "u-admin", "Policy": {"IsAdministrator": True}}])
         self.requests.append(request)
         if request.method == "GET":
+            assert request.url.params.get("userId") == "u-admin"
             return httpx.Response(200, json=self.dto)
         self.posted = json.loads(request.read())
         return httpx.Response(204)
