@@ -37,11 +37,12 @@ const HELD = "***REDACTED***";
  * server's own rule (`farthestStep`), never by this pane: one complete server,
  * and no configured server left without its credential.
  *
- * Both cards collapse by default unless the document already names that server
- * and the deployment holds no credential for it -- the one shape on this step
- * an operator MUST act on. The Plex card carries a whole plex.tv sign-in flow
- * inside it, so two open cards is the longest pane in the wizard for an
- * operator who runs one server.
+ * One card opens: the one the document names and holds no credential for --
+ * the one shape on this step an operator MUST act on -- or, on a deployment
+ * with nothing configured at all, Plex's, which is the pane the Plex-only
+ * operator used to land on with the sign-in expanded. Never both: the Plex
+ * card carries a whole plex.tv sign-in flow inside it, and two open cards is
+ * the longest pane in the wizard for an operator who runs one server.
  */
 export function SetupServersPane({
   busy,
@@ -64,6 +65,15 @@ export function SetupServersPane({
     jellyfinExcludedLibraries: string[] | null,
   ) => Promise<boolean>;
 }) {
+  // A deployment with NO server configured at all is a first run, and the card
+  // it opens is Plex's: that is where the Plex-only operator used to land --
+  // the token was a required provider key, so its accordion came up expanded
+  // with the sign-in inside it -- and two closed cards under a disabled
+  // Continue is the one visible thing this step changed about that walk
+  // (review M3). A deployment the document already names keeps the split
+  // below: the card that opens is the one missing its credential.
+  const firstRun = SERVER_CARDS.every((card) => !progress.servers[card.name]?.configured);
+
   return (
     <section className="setup-pane" data-testid="servers-step">
       <div className="setup-pane-head">
@@ -84,6 +94,7 @@ export function SetupServersPane({
           <SetupAccordion
             key={card.name}
             credential={card.credential}
+            defaultOpen={firstRun && card.name === "plex"}
             held={state.credential ? HELD : null}
             label={card.label}
             needsAddress={SYSTEMS_WITH_AN_ADDRESS.has(card.name)}

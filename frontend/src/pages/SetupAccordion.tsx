@@ -20,6 +20,7 @@ export function SetupAccordion({
   required,
   held,
   needsAddress,
+  defaultOpen = false,
   children,
   onSave,
 }: {
@@ -35,6 +36,13 @@ export function SetupAccordion({
   /** Whether this system's address is operator-supplied (Plex, Radarr, Sonarr,
    * Tracearr) or built in. */
   needsAddress: boolean;
+  /** Open this one whatever the split below says, for a step whose caller
+   * knows something this component cannot: the media-server step opens its
+   * Plex card on a deployment where NOTHING is configured yet, because that
+   * pane would otherwise be two closed cards and a disabled Continue where the
+   * Plex-only operator used to land on the sign-in already expanded. Not
+   * `required`, which would badge a card the deployment may never need. */
+  defaultOpen?: boolean;
   /** The Plex accordion's extra body (Task 3); absent elsewhere.
    *
    * A render prop over this form's own two fields rather than a plain node,
@@ -53,7 +61,7 @@ export function SetupAccordion({
   }) => ReactNode;
   onSave: (credential: string, value: string) => Promise<boolean>;
 }) {
-  const [open, setOpen] = useState(required && held === null);
+  const [open, setOpen] = useState(defaultOpen || (required && held === null));
   const [value, setValue] = useState("");
   const [address, setAddress] = useState("");
   // The credential's own label ("Plex token") names what is typed below; the

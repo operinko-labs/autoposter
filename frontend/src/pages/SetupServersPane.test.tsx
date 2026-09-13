@@ -46,8 +46,36 @@ describe("SetupServersPane", () => {
   it("offers one card per media server, because either one finishes the step", () => {
     renderPane();
 
-    expect(screen.getByRole("button", { name: /Plex/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Jellyfin/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Plex/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Jellyfin/ })).toBeInTheDocument();
+  });
+
+  it("opens the Plex card on a deployment with nothing configured, and only that one", () => {
+    // Review M3. The Plex token used to be a required provider key, so the
+    // Plex-only operator landed on an accordion already expanded around the
+    // sign-in; a first run that showed two closed cards under a disabled
+    // Continue would be the one thing this step changed about that walk. Not
+    // `required`, which would badge a card this deployment may never need.
+    renderPane();
+
+    expect(screen.getByTestId("accordion-body-plex")).toBeInTheDocument();
+    expect(screen.queryByTestId("accordion-body-jellyfin")).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign in with Plex" })).toBeInTheDocument();
+  });
+
+  it("opens neither card once a server is configured, because the split decides then", () => {
+    // A deployment the document already names is not a first run: what opens
+    // there is the card missing its credential, and a complete server opens
+    // nothing at all.
+    renderPane({
+      progress: {
+        ...PROGRESS,
+        servers: { ...NO_SERVERS, plex: { configured: true, credential: true, checked: false } },
+      },
+    });
+
+    expect(screen.queryByTestId("accordion-body-plex")).toBeNull();
+    expect(screen.queryByTestId("accordion-body-jellyfin")).toBeNull();
   });
 
   it("reads each card's Stored pill from the servers line, not from the provider map", () => {
@@ -92,7 +120,7 @@ describe("SetupServersPane", () => {
     const onSave = vi.fn(async () => true);
     vi.stubGlobal("fetch", vi.fn(async () => respond({ ok: true })));
     renderPane({ onSave });
-    fireEvent.click(screen.getByRole("button", { name: /Jellyfin/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Jellyfin/ }));
     await waitFor(() => screen.getByTestId("accordion-body-jellyfin"));
 
     fireEvent.change(screen.getByLabelText("AUTOPOSTER_JELLYFIN_APIKEY"), {
@@ -115,7 +143,7 @@ describe("SetupServersPane", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     renderPane();
-    fireEvent.click(screen.getByRole("button", { name: /Jellyfin/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Jellyfin/ }));
     await waitFor(() => screen.getByTestId("accordion-body-jellyfin"));
 
     fireEvent.change(screen.getByLabelText("Jellyfin address"), {
@@ -151,7 +179,8 @@ describe("SetupServersPane", () => {
       ),
     );
     renderPane({ onSelect });
-    fireEvent.click(screen.getByRole("button", { name: /Plex/ }));
+    // Already open: nothing is configured on this fixture, which is the first
+    // run the card opens itself for.
     await waitFor(() => screen.getByTestId("accordion-body-plex"));
 
     fireEvent.change(screen.getByLabelText("Plex address"), {

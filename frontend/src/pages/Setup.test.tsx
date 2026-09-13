@@ -264,6 +264,11 @@ describe("Setup", () => {
     // open, and neither state was asked of or sent to the server.
     expect(screen.queryByTestId("accordion-body-mdblist")).toBeNull();
     expect(screen.getByTestId("accordion-body-tmdb")).toBeInTheDocument();
+    // ...and no media server is among them: both cards live on the step
+    // before this one, and the systems pane renders from `providers`, which
+    // carries neither server credential (review M2).
+    expect(screen.queryByTestId("accordion-body-plex")).toBeNull();
+    expect(screen.queryByTestId("accordion-body-jellyfin")).toBeNull();
   });
 
   it("offers the database step once the address is set, while it is the unfinished one", async () => {

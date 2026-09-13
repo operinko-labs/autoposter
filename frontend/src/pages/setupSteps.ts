@@ -84,7 +84,7 @@ export function farthestStep(progress: SetupProgress | null): StepId {
   if (progress === null) return "password";
   if (!progress.public_url) return "url";
   if (!progress.database) return "database";
-  if (!serversDone(progress.servers)) return "servers";
+  if (!serversDone(progress.servers ?? {})) return "servers";
   if (progress.required.length > 0 || progress.config_source === null) return "systems";
   return "finish";
 }
@@ -103,6 +103,11 @@ export function farthestStep(progress: SetupProgress | null): StepId {
  * `checked` is deliberately not asked: it is a session fact the server
  * forgets, so gating on it would send a wizard picked up in a second tab back
  * to a step it had already finished.
+ *
+ * An EMPTY map is the unmet answer, which is what a progress body with no
+ * `servers` line at all falls back to at the call above. `farthestStep` runs
+ * on every render, so a throw here would be a white screen with no way out --
+ * and "no server is set up" is the safe reading of a surface that did not say.
  */
 function serversDone(servers: Record<string, ServerProgress>): boolean {
   const all = Object.values(servers);

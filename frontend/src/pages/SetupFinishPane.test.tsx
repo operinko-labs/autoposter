@@ -210,20 +210,23 @@ describe("SetupFinishPane", () => {
     expect(skipped).toHaveTextContent(/registrations above but not written/i);
   });
 
-  it("says what a resolving document did and did not keep from the Plex panel", () => {
+  it("says what a resolving document did and did not keep from the media-server card", () => {
     // Facts C1 and the Task 3 review's third point. Three separate facts, and
     // the operator leaves believing the tick-list took effect unless all three
-    // are said: `public_url` was used and not written; the Plex address and the
+    // are said: `public_url` was used and not written; the address and the
     // ticked libraries were recorded NOWHERE (`base_urls` dies with the setup
-    // state at `execv`); and the account token DID persist, into the secrets
-    // file, under both names.
+    // state at `execv`); and the credential DID persist, into the secrets file.
+    //
+    // Neither server is named: the block above already says which one this
+    // deployment was set up with, and on the Jellyfin-only walk a paragraph
+    // about Plex contradicts it on screen (review I1).
     renderPane({ progress: { ...PROGRESS, config_source: "configured" } });
 
     const skipped = screen.getByTestId("skipped-list");
-    expect(skipped).toHaveTextContent(/Plex address/i);
+    expect(skipped).toHaveTextContent(/media-server address/i);
     expect(skipped).toHaveTextContent(/libraries/i);
     expect(skipped).toHaveTextContent(/were not recorded/i);
-    expect(skipped).toHaveTextContent(/Plex token was stored/i);
+    expect(skipped).toHaveTextContent(/credential was stored/i);
   });
 
   it("does not claim public_url was skipped when the wizard is writing the document", () => {

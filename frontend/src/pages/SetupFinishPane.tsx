@@ -25,7 +25,8 @@ const MEDIA_SERVERS = [
  * with either server (spec 8), which is what makes this a shape and not an
  * omission -- and saying so here is what tells a Jellyfin-only operator that
  * the empty Plex card was read as an answer. */
-const SERVER_LEFT = "Left for later — no address was given for it, so the configuration names it nowhere.";
+const SERVER_LEFT =
+  "Left for later — no address was given for it, so the configuration names it nowhere.";
 
 /** Its address is in the document and its credential is not stored. The next
  * boot refuses this (`missing_server_setup`), and this is the last page that
@@ -73,10 +74,14 @@ const NOT_CONFIGURED = "Not configured — no API key staged, or its address was
  * `if state.config_document is not None`, and `stage_config_document` refuses
  * to stage one while a document resolves -- so three things are true at once
  * and all three are said by name: `public_url` was USED for the registrations
- * above and not persisted; the Plex address and the ticked libraries were
- * recorded nowhere, because `base_urls` dies with the setup state at `execv`;
- * and the Plex account token DID persist, into the secrets file. Left unsaid,
- * the operator leaves believing the tick-list took effect.
+ * above and not persisted; the media-server address and the ticked libraries
+ * were recorded nowhere, because `base_urls` dies with the setup state at
+ * `execv`; and that server's credential DID persist, into the secrets file.
+ * Left unsaid, the operator leaves believing the tick-list took effect.
+ *
+ * Neither server is named in it: the block above says which server this
+ * deployment was set up with, and the walk this step exists for is the one
+ * where that server is Jellyfin (review I1).
  */
 export function SetupFinishPane({
   busy,
@@ -182,9 +187,9 @@ export function SetupFinishPane({
               the Settings page to re-register for you later.
             </p>
             <p className="setup-hint">
-              For the same reason the Plex address and the libraries you ticked were not recorded
-              anywhere — they live in that document. The Plex token was stored, in the secrets
-              file, and so is every other credential above.
+              For the same reason the media-server address and the libraries you ticked were not
+              recorded anywhere — they live in that document. That server&apos;s credential was
+              stored, in the secrets file, and so is every other credential above.
             </p>
           </>
         )}
