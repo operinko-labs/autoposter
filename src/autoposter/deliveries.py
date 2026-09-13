@@ -14,6 +14,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from autoposter.config.loader import config_for_library
 from autoposter.db.models import MediaItem, Render, RenderDelivery
 from autoposter.db.refs import refs_for
 from autoposter.intake.arr import RenderIntent
@@ -153,64 +154,86 @@ async def retry_pending_deliveries(
 
     uploaded = still_pending = 0
     for delivery, render, item in due:
-        server = servers.get(delivery.server)
-        if server is None:
-            # The config that named this server is gone (an operator removed
-            # the block); no amount of retrying resolves that, unlike an
-            # ItemNotFound or a transport hiccup.
-            await record(session, render.id, delivery.server, "failed", detail="config: server removed")
-            await rollup(session, render.id)
-            continue
-
-        if not getattr(config.badges, f"upload_to_{delivery.server}", False):
-            await record(session, render.id, delivery.server, "skipped")
-            await rollup(session, render.id)
-            continue
-
-        refs = await refs_for(session, item.id)
+        # One row's own failure -- a bug, a bad refs_for lookup, anything not
+        # already turned into a delivery outcome below -- must not take the
+        # rest of the pass down with it; every other due row still deserves
+        # its own attempt.
         try:
-            resolved_item = await server.resolve(_intent_for(item, refs))
-        except PathMismatch as exc:
-            # A path-mapping mismatch that no retry fixes (spec §6.2).
-            await record(session, render.id, delivery.server, "failed", detail=f"{type(exc).__name__}: {exc}")
+            server = servers.get(delivery.server)
+            if server is None:
+                # The config that named this server is gone (an operator
+                # removed the block); no amount of retrying resolves that,
+                # unlike an ItemNotFound or a transport hiccup.
+                await record(session, render.id, delivery.server, "failed", detail="config: server removed")
+                await rollup(session, render.id)
+                continue
+
+            # Per-library, exactly like apply_badges (render/pipeline.py)
+            # resolves before reading any badges.* setting: a library
+            # override must gate a retry the same way it gated the delivery
+            # this row is a retry OF.
+            row_config = config_for_library(config, item.library)
+
+            if not getattr(row_config.badges, f"upload_to_{delivery.server}", False):
+                await record(session, render.id, delivery.server, "skipped")
+                await rollup(session, render.id)
+                continue
+
+            refs = await refs_for(session, item.id)
+            try:
+                resolved_item = await server.resolve(_intent_for(item, refs))
+            except PathMismatch as exc:
+                # A path-mapping mismatch that no retry fixes (spec §6.2).
+                await record(session, render.id, delivery.server, "failed", detail=f"{type(exc).__name__}: {exc}")
+                await rollup(session, render.id)
+                continue
+            except ItemNotFound:
+                # Not on this server yet -- keep waiting, no cap (spec §5.3).
+                await record(session, render.id, delivery.server, "pending", retry_in=RETRY_SECONDS)
+                still_pending += 1
+                await rollup(session, render.id)
+                continue
+            except Exception as exc:
+                # A transport error: the server may simply be down right now.
+                logger.warning("delivery to %s failed to resolve (%s)", delivery.server, failure_detail(exc))
+                await record(
+                    session, render.id, delivery.server, "pending",
+                    detail=failure_detail(exc), retry_in=RETRY_SECONDS,
+                )
+                still_pending += 1
+                await rollup(session, render.id)
+                continue
+
+            await upsert_server_ref(session, item.id, resolved_item)
+
+            try:
+                data = await _pipeline.compose_badged_bytes(
+                    session, row_config, render, item, http=http, mdblist=mdblist,
+                )
+                await server.upload_artwork(
+                    resolved_item.ref, data, render.art_kind,
+                    row_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities,
+                )
+            except Exception as exc:
+                # The item DID resolve; compositing or the upload itself is
+                # what failed. That is not "not there yet" -- it is a real
+                # problem against an item we found, the same distinction
+                # apply_badges' own upload except clause draws (records
+                # `failed`, not another `pending`).
+                logger.warning("delivery to %s failed (%s)", delivery.server, failure_detail(exc))
+                await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                await rollup(session, render.id)
+                continue
+
+            await record(session, render.id, delivery.server, "uploaded")
+            uploaded += 1
             await rollup(session, render.id)
-            continue
-        except ItemNotFound:
-            await record(session, render.id, delivery.server, "pending", retry_in=RETRY_SECONDS)
-            still_pending += 1
-            await rollup(session, render.id)
-            continue
         except Exception as exc:
-            logger.warning("delivery to %s failed to resolve (%s)", delivery.server, failure_detail(exc))
-            await record(
-                session, render.id, delivery.server, "pending",
-                detail=failure_detail(exc), retry_in=RETRY_SECONDS,
+            logger.warning(
+                "delivery retry for render %s/%s failed unexpectedly (%s)",
+                render.id, delivery.server, type(exc).__name__,
             )
             still_pending += 1
-            await rollup(session, render.id)
-            continue
-
-        await upsert_server_ref(session, item.id, resolved_item)
-
-        try:
-            data = await _pipeline.compose_badged_bytes(session, config, render, item, http=http, mdblist=mdblist)
-            await server.upload_artwork(
-                resolved_item.ref, data, render.art_kind,
-                config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities,
-            )
-        except Exception as exc:
-            logger.warning("delivery to %s failed (%s)", delivery.server, failure_detail(exc))
-            await record(
-                session, render.id, delivery.server, "pending",
-                detail=failure_detail(exc), retry_in=RETRY_SECONDS,
-            )
-            still_pending += 1
-            await rollup(session, render.id)
-            continue
-
-        await record(session, render.id, delivery.server, "uploaded")
-        uploaded += 1
-        await rollup(session, render.id)
 
     await session.commit()
     return f"pending deliveries: {len(due)} due, {uploaded} uploaded, {still_pending} still pending"
