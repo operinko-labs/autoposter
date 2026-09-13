@@ -201,3 +201,169 @@ async def test_library_override_gates_the_retry_per_row(session, monkeypatch):
     assert await deliveries.rollup(session, open_render.id) == "uploaded"
     assert len(jf.uploads) == 1 and jf.uploads[0][0].native_id == "j2"
     assert summary == "pending deliveries: 2 due, 1 uploaded, 0 still pending"
+
+
+# Fix round 3 (Phase 5 branch review).
+
+
+async def test_a_failed_delivery_keeps_the_renders_uploaded_at(session):
+    """I6: `record`'s conflict `set_` carried `uploaded_at=None` for every
+    non-`uploaded` status, and `rollup` then wrote that NULL onto the render.
+    A single failed Plex upload erased the "last delivered" timestamp the
+    item page's Uploaded column shows -- the column an operator reads to tell
+    "never delivered" from "delivered, then broke"."""
+    render = await _render(session)
+    await deliveries.record(session, render.id, "plex", "uploaded")
+    assert await deliveries.rollup(session, render.id) == "uploaded"
+    delivered_at = (
+        await session.execute(select(Render.uploaded_at).where(Render.id == render.id))
+    ).scalar_one()
+    assert delivered_at is not None
+
+    await deliveries.record(session, render.id, "plex", "failed", detail="connect: ConnectError")
+    assert await deliveries.rollup(session, render.id) == "failed"
+
+    row = (
+        await session.execute(
+            select(RenderDelivery.uploaded_at).where(RenderDelivery.render_id == render.id)
+        )
+    ).scalar_one()
+    assert row == delivered_at, "the row's own last success must survive a failure"
+    after = (
+        await session.execute(select(Render.uploaded_at).where(Render.id == render.id))
+    ).scalar_one()
+    assert after == delivered_at, "and so must the render's roll-up of it"
+
+
+async def test_a_database_error_on_one_row_does_not_abort_the_pass(
+    session, session_factory, config_with_badges, monkeypatch,
+):
+    """I2: "one row's failure never aborts the pass" held only for
+    pure-Python exceptions. A statement error -- `record`'s upsert, a `rollup`
+    UPDATE, a dropped connection -- leaves the transaction aborted, so every
+    remaining due row raised `PendingRollbackError` at its first execute and
+    the closing commit took the whole pass, and every prior row's work, with
+    it. The next due row must still be attempted AND committed."""
+    from sqlalchemy import text
+
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    first = await _render(session)
+    second_item = await pipeline._upsert_media_item(
+        session, resolved("plex", "2", tmdb_id=2, file_path="/m2.mkv")
+    )
+    second = await pipeline._get_or_create_render(session, second_item, "poster", "/a/p2.jpg")
+    await session.commit()
+    # The due query orders by next_attempt_at, so the exploding row is put
+    # squarely FIRST rather than left to a tie-break.
+    await deliveries.record(session, first.id, "jellyfin", "pending", retry_in=-600)
+    await deliveries.record(session, second.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
+    jf.items["process_item:movie:tmdb2"] = resolved("jellyfin", "j2", file_path="/m2.mkv")
+
+    async def fake_compose(session, config, render, item, http, mdblist):
+        return b"badged"
+
+    monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
+
+    real_record = deliveries.record
+    # Plain ints, read now: the pass rolls back mid-flight, which expires
+    # every ORM object this session holds -- including these two -- and a
+    # `first.id` inside the stub below would then be a lazy load outside an
+    # await rather than a value.
+    first_id, second_id = first.id, second.id
+
+    async def exploding_record(db, render_id, server, status, **kwargs):
+        if render_id == first_id:
+            # A genuinely aborted transaction, not a bare Python raise: that
+            # is the failure class the isolation did not survive.
+            await db.execute(text("SELECT 1 / 0"))
+        await real_record(db, render_id, server, status, **kwargs)
+
+    monkeypatch.setattr(deliveries, "record", exploding_record)
+    config_with_badges.badges.upload_to_jellyfin = True
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
+    )
+
+    assert summary == "pending deliveries: 2 due, 1 uploaded, 1 still pending"
+    assert [u[0].native_id for u in jf.uploads] == ["j1", "j2"], "the second row was never attempted"
+    # A separate session, because the point of the assertion is that the
+    # second row's work was COMMITTED and not lost with the first row's.
+    async with session_factory() as fresh:
+        rows = dict(
+            (await fresh.execute(
+                select(RenderDelivery.render_id, RenderDelivery.status)
+            )).all()
+        )
+    assert rows[second_id] == "uploaded"
+    assert rows[first_id] == "pending", "the exploding row keeps its seeded state"
+
+
+async def test_nothing_left_to_compose_records_skipped_not_a_failed_upload(
+    session, config_with_badges, monkeypatch,
+):
+    """I3: a pending row outlives the state that created it. Badges turned
+    off for the library, or a render that has since gone `failed`, makes
+    `compose_badged_bytes` answer `None` -- which was passed straight into
+    `upload_artwork`, producing a sticky `failed` row with a misleading
+    detail. `skipped` is the honest outcome."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    render = await _render(session)
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
+
+    async def compose_nothing(session, config, render, item, http, mdblist):
+        return None
+
+    monkeypatch.setattr(pipeline, "compose_badged_bytes", compose_nothing, raising=False)
+    config_with_badges.badges.upload_to_jellyfin = True
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
+    )
+
+    assert summary == "pending deliveries: 1 due, 0 uploaded, 0 still pending"
+    assert jf.uploads == [], "there was nothing to upload"
+    # Column-only select -- see the note in test_server_removed_from_config_
+    # fails_the_delivery on why a full-entity select would read stale.
+    row = (await session.execute(select(RenderDelivery.status, RenderDelivery.detail))).one()
+    assert row.status == "skipped" and row.detail is None
+    assert await deliveries.rollup(session, render.id) == "skipped"
+
+
+async def test_a_migration_backfilled_row_is_never_due(session, config_with_badges):
+    """I5's other half: the Phase-2 migration backfills a `plex` row per
+    render with `next_attempt_at` NULL, and NULL never satisfies the due
+    query. Load-bearing and, until now, untested -- every one of those rows
+    is `pending` on a production database the moment the migration lands."""
+    from sqlalchemy import insert
+
+    from autoposter.servers.registry import Servers
+
+    render = await _render(session)
+    await session.execute(
+        insert(RenderDelivery).values(render_id=render.id, server="plex", status="pending")
+    )
+    await session.commit()
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({}), config_with_badges, now=datetime.now(timezone.utc)
+    )
+
+    assert summary == "pending deliveries: 0 due, 0 uploaded, 0 still pending"
+    row = (
+        await session.execute(
+            select(RenderDelivery.status, RenderDelivery.attempted_at)
+        )
+    ).one()
+    assert row.status == "pending" and row.attempted_at is None

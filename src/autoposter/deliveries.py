@@ -63,9 +63,18 @@ async def record(
         next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
     )
     stmt = insert(RenderDelivery).values(**values)
+    updatable = {k: v for k, v in values.items() if k not in ("render_id", "server")}
+    if status != "uploaded":
+        # Fix round 3, I6: a failed, skipped or pending outcome must never
+        # erase what this server DID deliver last time. ``rollup`` reads these
+        # values back into ``renders.uploaded_at``, which the item page's
+        # Uploaded column shows, and an operator reads a blank there as "never
+        # delivered" rather than "delivered, then broke" -- the distinction
+        # the single-server code kept by leaving the column alone on a failure.
+        updatable.pop("uploaded_at")
     stmt = stmt.on_conflict_do_update(
         constraint="uq_delivery_render_server",
-        set_={k: v for k, v in values.items() if k not in ("render_id", "server")},
+        set_=updatable,
     )
     await session.execute(stmt)
     await session.flush()
@@ -98,9 +107,15 @@ async def rollup(session: AsyncSession, render_id: int) -> str:
     else:
         status = "skipped"
     uploaded_at = max((u for _, u in rows if u is not None), default=None)
+    values: dict[str, object] = {"upload_status": status}
+    if uploaded_at is not None:
+        # Fix round 3, I6, the roll-up half: the column is carried forward,
+        # never overwritten with NULL. No delivery row holding a timestamp
+        # means nothing this pass learned anything new about when the render
+        # was last delivered -- which is not the same as learning it never was.
+        values["uploaded_at"] = uploaded_at
     await session.execute(
-        update(Render).where(Render.id == render_id)
-        .values(upload_status=status, uploaded_at=uploaded_at)
+        update(Render).where(Render.id == render_id).values(**values)
     )
     await session.flush()
     return status
@@ -153,12 +168,30 @@ async def retry_pending_deliveries(
     )).all()
 
     uploaded = still_pending = 0
+    rolled_back = False
     for delivery, render, item in due:
         # One row's own failure -- a bug, a bad refs_for lookup, anything not
         # already turned into a delivery outcome below -- must not take the
         # rest of the pass down with it; every other due row still deserves
         # its own attempt.
+        #
+        # `render_id`/`server_name` are read inside the try and used by its
+        # `except`: a rollback expires every object the `due` query returned,
+        # and an expired attribute read outside an await is a MissingGreenlet
+        # rather than a reload -- which would turn the handler that exists to
+        # contain a failure into a second one.
+        render_id: int | None = None
+        server_name: str | None = None
         try:
+            if rolled_back:
+                # The previous row rolled back, so this row's three objects
+                # are expired. Reloaded here, in an await, for the same
+                # reason -- and only on the path that actually needs it, so
+                # an ordinary pass pays nothing.
+                for expired in (delivery, render, item):
+                    await session.refresh(expired)
+                rolled_back = False
+            render_id, server_name = render.id, delivery.server
             server = servers.get(delivery.server)
             if server is None:
                 # The config that named this server is gone (an operator
@@ -184,7 +217,10 @@ async def retry_pending_deliveries(
                 resolved_item = await server.resolve(_intent_for(item, refs))
             except PathMismatch as exc:
                 # A path-mapping mismatch that no retry fixes (spec §6.2).
-                await record(session, render.id, delivery.server, "failed", detail=f"{type(exc).__name__}: {exc}")
+                # Fix round 3, M4: the detail goes through `failure_detail`
+                # like every other one -- category plus class name, never the
+                # exception's own message, which carries an operator path.
+                await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
                 await rollup(session, render.id)
                 continue
             except ItemNotFound:
@@ -210,6 +246,17 @@ async def retry_pending_deliveries(
                 data = await _pipeline.compose_badged_bytes(
                     session, row_config, render, item, http=http, mdblist=mdblist,
                 )
+                if data is None:
+                    # Fix round 3, I3: a pending row outlives the state that
+                    # created it. Badges turned off for this library, or a
+                    # render that has since gone `failed`, leaves nothing to
+                    # compose -- and uploading `None` would turn that into a
+                    # sticky `failed` row with a misleading detail. `skipped`
+                    # is the honest outcome, the same one `deliver` records
+                    # for a server there is nothing to send to.
+                    await record(session, render.id, delivery.server, "skipped")
+                    await rollup(session, render.id)
+                    continue
                 await server.upload_artwork(
                     resolved_item.ref, data, render.art_kind,
                     row_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities,
@@ -229,11 +276,31 @@ async def retry_pending_deliveries(
             uploaded += 1
             await rollup(session, render.id)
         except Exception as exc:
+            # Fix round 3, I2: rolled back FIRST. The likeliest failure to
+            # land here is a database one -- a statement error out of
+            # `record`'s upsert, a `rollup` UPDATE, a dropped connection --
+            # which leaves the transaction aborted, so without this every
+            # remaining due row would raise `PendingRollbackError` at its
+            # first execute and the closing commit would take the whole pass
+            # with it. "One row's failure never aborts the pass" only holds
+            # for pure-Python exceptions otherwise.
+            await session.rollback()
+            rolled_back = True
             logger.warning(
                 "delivery retry for render %s/%s failed unexpectedly (%s)",
-                render.id, delivery.server, type(exc).__name__,
+                render_id, server_name, type(exc).__name__,
             )
             still_pending += 1
 
-    await session.commit()
-    return f"pending deliveries: {len(due)} due, {uploaded} uploaded, {still_pending} still pending"
+    summary = f"pending deliveries: {len(due)} due, {uploaded} uploaded, {still_pending} still pending"
+    try:
+        await session.commit()
+    except Exception as exc:
+        # Fix round 3, I2: the commit is the last thing that can fail, and a
+        # scheduled pass that raises out of its body loses the summary the
+        # operator reads. Reported in the sentence instead, rolled back so
+        # the session is usable again.
+        await session.rollback()
+        logger.warning("pending deliveries: the closing commit failed (%s)", failure_detail(exc))
+        return f"{summary}; the closing commit failed ({failure_detail(exc)})"
+    return summary
