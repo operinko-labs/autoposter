@@ -162,6 +162,93 @@ async def test_the_libraries_route_reads_with_a_typed_key_and_refuses_without_on
     assert JELLYFIN_KEY not in answered.text
 
 
+async def test_a_library_read_stops_at_the_body_cap():
+    """`setup_plex.library_sections`' bound, on the read this module makes from
+    the same kind of address. The timeout bounds TIME and not SIZE, and
+    `JellyfinApi` -- like every client -- reads a whole body into memory before
+    returning it, so this call streams rather than borrowing that."""
+    offered = 0
+    # Four megabytes, offered a chunk at a time and COUNTED: large but finite,
+    # because an endless generator would prove the cap by hanging forever when
+    # it regressed, and a test that hangs is not a test that reports.
+    chunk_count = 1024
+
+    async def oversized():
+        nonlocal offered
+        for _ in range(chunk_count):
+            offered += 1
+            yield b"x" * 4096
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=oversized())
+
+    # A megabyte of `x` is not JSON, which is the honest answer: the route
+    # turns it into a class name like every other failure.
+    with pytest.raises(Exception):
+        await setup_jellyfin.library_list(
+            JELLYFIN_URL, JELLYFIN_KEY, transport=httpx.MockTransport(handler)
+        )
+
+    within_the_cap = setup_jellyfin.JELLYFIN_BODY_LIMIT_BYTES // 4096 + 1
+    assert within_the_cap < chunk_count, "the fixture must be bigger than the cap to prove one"
+    assert offered <= within_the_cap
+
+
+async def test_the_libraries_route_refuses_an_address_that_is_not_one(setup_client):
+    """`/plex/libraries`' pin on the second server: the address is
+    operator-supplied whether it was typed or picked, so it goes through the
+    shared guard -- which refuses userinfo as well as a missing scheme."""
+    token = await _authenticate(setup_client)
+
+    response = await setup_client.post(
+        "/api/setup/jellyfin/libraries",
+        json={"base_url": "jf.example:8096", "credential_value": JELLYFIN_KEY},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.PUBLIC_URL_NOT_AN_ADDRESS
+
+
+async def test_the_check_route_puts_the_mediabrowser_header_on_the_wire(
+    setup_client, monkeypatch
+):
+    """The header, driven through the REAL route rather than through
+    `run_check` alone: the route builds the credential map and the url, and a
+    wrong header there is a 401 an operator reads as a wrong API key."""
+    token = await _authenticate(setup_client)
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("Authorization")
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"Version": "12.0.0"})
+
+    real_run_check = setup_checks.run_check
+
+    async def through_a_mock(system, base_url, credentials, transport=None):
+        return await real_run_check(
+            system, base_url, credentials, transport=httpx.MockTransport(handler)
+        )
+
+    monkeypatch.setattr(setup_checks, "run_check", through_a_mock)
+
+    response = await setup_client.post(
+        "/api/setup/check",
+        json={
+            "system": "jellyfin",
+            "base_url": JELLYFIN_URL,
+            "credential_value": JELLYFIN_KEY,
+        },
+        headers=_headers(token),
+    )
+
+    assert response.json()["ok"] is True, response.text
+    assert seen["url"] == f"{JELLYFIN_URL}/System/Info"
+    assert seen["auth"].startswith('MediaBrowser Token="%s"' % JELLYFIN_KEY)
+    assert JELLYFIN_KEY not in response.text
+
+
 # --- the config step, with no Plex address --------------------------------
 
 
@@ -275,6 +362,57 @@ async def test_saving_one_server_card_never_destroys_the_other(
     assert document["jellyfin"] == {
         "url": JELLYFIN_URL, "excluded_libraries": ["Home Videos"],
     }
+
+
+@pytest.mark.parametrize(
+    "probed,saved", [("plex", "jellyfin"), ("jellyfin", "plex")]
+)
+async def test_a_server_that_was_only_checked_is_not_configured(
+    setup_client, setup_app, monkeypatch, probed, saved
+):
+    """"Check connection" is the one control on this pane that is framed as a
+    TEST, and it must stay one.
+
+    A probe that configured the server would write a delivery target the
+    operator never chose -- and `missing_server_setup` then demands that
+    server's credential to finish, with no control anywhere that removes it.
+    So a checked address is honoured for the server the submit NAMES and
+    dropped for the one it does not, like the example's own placeholder block.
+    """
+
+    async def passes(system, base_url, credentials, transport=None):
+        return setup_checks.CheckOutcome(ok=True, refused=False, failure=None)
+
+    monkeypatch.setattr(setup_checks, "run_check", passes)
+    token = await _authenticate(setup_client)
+    addresses = {"plex": PLEX_URL, "jellyfin": JELLYFIN_URL}
+    checked = await setup_client.post(
+        "/api/setup/check",
+        json={
+            "system": probed,
+            "base_url": addresses[probed],
+            "credential_value": "row-267-typed-but-never-saved",
+        },
+        headers=_headers(token),
+    )
+    assert checked.json()["ok"] is True, checked.text
+
+    response = await setup_client.post(
+        "/api/setup/config",
+        json={f"{saved}_url" if saved == "jellyfin" else "plex_url": addresses[saved]},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    document = setup_app.state.setup.config_document
+    assert document[saved]["url"] == addresses[saved]
+    assert probed not in document
+    # And it stays out of the document the finish step would write, which is
+    # where `_apply_staged_urls` runs a second time over the same staged map.
+    progress = (await setup_client.get("/api/setup/progress", headers=_headers(token))).json()
+    assert progress["servers"][probed]["configured"] is False
+    assert progress["servers"][probed]["checked"] is True
+    assert progress["servers"][saved]["configured"] is True
 
 
 async def test_a_library_read_that_fails_is_a_class_name_and_never_the_error_text(
@@ -392,7 +530,8 @@ async def test_progress_carries_servers_and_the_wizard_finishes_jellyfin_only(
         )
     ).status_code == 200
 
-    progress = (await setup_client.get("/api/setup/progress", headers=headers)).json()
+    progress_body = await setup_client.get("/api/setup/progress", headers=headers)
+    progress = progress_body.json()
     assert set(progress) == {
         "password", "database", "database_source", "providers", "required", "config",
         "config_source", "public_url", "checked_systems", "servers",
@@ -407,6 +546,8 @@ async def test_progress_carries_servers_and_the_wizard_finishes_jellyfin_only(
     # The server credentials are reported by `servers` and by nothing else.
     assert "AUTOPOSTER_PLEX_TOKEN" not in progress["providers"]
     assert "AUTOPOSTER_JELLYFIN_APIKEY" not in progress["providers"]
+    # The NAME is absent and so is the value: `servers` is booleans.
+    assert JELLYFIN_KEY not in progress_body.text
 
     monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
     response = await setup_client.post("/api/setup/finish", headers=headers)
@@ -422,3 +563,68 @@ async def test_progress_carries_servers_and_the_wizard_finishes_jellyfin_only(
     assert boot.is_configured(setup_api.resolve_secret_values()) is True
     assert JELLYFIN_KEY not in response.text
     assert setup_app.state.setup.token is not None
+
+
+async def test_both_servers_reach_the_written_document_and_the_written_secrets(
+    setup_app, setup_client, monkeypatch
+):
+    """The third shape spec 8 allows, walked to the end.
+
+    Every earlier walk finishes with exactly one server, so nothing proved
+    that the finish step writes two blocks and two credentials -- which is the
+    deployment the delivery phases were built for, and the one where
+    `missing_server_setup`'s second arm (any configured server must have its
+    own credential) is actually load-bearing.
+    """
+    token = await _authenticate(setup_client)
+    headers = _headers(token)
+    monkeypatch.setattr(setup_api, "database_answers", _answering(True))
+    await setup_client.post(
+        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=headers
+    )
+    values = {
+        name: "value"
+        for name in setup_api._PROVIDER_ENV
+        if name != setup_api._GENERATED_SECRET
+    }
+    values["AUTOPOSTER_JELLYFIN_APIKEY"] = JELLYFIN_KEY
+    values["AUTOPOSTER_PLEX_TOKEN"] = "row-267-plex-token-8b12"
+    assert (
+        await setup_client.post(
+            "/api/setup/providers", json={"values": values}, headers=headers
+        )
+    ).status_code == 200
+    assert (
+        await setup_client.post(
+            "/api/setup/config",
+            json={
+                "plex_url": PLEX_URL,
+                "excluded_libraries": ["Photos"],
+                "jellyfin_url": JELLYFIN_URL,
+                "jellyfin_excluded_libraries": ["Home Videos"],
+            },
+            headers=headers,
+        )
+    ).status_code == 200
+
+    progress = (await setup_client.get("/api/setup/progress", headers=headers)).json()
+    assert progress["servers"]["plex"]["configured"] is True
+    assert progress["servers"]["jellyfin"]["configured"] is True
+    assert progress["servers"]["plex"]["credential"] is True
+    assert progress["servers"]["jellyfin"]["credential"] is True
+
+    monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
+    response = await setup_client.post("/api/setup/finish", headers=headers)
+
+    assert response.status_code == 200, response.text
+    document = setup_api.read_config_document(state_module.state_config_path())
+    assert document["plex"]["url"] == PLEX_URL
+    assert document["plex"]["excluded_libraries"] == ["Photos"]
+    assert document["jellyfin"] == {
+        "url": JELLYFIN_URL, "excluded_libraries": ["Home Videos"],
+    }
+    written = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert written["AUTOPOSTER_JELLYFIN_APIKEY"] == JELLYFIN_KEY
+    assert written["AUTOPOSTER_PLEX_TOKEN"] == "row-267-plex-token-8b12"
+    assert boot.is_configured(setup_api.resolve_secret_values()) is True
+    assert setup_app.state.setup.config_document is not None

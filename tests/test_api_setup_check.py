@@ -584,12 +584,21 @@ async def test_an_empty_credential_field_probes_the_one_the_deployment_holds(
 # --- the checked Plex address, and the config step's own ---------------------
 
 
-async def test_a_checked_plex_address_is_stamped_when_no_configuration_submit_follows(
+async def test_a_checked_plex_address_updates_a_document_but_never_adds_a_server(
     setup_client, monkeypatch
 ):
     """The `plex` arm of `_apply_staged_urls` -- the one whose config key is
     `url` rather than `base_url` -- which nothing asserted, and which the test
-    below turns off."""
+    below turns off.
+
+    It UPDATES and does not ADD (Phase 6 review I2). A checked address
+    correcting the server a document already names is the back navigation this
+    map exists for; a checked address CREATING a `plex:` block would make
+    "Check connection", the one control on that pane framed as a test, write a
+    delivery target the operator never saved -- and `missing_server_setup`
+    would then demand that server's credential to finish, with nothing able to
+    remove it.
+    """
 
     async def answered(system, base_url, credentials, transport=None):
         return setup_checks.CheckOutcome(ok=True, refused=False, failure=None)
@@ -604,7 +613,9 @@ async def test_a_checked_plex_address_is_stamped_when_no_configuration_submit_fo
 
     state = setup_client._transport.app.state.setup
 
-    assert setup_api._apply_staged_urls({}, state)["plex"]["url"] == PLEX_BASE
+    named = setup_api._apply_staged_urls({"plex": {"url": "http://stale:32400"}}, state)
+    assert named["plex"]["url"] == PLEX_BASE
+    assert "plex" not in setup_api._apply_staged_urls({}, state)
 
 
 async def test_a_configuration_submit_wins_over_the_address_the_plex_check_staged(
