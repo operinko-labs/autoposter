@@ -3,9 +3,11 @@
 ``impl`` yields ``(server, seed)`` where ``seed(intent, native_id)`` makes the
 server hold that item. Task 3 adds the Plex arm; Task 14 adds Jellyfin.
 """
+import httpx
 import pytest
 
 from autoposter.intake.arr import RenderIntent
+from autoposter.jellyfin.client import JellyfinApi, JellyfinClient
 from autoposter.plex.client import PlexClient
 from autoposter.servers.base import (
     CAP_LOCK_ARTWORK, ItemNotFound, MediaServer, ServerItemRef, UnsupportedOnServer,
@@ -77,12 +79,69 @@ class _PlexServer:
             raise NotFound(str(key))
 
 
-@pytest.fixture(params=["fake-plex", "fake-jellyfin", "plex"])
+class _JellyfinMock:
+    """A ``MockTransport`` handler backing one Movies library, over
+    ``JellyfinClient``: the same VirtualFolders/Items/Images shapes
+    ``tests/test_jellyfin_index.py`` uses. ``seed`` appends a movie dto;
+    uploaded image bytes are recorded and served back by a later GET, which
+    is what makes the ``fetch_artwork`` conformance case work on this arm."""
+
+    def __init__(self):
+        self.movies: list[dict] = []
+        self.images: dict[tuple[str, str], tuple[bytes, str]] = {}
+
+    def seed(self, intent, native_id):
+        self.movies.append({
+            "Id": native_id, "Name": intent.title, "Type": "Movie",
+            "ProductionYear": intent.year,
+            "ProviderIds": {"Tmdb": str(intent.tmdb_id)} if intent.tmdb_id else {},
+            "Path": f"/media/Movies/{intent.title} ({intent.year})/t.mkv",
+        })
+
+    async def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/Library/VirtualFolders":
+            return httpx.Response(200, json=[
+                {"Name": "Movies", "CollectionType": "movies", "Locations": ["/media/Movies"], "ItemId": "lib1"},
+            ])
+        if path == "/Items":
+            params = request.url.params
+            if "searchTerm" in params:
+                hits = [m for m in self.movies if m["Name"] == params["searchTerm"]]
+                return httpx.Response(200, json={"Items": hits})
+            return httpx.Response(200, json={"Items": list(self.movies)})
+        parts = path.split("/")
+        if len(parts) == 3 and parts[1] == "Items":
+            item_id = parts[2]
+            for movie in self.movies:
+                if movie["Id"] == item_id:
+                    return httpx.Response(200, json=movie)
+            return httpx.Response(404)
+        if len(parts) == 5 and parts[1] == "Items" and parts[3] == "Images":
+            item_id, image_type = parts[2], parts[4]
+            if request.method == "POST":
+                self.images[item_id, image_type] = (request.content, request.headers["Content-Type"])
+                return httpx.Response(204)
+            stored = self.images.get((item_id, image_type))
+            if stored is None:
+                return httpx.Response(404)
+            data, content_type = stored
+            return httpx.Response(200, content=data, headers={"Content-Type": content_type})
+        return httpx.Response(404)
+
+
+@pytest.fixture(params=["fake-plex", "fake-jellyfin", "plex", "jellyfin"])
 def impl(request):
     if request.param == "fake-plex":
         server = FakeMediaServer(name="plex")
     elif request.param == "fake-jellyfin":
         server = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    elif request.param == "jellyfin":
+        mock = _JellyfinMock()
+        http = httpx.AsyncClient(transport=httpx.MockTransport(mock.handler))
+        api = JellyfinApi(http, "https://jf.example", api_key="k", version="v1")
+        server = JellyfinClient(api, excluded_libraries=[], library_map={}, replace_thumb_with_backdrop=False)
+        return server, mock.seed
     else:
         section = _PlexSection()
         server = PlexClient(_PlexServer(section), excluded_libraries=[])

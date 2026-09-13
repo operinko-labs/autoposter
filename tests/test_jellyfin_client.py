@@ -3,8 +3,8 @@ Every path and parameter here is quoted from that document; nothing is recalled.
 import httpx
 import pytest
 
-from autoposter.jellyfin.client import IMAGE_SLOT, JELLYFIN_CAPABILITIES, JellyfinApi
-from autoposter.servers.base import CAP_LOCK_ARTWORK
+from autoposter.jellyfin.client import IMAGE_SLOT, JELLYFIN_CAPABILITIES, JellyfinApi, JellyfinClient
+from autoposter.servers.base import CAP_LOCK_ARTWORK, ServerItemRef
 
 BASE = "https://jf.example"
 
@@ -185,3 +185,26 @@ async def test_image_infos_is_the_per_item_image_listing():
     async with http:
         infos = await api.image_infos("m1")
     assert infos == [{"ImageType": "Primary", "Width": 300}]
+
+
+async def test_upload_artwork_routes_kinds_to_slots_and_thumb_when_asked():
+    posted = []
+    async def handler(request):
+        posted.append(request.url.path)
+        return httpx.Response(204)
+    api, http = _api(handler)
+    client = JellyfinClient(api, excluded_libraries=[], library_map={}, replace_thumb_with_backdrop=True)
+    ref = ServerItemRef("jellyfin", "m1", "Movies", "movie")
+    async with http:
+        await client.upload_artwork(ref, b"jpg", "background", lock=False)
+        await client.upload_artwork(ref, b"jpg", "poster", lock=False)
+    assert posted == ["/Items/m1/Images/Backdrop", "/Items/m1/Images/Thumb", "/Items/m1/Images/Primary"]
+
+
+async def test_lock_true_is_refused_not_ignored():
+    from autoposter.servers.base import UnsupportedOnServer
+    api, http = _api(lambda r: httpx.Response(204))
+    client = JellyfinClient(api, [], {}, False)
+    async with http:
+        with pytest.raises(UnsupportedOnServer):
+            await client.upload_artwork(ServerItemRef("jellyfin", "m1", "Movies", "movie"), b"", "poster", lock=True)

@@ -21,7 +21,7 @@ from autoposter.api.dashboard_stream import StatusBroadcaster
 from autoposter.api.errors import validation_error_without_input
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
-from autoposter.api.version import ReleasePoller
+from autoposter.api.version import ReleasePoller, _running_version
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
@@ -34,6 +34,7 @@ from autoposter.facts.tmdb_budget import TmdbRateBudget
 from autoposter.facts.tmdb_facts import TMDBFactsClient
 from autoposter.intake.arr import RenderIntent
 from autoposter.intake.routes import router
+from autoposter.jellyfin.health import JellyfinHealth
 from autoposter.notify.dispatch import NullNotifier, build_notifier
 from autoposter.plex.client import PlexClient
 from autoposter.plex.health import PlexHealth
@@ -241,8 +242,12 @@ def create_app(
                 refresh_interval=config.plex.token_refresh_interval_seconds,
                 refresh_enabled=config.plex.token_refresh_enabled,
             )
-        # Task 15 adds JellyfinHealth here, behind `if "jellyfin" in
-        # app.state.servers:` -- jellyfin/health.py does not exist until then.
+        if "jellyfin" in app.state.servers:
+            health_by_server["jellyfin"] = JellyfinHealth(
+                config.jellyfin.url, secrets.jellyfin_api_key, http,
+                liveness_interval=config.jellyfin.liveness_interval_seconds,
+                version=_running_version(),
+            )
         app.state.server_health = health_by_server
         app.state.plex_health = health_by_server.get("plex")
         # Check once before workers start: a service booting during an outage

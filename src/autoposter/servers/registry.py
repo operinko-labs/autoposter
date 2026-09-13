@@ -54,11 +54,13 @@ def build_servers(config, secrets, http) -> Servers:
 
     Plex via ``_LazyPlexServer`` (moved to ``plex/client.py`` so this module
     does not have to import ``main.py`` -- the circular import that shape
-    would otherwise create). Jellyfin is stubbed until Task 14 lands the
-    client: a ``jellyfin:`` block is accepted by Task 10's config already, so
-    this raises rather than silently building nothing, which is what lets
-    Phase 3 (this task) merge ahead of Phase 4.
+    would otherwise create). Jellyfin via ``JellyfinApi``/``JellyfinClient``
+    (jellyfin/client.py) -- ``http`` may be ``None`` in a test app that
+    builds a registry without ever making a call; ``JellyfinApi`` only
+    touches it on use.
     """
+    from autoposter.api.version import _running_version
+    from autoposter.jellyfin.client import JellyfinApi, JellyfinClient
     from autoposter.plex.client import PlexClient, _LazyPlexServer
 
     by_name: dict[str, MediaServer] = {}
@@ -69,7 +71,11 @@ def build_servers(config, secrets, http) -> Servers:
             http=http, base_url=config.plex.url, token=secrets.plex_token,
         )
     if config.jellyfin is not None:
-        raise NotImplementedError("the Jellyfin client lands in Task 14")
+        api = JellyfinApi(http, config.jellyfin.url, secrets.jellyfin_api_key, version=_running_version())
+        by_name["jellyfin"] = JellyfinClient(
+            api, config.jellyfin.excluded_libraries, config.jellyfin.library_map,
+            config.jellyfin.replace_thumb_with_backdrop,
+        )
     return Servers(by_name)
 
 

@@ -18,11 +18,20 @@ logger = logging.getLogger(__name__)
 
 
 class JellyfinHealth:
-    def __init__(self, url: str, api_key: str, http: httpx.AsyncClient, liveness_interval: float = 60):
+    def __init__(
+        self, url: str, api_key: str, http: httpx.AsyncClient, liveness_interval: float = 60,
+        version: str | None = None,
+    ):
         self._url = url.rstrip("/")
         self._api_key = api_key
         self._http = http
         self._liveness_interval = liveness_interval
+        # Read once, at construction, like ReleasePoller's own running_version:
+        # the header's Version="..." is stamped once per process, never per
+        # poll (api/version.py's _running_version reads an env var baked into
+        # the image, which cannot change while the process runs).
+        from autoposter.api.version import _running_version
+        self._version = version if version is not None else _running_version()
 
         # Optimistic default, same reasoning as PlexHealth: a real check runs
         # before workers start (app.py's lifespan).
@@ -36,7 +45,7 @@ class JellyfinHealth:
         # JellyfinApi for its header format, never its transport, and the
         # local import keeps that the only coupling between the two files.
         from autoposter.jellyfin.client import JellyfinApi
-        return JellyfinApi(self._http, self._url, self._api_key, "health").headers()
+        return JellyfinApi(self._http, self._url, self._api_key, self._version).headers()
 
     async def check_liveness(self) -> None:
         """Poll the configured Jellyfin server. Updates ``healthy`` and
