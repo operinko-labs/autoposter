@@ -1766,20 +1766,27 @@ async def apply_metadata(
             # budget nor takes it out of the run. The failure is still
             # recorded -- this is the only place that records one -- it is
             # only the RE-ARM that waits for the run to finish.
+            #
+            # And with it the HORIZON: `keep_next_attempt` leaves a row inside
+            # an open run on the `next_attempt_at` that run gave it, because
+            # the run's drain owns its timing (spec §3) and pushing it six
+            # hours out from here would stall a row the run is still counting.
             existing = (await session.execute(
                 select(MetadataWrite.status, MetadataWrite.run_id).where(
                     MetadataWrite.item_id == media_item_id, MetadataWrite.server == name,
                 )
             )).one_or_none()
+            in_open_run = (
+                existing is not None and await _run_is_open(session, existing.run_id)
+            )
             re_armed = (
-                existing is not None
-                and existing.status == "failed"
-                and not await _run_is_open(session, existing.run_id)
+                existing is not None and existing.status == "failed" and not in_open_run
             )
             await deliveries.record_metadata(
                 session, media_item_id, name, "pending",
                 detail=deliveries.failure_detail(exc), retry_in=deliveries.RETRY_SECONDS,
                 reset_attempts=re_armed, leave_run=re_armed,
+                keep_next_attempt=in_open_run,
             )
 
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:
@@ -2342,13 +2349,20 @@ async def deliver(
                     )
                 ).one_or_none()
                 existing_status = existing.status if existing is not None else None
-                if existing is not None and await _run_is_open(session, existing.run_id):
-                    # A row an in-flight catch-up armed is already pending
-                    # under that run (spec §3). Left alone entirely: re-arming
-                    # it would take it out of a run that is still counting it
-                    # and still able to cancel it.
-                    continue
                 if existing_status in (None, "pending", "failed"):
+                    if existing is not None and await _run_is_open(session, existing.run_id):
+                        # A row an in-flight catch-up armed is already pending
+                        # under that run (spec §3). Left alone entirely:
+                        # re-arming it would take it out of a run that is still
+                        # counting it and still able to cancel it.
+                        #
+                        # INSIDE this branch, not above it: nothing clears
+                        # `run_id` on a terminal outcome, so an `uploaded` row
+                        # a catch-up once touched carries its run id for ever
+                        # -- and asking about that run on every full pass, for
+                        # a row that could not be re-armed anyway, would be one
+                        # extra SELECT per settled row per pass, for ever.
+                        continue
                     # A re-arm, not an attempt: this pass composed no new
                     # bytes for this server, so nothing was actually tried
                     # against it -- only the retry pass below actually
