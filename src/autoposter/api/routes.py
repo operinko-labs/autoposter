@@ -35,6 +35,7 @@ from autoposter.api.manual import router as manual_router
 from autoposter.api.mismatches import router as mismatches_router
 from autoposter.api.playlists import router as playlists_router
 from autoposter.api.secret_rotation import router as secret_rotation_router
+from autoposter.api.secrets_api import router as secrets_api_router
 from autoposter.api.servers import router as servers_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.testing import router as testing_router
@@ -282,6 +283,13 @@ router.include_router(item_overrides_router)
 # it safe -- refuse unless `boot` said the secret came from the state file --
 # is the substance of it.
 router.include_router(secret_rotation_router)
+
+# The stored secrets (spec section 3): which names this service reads, where
+# each one's running value comes from, and the set/clear behind the Settings
+# page's buttons. Its own module because it is the one surface that WRITES a
+# credential into this deployment's own store, and the rule that makes it safe
+# -- names and sources leave here, values never do -- is the substance of it.
+router.include_router(secrets_api_router)
 
 # The operator's own overlay images and font faces, as files (roadmap row 55).
 # Its own module because these are the only handlers here that WRITE a
