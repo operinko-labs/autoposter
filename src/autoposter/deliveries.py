@@ -382,7 +382,11 @@ async def retry_pending_deliveries(
         .join(Render, Render.id == RenderDelivery.render_id)
         .join(MediaItem, MediaItem.id == Render.item_id)
         .where(RenderDelivery.status == "pending", RenderDelivery.next_attempt_at <= now)
-        .order_by(RenderDelivery.next_attempt_at)
+        # `, id`: a catch-up stamps thousands of rows with ONE timestamp, and
+        # without a tiebreak which 500 of them a pass takes is arbitrary --
+        # which makes a catch-up's drain unobservable and unrepeatable, and
+        # Phase C's progress reporting reads exactly that drain.
+        .order_by(RenderDelivery.next_attempt_at, RenderDelivery.id)
         .limit(500),
         RenderDelivery,
     ))).all()
@@ -390,7 +394,7 @@ async def retry_pending_deliveries(
         select(MetadataWrite, MediaItem)
         .join(MediaItem, MediaItem.id == MetadataWrite.item_id)
         .where(MetadataWrite.status == "pending", MetadataWrite.next_attempt_at <= now)
-        .order_by(MetadataWrite.next_attempt_at)
+        .order_by(MetadataWrite.next_attempt_at, MetadataWrite.id)
         .limit(500),
         MetadataWrite,
     ))).all()

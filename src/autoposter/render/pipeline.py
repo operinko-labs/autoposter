@@ -1886,9 +1886,10 @@ async def compose_badged_bytes(
     The COMPOSE half of the old, single-server ``apply_badges``: it lives
     here, once per render; ``deliver`` (below) fans the
     same bytes out to every configured server. ``retry_pending_deliveries``
-    (``deliveries.py``) calls this too, with neither ``server`` nor ``ref`` --
-    it has no live server object for the item, only the persisted row -- so
-    both are optional.
+    (``deliveries.py``) calls this too, passing the IDENTITY server and its
+    ref -- it re-resolves Plex for the media info and native ratings the
+    badge and the fingerprint need -- but both stay optional, because that
+    pass has neither when the item has no Plex ref.
 
     ``server``/``ref`` are the ONE identity live media info and native
     ratings are sampled from -- still Plex-only (``media_info_from_plex``,
@@ -2340,6 +2341,12 @@ async def deliver(
                 await server.upload_artwork(ref, data, render.art_kind, lock)
             except Exception as exc:
                 logger.warning("badge upload to %s failed for %s", name, ref.native_id, exc_info=True)
+                # Counted, on a row nothing retries: `failed` is terminal
+                # until a re-arm, and `retry_pending_deliveries` selects
+                # `pending` only. Harmless because BOTH re-arm doors below
+                # reset the counter, so the climb never reaches the row that
+                # gets its budget back -- said here rather than left for the
+                # next reader to re-derive.
                 await deliveries.record(
                     session, render.id, name, "failed", detail=deliveries.failure_detail(exc),
                 )
@@ -2351,6 +2358,8 @@ async def deliver(
             if exc is None:
                 continue
             if isinstance(exc, PathMismatch):
+                # Counted on a terminal row, like the upload failure above,
+                # and harmless for the same reason.
                 await deliveries.record(
                     # The same `failure_detail` every other
                     # detail goes through -- category and class name, never
