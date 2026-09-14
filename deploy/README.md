@@ -884,17 +884,21 @@ failure, so the delivery is recorded `pending` against that one server instead
 of being retried inline, and a scheduled pass picks it up.
 
 `scheduler.pending_deliveries_minutes` (default `15`) is its cadence, floored
-at 60 seconds. Each run takes the due rows — `pending`, with `next_attempt_at`
-in the past, oldest first, at most 500 — and **delivers** each to the one
-server it is still owed to, and only that one: the other servers already have
-their own delivery row, and re-running them here would be a second,
-uncoordinated delivery pass racing the one the next webhook triggers. It does
-read the identity server as well, where that is a different one, to sample the
-media info the badge needs — composing without it would put visibly different
-artwork on the retried server until the next full pass. A row that still does
-not resolve stays `pending` and is deferred six hours. A
-compose or upload that throws is recorded `failed`, with a category and an
-exception class name and never a URL. One row's own failure never takes the
+at 60 seconds. It retries both outcome tables: artwork rows in
+`render_deliveries` and metadata rows in `metadata_writes` (see "Per-server
+outcomes and catch-up" below). Each run takes the due rows — `pending`, with
+`next_attempt_at` in the past, oldest first, at most 500 of each table — and
+**delivers** or **writes** each to the one server it is still owed to, and
+only that one: the other servers already have their own row, and re-running
+them here would be a second, uncoordinated pass racing the one the next
+webhook triggers. It does read the identity server as well, where that is a
+different one, to sample the media info the badge needs — composing without it
+would put visibly different artwork on the retried server until the next full
+pass. A row that still does not resolve stays `pending` and is deferred six
+hours, at no cost to its budget. A compose, upload or write that throws spends
+one of the row's attempts and records the reason — a category and an exception
+class name, never a URL — and the row is marked `failed` once
+`scheduler.delivery_attempts` is spent. One row's own failure never takes the
 rest of the pass down with it.
 
 The per-server rows roll up into the render's `upload_status`, so every
@@ -917,8 +921,12 @@ server. Artwork lives in `render_deliveries`, one row per render and server;
 metadata in `metadata_writes`, one row per item and server. A row reads
 `uploaded` or `written` when the server took it, `skipped` with the reason
 when an exemption or a `write_to_<server>` / `upload_to_<server>` switch
-stopped it, `pending` when the server refused it or has not scanned the file
-yet, and `failed` when the retry budget ran out.
+stopped it, and `pending` when the server has not scanned the file yet or
+refused a metadata write. `failed` has two roads into it: an upload that
+throws during a full pass, and an item whose file path maps into none of that
+server's library roots, are `failed` at once — neither is a wait, and no retry
+fixes a mount mismatch — while a `pending` row becomes `failed` when its
+retry budget runs out.
 
 `absent` is the fifth status, and it is decided once per library and server
 rather than once per item attempt: a library a server does not carry will
@@ -967,9 +975,10 @@ It is visible in three places: its own dashboard tile beside `failed`; a
 sentence and when it finished; and the per-server table on an item page, which
 shows every server's artwork and metadata status side by side, with one
 neutral line for a server that does not carry the item's library. The panel
-reads `GET /api/actions/job-warnings?limit=&offset=`, which answers the same
-shape the parked-jobs listing does — `{"jobs": [...], "total": n}`, newest
-first, `limit` 50 by default and 200 at most.
+reads `GET /api/actions/job-warnings?limit=&offset=`, which answers
+`{"jobs": [...], "total": n}` — the same per-job fields the parked-jobs
+listing carries, with the count beside them — newest first, `limit` 50 by
+default and 200 at most.
 
 ### Catching one server up
 
@@ -1026,8 +1035,7 @@ the pending-deliveries cadence (`scheduler.pending_deliveries_minutes`, 15
 minutes) and is floored at 60 seconds, so an explicit `0` is read as a request
 for the fastest drain there is and becomes that floor. The drain job looks
 every `scheduler.catch_up_poll_seconds` (default `60`, also floored at 60
-seconds)
-and honours each open run's own cadence, which is why the poll setting bounds
+seconds) and honours each open run's own cadence, which is why the poll bounds
 only how finely a cadence can be met. The drain hands each batch to the
 ordinary pending-deliveries pass, scoped to the run, so a catch-up shares the
 per-row containment, the per-library gates and the attempt budget with every
@@ -1270,9 +1278,9 @@ adds is a way to read exactly four routes without logging in:
   one
 - `GET /api/stats/storage` — how many artifacts this service has rendered per
   library and art kind, and how many bytes they occupy
-- `GET /api/stats/runs` — the recent run history: when each scheduled pass and
-  each full pass started and finished, how long it took, and what the worker
-  pool finished inside a full pass's window
+- `GET /api/stats/runs` — the recent run history: when each scheduled pass,
+  full pass and catch-up started and finished, how long it took, and what the
+  worker pool finished inside a full pass's window
 
 Everything else — the config, the logs, items, artwork, every write — still
 answers a key with `401`, the same `401` it gives a request with no
@@ -1339,9 +1347,9 @@ the key never crosses the ingress.
           format: number
 ```
 
-`jobs_by_state` always carries all seven states (`pending`, `running`,
-`deferred`, `done`, `failed`, `parked`, `dismissed`), so a mapping never
-points at a missing field.
+`jobs_by_state` always carries all eight states (`pending`, `running`,
+`deferred`, `done`, `done_with_warnings`, `failed`, `parked`, `dismissed`), so
+a mapping never points at a missing field.
 
 #### Storage stats (`GET /api/stats/storage`)
 
@@ -1432,8 +1440,9 @@ when a render pass runs, not between polls.
 
 ### Run history (`GET /api/stats/runs`)
 
-Every scheduled pass and every full pass now leaves a row in a `runs` history
-table, and this endpoint serves the most recent ones, newest first:
+Every scheduled pass, every full pass and every catch-up leaves a row in a
+`runs` history table, and this endpoint serves the most recent ones, newest
+first:
 
 ```json
 {
@@ -1446,6 +1455,8 @@ table, and this endpoint serves the most recent ones, newest first:
       "finished_at": "2026-09-05T12:31:04Z",
       "status": "ok",
       "duration_seconds": 12664.0,
+      "server": null,
+      "detail": "drained: 15940 processed, 12 failed, 8 deferred",
       "rendered": {"poster": 12, "season_poster": 0, "background": 3, "title_card": 0},
       "processed": 15940,
       "failed": 12,
@@ -1469,24 +1480,30 @@ Four rules govern what these numbers mean:
   report what the worker pool *finished between the run's start and its end*.
   A webhook that arrives mid-drain lands in the count; an item that was already
   queued when the pass began does not.
-- **They are stamped for full passes only.** A scheduled job's window overlaps
-  whatever the pool happened to be doing, so attributing that work to it would
-  be a number served under a label it does not mean. Every count field on a
-  scheduled run is `null` — "not attributed", never `0`, which would read as
-  "this pass did nothing".
+- **They are stamped for full passes, and for catch-ups on their own terms.**
+  A scheduled job's window overlaps whatever the pool happened to be doing, so
+  attributing that work to it would be a number served under a label it does
+  not mean. Every count field on a scheduled run is `null` — "not attributed",
+  never `0`, which would read as "this pass did nothing". A catch-up's window
+  *is* its own work, so it stamps the three counts from the rows it marked:
+  `processed` is the backlog it marked, `failed` what ran out of budget,
+  `deferred` what was still due when it ended. Its `rendered` stays `null`,
+  because a catch-up composites nothing.
 - **`rendered` is composites, `processed` is items.** A render is stamped only
   when one actually happens; the pipeline's fingerprint short-circuit returns
   before the stamp. So a settled library's full pass reports tens of thousands
   `processed` and near-zero `rendered`, correctly — nothing needed
   re-compositing. Both numbers are served because either alone is misleading.
-- **`status` is `running`, `ok`, `failed`, `timed_out` or `interrupted`.** A
-  full pass has no end of its own — the button returns as soon as the work is
-  queued and the queue drains for hours afterwards — so the scheduler closes
+- **`status` is `running`, `ok`, `failed`, `timed_out`, `interrupted` or
+  `cancelled`.** A full pass has no end of its own — the button returns as
+  soon as the work is queued and the queue drains for hours afterwards — so
+  the scheduler closes
   the row when no `process_item` job created at or after the run's start is
   still pending or running. Deferred jobs are counted and do **not** hold the
   run open (a deferred job waits six hours by design), and a pass still
   holding a job after **24 hours** is closed as `timed_out`. `interrupted` is
-  a scheduled run whose successor found it still open after a restart.
+  a scheduled run whose successor found it still open after a restart, and
+  `cancelled` is a catch-up an operator stopped.
 
 **Retention.** The orphaned-asset cleanup pass (`cleanup_days`, default 7)
 trims this table to the newest **500 rows per** job name on every run, while
@@ -2547,15 +2564,21 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   (dry run: report which pairs would merge). The scan itself asks Plex
   nothing, so the dry-run report is readable even while Plex is down.
 - `pending_deliveries_minutes` (default `15`) — cadence for the
-  pending-deliveries retry pass, which re-attempts an artwork delivery a
-  server could not take yet. Minutes rather than days because the thing it
-  waits on is a library scan, not a week's drift. Not gated on Plex, like the
-  drift, cleanup and asset-stats passes above it. See "The pending-deliveries
-  pass" under "Media servers" above for what a run does.
+  pending-deliveries retry pass, which re-attempts an artwork delivery or a
+  metadata write a server could not take yet. Minutes rather than days
+  because the thing it waits on is a library scan, not a week's drift. Not
+  gated on Plex, like the drift, cleanup and asset-stats passes above it. See
+  "The pending-deliveries pass" under "Media servers" above for what a run
+  does.
   `delivery_attempts` (default 8) bounds one row's retries. A row that runs out
   is marked failed and stays visible until the next full pass or a catch-up
   re-arms it. A server that has simply not scanned the file yet does not spend
   that budget — that is a wait, and it has no cap.
+- `catch_up_poll_seconds` (default `60`) — how often the catch-up drain looks
+  for work. Each catch-up run carries its own cadence, so this bounds only how
+  finely that cadence can be honoured, and it is floored at 60 seconds like
+  every other cadence here. See "Catching one server up" under "Media servers"
+  above.
 
 ### Orphaned-asset cleanup: what it can and cannot find
 
