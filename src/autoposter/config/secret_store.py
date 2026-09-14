@@ -85,6 +85,37 @@ def load_key() -> bytes | None:
     return raw
 
 
+def _claim_and_fill(path: Path) -> bytes | None:
+    """Create ``path`` exclusively, fill it with a key, and return what landed.
+
+    ``None`` when the file already existed and holds no key: either a claim
+    another process is still filling, or one it left behind.
+
+    The claim is the exclusive create, and it is what makes an existing key
+    untouchable -- the read above this is only an optimisation, and a key that
+    appears between that read and this call must not be written over.
+    """
+    try:
+        os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _KEY_FILE_MODE))
+    except FileExistsError:
+        # Someone else holds it. Their key is the one every reader will agree
+        # on, so take whatever is there rather than writing a second one.
+        return load_key()
+    try:
+        write_state_file(path, Fernet.generate_key().decode("ascii") + "\n")
+    except BaseException:
+        # Including KeyboardInterrupt. An empty claim is a file no later call
+        # can get past -- the exclusive create fails against it and there is no
+        # key to read -- so a full or read-only volume would wedge key creation
+        # on this deployment permanently. Unlinking is what keeps a transient
+        # write failure transient.
+        path.unlink(missing_ok=True)
+        raise
+    # The PATH, never the key.
+    logger.info("generated the stored-secret encryption key at %s", path)
+    return load_key()
+
+
 def load_or_create_key() -> bytes:
     """The Fernet key, generated on the first WRITE that needs one.
 
@@ -102,6 +133,12 @@ def load_or_create_key() -> bytes:
     secrets file has: a half-written key makes every stored secret unreadable
     at once.
 
+    An empty file is a claim with no key in it. The second attempt below is
+    what stops one becoming permanent: a writer killed between the claim and
+    the write leaves a file that every later call would fail the exclusive
+    create against and find nothing in, so no secret could ever be stored
+    again without an operator deleting it by hand.
+
     Not cached in a module global. The state directory is an environment
     variable the suite repoints per test, and a cached key would leak one
     test's volume into the next. Reading a 44-byte file per call is nothing
@@ -112,24 +149,33 @@ def load_or_create_key() -> bytes:
     if existing is not None:
         return existing
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, _KEY_FILE_MODE))
-    except FileExistsError:
-        # Another process claimed it between the read above and this call. Its
-        # key is the one every reader will agree on, so fall through and take
-        # whatever it wrote.
-        pass
-    else:
-        write_state_file(path, Fernet.generate_key().decode("ascii") + "\n")
-        # The PATH, never the key.
-        logger.info("generated the stored-secret encryption key at %s", path)
-    landed = load_key()
-    if landed is None:
-        # The claim exists but is still empty: whoever made it has not finished
-        # writing. Loud, because the alternative is encrypting a credential
-        # under a key that is about to be replaced.
-        raise ValueError(f"{path} was claimed by another process but holds no key yet")
-    return landed
+    landed = _claim_and_fill(path)
+    if landed is not None:
+        return landed
+    # A claim with no key in it. Take it for this process and fill it.
+    path.unlink(missing_ok=True)
+    landed = _claim_and_fill(path)
+    if landed is not None:
+        return landed
+    # Still empty: another process holds the claim and is mid-write. Loud and
+    # self-clearing -- by the time this is retried the winner's key is on disk
+    # -- because the alternative is encrypting a credential under a key that is
+    # about to be replaced.
+    raise ValueError(f"{path} exists and holds no key; remove that file and try again")
+
+
+def _unstorable_reason(value: str) -> str | None:
+    """Why this deployment cannot store ``value``, or ``None`` when it can.
+
+    A function rather than two raises, because ``store_secret`` has to know
+    whether a ``ValueError`` from ``encrypt_secret`` was about the VALUE or
+    about the KEY FILE, and the two are indistinguishable once raised.
+    """
+    if len(value) > MAXIMUM_SECRET_LENGTH:
+        return f"a secret may be at most {MAXIMUM_SECRET_LENGTH} characters"
+    if not is_storable(value):
+        return "a secret cannot be stored as it stands"
+    return None
 
 
 def encrypt_secret(value: str) -> str:
@@ -149,11 +195,13 @@ def encrypt_secret(value: str) -> str:
     ``secrets.env``, when the two are meant to be interchangeable sources for
     the same name. The length is asked first only so that the common refusal
     says what the bound is.
+
+    Raises ``ValueError`` for a value it refuses and, from
+    ``load_or_create_key``, for a key file it cannot read or create.
     """
-    if len(value) > MAXIMUM_SECRET_LENGTH:
-        raise ValueError(f"a secret may be at most {MAXIMUM_SECRET_LENGTH} characters")
-    if not is_storable(value):
-        raise ValueError("a secret cannot be stored as it stands")
+    reason = _unstorable_reason(value)
+    if reason is not None:
+        raise ValueError(reason)
     return Fernet(load_or_create_key()).encrypt(value.encode("utf-8")).decode("ascii")
 
 
@@ -167,6 +215,15 @@ def _decrypt(key: bytes, token: str) -> str:
 
 
 def decrypt_secret(token: str) -> str:
+    """The plaintext behind ``token``.
+
+    A caller has two failures to handle, and they are different faults:
+    ``UndecryptableSecret`` when this volume's key cannot open the TOKEN -- a
+    row written on another volume, a corrupt row, or a volume with no key at
+    all -- and ``ValueError`` when the KEY FILE itself is unreadable or is not
+    a key, which names the file and is the operator's to fix rather than the
+    row's. A route that catches only the first answers 500 to the second.
+    """
     key = load_key()
     if key is None:
         raise UndecryptableSecret("this volume holds no stored-secret encryption key")
@@ -185,7 +242,11 @@ async def load_stored_secrets(session: AsyncSession) -> dict[str, str]:
     A row this key cannot open is SKIPPED with one warning naming the name. A
     key that is missing or unusable is instead ONE warning for the whole table,
     naming the FILE and the NUMBER of rows: per-row warnings there would say
-    the same thing once per credential, and the fault is not the rows'.
+    the same thing once per credential, and the fault is not the rows'. Both of
+    the exceptions a caller of ``decrypt_secret`` must handle --
+    ``UndecryptableSecret`` for a token and ``ValueError`` for the key file --
+    are answered here rather than raised, which is what "nothing raises out of
+    here" means in practice.
     """
     rows = (await session.execute(select(StoredSecret))).scalars().all()
     if not rows:
@@ -231,16 +292,20 @@ async def store_secret(session: AsyncSession, name: str, value: str) -> None:
     positive statement that this name is set, and an empty one would have the
     Settings page report it as stored while the resolver treats it as absent.
     Clearing a name is ``clear_secret``.
+
+    A refusal names the variable, because a caller setting several at once
+    needs to know which. A ``ValueError`` about the KEY FILE travels on
+    untouched: it is not this value's fault, its message names the file, and
+    rewriting it would tell the operator their token is malformed when the
+    fault is the volume's.
     """
     if not value:
         raise ValueError(f"{name} cannot be stored as an empty value")
-    try:
-        ciphertext = encrypt_secret(value)
-    except ValueError as exc:
-        # The refusal is about this NAME's value, and a caller setting several
-        # at once needs to know which. The same sentence ``render_secrets_file``
-        # uses, and like it the value is never quoted back.
-        raise ValueError(f"{name} cannot be stored as it stands") from exc
+    if _unstorable_reason(value) is not None:
+        # The same sentence ``render_secrets_file`` uses, and like it the
+        # value is never quoted back.
+        raise ValueError(f"{name} cannot be stored as it stands")
+    ciphertext = encrypt_secret(value)
     statement = insert(StoredSecret).values(name=name, ciphertext=ciphertext)
     # ``updated_at`` is set explicitly. The column's ``onupdate`` is applied to
     # a Core UPDATE, and the SET clause of an upsert is not one -- without this

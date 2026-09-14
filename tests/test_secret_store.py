@@ -67,6 +67,77 @@ def test_the_key_returned_is_the_key_on_disk(state, monkeypatch):
     assert secret_store.secret_key_path().read_bytes().strip() == winner
 
 
+def test_an_existing_key_is_never_written_over(state, monkeypatch):
+    planted = Fernet.generate_key()
+    state.mkdir(parents=True, exist_ok=True)
+    secret_store.secret_key_path().write_bytes(planted + b"\n")
+
+    def no_key_may_be_written(path, text):
+        raise AssertionError("a volume that has a key must not be given a second one")
+
+    monkeypatch.setattr(secret_store, "write_state_file", no_key_may_be_written)
+    assert secret_store.load_or_create_key() == planted
+    assert secret_store.secret_key_path().read_bytes() == planted + b"\n"
+
+
+def test_a_key_that_arrives_before_the_create_is_not_written_over(state, monkeypatch):
+    """The exclusive create, not the read above it, is what protects a key.
+
+    The stub is the other half of the race the re-read covers: another process
+    landed its key after this call looked and found nothing. Without
+    ``O_EXCL`` the create would succeed and ``write_state_file`` would replace
+    that key, leaving every row written under it unreadable.
+    """
+    planted = Fernet.generate_key()
+    state.mkdir(parents=True, exist_ok=True)
+    secret_store.secret_key_path().write_bytes(planted + b"\n")
+
+    real_load_key = secret_store.load_key
+    looks = []
+
+    def blind_to_the_first_look():
+        looks.append(None)
+        return None if len(looks) == 1 else real_load_key()
+
+    monkeypatch.setattr(secret_store, "load_key", blind_to_the_first_look)
+    assert secret_store.load_or_create_key() == planted
+    assert secret_store.secret_key_path().read_bytes() == planted + b"\n"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_key_file_is_a_stale_claim_rather_than_a_wedge(state, session_factory):
+    """A claim its writer never filled must not stop this deployment forever.
+
+    The exclusive create fails against such a file and there is no key to read,
+    so without taking it over no secret could ever be stored again without an
+    operator deleting it by hand.
+    """
+    state.mkdir(parents=True, exist_ok=True)
+    secret_store.secret_key_path().write_bytes(b"")
+    async with session_factory() as session:
+        await secret_store.store_secret(session, NAME, "tok")
+        await session.commit()
+    assert secret_store.load_key() is not None
+    async with session_factory() as session:
+        assert await secret_store.load_stored_secrets(session) == {NAME: "tok"}
+
+
+def test_a_write_that_fails_leaves_no_claim_behind(state, monkeypatch):
+    """A full or read-only volume is a transient fault, and must stay one."""
+    real_write_state_file = secret_store.write_state_file
+
+    def the_volume_is_full(path, text):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(secret_store, "write_state_file", the_volume_is_full)
+    with pytest.raises(OSError):
+        secret_store.load_or_create_key()
+    assert not secret_store.secret_key_path().exists()
+
+    monkeypatch.setattr(secret_store, "write_state_file", real_write_state_file)
+    assert secret_store.load_or_create_key(), "the next attempt is not wedged"
+
+
 def test_a_value_is_unreadable_without_the_key(state, tmp_path, monkeypatch):
     token = secret_store.encrypt_secret("a-real-token")
     assert "a-real-token" not in token
@@ -219,3 +290,20 @@ async def test_a_refused_value_is_reported_against_its_name(state, session_facto
         with pytest.raises(ValueError, match=NAME) as refused:
             await secret_store.store_secret(session, NAME, "x" * 5000)
     assert "xxx" not in str(refused.value), "the name, never the value"
+
+
+@pytest.mark.asyncio
+async def test_a_key_file_fault_is_not_reported_as_a_bad_value(state, session_factory):
+    """The operator is told which of the two is wrong.
+
+    Naming the variable for a fault that belongs to the key file would send
+    someone to check a token that is perfectly good.
+    """
+    state.mkdir(parents=True, exist_ok=True)
+    secret_store.secret_key_path().write_text("this-is-not-a-key\n", encoding="utf-8")
+    async with session_factory() as session:
+        with pytest.raises(ValueError) as refused:
+            await secret_store.store_secret(session, NAME, "a-fine-token")
+    assert str(secret_store.secret_key_path()) in str(refused.value)
+    assert "cannot be stored as it stands" not in str(refused.value)
+    assert "a-fine-token" not in str(refused.value)
