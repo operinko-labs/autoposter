@@ -37,6 +37,7 @@ from autoposter.config.overrides import (
     load_effective_config,
     load_store,
     merge_overrides,
+    seed_store,
 )
 from autoposter.config.schema import Secrets
 from autoposter.db.models import (
@@ -112,6 +113,25 @@ async def auth_headers(client):
 
 
 TEXT_EDIT = {"artwork": {"title_card": {"season_label": "Kausi"}}}
+
+
+@pytest.fixture
+def file_document(config_file) -> dict:
+    """The mounted file's document: the whole configuration, which is also
+    exactly what a seeded store holds."""
+    return yaml.safe_load(config_file.read_text(encoding="utf-8"))
+
+
+def _whole(base: dict, patch: dict) -> dict:
+    """``patch`` over a whole configuration document.
+
+    A store that says it holds the whole configuration validates what arrives
+    on its own, without the mounted file under it -- so a body carrying only
+    the leaves a test cares about would be refused for every required setting
+    it left out, and no page can produce one either. Tests that set up such a
+    store build their documents through here.
+    """
+    return merge_overrides(base, patch)
 
 
 async def _seed_library(session, config) -> None:
@@ -213,18 +233,28 @@ async def test_the_editor_endpoints_require_a_session(client, method, path):
 # --- GET /api/config enrichment ---
 
 
-async def test_get_config_reports_which_paths_are_overridden(client, auth_headers):
+async def test_get_config_serves_a_saved_value_rather_than_marking_it(
+    client, auth_headers
+):
+    """The response carries no provenance any more, and it does not need to:
+    the stored document IS the configuration, so the answer to "what is this
+    set to" is the value on the row and nothing beside it."""
     await client.put(
         "/api/config/overrides", headers=auth_headers,
         json={"document": {"workers": 9, **TEXT_EDIT}},
     )
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == ["artwork.title_card.season_label", "workers"]
+    assert "overridden_paths" not in body
+    assert body["workers"] == 9
+    assert body["artwork"]["title_card"]["season_label"] == "Kausi"
 
 
-async def test_get_config_reports_no_overridden_paths_before_any_edit(client, auth_headers):
+async def test_get_config_carries_an_empty_restart_list_by_default(client, auth_headers):
+    """``restart_paths`` comes off the store's own metadata, so a store nobody
+    has written a restart list into serves an empty one rather than no key --
+    the page renders one shape whatever the row says."""
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == []
+    assert body["restart_paths"] == []
 
 
 async def test_get_config_carries_the_frozen_paths_and_their_reasons(client, auth_headers):
@@ -257,7 +287,7 @@ def _leaf_paths(body: dict, prefix: str = "") -> list[str]:
 
 
 PROVENANCE_KEYS = {
-    "overridden_paths",
+    "restart_paths",
     "frozen_paths",
     "redacted_paths",
     "keep_sentinel",
@@ -293,11 +323,11 @@ async def test_provenance_keys_names_exactly_the_keys_the_response_adds(app, cli
     )
 
 
-def test_the_settings_pages_provenance_keys_match_the_python_set():
+def test_the_frontends_provenance_keys_match_the_python_set():
     """The half a Python-only guard cannot reach: the row's own symptom
     ("renders as an editable field") is a FRONTEND symptom, and
-    ``Settings.tsx:475`` filters the rendered sections by its own copy of this
-    set.
+    ``api/overrides.ts`` filters both the rendered sections and the document
+    every page saves by its own copy of this set.
 
     Reads the source file as text and regexes out the string literals rather
     than parsing TypeScript, so the pin survives reformatting -- the idiom
@@ -305,21 +335,26 @@ def test_the_settings_pages_provenance_keys_match_the_python_set():
     ``ActionCenter.tsx``'s ``ART_KINDS``.
 
     One difference from that idiom, and it is load-bearing: the array's own
-    comment contains a quoted phrase ("Overrides revision"), so ``//`` line
-    comments are stripped before the literals are read. Without that the
-    comment's words would join the set and this test would pass on a broken
-    array.
+    comments may contain quoted phrases, so ``//`` line comments are stripped
+    before the literals are read. Without that the comment's words would join
+    the set and this test would pass on a broken array.
+
+    ``secrets`` is the one key on the TypeScript side that is not on this one,
+    and it is not an oversight either way: it is not a provenance key the
+    handler adds on top of the settings (this set's subject), it is the
+    separate ``Secrets`` model -- and the document a page sends must drop it
+    all the same, because ``merge_overrides`` refuses the key outright.
     """
     import re
 
     frontend = (
-        Path(__file__).parent.parent / "frontend" / "src" / "pages" / "Settings.tsx"
+        Path(__file__).parent.parent / "frontend" / "src" / "api" / "overrides.ts"
     ).read_text(encoding="utf-8")
     match = re.search(r"const PROVENANCE_KEYS = \[([^\]]*)\];", frontend)
-    assert match is not None, "Settings.tsx no longer declares a const PROVENANCE_KEYS = [...]"
+    assert match is not None, "api/overrides.ts no longer declares a const PROVENANCE_KEYS = [...]"
     literals = set(re.findall(r'"([^"]*)"', re.sub(r"//[^\n]*", "", match.group(1))))
 
-    assert literals == PROVENANCE_KEYS
+    assert literals == PROVENANCE_KEYS | {"secrets"}
 
 
 def _wildcarded(path: str) -> str:
@@ -433,7 +468,7 @@ async def test_a_rejected_document_changes_nothing(client, auth_headers, session
     assert app.state.config.version == before, "the running generation was swapped"
     assert app.state.config_holder.current.version == before
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == []
+    assert body["workers"] == app.state.config.workers, "the refused value is served"
 
 
 async def test_an_unknown_key_is_a_422_at_full_depth(client, auth_headers, session):
@@ -610,7 +645,7 @@ async def test_omitting_a_key_reverts_it_to_the_file(client, auth_headers, app):
     )
     assert app.state.config.workers == 5, "the example config's value did not come back"
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == []
+    assert body["workers"] == 5, "the served config still shows the cleared value"
 
 
 # --- saving ---
@@ -988,25 +1023,26 @@ def _seed_document(body: dict) -> dict:
     Mirrored here rather than imagined, because the corruption this section
     guards against is a property of that seeding meeting this response. Kept
     in step with the TypeScript by hand -- there is one rule and it is two
-    lines long: an overridden path contributes its served value, unless the
-    response says the value was redacted, in which case it contributes the
-    sentinel.
+    lines long: the whole served configuration minus the keys that are not
+    settings, and the sentinel wherever the response says the value it served
+    was redacted.
     """
-    redacted = body.get("redacted_paths", [])
     sentinel = body.get("keep_sentinel")
-    document: dict = {}
-    for path in body["overridden_paths"]:
-        if path in redacted and isinstance(sentinel, str):
-            value = sentinel
-        else:
-            value = body
-            for part in path.split("."):
-                value = value[part]
-        target = document
+    document = deepcopy(
+        {key: value for key, value in body.items() if key not in PROVENANCE_KEYS | {"secrets"}}
+    )
+    if not isinstance(sentinel, str):
+        return document
+    for path in body.get("redacted_paths", []):
         parts = path.split(".")
+        target = document
         for part in parts[:-1]:
-            target = target.setdefault(part, {})
-        target[parts[-1]] = value
+            if not isinstance(target, dict) or part not in target:
+                target = None
+                break
+            target = target[part]
+        if isinstance(target, dict) and parts[-1] in target:
+            target[parts[-1]] = sentinel
     return document
 
 
@@ -1014,7 +1050,7 @@ WEBHOOK_URL = "https://kuma.example.com/api/push/s3cr3tPushToken?status=up"
 
 
 async def test_an_unrelated_save_does_not_destroy_a_redacted_override(
-    client, auth_headers, session, app
+    client, auth_headers, session, app, file_document
 ):
     """The corruption repro, end to end and with no mocking.
 
@@ -1024,10 +1060,23 @@ async def test_an_unrelated_save_does_not_destroy_a_redacted_override(
     the sentinel this stores `kuma.example.com` -- a valid string for a
     `str`-typed field, so nothing anywhere reports a problem -- and the push
     token is unrecoverable from the service.
+
+    The store is seeded first, because the seam this guards is the page's:
+    what a page sends is the whole configuration, which only a store that
+    holds one ever receives.
     """
+    async with app.state.session_factory() as setup:
+        await seed_store(setup, file_document)
+        await setup.commit()
+
     await client.put(
         "/api/config/overrides", headers=auth_headers,
-        json={"document": {"notifications": {"enabled": True, "url": WEBHOOK_URL}}},
+        json={
+            "document": _whole(
+                file_document,
+                {"notifications": {"enabled": True, "url": WEBHOOK_URL}},
+            )
+        },
     )
     assert app.state.config.notifications.url == WEBHOOK_URL
 
@@ -1332,7 +1381,7 @@ async def test_a_token_bearing_smart_url_override_is_refused_with_a_token_free_b
     async with session_factory() as session:
         assert (await session.execute(select(ConfigOverride))).scalars().first() is None
     served = (await client.get("/api/config", headers=auth_headers)).json()
-    assert served["overridden_paths"] == []
+    assert served["collections"]["definitions"] == [], "the refused definition is served"
 
 
 # --- The wholesale-replace law (row 138's editor is built on it) ----------
@@ -1424,16 +1473,15 @@ async def test_the_served_config_round_trips_a_definition_the_editor_reads_back(
     client, auth_headers
 ):
     """What the panel's `documentFromConfig` seeds from. The served
-    `collections.definitions` IS the stored array (an override wins the
-    merge), so an editor seeded from the GET writes back what it was given --
-    every key, at full depth."""
+    `collections.definitions` IS the stored array, so an editor seeded from the
+    GET writes back what it was given -- every key, at full depth."""
     await client.put(
         "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
     )
 
     served = (await client.get("/api/config", headers=auth_headers)).json()
 
-    assert "collections.definitions" in served["overridden_paths"]
+    assert len(served["collections"]["definitions"]) == 3
     stored_second = THREE_DEFINITIONS["collections"]["definitions"][1]
     served_second = served["collections"]["definitions"][1]
     for key, value in stored_second.items():
@@ -2177,12 +2225,23 @@ async def test_the_deployment_url_is_served_as_an_editable_leaf(client, auth_hea
 # --- the row's metadata ---
 
 
-async def test_a_first_ever_save_writes_the_store_format(client, auth_headers, session):
-    """The first save on a fresh deployment is an INSERT, and an insert that
-    left the metadata to the column default would label what it just stored a
-    delta -- so the next boot would merge the saved document over the mounted
-    file instead of running it, or refuse it outright on a deployment that has
-    no file."""
+async def test_the_stored_format_says_how_the_document_was_validated(
+    client, auth_headers, session
+):
+    """A save against a store with no row is validated by merging over the
+    mounted file -- there is nothing else it could be a statement about -- so
+    the row it inserts is labelled a delta, and the next boot merges it over
+    that same file and lands on the same configuration.
+
+    Labelling it a whole document instead would be the disagreement this pair
+    exists to prevent: the save would run one configuration and the restart
+    after it would try to build another out of a fragment, failing on the
+    first required setting the fragment does not carry.
+
+    An empty store is not reachable from a booted deployment -- boot seeds the
+    store from the file or serves the setup wizard -- so this is the shape of
+    the rule rather than a state an operator can be in.
+    """
     response = await client.put(
         "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 9}}
     )
@@ -2190,29 +2249,32 @@ async def test_a_first_ever_save_writes_the_store_format(client, auth_headers, s
 
     session.expire_all()
     row = (await session.execute(select(ConfigOverride))).scalar_one()
-    assert row.meta["format"] == STORE_FORMAT
+    assert row.meta.get("format", 1) < STORE_FORMAT
 
 
-async def test_a_save_keeps_the_metadata_it_did_not_write(client, auth_headers, session):
+async def test_a_save_keeps_the_metadata_it_did_not_write(
+    client, auth_headers, session, file_document
+):
     """The restart list lives in the same column as the format. A save is
     about the document; it must not take the rest of the row with it."""
     await session.execute(
         insert(ConfigOverride).values(
             id=1,
-            document={"workers": 9},
+            document=_whole(file_document, {"workers": 9}),
             meta={"format": STORE_FORMAT, "restart_paths": ["plex"]},
         )
     )
     await session.commit()
 
+    saved = _whole(file_document, {"workers": 8})
     response = await client.put(
-        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 8}}
+        "/api/config/overrides", headers=auth_headers, json={"document": saved}
     )
     assert response.status_code == 200, response.text
 
     session.expire_all()
     row = (await session.execute(select(ConfigOverride))).scalar_one()
-    assert row.document == {"workers": 8}
+    assert row.document == saved
     assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}
 
     snapshot = (
@@ -2286,8 +2348,14 @@ async def test_restoring_a_delta_era_snapshot_re_runs_the_merge(
     would store `{"workers": 9}` as the whole configuration and fail
     validation on eight required fields; the restore merges it over the file
     instead, exactly as the delta era did.
+
+    The store is seeded first, because that is the only state such a snapshot
+    can be restored from: a delta-era store is converted to a whole document by
+    the first boot that reads it, and the format-1 snapshot this restores is
+    what that conversion left behind.
     """
     async with session_factory() as session:
+        await seed_store(session, read_config_document(config_file))
         session.add(
             ConfigOverrideSnapshot(
                 document={"workers": 9}, path_count=1, reason="migrate", format=1

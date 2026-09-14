@@ -64,10 +64,14 @@ from autoposter.config.loader import build_config, moved_kinds, read_config_docu
 from autoposter.config.overrides import (
     STORE_FORMAT,
     _read_file_document,
+    _reject_secrets,
+    changed_paths,
     document_paths,
     document_revision,
+    drift_report,
     empty_leaf_paths,
     load_overrides_document,
+    load_store,
     merge_overrides,
     store_contents,
     store_row,
@@ -1632,9 +1636,11 @@ async def get_config(
     already owns.
 
     Carries eight things the editor needs beyond the values themselves.
-    ``overridden_paths`` is the provenance: which of these values come from
-    the database overrides rather than the mounted YAML, so the UI can mark
-    them and offer "revert to base". ``frozen_paths`` maps each restart-only
+    ``restart_paths`` is the settings a save changed that the running process
+    has not picked up, read off the store's own row so the notice outlives the
+    page that caused it -- empty until something writes it there, and served
+    from here so the editor has one shape to render from.
+    ``frozen_paths`` maps each restart-only
     path to the reason a live swap cannot reach it (see config/live.py) --
     sent as data so the editor can flag a field without duplicating this
     project's startup wiring in TypeScript. ``redacted_paths`` and
@@ -1693,7 +1699,7 @@ async def get_config(
     body["secrets"] = {field: _REDACTED for field in secrets.model_dump()}
     async with request.app.state.session_factory() as session:
         try:
-            document = await load_overrides_document(session)
+            document, meta = await load_store(session)
         except ValueError as exc:
             # A hand-edited config_overrides row whose document is not a JSON
             # object -- see load_overrides_document's docstring. An operator
@@ -1702,12 +1708,16 @@ async def get_config(
                 status_code=500,
                 detail="config overrides row is corrupt (not a JSON object); fix or delete it",
             ) from exc
-    body["overridden_paths"] = sorted(document_paths(document))
-    # Computed from the same document `overridden_paths` came from: one extra
-    # hash, no extra query, and it arrives with the seed -- which is exactly
-    # the invariant a stale-write check needs, because a page that seeded from
-    # this response holds this token for what it seeded from.
+    # No `overridden_paths`. The stored document IS the configuration, so
+    # "which of these came from the database" has no answer worth rendering --
+    # every value did, and the question the page asks of a row is what the
+    # setting is set to, which is the value beside it.
+    #
+    # One extra hash, no extra query, and it arrives with the seed -- which is
+    # exactly the invariant a stale-write check needs, because a page that
+    # seeded from this response holds this token for what it seeded from.
     body["overrides_revision"] = document_revision(document)
+    body["restart_paths"] = list(meta.get("restart_paths") or [])
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
     body["redacted_paths"] = list(REDACTED_PATHS)
     body["keep_sentinel"] = KEEP_SENTINEL
@@ -1784,20 +1794,13 @@ def _dotted(loc: tuple) -> str:
 
 
 def _changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
-    """Dotted paths whose value differs between two config dumps.
+    """``config.overrides.changed_paths``.
 
-    Both directions: a key the candidate config no longer overrides has still
-    changed, because reverting to the file's value is a change like any other.
+    Kept as a name because three call sites and two tests spell it this way.
+    The walk itself lives beside the store, so the drift report and the
+    stale-save 409 cannot count different things.
     """
-    changed: list[str] = []
-    for key in set(before) | set(after):
-        where = f"{prefix}.{key}" if prefix else str(key)
-        old, new = before.get(key), after.get(key)
-        if isinstance(old, dict) and isinstance(new, dict):
-            changed.extend(_changed_paths(old, new, where))
-        elif old != new:
-            changed.append(where)
-    return changed
+    return changed_paths(before, after, prefix)
 
 
 def _restart_required(before: Config, after: Config) -> list[str]:
@@ -1943,6 +1946,16 @@ async def _validated_generation(
     change what the restored configuration means, so the one caller restoring
     a delta turns the guard off instead of feeding it a document it never
     wrote.
+
+    What the generation is built FROM depends on what the store holds, and the
+    two shapes are not interchangeable. A store that holds the whole
+    configuration is handed straight to ``build_config``, with the mounted file
+    never opened: it is not a layer under this document, and merging over it
+    would agree with the next boot only while the file still matched the seed
+    -- and would fail outright on a deployment that has removed the file, which
+    is the end state the store exists to make possible. A row still holding a
+    delta merges over the file exactly as it always did, because that is what a
+    delta means.
     """
     # First, so that everything below -- the unknown-key walk, the merge and
     # pydantic -- sees real values rather than a marker they would each
@@ -1972,13 +1985,31 @@ async def _validated_generation(
             detail=[_error(path, "unknown setting") for path in sorted(unknown)],
         )
 
-    empty = empty_leaf_paths(document) if check_empty_leaves else []
+    # Which shape the store holds, and therefore which of the two arms below
+    # this document belongs to. Read here rather than taken from the locked
+    # read in `_persist_and_swap`, which runs after this and which a preview
+    # never reaches at all: the format only ever moves 1 -> 2, and only at
+    # boot, so a read that raced one would at worst merge a document that no
+    # longer needed merging and be refused by the same validator either way.
+    async with request.app.state.session_factory() as session:
+        _stored, meta = await load_store(session)
+    whole_document = meta.get("format") == STORE_FORMAT
+
+    empty = (
+        empty_leaf_paths(document)
+        if check_empty_leaves and not whole_document
+        else []
+    )
     if empty:
         # {} is not a leaf document_paths can report honestly (its own
-        # isinstance(value, dict) and value check is false for it) -- it
-        # would report the WHOLE section as one override and seed the editor
-        # into storing it wholesale on the next save. No caller can produce
-        # this today; refusing it is the honest answer either way.
+        # isinstance(value, dict) and value check is false for it), so in a
+        # DELTA it would report the WHOLE section as one override. In a whole
+        # document there is nothing to misreport: the page sends back a model
+        # dump, and `{}` in one is the value the model holds -- `libraries`
+        # with no library overrides is spelled exactly that way in the
+        # document every seeded store starts from. Refusing those would refuse
+        # every save on every seeded deployment, and dropping them would
+        # change what an explicitly empty mapping means.
         raise HTTPException(
             status_code=422,
             detail=[
@@ -1987,14 +2018,40 @@ async def _validated_generation(
             ],
         )
 
-    base = await asyncio.to_thread(read_config_document, request.app.state.config_path)
-    await _definitions_guard(request, base, document)
+    if whole_document:
+        # The document IS the configuration, so it is validated on its own and
+        # the mounted file is not opened. The same shape `config/overrides.py`
+        # validates a stored document with at boot, so this save and the
+        # restart after it build the same generation by construction.
+        #
+        # `merge_overrides` is what refuses a `secrets` key on the other arm;
+        # this arm has no merge, so it makes the same refusal directly.
+        try:
+            _reject_secrets(document)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail=[_error("secrets", str(exc))]
+            ) from exc
+        candidate = document
+    else:
+        # A row still holding a delta, and an empty store -- the pre-seed
+        # state, whose unstated values all still come from the file. Both are
+        # statements ABOUT the mounted document, so both merge over it.
+        #
+        # The definitions guard belongs to this arm alone for the same reason:
+        # what it refuses is an overrides list shadowing the file's list
+        # wholesale, and a whole-document store has no file layer under it to
+        # shadow.
+        base = await asyncio.to_thread(read_config_document, request.app.state.config_path)
+        await _definitions_guard(request, base, document)
+        try:
+            candidate = merge_overrides(base, document)
+        except ValueError as exc:  # a `secrets` key anywhere in the document
+            raise HTTPException(
+                status_code=422, detail=[_error("secrets", str(exc))]
+            ) from exc
     try:
-        merged = merge_overrides(base, document)
-    except ValueError as exc:  # a `secrets` key anywhere in the document
-        raise HTTPException(status_code=422, detail=[_error("secrets", str(exc))]) from exc
-    try:
-        return document, build_config(merged)
+        return document, build_config(candidate)
     except ValidationError as exc:
         raise HTTPException(
             status_code=422,
@@ -2005,9 +2062,9 @@ async def _validated_generation(
 def _drop_refusal(stored: dict, document: dict) -> str | None:
     """Why this write is too destructive to do unasked, or None.
 
-    Counted in ``document_paths`` units -- exactly what ``GET /api/config``
-    reports as ``overridden_paths`` -- so the operator, the API and this
-    sentence all count the same things.
+    Counted in ``document_paths`` units -- the leaves the stored document
+    actually sets -- and the paths it names are the ones this sentence lists,
+    so the operator and the refusal count the same things.
     """
     before = set(document_paths(stored))
     if not before:
@@ -2077,9 +2134,10 @@ async def _persist_and_swap(
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:
-        # The row itself, not just what it says: whether one exists at all is
-        # what decides the format stamp below, and a row holding nothing but
-        # sections that left the schema says exactly what no row says.
+        # The row itself, not just what it says: `store_row` is what takes the
+        # lock this whole read-compare-write runs under, and a row holding
+        # nothing but sections that left the schema says exactly what no row
+        # says once it has been read.
         row = await store_row(session, for_update=True)
         stored, meta = store_contents(row)
         if expected_revision is not None:
@@ -2112,22 +2170,23 @@ async def _persist_and_swap(
         # write that commits without its snapshot, is worse than neither.
         await capture_snapshot(session, stored, reason, format=meta.get("format", 1))
 
-        # Through the store's own writer, so the row's metadata is written
-        # rather than left to the column default: a first-ever save that
-        # inserted an empty one would say "this is a delta" about the whole
-        # document it had just stored, and the next boot would merge it over
-        # the mounted file.
+        # The row's metadata is written through verbatim, and the format in it
+        # is not touched by a save. It says how the document beneath it was
+        # VALIDATED, and `_validated_generation` reads it to decide that: a row
+        # that says the store holds a whole configuration gets a document
+        # validated as one, and a row that says it holds a delta gets one
+        # merged over the mounted file. Raising it here would say "whole" about
+        # a document that was validated as a fragment, and the next boot would
+        # try to build a configuration out of it and fail on the first required
+        # setting it does not carry.
         #
-        # The format is stamped only where it cannot be a lie: on a row that
-        # already says it, and where there is no row at all, which is the
-        # insert this guards. Every other existing row is written through with
-        # its metadata verbatim, because the document this save writes over it
-        # is a delta too -- the editor composed it from the paths that row made
-        # overridden -- and a raised format would tell the next boot to build a
-        # whole configuration out of a fragment and fail on the first required
-        # setting the fragment does not carry.
-        if row is None or meta.get("format") == STORE_FORMAT:
-            meta = {**meta, "format": STORE_FORMAT}
+        # Where there is no row at all, the insert takes the column default --
+        # which is what "delta" is spelled as -- because that is how the
+        # document about to be stored was validated. An empty store is the
+        # pre-seed state and is unreachable from a booted deployment: boot
+        # seeds the store from the file or serves the setup wizard, so by the
+        # time this endpoint can be called at all there is a row and it says
+        # the store holds the whole configuration.
         await write_store(session, document, meta)
         session.add(
             EventLog(
@@ -2446,9 +2505,9 @@ class ConfigImportBody(BaseModel):
     The same envelope ``GET /api/config/overrides/export`` writes, so the two
     are one format rather than two that agree by habit. ``autoposter_overrides``
     is required and is the point of the envelope: without a discriminator,
-    somebody would eventually import a whole ``GET /api/config`` dump, which
-    would freeze today's file values as permanent overrides -- the exact hazard
-    ``documentFromConfig``'s docstring warns about, arriving through a button.
+    somebody would eventually import a whole ``GET /api/config`` dump --
+    provenance keys, redacted values and all -- as though it were a
+    configuration document.
 
     ``exported_at`` is carried so a hand-inspected file round-trips unchanged;
     nothing reads it.
@@ -2468,6 +2527,30 @@ class ConfigImportBody(BaseModel):
     exported_at: str | None = None
     expected_revision: str | None = None
     confirm: bool = False
+
+
+@router.get("/config/drift")
+async def config_drift(
+    request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Whether the mounted configuration file still agrees with the store.
+
+    The file's whole remaining job. The System tab renders one notice from
+    this and offers Import -- through the existing import path, drop cap and
+    confirm included -- and Export. Neither is new code.
+
+    ``path`` is served so the notice can name the file it is talking about; it
+    is ``null`` on a deployment that has no mounted file, which is also the one
+    case that reports no drift at all (``drift_report``).
+
+    The file is read off the event loop: it is a mounted file on a possibly
+    slow volume and this route is polled by an open page.
+    """
+    path = request.app.state.config_path
+    file_document = await asyncio.to_thread(_read_file_document, path)
+    async with request.app.state.session_factory() as session:
+        stored = await load_overrides_document(session)
+    return {**drift_report(file_document, stored), "path": str(path) if path else None}
 
 
 @router.get("/config/overrides/export")

@@ -43,14 +43,15 @@ function catalog(groups: unknown[] = GROUPS) {
 }
 
 /** The config GET, whose only job here is seeding the document the panel
- * edits. The unrelated `plex.url` override is the point of the fixture: a
- * save about group order must not drop it. */
+ * edits. The unrelated `plex.url` is the point of the fixture: the document is
+ * the whole configuration, so a save about group order has to carry it back
+ * untouched rather than drop it. */
 function config(overrides: Record<string, unknown> = {}) {
   return {
     version: "cfg-1",
     plex: { url: "http://plex:32400" },
     collections: { enabled: true },
-    overridden_paths: ["plex.url"],
+    restart_paths: [],
     frozen_paths: {},
     redacted_paths: [],
     keep_sentinel: "***KEEP***",
@@ -58,16 +59,15 @@ function config(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** A config that already stores a group_order override, so Reset has
- * something to remove. The served groups order matches it, as the server's
- * effective order would. */
+/** A config that already stores a group_order, so Reset has something to
+ * remove. The served groups order matches it, as the server's effective order
+ * would. */
 function overriddenConfig() {
   return config({
     collections: {
       enabled: true,
       group_order: ["operator", "charts", "awards", "content_ratings"],
     },
-    overridden_paths: ["plex.url", "collections.group_order"],
   });
 }
 
@@ -225,9 +225,11 @@ describe("the groups panel", () => {
 
     await waitFor(() => expect(puts).toHaveLength(1));
     const document = sentDocument(puts);
-    // The revert IS the absence: `null` is a value the server refuses, and a
-    // written canonical list would be an override pretending to be none.
-    expect(document.collections).toBeUndefined();
+    // The reset IS the absence: `null` is a value the server refuses, and a
+    // written canonical list would be an order the operator never chose. The
+    // rest of the section is untouched.
+    expect(document.collections.group_order).toBeUndefined();
+    expect(document.collections.enabled).toBe(true);
     expect(document.plex.url).toBe("http://plex:32400");
   });
 
@@ -384,7 +386,6 @@ describe("the style select", () => {
       catalog: { ...catalog(), separator_style: "sand" },
       config: config({
         collections: { enabled: true, separator_style: "sand" },
-        overridden_paths: ["plex.url", "collections.separator_style"],
       }),
     });
 

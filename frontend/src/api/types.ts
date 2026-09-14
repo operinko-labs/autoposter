@@ -783,16 +783,16 @@ export interface LoginResponse {
   expires_at: string;
 }
 
-/** GET /api/config returns the parsed config with secrets redacted, plus two
- * provenance keys that are not config fields: `overridden_paths` (dotted
- * paths carried by the overrides document) and `frozen_paths` (dotted-path
- * prefix -> why a change there needs a restart). `version` *is* a config
- * field. */
+/** GET /api/config returns the parsed config with secrets redacted, plus the
+ * keys that are not config fields: `frozen_paths` (dotted-path prefix -> why a
+ * change there needs a restart), `restart_paths` (the settings a save changed
+ * that the running process has not picked up) and the rest of the list
+ * `api/overrides.ts::PROVENANCE_KEYS` names. `version` *is* a config field. */
 export type ConfigResponse = Record<string, unknown>;
 
-/** The overrides document: only the fields the operator changed, nested the
- * way the config is. A key's absence is how "use the mounted file's value"
- * is expressed -- `null` is a value the API rejects. */
+/** The overrides document: the whole configuration, nested the way the config
+ * is, which is what the store holds. A key's absence is how "use the schema's
+ * own default" is expressed -- `null` is a value the API rejects. */
 export type OverridesDocument = Record<string, unknown>;
 
 /** PUT /api/config/overrides. `restart_required` lists the dotted paths the

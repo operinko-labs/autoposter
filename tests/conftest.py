@@ -55,6 +55,7 @@ DEEP_SUITES = frozenset(
         "test_api_catch_up.py",
         "test_api_clear_override.py",
         "test_api_collections_builders.py",
+        "test_api_config_drift.py",
         "test_api_config_editor.py",
         "test_api_dashboard.py",
         "test_api_dashboard_stream.py",

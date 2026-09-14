@@ -10,15 +10,17 @@
  * first, and the page that got it wrong would destroy a push token on a save
  * about something else entirely.
  *
- * The document is a *delta*: it holds only the fields the operator changed,
- * nested the way the config is. Two consequences drive every helper below.
+ * The document is the whole configuration, nested the way the config is: the
+ * store holds it rather than a set of deltas over a mounted file, and every
+ * page that writes sends all of it back. Two consequences drive the helpers
+ * below.
  *
- *   - It is never built from the whole config. Round-tripping the config
- *     would store today's values as overrides, freezing them against every
- *     future change to the git-owned YAML.
- *   - Reverting a field is its key going *away*. `null` is a value the API
- *     validates like any other, and a null-valued setting is almost always
- *     invalid -- so a clear control that wrote null could not clear.
+ *   - It is built from the whole served config, minus the keys that are not
+ *     settings. Rebuilding a subset would delete every setting the page did
+ *     not name, because there is no file layer left to fall back on.
+ *   - Removing a key does not write `null` in its place. `null` is a value
+ *     the API validates like any other, and a null-valued setting is almost
+ *     always invalid -- so a control that wrote null could not clear.
  */
 import type { ConfigResponse, OverridesDocument } from "./types";
 
@@ -100,31 +102,55 @@ export function keepContract(
   return { paths: stringList(config.redacted_paths), sentinel };
 }
 
-/** The document as the server currently holds it, rebuilt from the paths it
- * says are overridden and the values it is serving for them (an override
- * wins the merge, so the served value *is* the stored one). Without this, a
- * save of one field would drop every override the operator saved earlier.
+/** Keys the enriched GET adds that are provenance, not configuration.
  *
- * Except at a redacted path, where the served value is *not* the stored one.
- * `notifications.url` arrives as a bare host, so seeding it would re-submit
- * that host as the override and destroy the push token on the next unrelated
- * save -- and skipping it would drop the override instead. Neither is
- * recoverable from what the page was given, so the server's keep sentinel
- * goes in and the server, which still has the stored value, resolves it. */
+ * Two readers and one list. `documentFromConfig` below drops them so the
+ * document a page saves carries settings and nothing else, and the settings
+ * page skips them so they are never rendered as rows -- either one alone would
+ * offer the operator an edit the API is bound to reject.
+ *
+ * `secrets` is on the list and is not provenance in the same sense: it is the
+ * separate `Secrets` model, and `merge_overrides` refuses the key outright at
+ * any depth, so a document carrying it is a guaranteed 422. */
+export const PROVENANCE_KEYS = [
+  "frozen_paths",
+  "redacted_paths",
+  "keep_sentinel",
+  "field_descriptions",
+  "computed_paths",
+  "live_paths",
+  "overrides_revision",
+  "restart_paths",
+  "secrets",
+];
+
+/** The document as the store holds it: the whole served configuration, minus
+ * the keys above, with the keep sentinel at every redacted path.
+ *
+ * This inverted when the store became the document. It used to be a DELTA
+ * rebuilt from the paths the response said were overridden, and round-tripping
+ * the whole config was the hazard its docstring warned about -- it would have
+ * frozen today's file values as permanent overrides. There is no file layer
+ * under the document any more: the whole configuration IS what is stored, so
+ * rebuilding a delta would drop every setting the operator never touched, on
+ * the very first save.
+ *
+ * A redacted path is the one place the served value is not the stored one.
+ * `notifications.url` arrives as a bare host, so sending it back would store
+ * that host and destroy the push token -- and leaving the path out would drop
+ * the setting instead. Neither is recoverable from what the page was given, so
+ * the server's keep sentinel goes in and the server, which still has the
+ * stored value, resolves it. */
 export function documentFromConfig(config: ConfigResponse): OverridesDocument {
-  const paths = config.overridden_paths;
-  if (!Array.isArray(paths)) return {};
   const keep = keepContract(config);
   let document: OverridesDocument = {};
-  for (const path of paths) {
-    if (typeof path !== "string") continue;
-    if (keep.paths.includes(path)) {
-      document = withPath(document, path, keep.sentinel);
-      continue;
-    }
-    const value = readPath(config, path);
-    if (value === undefined) continue;
-    document = withPath(document, path, value);
+  for (const [key, value] of Object.entries(config)) {
+    if (PROVENANCE_KEYS.includes(key)) continue;
+    document = { ...document, [key]: value };
+  }
+  for (const path of keep.paths) {
+    if (readPath(document, path) === undefined) continue;
+    document = withPath(document, path, keep.sentinel);
   }
   return document;
 }

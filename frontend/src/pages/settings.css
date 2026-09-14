@@ -83,11 +83,6 @@
   background: var(--surface);
 }
 
-.config-pill.overridden {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
 .config-pill.restart {
   color: var(--warn);
   border-color: var(--warn);

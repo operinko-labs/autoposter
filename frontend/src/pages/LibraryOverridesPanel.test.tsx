@@ -40,7 +40,7 @@ const CONFIG = {
 function editorFor(document: Record<string, unknown> = {}) {
   return {
     document,
-    overridden: [],
+    saved: document,
     frozen: {},
     computed: [],
     live: [],
@@ -49,6 +49,7 @@ function editorFor(document: Record<string, unknown> = {}) {
     errors: {},
     setValue: vi.fn(),
     clear: vi.fn(),
+    revert: vi.fn(),
   };
 }
 

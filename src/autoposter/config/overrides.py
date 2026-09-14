@@ -596,11 +596,55 @@ async def migrate_delta_to_document(session: AsyncSession, base: dict | None) ->
     return merged
 
 
+def changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
+    """Dotted paths whose value differs between two documents, both directions.
+
+    Both directions, because a key one document no longer carries has changed
+    just as much as one whose value moved.
+
+    Lifted here from ``api/routes.py::_changed_paths`` so the drift report and
+    the stale-save 409 count the same things; that function now delegates and
+    there is exactly one copy.
+    """
+    changed: list[str] = []
+    for key in set(before) | set(after):
+        where = f"{prefix}.{key}" if prefix else str(key)
+        old, new = before.get(key), after.get(key)
+        if isinstance(old, dict) and isinstance(new, dict):
+            changed.extend(changed_paths(old, new, where))
+        elif old != new:
+            changed.append(where)
+    return changed
+
+
+def drift_report(file_document: dict | None, stored: dict) -> dict:
+    """Whether the file on disk still says what the store says.
+
+    This is the mounted file's whole remaining job. It is not a source of
+    truth any more -- it seeds an empty store once, and a delta-era row is a
+    statement about it -- so the one thing it can still tell an operator is
+    "the configuration in git is not the configuration that is running".
+
+    No file is NOT drift. Removing the ConfigMap once the store is seeded is
+    the end state this design is working towards, and reporting it as a
+    difference would leave a permanent notice on the System tab for having
+    done the right thing.
+    """
+    if file_document is None:
+        return {"file_present": False, "differs": False, "paths": []}
+    paths = sorted(changed_paths(file_document, stored))
+    return {"file_present": True, "differs": bool(paths), "paths": paths}
+
+
 def _read_file_document(path: Path | None) -> dict | None:
     """The mounted document, or ``None`` when there is no readable file.
 
     ``None`` and not an exception: a deployment configured from the UI has no
     mounted file at all, and the caller already has to handle that.
+
+    The three callers are the whole of the file's life: the boot-time seed of
+    an empty store, the delta paths that are statements about this file, and
+    the drift report above. Nothing else in this service reads it.
     """
     if path is None:
         return None
