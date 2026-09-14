@@ -942,21 +942,28 @@ class ImdbMissRefreshState(Base):
 
 
 class ConfigOverride(Base):
-    """The operator's configuration deltas, deep-merged over the YAML on load.
+    """The configuration this deployment runs, as one JSON document.
 
-    A single row, pinned to ``id=1``, holding one JSON document. The mounted
-    ``autoposter.yaml`` stays git/Flux-owned and is never written by the app
-    (it is read-only in the pod, and an in-app writer would diverge from the
-    repository it is delivered from); what the UI edits lands here instead and
-    is merged over the file by ``config/overrides.py``.
+    A single row, pinned to ``id=1``. The mounted ``autoposter.yaml`` stays
+    git/Flux-owned and is never written by the app (it is read-only in the pod,
+    and an in-app writer would diverge from the repository it is delivered
+    from); it seeds this row once, on the first boot that finds the store
+    empty, and is not read at boot again. What the UI edits lands here, and
+    what this row holds is what runs.
 
-    One document rather than a key/value row per setting because the merge
-    result has to be validated *whole* -- a half-applied config is the thing
-    the reload path exists to prevent -- and because "what has the operator
-    changed" is then a single readable value.
+    One document rather than a key/value row per setting because it has to be
+    validated *whole* -- a half-applied config is the thing the reload path
+    exists to prevent -- and because "what is this deployment set to" is then a
+    single readable value.
 
-    ``secrets`` never appears in it: those come from the environment, and
-    ``merge_overrides`` rejects the key outright.
+    A row written before the store held whole documents holds a DELTA instead:
+    a partial document that ``config/overrides.py`` merges over the mounted
+    file. ``meta["format"]`` tells the two apart, and the delta is converted on
+    the first load that finds one.
+
+    ``secrets`` never appears in it: those come from the environment or the
+    secrets table, and ``config/overrides.py`` refuses the key on every path
+    that writes or loads this document.
     """
 
     __tablename__ = "config_overrides"

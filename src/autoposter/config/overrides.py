@@ -323,9 +323,6 @@ def without_migrated_sections(document: dict) -> dict:
 #: validates directly and which is what runs.
 STORE_FORMAT = 2
 
-#: The ``ConfigOverrideSnapshot.reason`` a seed writes. ``String(16)`` holds it.
-SEED_REASON = "seed"
-
 
 def store_meta(
     format_: int = STORE_FORMAT, restart_paths: list[str] | None = None
@@ -342,23 +339,18 @@ def store_meta(
     return meta
 
 
-async def load_store(
-    session: AsyncSession, *, for_update: bool = False
-) -> tuple[dict, dict]:
-    """The stored document and its metadata, or ``({}, {})`` when there is no row.
+async def _store_row(
+    session: AsyncSession, *, for_update: bool
+) -> ConfigOverride | None:
+    """The store's single row, or ``None``, under the lock the caller asked for.
 
-    An empty store is the pre-configuration state of every deployment, and it
-    is the one state that sends the loader looking at the mounted file.
+    Split out from ``load_store`` because the seed needs the row itself: what
+    a read strips out of the document is not what decides whether the store
+    has ever been written.
 
-    Migrated sections are stripped here rather than at any later point, because
-    this is the single seam every reader of the stored document comes through:
-    the boot-time load that would otherwise refuse to validate, and
-    ``GET /api/config``, which would otherwise serve a setting the editor no
-    longer renders.
-
-    ``for_update`` takes a row lock, and only the write path passes it: a
-    reader that locked would serialise ``GET /api/config`` behind every save
-    for no benefit.
+    ``for_update`` takes a row lock, and only a write path passes it: a reader
+    that locked would serialise ``GET /api/config`` behind every save for no
+    benefit.
 
     When there is no row yet, ``SELECT ... FOR UPDATE`` has nothing to lock, so
     the row lock alone left one hole: two *simultaneous* first-ever saves on a
@@ -402,8 +394,20 @@ async def load_store(
             select(func.pg_advisory_xact_lock(OVERRIDES_INSERT_LOCK_KEY))
         )
         row = await session.scalar(statement)
+    return row
+
+
+def _row_document(row: ConfigOverride | None) -> dict:
+    """A row's document, checked, and stripped of sections that left the schema.
+
+    The strip lives here rather than at any later point, because this is the
+    single seam every reader of the stored document comes through: the
+    boot-time load that would otherwise refuse to validate, and
+    ``GET /api/config``, which would otherwise serve a setting the editor no
+    longer renders.
+    """
     if row is None or not row.document:
-        return {}, {}
+        return {}
     if not isinstance(row.document, dict):
         # Only the config write path ever writes this column and it only ever
         # writes an object, so this is unreachable through the application --
@@ -415,8 +419,24 @@ async def load_store(
             "the config_overrides document must be a JSON object, not "
             f"{type(row.document).__name__}"
         )
+    return without_migrated_sections(row.document)
+
+
+async def load_store(
+    session: AsyncSession, *, for_update: bool = False
+) -> tuple[dict, dict]:
+    """The stored document and its metadata, or ``({}, {})`` when there is no row.
+
+    An empty store is the pre-configuration state of every deployment, and it
+    is the one state that sends the loader looking at the mounted file. A row
+    whose every section has left the schema reads as an empty *document* here
+    but is not an empty store: it has metadata, and it has been written.
+    """
+    row = await _store_row(session, for_update=for_update)
+    if row is None or not row.document:
+        return {}, {}
     meta = row.meta if isinstance(row.meta, dict) else {}
-    return without_migrated_sections(row.document), meta
+    return _row_document(row), meta
 
 
 async def load_overrides_document(
@@ -457,12 +477,21 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
     same instant against a fresh database cannot both seed -- the second reads
     the first's row and gets it back, and validates and runs that one.
 
+    Emptiness is judged on the raw row -- no row at all, or a row holding
+    nothing -- and not on the document a read hands back. A row whose every
+    section has left the schema strips to ``{}`` but is still a store somebody
+    wrote, and its metadata, which is where the restart list lives, is not
+    this function's to replace. Such a row is returned as the ``{}`` it strips
+    to, and the caller routes it the way it routes any other stored document.
+
     This is the one write in this module that takes no snapshot, because there
-    is nothing to snapshot: the store was empty.
+    is nothing to snapshot: the store was empty. That is also why it needs no
+    reason string -- a snapshot records what a write displaced, and this one
+    displaces nothing.
     """
-    held, _meta = await load_store(session, for_update=True)
-    if held:
-        return held
+    row = await _store_row(session, for_update=True)
+    if row is not None and row.document:
+        return _row_document(row)
     await write_store(session, document, store_meta())
     return document
 
@@ -529,6 +558,10 @@ async def load_effective_config(path: Path | None, session: AsyncSession) -> Con
     from a booted application (``boot.is_configured`` refuses it and serves the
     wizard instead), so it raises rather than inventing a document.
 
+    On the seed path this COMMITS the caller's session, because the seed has
+    to be durable before the configuration it holds is acted on. Every other
+    path reads and writes nothing.
+
     Validated whole and versioned through the same ``build_config`` as
     ``load_config``, so a stored artwork setting moves ``config.version``
     exactly as editing the file would, and a stored scheduler setting leaves it
@@ -546,6 +579,13 @@ async def load_effective_config(path: Path | None, session: AsyncSession) -> Con
             "found; this deployment has not been configured"
         )
     seeded = await seed_store(session, base)
+    if not seeded:
+        # The seed found a row it will not replace: one holding nothing but
+        # sections that left the schema. That is not an empty store, it is a
+        # delta with nothing left in it, so it keeps its metadata and takes
+        # the path every other delta takes -- which merges nothing over the
+        # file and leaves the file's document standing.
+        return _validated(await migrate_delta_to_document(session, base, {}))
     # Validated before the commit, deliberately: the seed is the last time this
     # file is read, so a store seeded with a document the schema refuses could
     # never be repaired -- the application would not start, and the editor that

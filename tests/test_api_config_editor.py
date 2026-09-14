@@ -33,6 +33,7 @@ from autoposter.config.loader import build_config, read_config_document, render_
 from autoposter.config.overrides import (
     EMPTY_DOCUMENT_REVISION,
     OVERRIDES_INSERT_LOCK_KEY,
+    STORE_FORMAT,
     merge_overrides,
 )
 from autoposter.config.schema import Secrets
@@ -2162,3 +2163,45 @@ async def test_the_deployment_url_is_served_as_an_editable_leaf(client, auth_hea
     assert "public_url" in body
     assert body["field_descriptions"]["public_url"].strip() != ""
     assert "public_url" not in body["frozen_paths"]
+
+
+# --- the row's metadata ---
+
+
+async def test_a_first_ever_save_writes_the_store_format(client, auth_headers, session):
+    """The first save on a fresh deployment is an INSERT, and an insert that
+    left the metadata to the column default would label what it just stored a
+    delta -- so the next boot would merge the saved document over the mounted
+    file instead of running it, or refuse it outright on a deployment that has
+    no file."""
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 9}}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.meta["format"] == STORE_FORMAT
+
+
+async def test_a_save_keeps_the_metadata_it_did_not_write(client, auth_headers, session):
+    """The restart list lives in the same column as the format. A save is
+    about the document; it must not take the rest of the row with it."""
+    await session.execute(
+        insert(ConfigOverride).values(
+            id=1,
+            document={"workers": 9},
+            meta={"format": STORE_FORMAT, "restart_paths": ["plex"]},
+        )
+    )
+    await session.commit()
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 8}}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.document == {"workers": 8}
+    assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}

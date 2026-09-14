@@ -62,19 +62,20 @@ from autoposter.config.live import (
 )
 from autoposter.config.loader import build_config, moved_kinds, read_config_document
 from autoposter.config.overrides import (
-    OVERRIDES_ROW_ID,
+    STORE_FORMAT,
     document_paths,
     document_revision,
     empty_leaf_paths,
     load_overrides_document,
+    load_store,
     merge_overrides,
     unknown_key_paths,
     without_migrated_sections,
+    write_store,
 )
 from autoposter.config.schema import Config, library_override_refusals
 from autoposter.config.snapshots import capture_snapshot, list_snapshots, load_snapshot
 from autoposter.db.models import (
-    ConfigOverride,
     EventLog,
     ItemFacts,
     Job,
@@ -2061,7 +2062,7 @@ async def _persist_and_swap(
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:
-        stored = await load_overrides_document(session, for_update=True)
+        stored, meta = await load_store(session, for_update=True)
         if expected_revision is not None:
             current = document_revision(stored)
             if expected_revision != current:
@@ -2092,11 +2093,13 @@ async def _persist_and_swap(
         # write that commits without its snapshot, is worse than neither.
         await capture_snapshot(session, stored, reason)
 
-        stmt = insert(ConfigOverride).values(id=OVERRIDES_ROW_ID, document=document)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["id"], set_={"document": document, "updated_at": func.now()}
-        )
-        await session.execute(stmt)
+        # Through the store's own writer, so the row's metadata is written
+        # rather than left to the column default: a first-ever save that
+        # inserted an empty one would say "this is a delta" about the whole
+        # document it had just stored, and the next boot would merge it over
+        # the mounted file. Anything already in the metadata -- the restart
+        # list -- is carried across, because this write is about the document.
+        await write_store(session, document, {**meta, "format": STORE_FORMAT})
         session.add(
             EventLog(
                 source="config",

@@ -128,3 +128,40 @@ async def test_a_stored_secrets_key_is_refused_at_load(session_factory):
     async with session_factory() as session:
         with pytest.raises(ValueError, match="secrets"):
             await load_effective_config(None, session)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_store_and_no_file_is_refused(session_factory, tmp_path):
+    """The state this loader will not invent its way out of. A booted
+    application cannot reach it -- ``boot.is_configured`` serves the wizard
+    instead -- so reaching it means something is wrong with the deployment,
+    and a config built from the schema's defaults would hide that behind a
+    running application pointed at nothing."""
+    async with session_factory() as session:
+        with pytest.raises(ValueError, match="has not been configured"):
+            await load_effective_config(tmp_path / "missing.yaml", session)
+    async with session_factory() as session:
+        assert await load_store(session) == ({}, {}), "the refusal wrote something"
+
+
+@pytest.mark.asyncio
+async def test_a_store_of_only_migrated_sections_is_not_an_empty_store(
+    session_factory, config_file
+):
+    """A row whose every section has left the schema reads as an empty
+    document, but it is a store somebody wrote: seeding over it would throw
+    away the metadata -- the restart list -- that the row still carries. It
+    takes the delta path instead, which merges nothing over the file."""
+    stale = {"version_check": {"project": "operinko-labs"}}
+    async with session_factory() as session:
+        await write_store(session, stale, {"restart_paths": ["plex"]})
+        await session.commit()
+
+    async with session_factory() as session:
+        config = await load_effective_config(config_file, session)
+    assert config.workers == _document()["workers"]
+
+    async with session_factory() as session:
+        row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.document == stale, "the seed replaced a row it does not own"
+    assert row.meta == {"restart_paths": ["plex"]}
