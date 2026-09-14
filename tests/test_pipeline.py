@@ -2083,9 +2083,9 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     assert row.status == "pending" and row.next_attempt_at is not None
     # A re-arm is not an attempt -- nothing was actually tried against
     # jellyfin this pass (no compose, no upload) -- and it is a fresh START:
-    # review I1, the counter goes back to zero rather than staying where the
-    # exhausted row left it, or the first failure after a re-arm would
-    # exhaust the row again (`failed` is itself a counted attempt).
+    # the counter goes back to zero rather than staying where the exhausted
+    # row left it, or the first failure after a re-arm would exhaust the row
+    # again (`failed` is itself a counted attempt).
     assert first_pass_attempts > 0, "the failed delivery did spend budget"
     assert row.attempts == 0
 
@@ -2527,9 +2527,10 @@ async def test_a_dual_registry_pass_writes_metadata_written_and_pending_per_serv
     session, config_with_badges, monkeypatch,
 ):
     """The branch matrix above is exercised directly against `apply_metadata`;
-    this proves the same outcomes through the real entry point, `process_item`, on a dual registry -- Plex accepts the write,
-    Jellyfin's `apply_facts` raises -- and that the artwork path (an
-    unrelated seam) still completes for both servers regardless."""
+    this proves the same outcomes through the real entry point, `process_item`,
+    on a dual registry -- Plex accepts the write, Jellyfin's `apply_facts`
+    raises -- and that the artwork path (an unrelated seam) still completes for
+    both servers regardless."""
     config_with_badges.badges.upload_to_jellyfin = True
     config_with_badges.operations.write_to_jellyfin = True
     monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
