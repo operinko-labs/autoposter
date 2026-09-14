@@ -493,7 +493,7 @@ async def test_the_collection_is_recorded_as_managed(session):
 
 
 async def test_reconciling_an_operator_row_upgrades_its_kind_to_manual(session):
-    """Fix round item 2, the mirror of item 1: an operator blank
+    """An operator blank
     (``ops/blank``) writes a row with ``kind="operator"``. If a definition is
     later pointed at that same title, this reconcile is that definition
     claiming it -- and leaving the row's kind at "operator" afterwards would

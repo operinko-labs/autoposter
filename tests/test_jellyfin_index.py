@@ -150,7 +150,7 @@ async def test_a_failed_build_leaves_no_partial_index():
 
 
 async def test_a_jellyfin_episode_has_the_same_identity_key_as_its_plex_twin():
-    """Controller ruling (identity parity): the series' provider ids, the
+    """The series' provider ids, the
     two-hop parent model, and the None file_path together mean a Jellyfin
     episode and a Plex episode at the same coordinates key identically."""
     api, http, _ = _api()

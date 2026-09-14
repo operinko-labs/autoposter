@@ -96,7 +96,7 @@ async def test_present_libraries_reads_the_server_and_refresh_walks_the_registry
     assert await presence.present_libraries(jf) == {"Movies"}
 
     # Read first (no database), stamped after: the full pass does the asking
-    # before it opens its transaction (review I3).
+    # before it opens its transaction.
     present = await presence.read_presence(Servers({"jellyfin": jf}))
     assert present == {"jellyfin": {"Movies"}}
     outcomes = await presence.refresh_presence(session, present)
@@ -120,7 +120,7 @@ async def test_a_server_that_cannot_list_its_libraries_is_skipped(session):
 
 
 async def test_a_server_that_lists_no_libraries_at_all_is_skipped_too(session):
-    """Review C2: an empty answer is not "carries nothing" -- a Jellyfin still
+    """An empty answer is not "carries nothing" -- a Jellyfin still
     starting up, an API key without library scope, or an excluded_libraries
     naming every folder all answer cleanly with nothing in them, and stamping
     on that would mark the entire database absent on that server and overwrite
@@ -148,7 +148,7 @@ async def _upload_status(session, render_id: int) -> str:
 
 
 async def test_a_reclassification_rolls_up_the_render_it_stamped(session):
-    """Review I2/T4: `renders.upload_status` is what /api/library's filter and
+    """`renders.upload_status` is what /api/library's filter and
     the dashboard tiles read, and nothing recomputed it after presence wrote
     `render_deliveries` directly -- so the retry queue was cleared and every
     operator-visible surface still said `pending`."""
@@ -208,7 +208,7 @@ async def test_an_absent_only_render_rolls_up_as_skipped(session):
 
 
 async def test_the_identity_server_stamping_absent_is_warned_about_by_name(session, caplog):
-    """Review I5: presence applies to Plex too -- a section renamed after
+    """Presence applies to Plex too -- a section renamed after
     ingest, or added to excluded_libraries later, genuinely no longer holds
     the item. That is the one place "Plex-only deployments see no behaviour
     change beyond recorded rows" could stop being true, so it is announced

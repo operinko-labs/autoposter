@@ -675,7 +675,7 @@ async def test_a_failed_hub_write_is_retried_on_the_next_pass(
 async def test_a_failed_move_does_not_discard_a_successful_visibility_write(
     session, registry_entry
 ):
-    """Fix round item 2c: a successful ``updateVisibility`` before a failed
+    """A successful ``updateVisibility`` before a failed
     ``move`` must not be reported as total failure -- the operator would
     otherwise be told the hub pinning failed when half of it actually
     worked."""
@@ -698,7 +698,7 @@ async def test_a_failed_move_does_not_discard_a_successful_visibility_write(
 
 
 def test_hub_priority_alone_is_refused_when_the_config_loads():
-    """Fix round item 2b: ``hub_priority`` without any ``visible_*`` flag
+    """``hub_priority`` without any ``visible_*`` flag
     would hit plexapi's ``ManagedHub.move`` on a hub ``visibility()`` never
     promoted -- a guaranteed ``BadRequest`` on the first pass, which
     ``_apply_hub`` used to misreport as a missing Plex Pass. Caught here,
