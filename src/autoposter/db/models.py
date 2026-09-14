@@ -1249,3 +1249,20 @@ class Run(Base):
     # cadence is enforced against this, which is why it is a column and not
     # process state: two replicas share the database and share nothing else.
     last_drained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # How many CONSECUTIVE batches of this run have moved nothing. Any batch
+    # that moves a row puts it back to 0, and the drain stops the run when it
+    # reaches two (`catchup.drain_catch_ups`): a resolution miss is a wait
+    # rather than a failure, so it changes neither status nor attempts, and a
+    # row for a file the server will never scan would otherwise hold the run
+    # -- and with it the in-flight guard that refuses the next catch-up for
+    # that server -- open for ever.
+    #
+    # Its own column rather than a comparison against the three count columns
+    # above: a snapshot of the counts cannot tell "this batch moved nothing"
+    # from "two in a row moved nothing", so a run that moves rows on
+    # alternating batches was stopped at its first idle one -- and one brief
+    # outage mid-drain, which turns every row of a batch into a resolution
+    # miss, is enough to cause that (review N1).
+    idle_drains: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
