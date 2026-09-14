@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 STATE_DIR_ENV = "AUTOPOSTER_STATE_DIR"
 DEFAULT_STATE_DIR = Path("/state")
 SECRETS_FILE_NAME = "secrets.env"
+#: The key the stored secrets are encrypted with. In the state directory and
+#: NEVER in the database: a database dump must not be a credential dump, which
+#: is the whole point of encrypting them (spec section 3).
+SECRET_KEY_FILE_NAME = "secret.key"
 CONFIG_FILE_NAME = "autoposter.yaml"
 
 # Set by this module on every write rather than trusted from the mount: a
