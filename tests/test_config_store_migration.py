@@ -11,8 +11,6 @@ import uuid
 import asyncpg
 import pytest
 
-REVISION = "a1f4c2d90e73"
-
 
 async def _scratch() -> tuple[str, str]:
     maintenance = os.environ["AUTOPOSTER_MAINTENANCE_DATABASE_URL"]
@@ -89,14 +87,25 @@ async def test_an_existing_row_is_backfilled_as_a_delta():
                 "INSERT INTO config_overrides (id, document) VALUES (1, $1::jsonb)",
                 '{"workers": 3}',
             )
+            snapshot_id = await connection.fetchval(
+                "INSERT INTO config_override_snapshots (document, path_count, reason) "
+                "VALUES ($1::jsonb, $2, $3) RETURNING id",
+                '{"workers": 2}',
+                1,
+                "save",
+            )
         finally:
             await connection.close()
         _alembic(["upgrade", "head"], url)
         connection = await asyncpg.connect(url)
         try:
             meta = await connection.fetchval("SELECT meta FROM config_overrides WHERE id = 1")
+            format_ = await connection.fetchval(
+                "SELECT format FROM config_override_snapshots WHERE id = $1", snapshot_id
+            )
         finally:
             await connection.close()
         assert meta == "{}", "an existing row must carry the empty meta, i.e. format 1"
+        assert format_ == 1, "an existing snapshot must carry format 1, i.e. a delta"
     finally:
         await _drop(name)
