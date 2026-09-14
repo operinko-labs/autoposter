@@ -574,8 +574,12 @@ async def migrate_delta_to_document(session: AsyncSession, base: dict | None) ->
     row = await store_row(session, for_update=True)
     meta = row.meta if row is not None and isinstance(row.meta, dict) else {}
     if meta.get("format") == STORE_FORMAT:
-        # Somebody else got here first. What they wrote is the store.
-        return _row_document(row)
+        # Somebody else got here first. What they wrote is the store. Commit
+        # so the row lock is released now rather than at the end of a
+        # caller's session -- a CLI run holds one for hours.
+        document = _row_document(row)
+        await session.commit()
+        return document
     delta = _row_document(row)
     merged = merge_overrides(base, delta)
     _validated(merged)
