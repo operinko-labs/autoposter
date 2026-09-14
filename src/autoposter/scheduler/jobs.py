@@ -28,6 +28,7 @@ from autoposter.arr.sync import (
     enqueue_unknown_items,
     sync_section,
 )
+from autoposter.catchup import CatchUpRefused, drain_catch_ups, start_catch_up
 from autoposter.collections.credits import scan_credits
 from autoposter.collections.playlists import PlaylistsPassFailed, reconcile_playlists
 from autoposter.collections.service import (
@@ -1104,5 +1105,68 @@ def make_pending_deliveries_job(
     return Job(
         name="pending_deliveries",
         interval_seconds=lambda: max(60, holder.current.scheduler.pending_deliveries_minutes * 60),
+        run=run,
+    )
+
+
+def make_catch_up_drain_job(
+    holder: ConfigHolder,
+    servers_ref: Callable[[], object],
+    requests_ref: Callable[[], list],
+    health_ref: Callable[[], dict],
+    http: httpx.AsyncClient | None,
+    mdblist,
+) -> Job:
+    """Build the catch-up drain (``catchup.py``, spec §3).
+
+    Two jobs in one pass, and deliberately: the automatic triggers queue
+    server NAMES (a config swap and a boot have no session of their own, and
+    starting a run from inside ``swap_config`` would mean a synchronous
+    function opening a transaction), and this pass is the first thing with a
+    session that can turn a name into a run. Starting them here also means a
+    queued request and the drain it needs share one transaction boundary.
+
+    A refused request is DROPPED rather than re-queued: the two refusals it
+    can hit are "already in flight" -- in which case the work is already
+    happening -- and "the server is down", which the next trigger or the
+    operator's own button will raise again. Re-queueing would turn a down
+    server into a growing list nothing ever clears.
+
+    Registered inside ``scheduler.enabled`` beside the pending-deliveries
+    pass and, like it, not conditioned on ``config.plex``.
+
+    ``catch_up_poll_seconds`` is how often this LOOKS; each open run's own
+    ``cadence_seconds`` decides whether its next batch is actually taken, so
+    the floor here bounds only how finely those cadences can be honoured.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        started = []
+        requests = requests_ref()
+        while requests:
+            name = requests.pop(0)
+            try:
+                await start_catch_up(
+                    session, servers_ref(), holder.current, name, health=health_ref(),
+                )
+            except CatchUpRefused as exc:
+                logger.info("catch-up for %s not started: %s", name, exc)
+                # `start_catch_up` takes an advisory lock and reads before it
+                # can refuse, so the refusal leaves a transaction behind that
+                # the next queued name would otherwise run inside.
+                await session.rollback()
+                continue
+            await session.commit()
+            started.append(name)
+        drained = await drain_catch_ups(
+            session, servers_ref(), holder.current, http=http, mdblist=mdblist,
+        )
+        if started:
+            return f"started {', '.join(started)}; {drained}"
+        return drained
+
+    return Job(
+        name="catch_up_drain",
+        interval_seconds=lambda: max(60, holder.current.scheduler.catch_up_poll_seconds),
         run=run,
     )

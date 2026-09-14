@@ -838,6 +838,39 @@ async def test_pending_deliveries_is_registered_for_a_jellyfin_only_deployment(
         assert "pending_deliveries" not in UNRECORDED
 
 
+async def test_the_catch_up_drain_is_registered_for_a_jellyfin_only_deployment(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """Spec §3. The drain sits beside the retry pass it uses and inside the
+    same gate: not Plex-gated, since a catch-up is for whatever server the
+    deployment has, and not ahead of the gate like ``stale_job_reclaim``,
+    since its runs ARE recorded and trimmed by the cleanup pass.
+    """
+    await _store_override(session, {"plex": None, "jellyfin": {"url": "https://jf"}})
+
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
+
+    async with app.router.lifespan_context(app):
+        assert app.state.config.plex is None, (
+            "precondition: the override actually removed the plex block"
+        )
+        assert "catch_up_drain" in app.state.scheduler_intervals
+        assert any(job.name == "catch_up_drain" for job in app.state.scheduler_jobs)
+        assert "catch_up_drain" not in UNRECORDED
+
+
+def test_every_application_publishes_the_catch_up_request_queue(
+    session_factory, secrets
+):
+    """The automatic triggers' queue is owned by the application object and
+    mutated in place, so a process without the background services -- every
+    test app, and any replica running with the scheduler off -- still has to
+    have the attribute for ``swap_config`` to append to."""
+    app = create_app(load_config(EXAMPLE), session_factory, secrets)
+
+    assert app.state.catch_up_requests == []
+
+
 async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_processes(
     session_factory, secrets, stubbed_background_services, monkeypatch
 ):

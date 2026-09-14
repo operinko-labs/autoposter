@@ -984,3 +984,169 @@ async def test_the_re_arm_doors_read_the_open_runs_once_per_item(
     # And the door still did its job off the set it was handed.
     assert row.status == "pending" and row.run_id == run_id
 
+
+# --- the drain (spec §3) ---------------------------------------------------
+
+
+async def test_the_drain_takes_one_batch_and_closes_the_run_when_it_empties(
+    session, catch_up_config, monkeypatch
+):
+    from autoposter.render import pipeline as pipeline_module
+
+    catch_up_config.operations.enabled = True
+    item, render = await _item_with_render(session, "d1")
+    jf = _jellyfin()
+    jf.resolve_any = resolved("jellyfin", "d1", file_path="/m.mkv")
+
+    async def fake_compose(session, config, render, media_item, **kwargs):
+        return b"badged"
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", fake_compose)
+
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+
+    summary = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": jf}), catch_up_config, now=NOW,
+    )
+
+    assert summary == "catch-up: jellyfin finished, 2 done, 0 failed"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.status == "ok" and run.finished_at is not None
+    assert run.detail == "catch-up: 2 done, 0 failed"
+    assert run.last_drained_at == NOW
+
+
+async def test_a_finished_runs_tallies_outlive_the_rows_it_released(
+    session, catch_up_config, monkeypatch
+):
+    """The finish stamps the tallies BEFORE it releases, and releases every
+    row it owned -- a run that is over must own nothing, or a later progress
+    query goes on counting for it. The stored tallies are what the progress
+    line serves once the rows are gone."""
+    from autoposter.render import pipeline as pipeline_module
+
+    catch_up_config.operations.enabled = True
+    item, render = await _item_with_render(session, "d5")
+    jf = _jellyfin()
+    jf.resolve_any = resolved("jellyfin", "d5", file_path="/m.mkv")
+
+    async def fake_compose(session, config, render, media_item, **kwargs):
+        return b"badged"
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", fake_compose)
+
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+
+    await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": jf}), catch_up_config, now=NOW,
+    )
+
+    owned = (await session.execute(
+        select(func.count()).select_from(RenderDelivery).where(RenderDelivery.run_id == run_id)
+    )).scalar_one()
+    assert owned == 0
+    art = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert art.status == "uploaded" and art.previous_status is None
+    progress = await catchup.catch_up_progress(session, "jellyfin")
+    assert (progress["due"], progress["done"], progress["failed"]) == (0, 2, 0)
+    assert progress["total"] == 2
+
+
+async def test_the_drain_respects_the_per_run_cadence(session, catch_up_config):
+    await _item_with_render(session, "d2")
+    jf = _jellyfin()
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin",
+        cadence_seconds=600, now=NOW,
+    )
+    await session.execute(
+        update(Run).where(Run.id == run_id).values(last_drained_at=NOW - timedelta(seconds=30))
+    )
+    await session.commit()
+
+    summary = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": jf}), catch_up_config, now=NOW,
+    )
+
+    assert summary == "catch-up: jellyfin waiting 600s between batches"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.finished_at is None
+
+
+async def test_the_drain_reports_a_run_still_working(session, catch_up_config):
+    """A server that cannot resolve leaves its rows pending, and the run stays open."""
+    catch_up_config.operations.enabled = True
+    await _item_with_render(session, "d3")
+    jf = _jellyfin()  # resolves nothing
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+
+    summary = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": jf}), catch_up_config, now=NOW,
+    )
+
+    assert summary == "catch-up: jellyfin 2 still due, 0 done, 0 failed"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.finished_at is None
+    assert run.last_drained_at == NOW
+
+
+async def test_the_drain_says_so_when_nothing_is_in_flight(session, catch_up_config):
+    assert await catchup.drain_catch_ups(
+        session, Servers({}), catch_up_config, now=NOW,
+    ) == "catch-up: nothing in flight"
+
+
+async def test_the_drain_takes_only_the_rows_of_the_run_it_is_draining(
+    session, catch_up_config, monkeypatch
+):
+    """The batch is scoped by `run_id` (spec §3): an ORDINARY due row -- one
+    no catch-up armed -- is left to the unscoped pending-deliveries pass, so
+    it neither spends this run's batch nor advances its progress."""
+    from autoposter.render import pipeline as pipeline_module
+
+    catch_up_config.operations.enabled = False
+    jf = _jellyfin()
+    jf.resolve_any = resolved("jellyfin", "d4", file_path="/m.mkv")
+
+    async def fake_compose(session, config, render, media_item, **kwargs):
+        return b"badged"
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", fake_compose)
+
+    await _item_with_render(session, "d4")
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+    # Armed AFTER the catch-up marked its backlog, so it carries no run id.
+    _, ordinary = await _item_with_render(session, "d4b")
+    await deliveries.record(session, ordinary.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    columns = (
+        RenderDelivery.status, RenderDelivery.attempts, RenderDelivery.next_attempt_at,
+    )
+    before = (await session.execute(
+        select(*columns).where(RenderDelivery.render_id == ordinary.id)
+    )).one()
+
+    summary = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": jf}), catch_up_config, now=NOW,
+    )
+
+    assert summary == "catch-up: jellyfin finished, 1 done, 0 failed"
+    # Untouched, field for field -- and still due, for the unscoped pass.
+    left = (await session.execute(
+        select(*columns).where(RenderDelivery.render_id == ordinary.id)
+    )).one()
+    assert left == before and left.status == "pending"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.status == "ok"

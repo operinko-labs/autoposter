@@ -117,6 +117,7 @@ SCHEDULED_JOB_NAMES = frozenset({
     "plex_merge",
     "stale_job_reclaim",
     "pending_deliveries",
+    "catch_up_drain",
 })
 
 DEFAULT_EVENTS_LIMIT = 50

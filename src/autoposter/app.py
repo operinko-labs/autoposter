@@ -51,6 +51,7 @@ from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import (
     make_arr_sync_job,
     make_asset_stats_job,
+    make_catch_up_drain_job,
     make_cleanup_job,
     make_collections_job,
     make_credits_job,
@@ -496,6 +497,19 @@ def create_app(
             scheduler_jobs.append(make_pending_deliveries_job(
                 holder, lambda: app.state.servers, http, app.state.mdblist
             ))
+            # The catch-up drain (spec §3), beside the retry pass it uses and
+            # inside the same gate, for the same two reasons.
+            # `catch_up_requests` is the list the automatic triggers push
+            # server names onto; this job is the first thing with a session
+            # that can turn one into a run.
+            scheduler_jobs.append(make_catch_up_drain_job(
+                holder,
+                lambda: app.state.servers,
+                lambda: app.state.catch_up_requests,
+                lambda: app.state.server_health,
+                http,
+                app.state.mdblist,
+            ))
         # Published so config.live.swap_config can recompute the cadences
         # below without rebuilding the jobs -- it has no other way to reach
         # them, and rebuilding would silently change the job set.
@@ -721,6 +735,12 @@ def create_app(
     # cadences. Empty and unconditionally set for the same reason as above:
     # swap_config must work on an app whose lifespan never ran.
     app.state.scheduler_jobs = []
+    # The automatic catch-up triggers' queue (spec §3). A plain list, owned by
+    # the application object and mutated in place: a synchronous trigger
+    # (config.live's swap_config) appends to it without a session of its own,
+    # and the drain job is what turns the names into runs. Published here for
+    # the reason above: an app whose lifespan never ran still has to have it.
+    app.state.catch_up_requests = []
     # Created here so /api/dashboard/stream always has one to subscribe to --
     # the log_buffer precedent above. No lifespan work: the poll loop is
     # subscriber-driven and its task is created from subscribe(), which runs

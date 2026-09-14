@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from autoposter.db.models import (
     ItemFacts, ItemMetadataOverride, MediaItem, MetadataWrite, Render, RenderDelivery, Run,
 )
-from autoposter.deliveries import RETRY_SECONDS
+from autoposter.deliveries import RETRY_SECONDS, retry_pending_deliveries
 from autoposter.scheduler.run_history import close_run, open_run
 from autoposter.servers.presence import (
     apply_presence, present_libraries, rollup_stamped_renders,
@@ -441,6 +441,18 @@ async def finish_catch_up(
         )
     )
     await close_run(session, run_id, status=status, detail=detail)
+    # The release, AFTER the tallies above are stamped: a run that is over
+    # owns nothing, or a later progress query goes on counting rows for it and
+    # `pipeline`'s re-arm doors keep asking about a run that has finished. The
+    # settled rows keep their outcome and lose only the two scope columns --
+    # nothing uploaded or written is undone. A no-op for `cancel_catch_up`,
+    # which has already released its own rows by the time it calls this: it
+    # has to, because it counts and restores them first.
+    for table in (RenderDelivery, MetadataWrite):
+        await session.execute(
+            update(table).where(table.run_id == run_id)
+            .values(previous_status=None, run_id=None)
+        )
     return tallies
 
 
@@ -488,6 +500,76 @@ async def catch_up_progress(session: AsyncSession, name: str) -> dict | None:
         "detail": run.detail,
         **counts,
     }
+
+
+async def drain_catch_ups(
+    session: AsyncSession, servers, config, *, http=None, mdblist=None,
+    now: datetime | None = None,
+) -> str:
+    """Take one batch from every open catch-up whose cadence has elapsed.
+
+    The backlog is drained by the ORDINARY retry pass, scoped to this run's
+    ``run_id`` (spec §3), so a catch-up shares the per-row savepoint, the
+    per-library gates and the attempt budget with every other delivery --
+    there is no second delivery path to keep in step with the first.
+
+    The per-run cadence is honoured here rather than by registering a second
+    scheduled job per run: ``last_drained_at`` is a column, so two replicas
+    polling the same database agree about when the last batch was taken.
+
+    A run closes the moment nothing of its is still due -- `ok` even when some
+    of its rows failed: the run did what it was asked, and the failed rows are
+    the operator's business, counted in the detail. ``finish_catch_up`` is
+    what closes it, so the tallies are stamped on the run row BEFORE the rows
+    they were counted from are released.
+
+    Commits, like every scheduled pass's body.
+    """
+    now = now or datetime.now(timezone.utc)
+    open_runs = (await session.execute(
+        select(Run.id, Run.server, Run.cadence_seconds, Run.last_drained_at)
+        .where(Run.kind == CATCH_UP_KIND, Run.finished_at.is_(None))
+        .order_by(Run.id)
+    )).all()
+    if not open_runs:
+        return "catch-up: nothing in flight"
+
+    clauses = []
+    for run_id, server_name, cadence_seconds, last_drained_at in open_runs:
+        cadence = cadence_seconds or MIN_CADENCE_SECONDS
+        if (
+            last_drained_at is not None
+            and (now - last_drained_at).total_seconds() < cadence
+        ):
+            clauses.append(f"{server_name} waiting {cadence}s between batches")
+            continue
+        # The retry pass commits per row, so nothing below may rely on an ORM
+        # object loaded before it -- which is why the run's fields are read
+        # into locals above rather than kept as a `Run` instance.
+        await retry_pending_deliveries(
+            session, servers, config, http=http, mdblist=mdblist, now=now,
+            server=server_name, run_id=run_id,
+        )
+        await session.execute(
+            update(Run).where(Run.id == run_id).values(last_drained_at=now)
+        )
+        tallies = await run_tallies(session, run_id)
+        if tallies["due"] == 0:
+            detail = f"catch-up: {tallies['done']} done, {tallies['failed']} failed"
+            await finish_catch_up(
+                session, run_id, status="ok", detail=detail, tallies=tallies,
+            )
+            clauses.append(
+                f"{server_name} finished, {tallies['done']} done, "
+                f"{tallies['failed']} failed"
+            )
+        else:
+            clauses.append(
+                f"{server_name} {tallies['due']} still due, "
+                f"{tallies['done']} done, {tallies['failed']} failed"
+            )
+    await session.commit()
+    return "catch-up: " + "; ".join(clauses)
 
 
 async def cancel_catch_up(
