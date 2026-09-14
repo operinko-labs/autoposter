@@ -53,6 +53,7 @@ const MOVIE = {
       textless: null,
     },
   ],
+  servers: [],
 };
 
 /** The absolute path a manual override stamps into `source_url`. It is a path
@@ -101,6 +102,7 @@ const EPISODE = {
   parent: null,
   facts: null,
   renders: [],
+  servers: [],
 };
 
 /** The same episode, but with the show the API resolves for it -- an
@@ -131,6 +133,7 @@ const SEASON_WITH_PARENT = {
   parent: { id: 42, title: "Firefly" },
   facts: null,
   renders: [],
+  servers: [],
 };
 
 /** Two candidates from two providers, one provider having failed.
@@ -606,6 +609,49 @@ describe("ItemDetail", () => {
     // detail is the hover text, not shown on screen.
     expect(chips[0].getAttribute("title")).toBeNull();
     expect(chips[1].getAttribute("title")).toBe("ConnectError: connection refused");
+  });
+
+  it("shows the per-server outcome table under the renders table", async () => {
+    stubFetch(
+      movieRoutes({
+        "/api/items/3": () =>
+          json({
+            ...MOVIE,
+            servers: [
+              {
+                server: "jellyfin",
+                metadata: {
+                  status: "failed",
+                  detail: "status: HTTPStatusError 400",
+                  attempts: 8,
+                  attempted_at: "2026-09-14T00:00:00Z",
+                  written_at: null,
+                  next_attempt_at: null,
+                },
+                artwork: [
+                  {
+                    art_kind: "poster",
+                    status: "uploaded",
+                    detail: null,
+                    attempts: 0,
+                    attempted_at: "2026-09-14T00:00:00Z",
+                    uploaded_at: "2026-09-14T00:00:00Z",
+                    next_attempt_at: null,
+                  },
+                ],
+              },
+            ],
+          }),
+      }),
+    );
+
+    await renderItem();
+
+    expect(await screen.findByText("Per server")).toBeInTheDocument();
+    const table = document.querySelector(".server-outcomes");
+    expect(table).not.toBeNull();
+    expect(within(table as HTMLElement).getByText("metadata failed")).toBeInTheDocument();
+    expect(within(table as HTMLElement).getByText("poster uploaded")).toBeInTheDocument();
   });
 
   it("re-runs by posting to /reprocess and reports the job the server queued", async () => {

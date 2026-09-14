@@ -144,6 +144,14 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
       return json({ dismissed: true, evidence: "a".repeat(64) });
     }
     if (path.startsWith("/api/actions/undismiss")) return json({ dismissed: false });
+    // Before the `/api/actions` catch-all below, which would otherwise answer
+    // this path with the flag queue's own rows. Empty by default so the panel
+    // stays off every other test's page -- it renders nothing at total 0, and
+    // a default with rows in it would put a second table under assertions
+    // written when there was one.
+    if (path.startsWith("/api/actions/job-warnings")) {
+      return json(overrides.jobWarnings ?? { jobs: [], total: 0 });
+    }
     if (path.startsWith("/api/actions/backfill")) {
       return json(
         overrides.backfill ?? {
@@ -294,6 +302,7 @@ describe("ActionCenter", () => {
       if (path.startsWith("/api/actions/summary")) return json(SUMMARY);
       if (path.includes("flag=missing")) return missingPromise;
       if (path.includes("flag=language_miss")) return languagePromise;
+      if (path.startsWith("/api/actions/job-warnings")) return json({ jobs: [], total: 0 });
       if (path.startsWith("/api/actions")) return json(ROWS);
       throw new Error(`the page requested an unexpected path: ${path}`);
     });
@@ -450,6 +459,7 @@ describe("ActionCenter", () => {
         const body = JSON.parse(String(init?.body)) as { item_id: number };
         return body.item_id === 7 ? firstPromise : secondPromise;
       }
+      if (path.startsWith("/api/actions/job-warnings")) return json({ jobs: [], total: 0 });
       if (path.startsWith("/api/actions")) return json(ROWS);
       throw new Error(`the page requested an unexpected path: ${path}`);
     });
@@ -588,6 +598,7 @@ describe("ActionCenter", () => {
         if (bulkCalls === 1) return json(DRY_RUN);
         return json({ detail: "the database is unreachable" }, 503);
       }
+      if (path.startsWith("/api/actions/job-warnings")) return json({ jobs: [], total: 0 });
       if (path.startsWith("/api/actions")) return json(ROWS);
       throw new Error(`the page requested an unexpected path: ${path}`);
     });
@@ -944,5 +955,45 @@ describe("ActionCenter", () => {
     expect(
       await screen.findByText("queued 500 more; 620 of 9050 unscored now queued for scoring"),
     ).toBeInTheDocument();
+  });
+
+  it("lists jobs that finished with warnings, with the sentence", async () => {
+    stubFetch({
+      jobWarnings: {
+        jobs: [
+          {
+            id: 1,
+            kind: "process_item",
+            attempts: 1,
+            reason: "jellyfin: metadata failed (status: HTTPStatusError 400)",
+            updated_at: "2026-09-14T00:00:00Z",
+            title: "Movie",
+            item_kind: "movie",
+            season_number: null,
+            episode_number: null,
+          },
+        ],
+        total: 1,
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("Finished with warnings")).toBeInTheDocument();
+    expect(
+      screen.getByText("jellyfin: metadata failed (status: HTTPStatusError 400)"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no warnings panel at all when nothing finished with warnings", async () => {
+    // The healthy deployment. An empty panel with a heading over it would be
+    // one more thing to read past on every visit, so the panel is absent
+    // rather than empty.
+    stubFetch();
+
+    renderPage();
+
+    await screen.findByText("Dune: Part Two");
+    expect(screen.queryByText("Finished with warnings")).not.toBeInTheDocument();
   });
 });

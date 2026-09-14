@@ -21,6 +21,7 @@ export const JOB_STATES = [
   "running",
   "deferred",
   "done",
+  "done_with_warnings",
   "failed",
   "parked",
   "dismissed",
@@ -113,6 +114,22 @@ export interface ParkedJob {
 
 export interface ParkedJobsResponse {
   jobs: ParkedJob[];
+}
+
+/** GET /api/actions/job-warnings -- jobs that finished with warnings, newest
+ * first, for the Action Center's own panel.
+ *
+ * The rows are `ParkedJob`s and the type is reused rather than copied: the
+ * endpoint lifts the same four naming fields out of the payload that
+ * `/api/jobs/parked` does, from the same helpers, so a second interface would
+ * only be able to drift from this one. `total` is the count across the whole
+ * state, not the length of this page.
+ *
+ * `reason` here is the job's last error, which for this state names the
+ * servers the job still owes rather than a failure that stopped it. */
+export interface JobWarningsResponse {
+  jobs: ParkedJob[];
+  total: number;
 }
 
 /** GET /api/jobs -- the pending and running queue, for the Jobs overview.
@@ -294,6 +311,50 @@ export interface ItemRenderDelivery {
   uploaded_at: string | null;
   next_attempt_at: string | null;
   detail: string | null;
+}
+
+/** One server's `metadata_writes` row, as nested under each entry of
+ * `ItemDetailResponse.servers`. `status` is `pending` / `failed` / `written` /
+ * `skipped` / `absent`; `absent` is a statement about the LIBRARY -- this
+ * server does not carry the item's library -- and not about this write. */
+export interface ItemMetadataWrite {
+  status: string;
+  detail: string | null;
+  attempts: number;
+  attempted_at: string | null;
+  written_at: string | null;
+  next_attempt_at: string | null;
+}
+
+/** One server's delivery of one art kind, as nested under each entry of
+ * `ItemDetailResponse.servers`. `status` is `pending` / `failed` /
+ * `uploaded` / `skipped` / `absent`, with `absent` carrying the same
+ * library-level meaning it does on a metadata write.
+ *
+ * The same underlying `render_deliveries` row `ItemRender.deliveries` carries,
+ * pivoted the other way: there it hangs off the render and names the server,
+ * here it hangs off the server and names the art kind. */
+export interface ItemServerArtwork {
+  art_kind: string;
+  status: string;
+  detail: string | null;
+  attempts: number;
+  attempted_at: string | null;
+  uploaded_at: string | null;
+  next_attempt_at: string | null;
+}
+
+/** One configured server's whole outcome for one item: what was written to it
+ * and what was uploaded to it. `metadata` is null for a server with no
+ * `metadata_writes` row yet, and `artwork` is empty for one with no delivery
+ * rows -- neither is an error, only work that has not happened.
+ *
+ * Servers are ordered by name and each server's `artwork` by art kind, both
+ * server-side, so the table does not reorder between page loads. */
+export interface ItemServerOutcome {
+  server: string;
+  metadata: ItemMetadataWrite | null;
+  artwork: ItemServerArtwork[];
 }
 
 /** One row of `renders`, as GET /api/items/{id} returns it. `(item_id,
@@ -640,6 +701,9 @@ export interface ItemDetailResponse {
   episode_number: number | null;
   parent: ItemParent | null;
   facts: ItemFacts | null;
+  /** One entry per server this item has any outcome row for, metadata and
+   * artwork together. Empty until the item has been processed once. */
+  servers: ItemServerOutcome[];
   renders: ItemRender[];
 }
 

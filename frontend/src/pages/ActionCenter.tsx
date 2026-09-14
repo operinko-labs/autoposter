@@ -32,6 +32,7 @@ import type {
   ActionsSummaryResponse,
   BulkRerenderResponse,
   ItemFiltersResponse,
+  JobWarningsResponse,
   QualityBackfillStatus,
   QualityBackfillTrigger,
   RebuildResponse,
@@ -111,6 +112,14 @@ export function ActionCenter() {
   const [rebuildResult, setRebuildResult] = useState<RebuildResponse | null>(null);
   const [rebuildBusy, setRebuildBusy] = useState(false);
 
+  /** Jobs that finished with warnings, or null until the endpoint answers.
+   *
+   * Its own state and its own effect rather than a field on `load()`: this
+   * reads a stored job outcome, not a flag recomputed over `renders`, so no
+   * filter above changes it and re-reading it on every chip click would be a
+   * query per click for a number that cannot have moved. */
+  const [warnings, setWarnings] = useState<JobWarningsResponse | null>(null);
+
   const [coverage, setCoverage] = useState<QualityBackfillStatus | null>(null);
   const [coverageDetail, setCoverageDetail] = useState<string | null>(null);
   const [coverageBusy, setCoverageBusy] = useState(false);
@@ -143,6 +152,21 @@ export function ActionCenter() {
       })
       .catch((caught: Error) => {
         if (!cancelled) setFiltersError(caught.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // The panel shows one screen of the newest rows; `total` carries the rest.
+    apiFetch<JobWarningsResponse>("/api/actions/job-warnings?limit=25")
+      .then((response) => {
+        if (!cancelled) setWarnings(response);
+      })
+      .catch((caught: Error) => {
+        if (!cancelled) setError(caught.message);
       });
     return () => {
       cancelled = true;
@@ -668,6 +692,44 @@ export function ActionCenter() {
       </div>
 
       {notice !== null && <p className="muted action-notice">{notice}</p>}
+
+      {/* Nothing at all when nothing finished with warnings, rather than an
+          empty table under a heading: a healthy deployment should not have to
+          read past a panel to learn there is nothing in it. */}
+      {warnings !== null && warnings.total > 0 && (
+        <div className="panel action-warnings">
+          <div className="row-actions">
+            <h2>Finished with warnings</h2>
+            <span className="muted">
+              {warnings.total} job{warnings.total === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Reason</th>
+                  <th>Finished</th>
+                </tr>
+              </thead>
+              <tbody>
+                {warnings.jobs.map((job) => (
+                  <tr key={job.id}>
+                    <td>{job.title ?? <span className="muted">—</span>}</td>
+                    {/* Wrapped for Failures.tsx's reason: the string names
+                        every server still owed and the provider error behind
+                        each, and unwrapped it widens the table past the
+                        viewport. */}
+                    <td className="mono cell-wrap">{job.reason ?? "—"}</td>
+                    <td className="muted cell-time">{formatTime(job.updated_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="panel">
         {page === null ? (
