@@ -339,14 +339,17 @@ def store_meta(
     return meta
 
 
-async def _store_row(
+async def store_row(
     session: AsyncSession, *, for_update: bool
 ) -> ConfigOverride | None:
     """The store's single row, or ``None``, under the lock the caller asked for.
 
-    Split out from ``load_store`` because the seed needs the row itself: what
-    a read strips out of the document is not what decides whether the store
-    has ever been written.
+    Split out from ``load_store`` because two writers need the row itself:
+    what a read strips out of the document is not what decides whether the
+    store has ever been written, and "has it ever been written" is the
+    question both the seed and the format stamp turn on. A row holding
+    nothing but sections that left the schema reads as an empty document and
+    is not an empty store.
 
     ``for_update`` takes a row lock, and only a write path passes it: a reader
     that locked would serialise ``GET /api/config`` behind every save for no
@@ -422,6 +425,19 @@ def _row_document(row: ConfigOverride | None) -> dict:
     return without_migrated_sections(row.document)
 
 
+def store_contents(row: ConfigOverride | None) -> tuple[dict, dict]:
+    """One row's document and metadata, as every reader of the store sees them.
+
+    Taken apart from the read so that a caller holding the row -- because it
+    has to know whether there is one -- does not have to read it twice to
+    learn what it says.
+    """
+    if row is None or not row.document:
+        return {}, {}
+    meta = row.meta if isinstance(row.meta, dict) else {}
+    return _row_document(row), meta
+
+
 async def load_store(
     session: AsyncSession, *, for_update: bool = False
 ) -> tuple[dict, dict]:
@@ -430,13 +446,10 @@ async def load_store(
     An empty store is the pre-configuration state of every deployment, and it
     is the one state that sends the loader looking at the mounted file. A row
     whose every section has left the schema reads as an empty *document* here
-    but is not an empty store: it has metadata, and it has been written.
+    and cannot be told apart from no row at all -- a caller that needs the
+    difference asks ``store_row`` for the row instead.
     """
-    row = await _store_row(session, for_update=for_update)
-    if row is None or not row.document:
-        return {}, {}
-    meta = row.meta if isinstance(row.meta, dict) else {}
-    return _row_document(row), meta
+    return store_contents(await store_row(session, for_update=for_update))
 
 
 async def load_overrides_document(
@@ -489,7 +502,7 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
     reason string -- a snapshot records what a write displaced, and this one
     displaces nothing.
     """
-    row = await _store_row(session, for_update=True)
+    row = await store_row(session, for_update=True)
     if row is not None and row.document:
         return _row_document(row)
     await write_store(session, document, store_meta())

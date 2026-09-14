@@ -67,8 +67,9 @@ from autoposter.config.overrides import (
     document_revision,
     empty_leaf_paths,
     load_overrides_document,
-    load_store,
     merge_overrides,
+    store_contents,
+    store_row,
     unknown_key_paths,
     without_migrated_sections,
     write_store,
@@ -2062,7 +2063,11 @@ async def _persist_and_swap(
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:
-        stored, meta = await load_store(session, for_update=True)
+        # The row itself, not just what it says: whether one exists at all is
+        # what decides the format stamp below, and a row holding nothing but
+        # sections that left the schema says exactly what no row says.
+        row = await store_row(session, for_update=True)
+        stored, meta = store_contents(row)
         if expected_revision is not None:
             current = document_revision(stored)
             if expected_revision != current:
@@ -2100,14 +2105,14 @@ async def _persist_and_swap(
         # the mounted file.
         #
         # The format is stamped only where it cannot be a lie: on a row that
-        # already says it, and on a store holding nothing at all, which is the
-        # insert this guards. A row still holding a delta keeps its metadata
-        # verbatim, because the document this save writes over it is a delta
-        # too -- the editor composed it from the paths that row made
-        # overridden -- and a raised format would tell the next boot to build
-        # a whole configuration out of a fragment and fail on the first
-        # required setting the fragment does not carry.
-        if meta.get("format") == STORE_FORMAT or not (stored or meta):
+        # already says it, and where there is no row at all, which is the
+        # insert this guards. Every other existing row is written through with
+        # its metadata verbatim, because the document this save writes over it
+        # is a delta too -- the editor composed it from the paths that row made
+        # overridden -- and a raised format would tell the next boot to build a
+        # whole configuration out of a fragment and fail on the first required
+        # setting the fragment does not carry.
+        if row is None or meta.get("format") == STORE_FORMAT:
             meta = {**meta, "format": STORE_FORMAT}
         await write_store(session, document, meta)
         session.add(

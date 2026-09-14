@@ -2208,18 +2208,31 @@ async def test_a_save_keeps_the_metadata_it_did_not_write(client, auth_headers, 
     assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}
 
 
-@pytest.mark.parametrize("stale_meta", [{}, {"format": 1}], ids=["absent", "explicit"])
+@pytest.mark.parametrize(
+    ("stale_document", "stale_meta"),
+    [
+        ({"workers": 9}, {}),
+        ({"workers": 9}, {"format": 1}),
+        ({"version_check": {"project": "operinko-labs"}}, {}),
+    ],
+    ids=["delta", "delta-with-an-explicit-format", "only-sections-that-left-the-schema"],
+)
 async def test_a_save_does_not_raise_the_format_of_a_delta(
-    client, auth_headers, session, stale_meta
+    client, auth_headers, session, stale_document, stale_meta
 ):
     """A deployment that has not been converted yet still stores a delta, and
     the editor still composes one -- from the very paths that delta made
     overridden. Stamping this document as whole would be a lie the next boot
     pays for: it would build a configuration out of a fragment and die on the
     first required setting the fragment does not carry, with the editor that
-    could repair the row sitting behind the application that will not start."""
+    could repair the row sitting behind the application that will not start.
+
+    The third row shape is the one that cannot be told apart by what it says:
+    every section in it has left the schema, so it reads as an empty document
+    and looks exactly like a store that was never written. Whether a row
+    exists is the only question that separates them."""
     await session.execute(
-        insert(ConfigOverride).values(id=1, document={"workers": 9}, meta=stale_meta)
+        insert(ConfigOverride).values(id=1, document=stale_document, meta=stale_meta)
     )
     await session.commit()
 
