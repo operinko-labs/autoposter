@@ -1745,7 +1745,7 @@ async def apply_metadata(
             await deliveries.record_metadata(
                 session, media_item_id, name, "pending",
                 detail=deliveries.failure_detail(exc), retry_in=deliveries.RETRY_SECONDS,
-                reset_attempts=re_armed,
+                reset_attempts=re_armed, leave_run=re_armed,
             )
 
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:
@@ -2319,9 +2319,13 @@ async def deliver(
                     # exhausted it again. Spec 2 promises the full pass and
                     # the catch-up re-arm such a row; that is only true if
                     # the counter goes back to zero with it.
+                    # `leave_run`: a row the ORDINARY pipeline re-arms has
+                    # left the catch-up that armed it, so its run scope goes
+                    # back to NULL -- otherwise a later progress query or
+                    # cancel acts on rows that run no longer owns.
                     await deliveries.record(
                         session, render.id, name, "pending", retry_in=0,
-                        count_attempt=False, reset_attempts=True,
+                        count_attempt=False, reset_attempts=True, leave_run=True,
                     )
                     recorded = True
                 continue
@@ -2378,7 +2382,7 @@ async def deliver(
             # over budget from an earlier, unrelated delivery failure.
             await deliveries.record(
                 session, render.id, name, "pending", retry_in=deliveries.RETRY_SECONDS,
-                count_attempt=False, reset_attempts=True,
+                count_attempt=False, reset_attempts=True, leave_run=True,
             )
             recorded = True
     if not recorded:

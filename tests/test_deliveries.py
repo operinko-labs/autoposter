@@ -655,6 +655,37 @@ async def test_an_uncounted_pending_leaves_the_budget_alone(session):
     ) == 1
 
 
+async def test_an_outcome_inside_a_run_keeps_its_scope(session):
+    """The other half of review I4: a row keeps `run_id`/`previous_status`
+    across every retry inside the run that armed it, terminal outcome
+    included -- Phase C's progress counts by run AND status, and its cancel
+    restores `previous_status`. Only `leave_run` clears them."""
+    from conftest import seed_media_item
+    from autoposter.scheduler.run_history import open_run
+
+    item = await seed_media_item(session, "rk-run", title="A")
+    run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=0)
+    await session.execute(
+        update(MetadataWrite).values(run_id=run_id, previous_status="written")
+    )
+
+    await deliveries.record_metadata(session, item.id, "jellyfin", "written")
+    row = (await session.execute(
+        select(MetadataWrite.status, MetadataWrite.run_id, MetadataWrite.previous_status)
+    )).one()
+    assert row.status == "written"
+    assert row.run_id == run_id and row.previous_status == "written"
+
+    await deliveries.record_metadata(
+        session, item.id, "jellyfin", "pending", retry_in=0, leave_run=True,
+    )
+    row = (await session.execute(
+        select(MetadataWrite.run_id, MetadataWrite.previous_status)
+    )).one()
+    assert row.run_id is None and row.previous_status is None
+
+
 async def test_a_re_arm_that_is_also_an_attempt_lands_at_one(session):
     """Review M9: `reset_attempts` used to be silently ignored whenever
     `count_attempt` was true, so a caller whose event is both a fresh start

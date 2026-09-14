@@ -95,7 +95,7 @@ async def _upsert_outcome(
     session: AsyncSession, model, constraint: str, key: dict[str, object], status: str, *,
     detail: str | None, retry_in: float | None, count_attempt: bool,
     terminal_status: str, terminal_at: str, extra_terminal: dict[str, object] | None = None,
-    reset_attempts: bool = False,
+    reset_attempts: bool = False, leave_run: bool = False,
 ) -> int:
     """Shared upsert body for ``record`` and ``record_metadata`` (spec §1/§2).
 
@@ -116,6 +116,15 @@ async def _upsert_outcome(
     pass's presence stamp. ``presence.apply_presence``'s re-arm is a plain
     ``UPDATE`` and is unaffected -- it is the one thing entitled to move a
     row off ``absent``.
+
+    ``run_id``/``previous_status`` are otherwise never named here, so a row
+    keeps its scope across every retry inside the run that armed it -- which
+    is what Phase C's run-scoped progress counts, by run and status, and what
+    its cancel restores. ``leave_run`` is the one exception: a row the
+    ORDINARY pipeline re-arms has left that run, and carrying the run id on
+    would have a later cancel or progress query act on rows the run no longer
+    owns. A terminal outcome inside a run keeps both columns; clearing them
+    when the run closes is the run's own business.
     """
     if status not in STATUSES and status != terminal_status:
         raise ValueError(f"{status!r} is not an outcome status")
@@ -128,6 +137,9 @@ async def _upsert_outcome(
         next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
         attempts=1 if counted else 0,
     )
+    if leave_run:
+        values["run_id"] = None
+        values["previous_status"] = None
     values[terminal_at] = now if is_terminal else None
     for column, value in (extra_terminal or {}).items():
         values[column] = value if is_terminal else None
@@ -184,7 +196,7 @@ async def record(
     session: AsyncSession, render_id: int, server: str, status: str, *,
     detail: str | None = None, retry_in: float | None = None,
     fingerprint: str | None = None, count_attempt: bool = True,
-    reset_attempts: bool = False,
+    reset_attempts: bool = False, leave_run: bool = False,
 ) -> int:
     """Upsert this render's delivery row for ``server``; return its ``attempts``.
 
@@ -216,6 +228,10 @@ async def record(
     event is a fresh start AND a real attempt says (``pipeline._write``'s
     write failure against a row that was already ``failed``).
 
+    ``leave_run`` is the re-arm's other half: a row the ordinary pipeline
+    re-arms has left the catch-up that armed it, so both scope columns go
+    back to NULL. The same two sites pass it that pass ``reset_attempts``.
+
     ``fingerprint`` is the badge fingerprint actually delivered. Stored on
     ``uploaded`` only, and -- exactly like ``uploaded_at`` -- never erased by
     a later non-``uploaded`` outcome, because the catch-up's "is this row
@@ -227,29 +243,29 @@ async def record(
         detail=detail, retry_in=retry_in, count_attempt=count_attempt,
         terminal_status="uploaded", terminal_at="uploaded_at",
         extra_terminal={"fingerprint": fingerprint},
-        reset_attempts=reset_attempts,
+        reset_attempts=reset_attempts, leave_run=leave_run,
     )
 
 
 async def record_metadata(
     session: AsyncSession, item_id: int, server: str, status: str, *,
     detail: str | None = None, retry_in: float | None = None,
-    count_attempt: bool = True, reset_attempts: bool = False,
+    count_attempt: bool = True, reset_attempts: bool = False, leave_run: bool = False,
 ) -> int:
     """Upsert this item's metadata-write row for ``server``; return ``attempts``.
 
     The sibling of ``record`` (spec §1), field for field, with ``written``
     where artwork says ``uploaded`` and ``written_at`` where it says
     ``uploaded_at``. Keyed on the ITEM: a metadata write has no art kind.
-    ``reset_attempts`` means what it means there -- the re-arm, which Phase
-    C's catch-up is the writer of for this table.
+    ``reset_attempts`` and ``leave_run`` mean what they mean there -- the
+    re-arm, which Phase C's catch-up is the other writer of for this table.
     """
     return await _upsert_outcome(
         session, MetadataWrite, "uq_metadata_write_item_server",
         {"item_id": item_id, "server": server}, status,
         detail=detail, retry_in=retry_in, count_attempt=count_attempt,
         terminal_status="written", terminal_at="written_at",
-        reset_attempts=reset_attempts,
+        reset_attempts=reset_attempts, leave_run=leave_run,
     )
 
 

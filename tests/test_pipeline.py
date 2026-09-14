@@ -2556,6 +2556,75 @@ async def test_a_dual_registry_pass_writes_metadata_written_and_pending_per_serv
     assert rows["jellyfin"].detail == "error: RuntimeError"
 
 
+async def test_the_pipeline_re_arming_a_row_takes_it_out_of_its_catch_up_run(
+    session, config_with_badges, monkeypatch,
+):
+    """Review I4: `run_id`/`previous_status` were never named by the outcome
+    writers, so a row armed by catch-up run 5 kept `run_id=5` for the rest of
+    its life -- including after the ordinary pipeline re-armed it weeks later.
+    Phase C's run-scoped progress and its cancel would then act on rows that
+    run no longer owns. A row leaves a run when the pipeline re-arms it;
+    a terminal outcome INSIDE a run keeps its scope."""
+    from sqlalchemy import update
+    from autoposter.db.models import MetadataWrite
+    from autoposter.scheduler.run_history import open_run
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers()
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+
+    # What a catch-up leaves behind: its own rows, exhausted and scoped to it.
+    run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
+    await session.execute(
+        update(RenderDelivery)
+        .where(RenderDelivery.server == "jellyfin")
+        .values(status="failed", run_id=run_id, previous_status="uploaded")
+    )
+    await session.execute(
+        update(MetadataWrite)
+        .where(MetadataWrite.server == "jellyfin")
+        .values(status="failed", run_id=run_id, previous_status="written")
+    )
+    await session.commit()
+
+    async def nothing_new(session, config, render, media_item, **_kwargs):
+        # An unchanged fingerprint, which is `deliver`'s own re-arm door.
+        return None
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise RuntimeError("jellyfin refused it")
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", nothing_new)
+    monkeypatch.setattr(jf, "apply_facts", boom)
+
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    delivery = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.run_id, RenderDelivery.previous_status)
+        .where(RenderDelivery.server == "jellyfin", RenderDelivery.render_id == poster.id)
+    )).one()
+    assert delivery.status == "pending"
+    assert delivery.run_id is None and delivery.previous_status is None
+    write = (await session.execute(
+        select(MetadataWrite.status, MetadataWrite.run_id, MetadataWrite.previous_status)
+        .where(MetadataWrite.server == "jellyfin")
+    )).one()
+    assert write.status == "pending"
+    assert write.run_id is None and write.previous_status is None
+
+
 async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
     session, monkeypatch,
 ):
