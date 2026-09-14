@@ -10,6 +10,7 @@ statements about THIS test's environment: a developer who exports
 AUTOPOSTER_RADARR_APIKEY in their shell would otherwise turn the second into a
 failure that says nothing about the code.
 """
+import os
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,7 @@ from autoposter.config.schema import (
     STATE_FILE_NAMES_ENV,
     STORED_SECRET_NAMES_ENV,
     Secrets,
+    state_file_secret_names,
 )
 from autoposter.config.state import STATE_DIR_ENV, merge_secrets_file
 
@@ -235,12 +237,18 @@ async def test_a_clear_the_state_file_answers_takes_the_file_s_value(
         f"/api/secrets/{TMDB}", json={"value": "the-stored-one"}, headers=auth_headers
     )
     merge_secrets_file({TMDB: "the-one-in-the-state-file"})
+    # The file marker comes from `boot`'s own function rather than a literal,
+    # and what it publishes here is EMPTY: that marker records what the file
+    # WON, and at this boot the store outranked it. Naming the marker by hand
+    # would describe a deployment `boot` cannot produce -- and would pass while
+    # every real one of this shape answered `unset`.
     booted_with(
         monkeypatch,
         stored=[TMDB],
-        state_file=[TMDB],
+        state_file=state_file_secret_names({TMDB: "the-stored-one"}),
         exported={TMDB: "the-stored-one"},
     )
+    assert os.environ[STATE_FILE_NAMES_ENV] == "", "the marker boot really emits"
 
     response = await client.delete(f"/api/secrets/{TMDB}", headers=auth_headers)
 

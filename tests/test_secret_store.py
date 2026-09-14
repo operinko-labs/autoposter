@@ -23,6 +23,7 @@ from sqlalchemy import select, update
 
 from autoposter.config import secret_store
 from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
     SECRET_NAMES,
     STATE_FILE_NAMES_ENV,
     STORED_SECRET_NAMES_ENV,
@@ -38,7 +39,7 @@ NAME = "AUTOPOSTER_TMDB_TOKEN"
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
-    """A state directory nobody else shares, and neither boot marker set.
+    """A state directory nobody else shares, and no boot marker set.
 
     The markers are what `secret_sources` falls back to with no session and no
     readable file, so a marker inherited from the container's environment (or
@@ -48,6 +49,7 @@ def state(tmp_path, monkeypatch):
     monkeypatch.setenv(STATE_DIR_ENV, str(tmp_path / "state"))
     monkeypatch.delenv(STATE_FILE_NAMES_ENV, raising=False)
     monkeypatch.delenv(STORED_SECRET_NAMES_ENV, raising=False)
+    monkeypatch.delenv(ENVIRONMENT_SECRET_NAMES_ENV, raising=False)
     return tmp_path / "state"
 
 
@@ -419,12 +421,27 @@ EXPORTED_HARD = (
 
 
 def _as_boot_left_it(monkeypatch, *names: str, from_file: str = "", stored: str = "") -> None:
-    """`os.environ` the way `boot.main` leaves it: both markers set -- possibly
-    empty -- and every winning value present, whichever layer supplied it."""
-    for name in (*EXPORTED_HARD, *names):
+    """`os.environ` the way `boot.main` leaves it: all three markers set --
+    possibly empty -- and every winning value present, whichever layer
+    supplied it.
+
+    The environment marker is derived rather than passed, the way `boot`
+    derives it: what this deployment's own environment supplies is whatever
+    the export published that neither higher layer claims. Leaving it absent
+    would send these assertions down the never-booted fallback -- and would
+    make them depend on whether an earlier test in the same worker ran a real
+    `boot.main`.
+    """
+    claimed = set(from_file.split(",")) | set(stored.split(","))
+    exported = (*EXPORTED_HARD, *names)
+    for name in exported:
         monkeypatch.setenv(name, "published-by-the-export")
     monkeypatch.setenv(STATE_FILE_NAMES_ENV, from_file)
     monkeypatch.setenv(STORED_SECRET_NAMES_ENV, stored)
+    monkeypatch.setenv(
+        ENVIRONMENT_SECRET_NAMES_ENV,
+        ",".join(name for name in exported if name not in claimed),
+    )
 
 
 def test_a_file_supplied_name_is_still_the_state_file_after_the_export(state, monkeypatch):

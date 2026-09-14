@@ -31,6 +31,7 @@ from autoposter.app import create_app
 from autoposter.config import state as state_module
 from autoposter.config.loader import build_config
 from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
     STATE_FILE_NAMES_ENV,
     STORED_SECRET_NAMES_ENV,
     Secrets,
@@ -149,12 +150,24 @@ def _as_boot_left_it(
     monkeypatch, *, from_file: str = "", stored: str = "", **overrides: str
 ) -> None:
     """`os.environ` the way `boot.main` leaves it: every winning value present
-    whichever layer supplied it, and BOTH name markers set -- possibly empty,
-    which is itself the answer "nothing came from there"."""
+    whichever layer supplied it, and ALL THREE name markers set -- possibly
+    empty, which is itself the answer "nothing came from there".
+
+    The environment marker is derived rather than passed, the way `boot`
+    derives it: what the deployment's own environment supplies is whatever the
+    export published that neither higher layer claims. Setting the two old
+    markers and leaving this one absent would send these assertions down the
+    never-booted fallback instead of the path a deployed process takes.
+    """
+    claimed = set(from_file.split(",")) | set(stored.split(","))
     for name in EXPORTED_HARD:
         monkeypatch.setenv(name, overrides.get(name, "published-by-the-export"))
     monkeypatch.setenv(STATE_FILE_NAMES_ENV, from_file)
     monkeypatch.setenv(STORED_SECRET_NAMES_ENV, stored)
+    monkeypatch.setenv(
+        ENVIRONMENT_SECRET_NAMES_ENV,
+        ",".join(name for name in EXPORTED_HARD if name not in claimed),
+    )
 
 
 async def test_a_deployment_whose_environment_answers_is_refused_by_a_fixed_sentence(

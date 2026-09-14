@@ -147,7 +147,7 @@ def resolve_secret_values(stored: Mapping[str, str] | None = None) -> dict[str, 
     # read for that deployment to fail, race, or be denied by a mount that
     # is not there. It is off the moment one name is a boot-exported copy:
     # the file is then the only layer that can answer that name honestly.
-    if not stored and not cleared and all(os.environ.get(name) for name in _SECRET_ENV.values()):
+    if _environment_is_complete(stored, cleared):
         return {name: os.environ[name] for name in SECRET_NAMES if os.environ.get(name)}
     from_file = read_secrets_file(secrets_file_path())
     resolved: dict[str, str] = {}
@@ -172,7 +172,7 @@ def _marker_names(variable: str) -> set[str]:
     return {name for name in os.environ.get(variable, "").split(",") if name}
 
 
-def _boot_exported_copies(stored: Mapping[str, str] | None) -> set[str]:
+def _boot_exported_copies(stored: Mapping[str, str] | Collection[str] | None) -> set[str]:
     """The names whose ``os.environ`` value is boot's echo of a STORED secret
     that the caller's own read of the table no longer finds.
 
@@ -190,46 +190,78 @@ def _boot_exported_copies(stored: Mapping[str, str] | None) -> set[str]:
     excluded for it and the resolution is exactly what it was. An empty
     MAPPING is the opposite statement -- the table was read and holds nothing.
 
+    A mapping of values or a collection of names, whichever the caller has:
+    the question is only whether the table still claims the name, and a stored
+    row never holds an empty value -- ``store_secret`` refuses one -- so
+    membership and a truthy value are the same test here.
+
     Empty without ``boot``'s marker, which is the suite, the CLIs and the
     wizard before the first boot: no export has happened in those processes,
     so every value in ``os.environ`` is the environment's own.
     """
     if stored is None or STORED_SECRET_NAMES_ENV not in os.environ:
         return set()
-    return {name for name in _marker_names(STORED_SECRET_NAMES_ENV) if not stored.get(name)}
+    return {name for name in _marker_names(STORED_SECRET_NAMES_ENV) if name not in stored}
 
 
-def _state_file_names() -> set[str]:
+def _environment_is_complete(stored: Collection[str], cleared: Collection[str]) -> bool:
+    """Whether ``resolve_secret_values`` answers without opening the state file.
+
+    Its env-complete short-circuit, asked as a predicate because two callers
+    need the same answer: the resolver, to skip the read, and ``secret_sources``
+    below, to know whether what that file holds is in play at all. Shared
+    rather than repeated, so a label and the value it describes cannot come to
+    disagree about which layers this deployment is even using.
+    """
+    return (
+        not stored
+        and not cleared
+        and all(os.environ.get(name) for name in _SECRET_ENV.values())
+    )
+
+
+def _state_file_names(file_is_read: bool) -> set[str]:
     """The names the STATE FILE answers, as this process can best tell.
 
-    ``boot``'s marker whenever there is one, and the file itself only when
-    there is not. That order is the whole point and it is not the intuitive
-    one: the file is what happens to be on the volume, the marker is what WON.
-    An env-complete deployment with a leftover ``secrets.env`` never opens that
-    file at boot -- ``resolve_secret_values`` short-circuits -- so not one of
-    the names in it answers anything, and a label read off the file would tell
-    that operator the opposite of what their deployment is running on. It would
-    also let the webhook rotation write a file the next boot will not read,
-    leaving both *arrs signing with a value this service has already forgotten.
+    What ``boot`` published, PLUS what the file holds now. Both are true about
+    that layer and neither contains the other: the marker is what the file WON
+    at boot, which by construction leaves out every name the store outranked
+    (``state_file_secret_names``), and those are exactly the names a clear asks
+    about -- while the file, unlike the environment, is not destroyed by
+    ``boot._export`` and can simply be read again. A name the marker claims and
+    the file no longer holds stays claimed: the running value came from there,
+    and the copy in ``os.environ`` is the export's echo of it.
 
-    PRESENCE, not truthiness: both markers are set unconditionally, so
-    ``STATE_FILE_NAMES_ENV in os.environ`` is what separates "this process
-    booted and nothing came from the file" from "this process never booted at
-    all". The second is the wizard before its first boot, the CLIs and the
-    suite -- none of which has a marker, and all of which are right to read the
-    file, because for them it is the only record there is.
+    The union is off for a deployment whose resolver never opens that file --
+    ``file_is_read``, from ``_environment_is_complete`` above. An env-complete
+    deployment with a leftover ``secrets.env`` reads not one name out of it, so
+    a label taken from it would tell that operator the opposite of what their
+    deployment is running on, and would let the webhook rotation write a file
+    the next boot will not read, leaving both *arrs signing with a value this
+    service has already forgotten.
+
+    PRESENCE, not truthiness, for that exemption: all three markers are set
+    unconditionally, so ``STATE_FILE_NAMES_ENV in os.environ`` is what
+    separates "this process booted and nothing came from the file" from "this
+    process never booted at all". The second is the wizard before its first
+    boot, the CLIs and the suite -- none of which has a marker, none of which
+    has exported anything, and all of which are right to read the file, because
+    for them it is the only record there is.
 
     ``read_secrets_file`` raises rather than swallowing a file that exists and
     cannot be read, which is right for the boot path and wrong for a label
-    lookup: a page render must not 500 over it. A file that is not UTF-8 is the
-    same fault one decoding step later and is caught with it.
+    lookup: a page render must not 500 over it, and what ``boot`` published is
+    the honest smaller answer when the volume has gone away. A file that is not
+    UTF-8 is the same fault one decoding step later and is caught with it.
     """
-    if STATE_FILE_NAMES_ENV in os.environ:
-        return _marker_names(STATE_FILE_NAMES_ENV)
+    published = _marker_names(STATE_FILE_NAMES_ENV)
+    if not file_is_read and STATE_FILE_NAMES_ENV in os.environ:
+        return published
     try:
-        return {name for name, value in read_secrets_file(secrets_file_path()).items() if value}
+        held = read_secrets_file(secrets_file_path())
     except (OSError, UnicodeDecodeError):
-        return set()
+        return published
+    return published | {name for name, value in held.items() if value}
 
 
 def _environment_names() -> set[str]:
@@ -282,9 +314,11 @@ def secret_sources(stored_names: Collection[str] | None = None) -> dict[str, str
     stops being labelled ``stored`` immediately. ``None`` -- a caller with no
     session -- falls back to the marker ``boot`` published, which is that
     boot's own answer. An empty collection is not ``None``: it means the table
-    was read and holds nothing. The state-file set follows the same rule one
-    layer down, in ``_state_file_names``: what ``boot`` published, and the
-    file only where no boot has published anything.
+    was read and holds nothing. The state-file set one layer down is what
+    ``boot`` published TOGETHER WITH what the file holds now
+    (``_state_file_names``), because that file is still there to be read and
+    its marker cannot name a secret the store outranked at boot -- which is
+    every name a clear is about.
 
     The branches are in ``resolve_secret_values``' resolution order and must
     stay in it. A source label that disagreed with the value that function
@@ -293,7 +327,8 @@ def secret_sources(stored_names: Collection[str] | None = None) -> dict[str, str
     about.
     """
     stored = _marker_names(STORED_SECRET_NAMES_ENV) if stored_names is None else set(stored_names)
-    from_file = _state_file_names()
+    cleared = _boot_exported_copies(stored_names)
+    from_file = _state_file_names(not _environment_is_complete(stored, cleared))
     from_environment = _environment_names()
     sources: dict[str, str] = {}
     for name in SECRET_NAMES:
