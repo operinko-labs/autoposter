@@ -34,6 +34,7 @@ from autoposter.config.overrides import (
     EMPTY_DOCUMENT_REVISION,
     OVERRIDES_INSERT_LOCK_KEY,
     STORE_FORMAT,
+    load_effective_config,
     merge_overrides,
 )
 from autoposter.config.schema import Secrets
@@ -2205,3 +2206,33 @@ async def test_a_save_keeps_the_metadata_it_did_not_write(client, auth_headers, 
     row = (await session.execute(select(ConfigOverride))).scalar_one()
     assert row.document == {"workers": 8}
     assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}
+
+
+@pytest.mark.parametrize("stale_meta", [{}, {"format": 1}], ids=["absent", "explicit"])
+async def test_a_save_does_not_raise_the_format_of_a_delta(
+    client, auth_headers, session, stale_meta
+):
+    """A deployment that has not been converted yet still stores a delta, and
+    the editor still composes one -- from the very paths that delta made
+    overridden. Stamping this document as whole would be a lie the next boot
+    pays for: it would build a configuration out of a fragment and die on the
+    first required setting the fragment does not carry, with the editor that
+    could repair the row sitting behind the application that will not start."""
+    await session.execute(
+        insert(ConfigOverride).values(id=1, document={"workers": 9}, meta=stale_meta)
+    )
+    await session.commit()
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 8}}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.meta == stale_meta, "the save relabelled a delta as a whole document"
+
+    # The proof that matters: the next boot still starts, because the delta is
+    # still merged over the mounted file.
+    config = await load_effective_config(EXAMPLE, session)
+    assert config.workers == 8
