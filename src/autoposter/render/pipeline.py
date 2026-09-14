@@ -2696,6 +2696,17 @@ async def process_item(
                 imdb_parental, servers=servers, resolved_on=resolved_on,
                 absent_servers=absent_servers, open_runs=open_runs,
             )
+            # `apply_metadata` records every per-server `metadata_writes` row
+            # with `flush()` alone, and the first thing that would commit them
+            # is `render_artifact`'s own commit down in the artifact loop. Every
+            # containment between here and there rolls back -- the refusal
+            # branch fires before `render_artifact` has committed anything at
+            # all -- and would take the unsettled rows with it, leaving the
+            # warning sentence at the end of this function with nothing to
+            # name and the job finishing plain `done`. Committed here, while
+            # the rows are still the only thing in the transaction, so no
+            # later containment can discard what the sentence is computed from.
+            await session.commit()
         except AttributeError:
             # A server missing a required method (item_labels/apply_facts) is
             # a wiring bug, not the runtime failure below is for -- it must

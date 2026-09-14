@@ -10,7 +10,9 @@ from conftest import decodable_png
 from sqlalchemy import select, update
 
 from autoposter.config.loader import load_config, render_version_for
-from autoposter.db.models import MediaItem, MediaItemServerRef, Render, RenderDelivery
+from autoposter.db.models import (
+    MediaItem, MediaItemServerRef, MetadataWrite, Render, RenderDelivery,
+)
 from autoposter.db.refs import item_id_for
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
@@ -2867,13 +2869,59 @@ async def test_process_item_reports_a_failed_metadata_write_as_a_warning(
     assert len(plex.facts_written) == 1, "the server that settled is not in the sentence"
 
 
+async def test_a_later_refusal_cannot_discard_the_rows_the_sentence_names(
+    session, config_with_badges, monkeypatch,
+):
+    """`apply_metadata` only flushes its `metadata_writes` rows, and the
+    refusal branch below rolls back before `render_artifact` has committed
+    anything at all -- so an unsettled row written moments earlier vanished
+    with it, the sentence found nothing left to name, and the job finished
+    plain `done` while the operator was owed exactly the warning spec §4
+    exists for."""
+    from autoposter.render.artwork_fetch import SourceRefused
+
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers()
+    response = httpx.Response(400, request=httpx.Request("POST", "https://jf.internal/Items/j1"))
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.HTTPStatusError("bad", request=response.request, response=response)
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+
+    async def refuse_the_poster(session, config, http, item, art_kind, providers, **kwargs):
+        if art_kind != "poster":
+            return await _fake_render_artifact(
+                session, config, http, item, art_kind, providers, **kwargs
+            )
+        # The real `render_artifact` flushes its own render-row upsert before
+        # it can refuse, which is what makes the handler's rollback matter.
+        media_item = await pipeline_module._upsert_media_item(session, item)
+        await pipeline_module._get_or_create_render(session, media_item, art_kind, "/tmp/p.jpg")
+        raise SourceRefused("the poster source refused")
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", refuse_the_poster)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == ["jellyfin: metadata pending (status: HTTPStatusError 400)"]
+    assert dict((await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status)
+    )).all()) == {"plex": "written", "jellyfin": "pending"}
+
+
 async def test_process_item_reports_nothing_when_every_server_settled(
     session, config_with_badges, monkeypatch,
 ):
     """The other half: both tables settle on both servers, so the job that
     ran this item finishes plain `done`."""
-    from autoposter.db.models import MetadataWrite
-
     config_with_badges.badges.upload_to_jellyfin = True
     config_with_badges.operations.enabled = True
     config_with_badges.operations.write_to_plex = True
@@ -2931,8 +2979,6 @@ async def test_a_badge_stage_failure_stays_contained_with_warnings_asked_for(
         )
 
     assert any("badge stage failed" in r.message for r in caplog.records)
-    # Whatever the rows say is fine; what must NOT happen is the call raising.
-    assert isinstance(warnings, list)
 
 
 async def test_process_item_reports_a_server_that_never_resolved(
@@ -2942,9 +2988,6 @@ async def test_process_item_reports_a_server_that_never_resolved(
     metadata row at all -- the deployment shape where the old code finished
     plain `done` and said nothing about a server that has never seen the
     item."""
-    from sqlalchemy import select as _select
-    from autoposter.db.models import MetadataWrite
-
     config_with_badges.badges.enabled = False
     config_with_badges.operations.enabled = True
     config_with_badges.operations.write_to_plex = True
@@ -2961,9 +3004,9 @@ async def test_process_item_reports_a_server_that_never_resolved(
     assert warnings == ["jellyfin: not found"]
     # The vacuity guard for the premise: no row names jellyfin at all, which
     # is why the miss had to be carried separately.
-    assert (await session.execute(_select(RenderDelivery))).all() == []
+    assert (await session.execute(select(RenderDelivery))).all() == []
     assert dict((await session.execute(
-        _select(MetadataWrite.server, MetadataWrite.status)
+        select(MetadataWrite.server, MetadataWrite.status)
     )).all()) == {"plex": "written"}
 
 
