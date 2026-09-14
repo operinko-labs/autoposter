@@ -893,6 +893,24 @@ def test_a_second_boot_keeps_the_environment_the_first_one_recorded(monkeypatch)
     assert os.environ[ENVIRONMENT_SECRET_NAMES_ENV] == first
 
 
+def test_a_second_boot_publishes_the_same_state_file_marker(monkeypatch):
+    """The same re-exec, one layer up. A deployment with nothing stored whose
+    file answers every hard name carries all of them in `os.environ` after the
+    first `_export`, so a short-circuit that asked `os.environ` would decide
+    the second boot is env-complete, skip the file, and publish an EMPTY
+    marker. The values would still be the file's and every one of them would
+    be labelled `unset` on the Settings page -- a deployment running perfectly,
+    described as unconfigured, with its operator sent to set variables nothing
+    reads."""
+    _write_state_secrets({name: "from-file" for name in HARD})
+
+    first = _booted(monkeypatch)
+    second = _booted(monkeypatch)
+
+    assert sorted(first.split(",")) == sorted(HARD)
+    assert second == first
+
+
 def test_a_name_the_environment_also_carries_is_on_the_marker_now(monkeypatch):
     """The migration `deploy/README.md:240-243` sends operators through: the
     file and the environment hold the SAME string for the webhook secret. The

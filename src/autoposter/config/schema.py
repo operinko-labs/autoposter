@@ -400,9 +400,25 @@ def state_file_secret_names(stored: Mapping[str, str] | None = None) -> list[str
     GitOps exemption stays structural here too: such a deployment returns
     ``[]`` without the file being opened at all. That costs one extra read of
     one small file on the file-configured boot, once per process.
+
+    It asks ``_environment_names`` rather than raw ``os.environ``, and on a
+    RE-EXEC that is the whole difference. ``boot._export`` publishes every
+    winning value into ``os.environ`` and ``os.execv`` hands that environment
+    to the next boot in the chain -- the wizard's finish today, the restart
+    route next -- so a deployment running on ``secrets.env`` with nothing
+    stored would take this short-circuit on its second boot, publish an EMPTY
+    state-file marker, and have every secret it runs on labelled ``unset`` on
+    a page describing a deployment that is running perfectly. The values would
+    stay right and only the labels would lie, which is the expensive half: an
+    operator is sent to set a variable nothing reads. ``_environment_names``
+    is the inherited marker on such a boot -- what the deployment's own
+    manifest set, which is the only thing this exemption was ever about -- and
+    on a first boot, where there is no marker, it is ``os.environ`` itself,
+    which is the answer this line gave before.
     """
     stored = stored or {}
-    if not stored and all(os.environ.get(name) for name in _SECRET_ENV.values()):
+    environment = _environment_names()
+    if not stored and all(name in environment for name in _SECRET_ENV.values()):
         return []
     from_file = read_secrets_file(secrets_file_path())
     return [name for name in SECRET_NAMES if not stored.get(name) and from_file.get(name)]
