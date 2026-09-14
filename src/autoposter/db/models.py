@@ -1231,3 +1231,21 @@ class Run(Base):
     # matter the Action Center owns, and a run's rollup is not where it
     # belongs.
     deferred: Mapped[int | None] = mapped_column(Integer)
+
+    # --- the catch-up run's own three columns (spec §3) -------------------
+    #
+    # A catch-up is a run of kind `catch_up` FOR one media server, so the
+    # server belongs on the row rather than being parsed back out of `name`
+    # -- the runs list filters and groups by it, and a name is a label.
+    # NULL for every other kind.
+    server: Mapped[str | None] = mapped_column(String(16))
+    # How often this run's backlog is drained. Defaults to the scheduler's
+    # pending-deliveries cadence and can be SHORTENED by the button that
+    # starts the run, because a catch-up over a large library is thousands of
+    # rows drained in batches of 500 and an operator watching it should not
+    # have to wait a quarter of an hour per batch.
+    cadence_seconds: Mapped[int | None] = mapped_column(Integer)
+    # When the drain job last took a batch of this run's rows. The per-run
+    # cadence is enforced against this, which is why it is a column and not
+    # process state: two replicas share the database and share nothing else.
+    last_drained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
