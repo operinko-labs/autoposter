@@ -210,7 +210,7 @@ async def test_the_listing_carries_metadata_and_no_documents(
 
     body = (await client.get("/api/config/snapshots", headers=auth_headers)).json()
     assert len(body) == 1
-    assert set(body[0]) == {"id", "created_at", "path_count", "reason"}
+    assert set(body[0]) == {"id", "created_at", "path_count", "reason", "format"}
     assert body[0]["path_count"] == 12
     assert body[0]["reason"] == "save"
 

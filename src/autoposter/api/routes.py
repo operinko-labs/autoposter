@@ -63,6 +63,7 @@ from autoposter.config.live import (
 from autoposter.config.loader import build_config, moved_kinds, read_config_document
 from autoposter.config.overrides import (
     STORE_FORMAT,
+    _read_file_document,
     document_paths,
     document_revision,
     empty_leaf_paths,
@@ -2096,7 +2097,7 @@ async def _persist_and_swap(
         # Pre-write, in this session and this transaction. Same transaction is
         # the whole point: a snapshot that commits without its write, or a
         # write that commits without its snapshot, is worse than neither.
-        await capture_snapshot(session, stored, reason)
+        await capture_snapshot(session, stored, reason, format=meta.get("format", 1))
 
         # Through the store's own writer, so the row's metadata is written
         # rather than left to the column default: a first-ever save that
@@ -2330,7 +2331,7 @@ async def get_config_snapshot(
     """One previous overrides document, redacted the way the live one is."""
     async with request.app.state.session_factory() as session:
         try:
-            document = await load_snapshot(session, snapshot_id)
+            document, snapshot_format = await load_snapshot(session, snapshot_id)
         except LookupError:
             raise HTTPException(
                 status_code=404, detail=f"no config snapshot {snapshot_id}"
@@ -2342,8 +2343,34 @@ async def get_config_snapshot(
         "created_at": meta.get("created_at"),
         "path_count": meta.get("path_count"),
         "reason": meta.get("reason"),
+        "format": snapshot_format,
         "document": _redacted_document(document),
     }
+
+
+def _drop_empty_leaves(document: dict) -> dict:
+    """A copy of ``document`` with every ``{}`` leaf removed, recursively.
+
+    The mounted file is free to spell an unset optional section out as ``{}``
+    (``artwork.poster.text.newline_words: {}``, for one) -- leaving the key
+    out entirely validates to the exact same thing. A delta-era restore merges
+    that file wholesale into the document it is about to write back, which
+    copies those spellings in verbatim; ``_validated_generation``'s
+    ``empty_leaf_paths`` guard exists to catch an operator setting ``{}`` by
+    hand, not the mounted file's own way of saying "nothing here", so those
+    are dropped before the merged candidate reaches that guard.
+    """
+    pruned: dict = {}
+    for key, value in document.items():
+        if isinstance(value, dict):
+            if not value:
+                continue
+            nested = _drop_empty_leaves(value)
+            if nested:
+                pruned[key] = nested
+        else:
+            pruned[key] = value
+    return pruned
 
 
 @router.post("/config/snapshots/{snapshot_id}/restore")
@@ -2367,18 +2394,40 @@ async def restore_config_snapshot(
     every read, but a raw snapshot row still holds it -- so without this the
     one recovery path would 422 on exactly the old snapshots recovery exists
     for.
+
+    A snapshot older than the store format is a DELTA, not a document: it is a
+    statement about the file that was mounted when it was taken, and it is
+    restored the way it was applied -- merged over that file -- rather than
+    stored as though it were the whole configuration, which would 422 on every
+    required field the delta never mentioned.
     """
     async with request.app.state.session_factory() as session:
         try:
-            snapshot = await load_snapshot(session, snapshot_id)
+            snapshot, snapshot_format = await load_snapshot(session, snapshot_id)
         except LookupError:
             raise HTTPException(
                 status_code=404, detail=f"no config snapshot {snapshot_id}"
             ) from None
 
-    document, after = await _validated_generation(
-        request, without_migrated_sections(snapshot)
-    )
+    candidate = without_migrated_sections(snapshot)
+    if snapshot_format < STORE_FORMAT:
+        base = _read_file_document(request.app.state.config_path)
+        if base is None:
+            raise HTTPException(
+                status_code=422,
+                detail=[
+                    _error(
+                        "document",
+                        "this snapshot is a delta from before the stored "
+                        "document replaced the configuration file, and that "
+                        "file is not readable, so there is nothing to merge "
+                        "it over",
+                    )
+                ],
+            )
+        candidate = _drop_empty_leaves(merge_overrides(base, candidate))
+
+    document, after = await _validated_generation(request, candidate)
     return await _persist_and_swap(
         request,
         document,

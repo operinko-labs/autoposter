@@ -35,10 +35,18 @@ from autoposter.config.overrides import (
     OVERRIDES_INSERT_LOCK_KEY,
     STORE_FORMAT,
     load_effective_config,
+    load_store,
     merge_overrides,
 )
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ConfigOverride, EventLog, Job, ManagedCollection, Render
+from autoposter.db.models import (
+    ConfigOverride,
+    ConfigOverrideSnapshot,
+    EventLog,
+    Job,
+    ManagedCollection,
+    Render,
+)
 from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue
 from autoposter.render.pipeline import compute_fingerprint, gather_fingerprint_inputs
@@ -2207,6 +2215,13 @@ async def test_a_save_keeps_the_metadata_it_did_not_write(client, auth_headers, 
     assert row.document == {"workers": 8}
     assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}
 
+    snapshot = (
+        await session.execute(
+            select(ConfigOverrideSnapshot).order_by(ConfigOverrideSnapshot.id.desc())
+        )
+    ).scalars().first()
+    assert snapshot.format == STORE_FORMAT, "the save was on a whole document"
+
 
 @pytest.mark.parametrize(
     ("stale_document", "stale_meta"),
@@ -2245,7 +2260,66 @@ async def test_a_save_does_not_raise_the_format_of_a_delta(
     row = (await session.execute(select(ConfigOverride))).scalar_one()
     assert row.meta == stale_meta, "the save relabelled a delta as a whole document"
 
+    snapshot = (
+        await session.execute(
+            select(ConfigOverrideSnapshot).order_by(ConfigOverrideSnapshot.id.desc())
+        )
+    ).scalars().first()
+    if snapshot is not None:
+        # The third row shape's outgoing document strips to {} -- nothing to
+        # snapshot, and capture_snapshot skips an empty document -- so only
+        # the first two shapes reach this assertion.
+        assert snapshot.format == 1, "the snapshot of the outgoing delta must not be raised"
+
     # The proof that matters: the next boot still starts, because the delta is
     # still merged over the mounted file.
     config = await load_effective_config(EXAMPLE, session)
     assert config.workers == 8
+
+
+async def test_restoring_a_delta_era_snapshot_re_runs_the_merge(
+    client, auth_headers, app, session_factory, config_file
+):
+    """spec §8: every existing snapshot stays restorable.
+
+    A format-1 snapshot is a DELTA. Restoring it as though it were a document
+    would store `{"workers": 9}` as the whole configuration and fail
+    validation on eight required fields; the restore merges it over the file
+    instead, exactly as the delta era did.
+    """
+    async with session_factory() as session:
+        session.add(
+            ConfigOverrideSnapshot(
+                document={"workers": 9}, path_count=1, reason="migrate", format=1
+            )
+        )
+        await session.commit()
+        snapshot_id = (
+            await session.execute(select(func.max(ConfigOverrideSnapshot.id)))
+        ).scalar_one()
+
+    response = await client.post(
+        f"/api/config/snapshots/{snapshot_id}/restore", json={}, headers=auth_headers
+    )
+    assert response.status_code == 200, response.text
+
+    async with session_factory() as session:
+        document, meta = await load_store(session)
+    assert document["workers"] == 9
+    assert meta["format"] == 2
+    assert "plex" in document, "the restore must produce a whole document"
+
+
+async def test_a_snapshot_reports_which_format_it_is(
+    client, auth_headers, session_factory
+):
+    async with session_factory() as session:
+        session.add(
+            ConfigOverrideSnapshot(
+                document={"workers": 9}, path_count=1, reason="migrate", format=1
+            )
+        )
+        await session.commit()
+
+    listing = await client.get("/api/config/snapshots", headers=auth_headers)
+    assert listing.json()[0]["format"] == 1
