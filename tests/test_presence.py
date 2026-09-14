@@ -32,7 +32,12 @@ async def test_an_item_in_an_uncarried_library_is_absent_in_both_tables(session)
     assert metadata[photo.id].next_attempt_at is None
     delivery = (await session.execute(select(RenderDelivery))).scalar_one()
     assert delivery.status == "absent" and delivery.server == "jellyfin"
-    assert outcome == {"absent": 2, "rearmed": 0}
+    # Per table, not summed: one ITEM and one RENDER, which a single `2` gave
+    # an operator no way to tell apart (review minor 2).
+    assert outcome == {
+        "metadata": {"absent": 1, "rearmed": 0},
+        "artwork": {"absent": 1, "rearmed": 0},
+    }
     assert movie.id not in metadata
 
 
@@ -59,7 +64,10 @@ async def test_a_reappearing_library_re_arms_its_absent_rows(session):
     outcome = await presence.apply_presence(session, "jellyfin", {"Movies", "Photos"})
     await session.commit()
 
-    assert outcome == {"absent": 0, "rearmed": 2}
+    assert outcome == {
+        "metadata": {"absent": 0, "rearmed": 1},
+        "artwork": {"absent": 0, "rearmed": 1},
+    }
     delivery = (await session.execute(select(RenderDelivery))).scalar_one()
     assert delivery.status == "pending" and delivery.next_attempt_at is not None
     metadata = (await session.execute(select(MetadataWrite))).scalar_one()
@@ -88,7 +96,10 @@ async def test_present_libraries_reads_the_server_and_refresh_walks_the_registry
 
     outcomes = await presence.refresh_presence(session, Servers({"jellyfin": jf}))
     await session.commit()
-    assert outcomes == {"jellyfin": {"absent": 1, "rearmed": 0}}
+    assert outcomes == {"jellyfin": {
+        "metadata": {"absent": 1, "rearmed": 0},
+        "artwork": {"absent": 0, "rearmed": 0},
+    }}
 
 
 async def test_a_server_that_cannot_list_its_libraries_is_skipped(session):
@@ -99,3 +110,23 @@ async def test_a_server_that_cannot_list_its_libraries_is_skipped(session):
 
     jf.library_names = boom
     assert await presence.refresh_presence(session, Servers({"jellyfin": jf})) == {}
+
+
+async def test_a_server_that_lists_no_libraries_at_all_is_skipped_too(session):
+    """Review C2: an empty answer is not "carries nothing" -- a Jellyfin still
+    starting up, an API key without library scope, or an excluded_libraries
+    naming every folder all answer cleanly with nothing in them, and stamping
+    on that would mark the entire database absent on that server and overwrite
+    every non-terminal row's detail, attempts and horizon on the way."""
+    item = await seed_media_item(session, "rk7", library="Photos", title="P")
+    await _rendered(session, item)
+    # Neither `libraries` nor `items`, which is exactly what an unconfigured
+    # double -- and a real server with nothing mounted yet -- answers.
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    assert await presence.present_libraries(jf) == set()
+
+    assert await presence.refresh_presence(session, Servers({"jellyfin": jf})) == {}
+    await session.commit()
+
+    assert (await session.execute(select(MetadataWrite))).scalars().all() == []
+    assert (await session.execute(select(RenderDelivery))).scalars().all() == []

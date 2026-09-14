@@ -46,16 +46,22 @@ async def apply_presence(
 ) -> dict:
     """Stamp `absent` where a library is not carried, re-arm where one is.
 
-    Returns ``{"absent": rows stamped, "rearmed": rows re-armed}`` counted
-    across BOTH tables. Does not commit -- the caller (a full pass's opening,
-    a catch-up's step 1) owns the transaction.
+    Returns the counts PER TABLE --
+    ``{"metadata": {"absent": n, "rearmed": n}, "artwork": {"absent": n, "rearmed": n}}``
+    -- because the two are different units and summing them is not a number
+    anyone can read: one item with two renders contributed 3 to a single
+    total, so a 3000-item library answered `9000` and the operator-facing
+    sentence built on it (spec §5) said nothing true. ``metadata`` counts
+    ITEMS, ``artwork`` counts RENDERS. Does not commit -- the caller (a full
+    pass's opening, a catch-up's step 1) owns the transaction.
     """
     now = now or datetime.now(timezone.utc)
     carried = sorted(present)
     not_carried = MediaItem.library.notin_(carried) if carried else true()
 
-    absent = 0
-    absent += (await session.execute(
+    metadata = {"absent": 0, "rearmed": 0}
+    artwork = {"absent": 0, "rearmed": 0}
+    metadata["absent"] = (await session.execute(
         insert(MetadataWrite)
         .from_select(
             ["item_id", "server", "status", "detail", "attempted_at"],
@@ -77,7 +83,7 @@ async def apply_presence(
             where=MetadataWrite.status.notin_(_KEEP_METADATA),
         )
     )).rowcount
-    absent += (await session.execute(
+    artwork["absent"] = (await session.execute(
         insert(RenderDelivery)
         .from_select(
             ["render_id", "server", "status", "detail", "attempted_at"],
@@ -98,9 +104,8 @@ async def apply_presence(
         )
     )).rowcount
 
-    rearmed = 0
     if carried:
-        rearmed += (await session.execute(
+        metadata["rearmed"] = (await session.execute(
             update(MetadataWrite)
             .where(
                 MetadataWrite.server == server_name,
@@ -111,7 +116,7 @@ async def apply_presence(
             )
             .values(status="pending", detail=None, next_attempt_at=now, attempts=0)
         )).rowcount
-        rearmed += (await session.execute(
+        artwork["rearmed"] = (await session.execute(
             update(RenderDelivery)
             .where(
                 RenderDelivery.server == server_name,
@@ -125,7 +130,7 @@ async def apply_presence(
             .values(status="pending", detail=None, next_attempt_at=now, attempts=0)
         )).rowcount
 
-    return {"absent": absent, "rearmed": rearmed}
+    return {"metadata": metadata, "artwork": artwork}
 
 
 async def refresh_presence(session: AsyncSession, servers) -> dict[str, dict]:
@@ -135,6 +140,16 @@ async def refresh_presence(session: AsyncSession, servers) -> dict[str, dict]:
     rather than an empty ``present`` set: an unreachable server would
     otherwise mark the entire library absent on it, which is the opposite of
     the truth and would take a catch-up to undo.
+
+    An EMPTY-but-successful answer is treated the same way, and for the same
+    reason: a Jellyfin still starting up, an API key without library scope,
+    or an `excluded_libraries` that happens to name every folder all return
+    cleanly with nothing in them, and stamping on that answer would mark
+    every item and every render absent on that server in two statements --
+    overwriting each row's `detail`, `attempts` and `next_attempt_at` with
+    no record of what they were. A server that carries none of the libraries
+    this deployment manages has nothing here to say anything about anyway,
+    so skipping it is both safe and honest.
     """
     outcomes: dict[str, dict] = {}
     for name, server in servers.items():
@@ -145,6 +160,9 @@ async def refresh_presence(session: AsyncSession, servers) -> dict[str, dict]:
                 "could not read %s's library list; leaving presence unchanged (%s)",
                 name, type(exc).__name__,
             )
+            continue
+        if not present:
+            logger.warning("%s listed no libraries; leaving presence unchanged", name)
             continue
         outcomes[name] = await apply_presence(session, name, present)
     return outcomes

@@ -380,8 +380,16 @@ async def test_a_full_pass_marks_a_library_jellyfin_does_not_carry_absent(
 
     body = (await client.post("/api/full-pass", headers=auth_headers)).json()
 
-    assert body["presence"]["jellyfin"] == {"absent": 2, "rearmed": 0}
-    assert body["presence"]["plex"] == {"absent": 0, "rearmed": 0}
+    # Counted per table (review minor 2): one ITEM's metadata row and one
+    # RENDER's delivery row, not an unreadable `2`.
+    assert body["presence"]["jellyfin"] == {
+        "metadata": {"absent": 1, "rearmed": 0},
+        "artwork": {"absent": 1, "rearmed": 0},
+    }
+    assert body["presence"]["plex"] == {
+        "metadata": {"absent": 0, "rearmed": 0},
+        "artwork": {"absent": 0, "rearmed": 0},
+    }
     rows = (await session.execute(
         select(MetadataWrite.server, MetadataWrite.status, MetadataWrite.item_id)
     )).all()
