@@ -2323,3 +2323,84 @@ async def test_a_snapshot_reports_which_format_it_is(
 
     listing = await client.get("/api/config/snapshots", headers=auth_headers)
     assert listing.json()[0]["format"] == 1
+
+
+async def test_restoring_a_delta_keeps_an_empty_object_the_file_spells_out(
+    client, auth_headers, app, session_factory, config_file
+):
+    """The mounted file is free to spell an unset section out as `{}`
+    (``artwork.poster.text.newline_words: {}`` in the example config) -- the
+    same value leaving the key out entirely validates to. The delta-restore
+    merge carries that spelling in from the file verbatim, and it must not be
+    dropped to satisfy the editor's `{}`-leaf guard: that guard exists for a
+    typed-by-hand mistake, not for the file's own way of saying "nothing
+    here", and dropping it would silently change what got restored.
+    """
+    async with session_factory() as session:
+        session.add(
+            ConfigOverrideSnapshot(
+                document={"workers": 9}, path_count=1, reason="migrate", format=1
+            )
+        )
+        await session.commit()
+        snapshot_id = (
+            await session.execute(select(func.max(ConfigOverrideSnapshot.id)))
+        ).scalar_one()
+
+    response = await client.post(
+        f"/api/config/snapshots/{snapshot_id}/restore", json={}, headers=auth_headers
+    )
+    assert response.status_code == 200, response.text
+
+    async with session_factory() as session:
+        document, _meta = await load_store(session)
+    assert document["artwork"]["poster"]["text"]["newline_words"] == {}
+
+
+async def test_an_ordinary_save_with_an_empty_object_leaf_is_still_refused(
+    client, auth_headers
+):
+    """The `{}`-leaf guard stays on for editor input -- only the delta-restore
+    merge turns it off. A save that hand-carries a `{}` leaf is refused
+    exactly as it always was."""
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={
+            "document": {
+                "workers": 8,
+                "artwork": {"poster": {"text": {"newline_words": {}}}},
+            }
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert any(
+        item["path"] == "artwork.poster.text.newline_words"
+        for item in response.json()["detail"]
+    )
+
+
+async def test_restoring_a_delta_snapshot_with_a_secrets_key_is_refused(
+    client, auth_headers, session_factory
+):
+    """A corrupted snapshot row carrying a `secrets` key must not resurrect a
+    token into the store on restore -- the delta-merge path refuses it the
+    same way an ordinary save's merge does."""
+    async with session_factory() as session:
+        session.add(
+            ConfigOverrideSnapshot(
+                document={"secrets": {"plex_token": "leaked"}},
+                path_count=1,
+                reason="migrate",
+                format=1,
+            )
+        )
+        await session.commit()
+        snapshot_id = (
+            await session.execute(select(func.max(ConfigOverrideSnapshot.id)))
+        ).scalar_one()
+
+    response = await client.post(
+        f"/api/config/snapshots/{snapshot_id}/restore", json={}, headers=auth_headers
+    )
+    assert response.status_code == 422, response.text

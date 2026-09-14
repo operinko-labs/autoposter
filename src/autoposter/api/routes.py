@@ -1911,7 +1911,9 @@ async def _definitions_guard(request: Request, base: dict, document: dict) -> No
     )
 
 
-async def _validated_generation(request: Request, document: dict) -> tuple[dict, Config]:
+async def _validated_generation(
+    request: Request, document: dict, *, check_empty_leaves: bool = True
+) -> tuple[dict, Config]:
     """The document to store and the generation it describes, or a 422.
 
     Returns the *resolved* document, not the one that arrived: keep sentinels
@@ -1930,6 +1932,17 @@ async def _validated_generation(request: Request, document: dict) -> tuple[dict,
     mounted file's value is expressed by leaving the key out of the document
     entirely; the document is always sent whole, so an absent key is
     unambiguous. Both halves are pinned by tests.
+
+    ``check_empty_leaves`` guards the ``{}``-leaf refusal below and defaults
+    on for every editor-facing caller. A restored delta is not editor input:
+    it is the mounted file plus a delta both already validated at boot, and
+    the file is free to spell an unset optional model section as ``{}``
+    (``text: TextStyle | None`` at ``config/schema.py`` -- unset means no
+    text, ``{}`` means a defaulted ``TextStyle()``, and the two are not the
+    same value). Dropping such a ``{}`` to satisfy this guard would silently
+    change what the restored configuration means, so the one caller restoring
+    a delta turns the guard off instead of feeding it a document it never
+    wrote.
     """
     # First, so that everything below -- the unknown-key walk, the merge and
     # pydantic -- sees real values rather than a marker they would each
@@ -1959,7 +1972,7 @@ async def _validated_generation(request: Request, document: dict) -> tuple[dict,
             detail=[_error(path, "unknown setting") for path in sorted(unknown)],
         )
 
-    empty = empty_leaf_paths(document)
+    empty = empty_leaf_paths(document) if check_empty_leaves else []
     if empty:
         # {} is not a leaf document_paths can report honestly (its own
         # isinstance(value, dict) and value check is false for it) -- it
@@ -2348,31 +2361,6 @@ async def get_config_snapshot(
     }
 
 
-def _drop_empty_leaves(document: dict) -> dict:
-    """A copy of ``document`` with every ``{}`` leaf removed, recursively.
-
-    The mounted file is free to spell an unset optional section out as ``{}``
-    (``artwork.poster.text.newline_words: {}``, for one) -- leaving the key
-    out entirely validates to the exact same thing. A delta-era restore merges
-    that file wholesale into the document it is about to write back, which
-    copies those spellings in verbatim; ``_validated_generation``'s
-    ``empty_leaf_paths`` guard exists to catch an operator setting ``{}`` by
-    hand, not the mounted file's own way of saying "nothing here", so those
-    are dropped before the merged candidate reaches that guard.
-    """
-    pruned: dict = {}
-    for key, value in document.items():
-        if isinstance(value, dict):
-            if not value:
-                continue
-            nested = _drop_empty_leaves(value)
-            if nested:
-                pruned[key] = nested
-        else:
-            pruned[key] = value
-    return pruned
-
-
 @router.post("/config/snapshots/{snapshot_id}/restore")
 async def restore_config_snapshot(
     snapshot_id: int,
@@ -2410,7 +2398,8 @@ async def restore_config_snapshot(
             ) from None
 
     candidate = without_migrated_sections(snapshot)
-    if snapshot_format < STORE_FORMAT:
+    is_delta = snapshot_format < STORE_FORMAT
+    if is_delta:
         base = _read_file_document(request.app.state.config_path)
         if base is None:
             raise HTTPException(
@@ -2425,9 +2414,16 @@ async def restore_config_snapshot(
                     )
                 ],
             )
-        candidate = _drop_empty_leaves(merge_overrides(base, candidate))
+        try:
+            candidate = merge_overrides(base, candidate)
+        except ValueError as exc:  # a `secrets` key anywhere in the snapshot
+            raise HTTPException(
+                status_code=422, detail=[_error("secrets", str(exc))]
+            ) from exc
 
-    document, after = await _validated_generation(request, candidate)
+    document, after = await _validated_generation(
+        request, candidate, check_empty_leaves=not is_delta
+    )
     return await _persist_and_swap(
         request,
         document,
