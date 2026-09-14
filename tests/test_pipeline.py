@@ -2490,3 +2490,58 @@ async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
         )
     ).scalar_one()
     assert row.status == "absent" and row.detail == ABSENT_DETAIL
+
+
+async def test_a_second_pass_leaves_an_absent_jellyfin_artwork_row_untouched(
+    session, config_with_badges, monkeypatch,
+):
+    """The artwork half of the same rule, with the badge gate ON (review T1).
+
+    The metadata test above runs with `badges.enabled = False`, so `deliver`
+    returns at its first guard and only the metadata guard is proven. Here
+    badges and `upload_to_jellyfin` are both on and Jellyfin does not have
+    the item, which is the exact shape presence stamps `absent` for: the
+    pass composes bytes, `deliver` reaches its miss branch, and the row must
+    still be `absent` afterwards -- with no retry horizon -- rather than
+    flipped back to `pending` for the next pass's presence step to re-stamp.
+    """
+    from sqlalchemy import update
+
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers(jelly_has=False)
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+
+    # What a full pass's opening writes, set-shaped, before the jobs run
+    # (servers/presence.py): the row this pass left `pending` is reclassified.
+    await session.execute(
+        update(RenderDelivery)
+        .where(RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin")
+        .values(status="absent", detail=ABSENT_DETAIL, next_attempt_at=None, attempts=0)
+    )
+    await session.commit()
+
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+
+    rows = {
+        d.server: d
+        for d in (
+            await session.execute(
+                select(RenderDelivery).where(RenderDelivery.render_id == poster.id)
+            )
+        ).scalars()
+    }
+    assert rows["jellyfin"].status == "absent", "the pass flipped an absent row back"
+    assert rows["jellyfin"].detail == ABSENT_DETAIL
+    assert rows["jellyfin"].next_attempt_at is None, "an absent row must never gain a retry horizon"
+    assert jf.uploads == [], "nothing is ever delivered to a server that does not carry the library"
+    assert rows["plex"].status == "uploaded", "the other server is unaffected"

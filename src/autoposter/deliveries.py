@@ -27,6 +27,17 @@ logger = logging.getLogger(__name__)
 # the job to the delivery row.
 RETRY_SECONDS = 6 * 60 * 60
 
+# The status vocabulary, spelled once (spec §1/§5.2). These four words are
+# shared by both outcome tables; each table's own terminal word (``uploaded``
+# for a delivery, ``written`` for a metadata write) is ``_upsert_outcome``'s
+# ``terminal_status`` argument, and the check below admits that one too.
+#
+# Checked rather than left to a docstring: the column is a plain
+# ``String(24)``, so a typo at a call site (``"write"`` for ``"written"``)
+# stores silently and then reads as neither written nor pending -- invisible
+# until an operator asks the item page why a server says nothing.
+STATUSES = ("pending", "failed", "skipped", "absent")
+
 
 def failure_detail(exc: Exception) -> str:
     """``category: ClassName``, never a URL (spec §6.1) -- this string is
@@ -59,7 +70,20 @@ async def _upsert_outcome(
     terminal timestamp (``fingerprint``, deliveries only). Both are stamped
     only on a terminal-status call and, on conflict, never erased by a later
     non-terminal one -- see ``record``'s own docstring for why.
+
+    An ``absent`` row is never written over from here, whatever the caller
+    asks for: spec §1 says an item whose library a server does not carry "is
+    never resolved there, and is never retried", and making that a clause on
+    the conflict rather than a check each caller remembers is what makes it
+    true of the callers Phases B-D have yet to add. Postgres re-evaluates the
+    clause against the latest row version after taking the row lock, so it
+    also closes the window where a caller's own snapshot predates a full
+    pass's presence stamp. ``presence.apply_presence``'s re-arm is a plain
+    ``UPDATE`` and is unaffected -- it is the one thing entitled to move a
+    row off ``absent``.
     """
+    if status not in STATUSES and status != terminal_status:
+        raise ValueError(f"{status!r} is not an outcome status")
     now = datetime.now(timezone.utc)
     counted = count_attempt and status in ("pending", "failed")
     is_terminal = status == terminal_status
@@ -85,6 +109,14 @@ async def _upsert_outcome(
         updatable.pop(terminal_at)
         for column in (extra_terminal or {}):
             updatable.pop(column)
+    else:
+        # And a TERMINAL call that names no value for one of those columns
+        # keeps what is stored, for the same reason: `record(..., "uploaded")`
+        # without a `fingerprint=` is a caller that does not know which bytes
+        # this server holds, not one asserting it holds none.
+        for column, value in (extra_terminal or {}).items():
+            if value is None:
+                updatable.pop(column)
     if counted:
         # The EXISTING row's value plus one: naming the column in `set_`
         # renders `attempts = <table>.attempts + 1`, which is what makes the
@@ -95,8 +127,12 @@ async def _upsert_outcome(
     stmt = stmt.on_conflict_do_update(
         constraint=constraint,
         set_=updatable,
+        where=model.status != "absent",
     ).returning(model.attempts)
-    attempts = (await session.execute(stmt)).scalar_one()
+    # `scalar_one_or_none`, because the clause above can leave the conflicting
+    # row alone and then there is no RETURNING row at all. Zero is the honest
+    # answer for the budget: nothing was attempted against an absent server.
+    attempts = (await session.execute(stmt)).scalar_one_or_none() or 0
     await session.flush()
     return attempts
 

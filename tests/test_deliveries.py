@@ -581,3 +581,58 @@ async def test_record_metadata_skipped_keeps_its_reason(session):
     row = (await session.execute(select(MetadataWrite.status, MetadataWrite.detail))).one()
     assert row.status == "skipped"
     assert row.detail == "config: operations.write_to_jellyfin is off"
+
+
+async def test_an_absent_row_is_never_written_over_by_either_writer(session):
+    """Review C1/I4: the `absent` rule is a clause on the upsert, not a
+    convention each caller remembers. Both writers, both tables."""
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-abs", title="A")
+    render = await pipeline._get_or_create_render(session, item, "poster", "/a/p.jpg")
+    await session.commit()
+    await deliveries.record(session, render.id, "jellyfin", "absent", detail="library: x")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "absent", detail="library: x")
+
+    # Zero, not a climbing counter: nothing was attempted against a server
+    # that does not carry the library.
+    assert await deliveries.record(
+        session, render.id, "jellyfin", "pending", retry_in=60
+    ) == 0
+    assert await deliveries.record(session, render.id, "jellyfin", "uploaded", fingerprint="fp") == 0
+    assert await deliveries.record_metadata(session, item.id, "jellyfin", "written") == 0
+
+    delivery = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert delivery.status == "absent" and delivery.next_attempt_at is None
+    assert delivery.fingerprint is None and delivery.uploaded_at is None
+    metadata = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert metadata.status == "absent" and metadata.written_at is None
+
+
+async def test_an_unknown_status_is_refused_rather_than_stored(session):
+    """Review minor 4: the vocabulary is `deliveries.STATUSES` plus each
+    table's own terminal word, and `status` is a plain String(24) -- so a
+    typo would otherwise store and read as neither."""
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-vocab", title="A")
+    render = await pipeline._get_or_create_render(session, item, "poster", "/a/p.jpg")
+    await session.commit()
+
+    assert deliveries.STATUSES == ("pending", "failed", "skipped", "absent")
+    with pytest.raises(ValueError):
+        await deliveries.record_metadata(session, item.id, "jellyfin", "write")
+    with pytest.raises(ValueError):
+        # Each table admits only its OWN terminal word.
+        await deliveries.record_metadata(session, item.id, "jellyfin", "uploaded")
+    with pytest.raises(ValueError):
+        await deliveries.record(session, render.id, "jellyfin", "written")
+
+
+async def test_a_terminal_call_without_a_fingerprint_keeps_the_stored_one(session):
+    """Review minor 1: `record(..., "uploaded")` with no `fingerprint=` is a
+    caller that does not know which bytes the server holds, not one asserting
+    it holds none."""
+    render = await _render(session)
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await deliveries.record(session, render.id, "plex", "uploaded")
+    row = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert row.fingerprint == "fp1"
