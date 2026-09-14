@@ -218,6 +218,14 @@ VALUE_IS_NOT_STORABLE = (
 # string carries a file name and merge_secrets_file's own message carries a
 # variable name.
 STATE_DIR_NOT_WRITABLE = "the state directory could not be written"
+# What a write into the SECRETS TABLE answers when the database will not
+# take it: a role without INSERT, a full disk, a connection dropped between
+# the database step's probe and this write. 503 for the reason above -- the
+# deployment is not broken, its database is -- and a fixed sentence, because
+# every value this write carries is a credential and a connection error's
+# own text carries the DSN. Nothing is exec'd after it: the wizard stays on
+# the port with what the operator typed still staged in memory.
+CREDENTIALS_NOT_STORED = "the credentials could not be written to the database"
 
 # The check endpoint's vocabulary. A system key is caller text -- exactly like
 # a provider NAME at step 3 -- so the refusal names the surface and never the
@@ -1455,6 +1463,13 @@ async def set_provider_keys(body: ProvidersRequest, request: Request) -> dict:
     naming one is accepted (``_STAGEABLE_ENV``) and the presence map that comes
     back -- ``_PROVIDER_ENV``, the systems step's own names -- does not carry
     it. One staging route for both steps, because ``staged`` has one writer.
+
+    Every name this step stages is written by the finish step into the SECRETS
+    TABLE, encrypted, and not into the state file: the file goes on holding
+    exactly one credential, ``AUTOPOSTER_DATABASE_URL``, because reading the
+    table needs it. The next boot resolves the stored row ahead of both lower
+    layers, so what an operator typed here cannot be shadowed by a variable
+    they never set.
     """
     if set(body.values) - set(_STAGEABLE_ENV):
         # A fixed sentence: the submitted keys are caller-chosen strings.
@@ -1744,13 +1759,99 @@ def _unmet_step(
     return None
 
 
+# PostgreSQL's SQLSTATE for "relation does not exist", and the one database
+# failure the write below treats as ordinary rather than as a refusal.
+# ``boot`` runs ``alembic upgrade head`` only on the CONFIGURED side of its
+# branch -- a deployment being set up for the first time has never migrated --
+# so on a genuine first start the secrets table does not exist yet at this
+# point, and will not until the boot this step execs. Those credentials go to
+# the state file instead, which is where every one of them went before the
+# table existed, and the next boot resolves them from there.
+_UNDEFINED_TABLE = "42P01"
+
+
+def _table_is_missing(exc: BaseException) -> bool:
+    """Whether ``exc`` is the database saying the secrets table is not there.
+
+    The driver's own SQLSTATE rather than the exception's text: the message
+    names the relation, which is harmless, but matching on it would make this
+    a string comparison against a server's locale and version.
+    """
+    return getattr(getattr(exc, "orig", None), "sqlstate", None) == _UNDEFINED_TABLE
+
+
+async def _persist_staged_secrets(state: SetupState, database_url: str) -> list[str]:
+    """Write the staged credentials into the secrets table; the names written.
+
+    The DATABASE URL is the one exception and goes to the state file instead:
+    reading the store requires it, so storing it there would be a boot that
+    needs the credential in order to find the credential. Everything else --
+    the provider keys, both server credentials, the generated webhook secret --
+    lands in the store, encrypted, and the next boot resolves it ahead of the
+    state file and the environment.
+
+    Through ``store_secret``, which is the same function the Settings page
+    writes with: one place decides how a secret is encrypted, and one place
+    decides what may be stored.
+
+    The engine is built and disposed here rather than held: this runs once, in
+    a process that is about to replace itself, and the application that
+    replaces it builds its own.
+
+    Answers the names it STORED, so a caller can tell the table's write from
+    the fallback inside it -- which answers none.
+    """
+    from autoposter.config.secret_store import store_secret
+    from autoposter.db.base import make_engine, make_session_factory
+
+    to_store = {
+        name: value
+        for name, value in state.staged.items()
+        if name != "AUTOPOSTER_DATABASE_URL" and value
+    }
+    if not to_store:
+        return []
+    engine = make_engine(database_url)
+    try:
+        factory = make_session_factory(engine)
+        async with factory() as session:
+            for name in sorted(to_store):
+                await store_secret(session, name, to_store[name])
+            await session.commit()
+    except Exception as exc:
+        if not _table_is_missing(exc):
+            raise
+        # The NAMES, which have all passed this module's own allowlist, and
+        # never a value: an operator reading this line has to be able to see
+        # which credentials are on the volume rather than in the table, since
+        # that is where they will have to be cleared from.
+        logger.warning(
+            "first-start setup: this deployment has not been migrated yet, so "
+            "these credentials were written to the state file instead of the "
+            "secrets table: %s",
+            ", ".join(sorted(to_store)),
+        )
+        _persist(merge_secrets_file, to_store)
+        return []
+    finally:
+        await engine.dispose()
+    # A COUNT, not the names: this module's rule is that a log line names the
+    # step, and the step is done.
+    logger.info(
+        "first-start setup: %d credentials were stored in the database", len(to_store)
+    )
+    return sorted(to_store)
+
+
 @router.post("/finish", dependencies=[RequireSetupToken])
 async def finish(request: Request) -> JSONResponse:
     """Step 5: write what the wizard staged, re-run the boot check in process,
     then hand the process over.
 
-    The write order is the config document FIRST and the secrets file second,
-    each atomically. Both orders have a window; only this
+    The write order is the config document FIRST and the credentials second,
+    each atomically -- and the credentials are themselves two writes, the
+    database URL to the state file and every other staged name into the
+    encrypted store. Both orders have a window; only this
     one has a survivable window. Secrets-first crashing halfway leaves a
     deployment whose credentials all resolve and whose document does not, which
     ``boot`` reports as a configuration error and exits non-zero -- forever,
@@ -1787,6 +1888,8 @@ async def finish(request: Request) -> JSONResponse:
     if not answered:
         raise HTTPException(status_code=400, detail=STEP_DATABASE_UNREACHABLE)
 
+    url = effective["AUTOPOSTER_DATABASE_URL"]
+
     async with state.lock:
         if state.config_document is not None:
             _persist(
@@ -1802,9 +1905,52 @@ async def finish(request: Request) -> JSONResponse:
         # document stays and the hard secrets stay ABSENT, which is the next
         # boot back in setup mode -- the survivable half of the write
         # ordering, reported rather than served as a 500.
-        _persist(merge_secrets_file, state.staged)
+        #
+        # The database URL to the volume and everything else to the store, in
+        # that order and for the ordering's own reason: the URL lands first, so
+        # an interruption between the two leaves a deployment that can still
+        # reach its database and whose other hard secrets are still absent --
+        # the wizard again, which is the recoverable half.
+        #
+        # Restricted to that ONE name rather than all of ``staged``: the state
+        # file must go on holding only what the environment did not answer,
+        # which is what keeps the order between those two lower layers
+        # unobservable on every deployment that predates the store.
+        _persist(
+            merge_secrets_file,
+            {
+                name: value
+                for name, value in state.staged.items()
+                if name == "AUTOPOSTER_DATABASE_URL"
+            },
+        )
+        try:
+            await _persist_staged_secrets(state, url)
+        except HTTPException:
+            # ``_persist``'s own 503 out of the fallback write, already worded
+            # for the volume it is about.
+            raise
+        except Exception as exc:
+            # The CLASS NAME only, in the log, and nothing at all in the
+            # response: the values are credentials and the URL carries a
+            # password.
+            logger.error(
+                "first-start setup: the credentials could not be stored (%s)",
+                type(exc).__name__,
+            )
+            raise HTTPException(status_code=503, detail=CREDENTIALS_NOT_STORED) from None
 
-    persisted = resolve_secret_values()
+    # The same read the next boot will make, in a THREAD: this frame has a
+    # running event loop and ``stored_secrets_for_boot`` owns an
+    # ``asyncio.run``, which raises inside one -- into that function's own
+    # catch-all, which would answer an empty store indistinguishably from a
+    # table that holds nothing and refuse a wizard that had just written
+    # everything correctly. ``or None`` is ``boot.main``'s own guard at the
+    # same call: an empty map from a table this process could not open must
+    # not be reported to the resolver as "the table was read and holds
+    # nothing", which is what an empty MAPPING means there.
+    stored = await asyncio.to_thread(boot.stored_secrets_for_boot, url)
+    persisted = resolve_secret_values(stored or None)
     if not boot.is_configured(persisted):
         raise HTTPException(
             status_code=400,

@@ -29,6 +29,7 @@ from autoposter.api import setup as setup_api
 from autoposter.api.routes import _REDACTED
 from autoposter.api.setup import build_setup_app
 from autoposter.app import create_app
+from autoposter.config import secret_store
 from autoposter.config import state as state_module
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets, resolve_secret_values
@@ -135,6 +136,43 @@ async def _authenticate(client) -> str:
 
 def _headers(token: str) -> dict:
     return {setup_api.SETUP_TOKEN_HEADER: token}
+
+
+@pytest.fixture
+def database_url():
+    """The database this pytest process owns.
+
+    ``tests/conftest.py`` exposes no fixture for the URL itself, but it writes
+    the per-worker URL it derived back into this variable -- so reading the
+    variable here names exactly the database ``session_factory`` writes into,
+    under xdist as well as serially.
+
+    The finish step CONNECTS now: every walk that reaches it has to name a
+    database that answers, where before a well-formed unreachable one was
+    enough.
+    """
+    return os.environ["AUTOPOSTER_TEST_DATABASE_URL"]
+
+
+@pytest.fixture
+def tableless_database_url():
+    """A database that answers and holds no secrets table: the ordinary first
+    start, whose migration has not run and will not until the boot the finish
+    step execs.
+
+    The compose file's maintenance database, which the suite already requires
+    and which this project's migrations never touch
+    (tests/test_boot_store.py's fixture, and for the same reason).
+    """
+    url = os.environ["AUTOPOSTER_MAINTENANCE_DATABASE_URL"]
+    return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+
+async def _stored(session_factory) -> dict:
+    """Every secret the store holds, by name -- the wizard's write, read back
+    through the same function boot and the Settings page read it with."""
+    async with session_factory() as session:
+        return await secret_store.load_stored_secrets(session)
 
 
 # --- the probe --------------------------------------------------------------
@@ -886,18 +924,20 @@ async def test_a_provider_value_the_reader_would_split_is_refused_at_the_step(
 
 
 async def test_a_split_value_never_reaches_the_finish_step(
-    setup_app, setup_client, monkeypatch
+    setup_app, setup_client, monkeypatch, session_factory, database_url
 ):
     """The other half: a wizard that was refused the value at step 3 finishes
     normally, and what lands is one entry per name -- the injected second
-    entry is not in the file, and no credential was replaced by it."""
+    entry is nowhere, and no credential was replaced by it."""
     token = await _authenticate(setup_client)
     await setup_client.post(
         "/api/setup/providers",
         json={"values": {"AUTOPOSTER_TMDB_TOKEN": SPLIT_VALUE}},
         headers=_headers(token),
     )
-    await _complete_every_step(setup_client, token, monkeypatch)
+    await _complete_every_step(
+        setup_client, token, monkeypatch, database_url=database_url
+    )
     monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
 
     response = await setup_client.post("/api/setup/finish", headers=_headers(token))
@@ -907,9 +947,10 @@ async def test_a_split_value_never_reaches_the_finish_step(
         state_module.is_storable(value)
         for value in setup_app.state.setup.staged.values()
     )
-    held = state_module.read_secrets_file(state_module.secrets_file_path())
-    assert held["AUTOPOSTER_TMDB_TOKEN"] == "value"
-    assert held["AUTOPOSTER_PLEX_TOKEN"] == FAKE_PLEX_TOKEN
+    stored = await _stored(session_factory)
+    assert stored["AUTOPOSTER_TMDB_TOKEN"] == "value"
+    assert stored["AUTOPOSTER_PLEX_TOKEN"] == FAKE_PLEX_TOKEN
+    assert "row-121-injected" not in stored
 
 
 def test_the_wizard_refuses_exactly_what_the_writer_refuses():
@@ -1641,10 +1682,19 @@ async def test_an_unreadable_example_document_is_a_503_and_not_a_500(setup_clien
 _NOT_PASTED = {"AUTOPOSTER_DATABASE_URL", "AUTOPOSTER_WEBHOOK_SECRET"}
 
 
-async def _complete_every_step(client, token, monkeypatch) -> None:
+async def _complete_every_step(
+    client, token, monkeypatch, database_url: str = FAKE_DB_URL
+) -> None:
+    """Every step but the last, with the values the finish tests assert on.
+
+    ``database_url`` defaults to the unreachable one every step before finish
+    is happy with -- the probe is patched out -- and is passed the real one by
+    the tests that walk THROUGH finish, which now writes into the database it
+    was given.
+    """
     monkeypatch.setattr(setup_api, "database_answers", _answering(True))
     await client.post(
-        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+        "/api/setup/database", json={"url": database_url}, headers=_headers(token)
     )
     await client.post(
         "/api/setup/providers",
@@ -1663,7 +1713,7 @@ async def _complete_every_step(client, token, monkeypatch) -> None:
 
 
 async def test_finish_writes_the_config_document_then_the_secrets_and_execs(
-    setup_client, monkeypatch
+    setup_client, monkeypatch, session_factory, database_url
 ):
     """os.execv rather than a flag: nothing in a running setup application can
     become the real one -- no migration has run, no engine exists, create_app
@@ -1673,9 +1723,14 @@ async def test_finish_writes_the_config_document_then_the_secrets_and_execs(
     hard secrets resolve and no document does, which boot treats as a
     configuration error and a non-zero exit -- a deployment that can no longer
     be fixed by the wizard, because no wizard is served for that shape.
+
+    The state file's half of that write is now ONE name. The rest is the test
+    below.
     """
     token = await _authenticate(setup_client)
-    await _complete_every_step(setup_client, token, monkeypatch)
+    await _complete_every_step(
+        setup_client, token, monkeypatch, database_url=database_url
+    )
     document_was_on_disk: list[bool] = []
     real_merge = setup_api.merge_secrets_file
 
@@ -1693,24 +1748,124 @@ async def test_finish_writes_the_config_document_then_the_secrets_and_execs(
     assert response.json() == {"restarting": True}
     assert document_was_on_disk == [True]
     held = state_module.read_secrets_file(state_module.secrets_file_path())
-    assert held["AUTOPOSTER_DATABASE_URL"] == FAKE_DB_URL
-    assert held["AUTOPOSTER_PLEX_TOKEN"] == FAKE_PLEX_TOKEN
-    assert held["AUTOPOSTER_WEBHOOK_SECRET"]
+    assert held["AUTOPOSTER_DATABASE_URL"] == database_url
     assert load_config(state_module.state_config_path()).plex.url == PLEX_URL
     assert calls == [[setup_api.sys.executable, "-m", "autoposter.boot"]]
 
 
 async def test_the_written_config_document_is_the_one_the_loader_would_find(
-    setup_client, monkeypatch
+    setup_client, monkeypatch, database_url
 ):
     from autoposter.config import loader as loader_module
 
     token = await _authenticate(setup_client)
-    await _complete_every_step(setup_client, token, monkeypatch)
+    await _complete_every_step(
+        setup_client, token, monkeypatch, database_url=database_url
+    )
     monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
     await setup_client.post("/api/setup/finish", headers=_headers(token))
 
     assert loader_module._default_config_path() == state_module.state_config_path()
+
+
+async def test_finish_writes_the_staged_credentials_into_the_store(
+    setup_client, monkeypatch, session_factory, database_url
+):
+    """The wizard writes through the same function the Settings page writes
+    with. Only the database URL stays on the volume, because reading the store
+    needs it -- storing it there would be a boot that needs the credential in
+    order to find the credential.
+
+    The file is asserted NEGATIVELY as well: a wizard that wrote both would
+    leave a deployment whose credentials an operator can clear from the
+    Settings page and that goes on resolving them from a file no page shows.
+    """
+    token = await _authenticate(setup_client)
+    await _complete_every_step(
+        setup_client, token, monkeypatch, database_url=database_url
+    )
+    monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
+
+    response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    stored = await _stored(session_factory)
+    assert stored["AUTOPOSTER_PLEX_TOKEN"] == FAKE_PLEX_TOKEN
+    assert stored["AUTOPOSTER_TMDB_TOKEN"] == "value"
+    assert stored["AUTOPOSTER_WEBHOOK_SECRET"]
+    assert "AUTOPOSTER_DATABASE_URL" not in stored
+
+    on_disk = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert on_disk["AUTOPOSTER_DATABASE_URL"] == database_url
+    assert set(on_disk) == {"AUTOPOSTER_DATABASE_URL", "AUTOPOSTER_ADMIN_PASSWORD_HASH"}
+    # The key never leaves the state directory, and is what the row above was
+    # encrypted with.
+    assert secret_store.secret_key_path().parent == state_module.state_dir()
+
+
+async def test_finish_stores_nothing_and_execs_nothing_when_the_write_is_refused(
+    setup_client, monkeypatch, database_url, caplog
+):
+    """A database that takes the connection and refuses the row: a 503 with a
+    fixed sentence, no exec, and the wizard still on the port with what the
+    operator typed still staged. Not a 500, and not a value anywhere."""
+    token = await _authenticate(setup_client)
+    await _complete_every_step(
+        setup_client, token, monkeypatch, database_url=database_url
+    )
+
+    async def refusing_store(session, name, value):
+        raise RuntimeError(f"the row for {value} was refused")
+
+    monkeypatch.setattr(secret_store, "store_secret", refusing_store)
+    monkeypatch.setattr(setup_api.os, "execv", _never_exec)
+
+    with caplog.at_level(logging.DEBUG):
+        response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == setup_api.CREDENTIALS_NOT_STORED
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "RuntimeError" in logged
+    for secret in (FAKE_PLEX_TOKEN, database_url, MASTER_PASSWORD):
+        assert secret not in response.text
+        assert secret not in logged
+
+
+async def test_finish_falls_back_to_the_state_file_before_the_first_migration(
+    setup_client, monkeypatch, tableless_database_url, caplog
+):
+    """The ordinary FIRST START. `boot` runs `alembic upgrade head` only on the
+    configured side of its branch, so a deployment being set up for the first
+    time has never migrated and the secrets table does not exist yet at this
+    write -- and will not until the boot this step execs.
+
+    Refusing there would make the wizard unusable on every genuinely fresh
+    deployment, which is the one it exists for. The credentials go to the state
+    file instead, where every one of them went before the store existed, and
+    the log line names the NAMES so an operator can see which are on the volume
+    rather than in the table."""
+    token = await _authenticate(setup_client)
+    await _complete_every_step(
+        setup_client, token, monkeypatch, database_url=tableless_database_url
+    )
+    monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
+
+    with caplog.at_level(logging.DEBUG):
+        response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert held["AUTOPOSTER_DATABASE_URL"] == tableless_database_url
+    assert held["AUTOPOSTER_PLEX_TOKEN"] == FAKE_PLEX_TOKEN
+    assert held["AUTOPOSTER_WEBHOOK_SECRET"]
+    # The next boot resolves every one of them from that file.
+    assert boot.is_configured(resolve_secret_values()) is True
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "AUTOPOSTER_PLEX_TOKEN" in logged
+    for secret in (FAKE_PLEX_TOKEN, held["AUTOPOSTER_WEBHOOK_SECRET"]):
+        assert secret not in logged
+        assert secret not in response.text
 
 
 async def test_nothing_hard_is_persisted_until_finish(setup_client, monkeypatch):
@@ -1773,7 +1928,7 @@ async def test_finish_never_echoes_a_value_in_its_refusal(setup_client, monkeypa
 
 
 async def test_finish_writes_no_state_document_when_the_deployment_has_one(
-    setup_client, monkeypatch, tmp_path
+    setup_client, monkeypatch, tmp_path, database_url
 ):
     """The other side of the same rule: with a document the next boot will
     read, step 4 is never offered, nothing is staged for it, and finish must
@@ -1785,7 +1940,7 @@ async def test_finish_writes_no_state_document_when_the_deployment_has_one(
     token = await _authenticate(setup_client)
     monkeypatch.setattr(setup_api, "database_answers", _answering(True))
     await setup_client.post(
-        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+        "/api/setup/database", json={"url": database_url}, headers=_headers(token)
     )
     await setup_client.post(
         "/api/setup/providers",

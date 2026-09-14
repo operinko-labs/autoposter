@@ -55,6 +55,17 @@ from test_api_setup import (  # noqa: F401
     isolated_state,
 )
 
+@pytest.fixture
+def database_url():
+    """The database this pytest process owns.
+
+    The finish step CONNECTS now -- it writes the staged credentials into the
+    secrets table -- so a walk that goes through it has to name a database that
+    answers, where before a well-formed unreachable one was enough.
+    """
+    return os.environ["AUTOPOSTER_TEST_DATABASE_URL"]
+
+
 BOOT_MARKERS = (
     STATE_FILE_NAMES_ENV,
     STORED_SECRET_NAMES_ENV,
@@ -789,7 +800,7 @@ async def test_the_libraries_route_reads_with_the_token_typed_beside_the_address
 
 
 async def test_the_manual_path_reaches_the_document_and_then_finish(
-    setup_client, setup_state, monkeypatch
+    setup_client, setup_state, monkeypatch, database_url
 ):
     """The other half: arriving manually reaches the SAME configuration submit,
     and the wizard can then be finished.
@@ -824,7 +835,7 @@ async def test_the_manual_path_reaches_the_document_and_then_finish(
     assert progress.json()["config_source"] == "staged"
 
     await setup_client.post(
-        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+        "/api/setup/database", json={"url": database_url}, headers=_headers(token)
     )
     await setup_client.post(
         "/api/setup/providers",
