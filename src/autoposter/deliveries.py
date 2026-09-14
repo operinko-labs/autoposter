@@ -15,9 +15,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.loader import config_for_library
-from autoposter.db.models import MediaItem, MetadataWrite, Render, RenderDelivery
+from autoposter.db.models import ItemFacts, MediaItem, MetadataWrite, Render, RenderDelivery
 from autoposter.db.refs import refs_for
+from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
+from autoposter.plex.item_overrides import load_overrides
+from autoposter.plex.writer import exemption_reason
 from autoposter.servers.base import CAP_LOCK_ARTWORK, ItemNotFound, PathMismatch
 
 logger = logging.getLogger(__name__)
@@ -253,16 +256,21 @@ def _intent_for(item: MediaItem, refs: dict[str, str]) -> RenderIntent:
 
 
 async def retry_pending_deliveries(
-    session: AsyncSession, servers, config, *, http=None, mdblist=None, now: datetime | None = None,
+    session: AsyncSession, servers, config, *, http=None, mdblist=None,
+    now: datetime | None = None, server: str | None = None, run_id: int | None = None,
 ) -> str:
-    """The pending-delivery retry pass (spec §5.3): due rows only, each
+    """The retry pass for BOTH outcome tables (spec §2): due rows only, each
     re-resolved on the ONE server it is still owed to.
 
     Only that server, never every server for the item: the other servers
-    already have their own delivery row (uploaded, skipped or independently
-    pending), and re-running them here would be a second, uncoordinated
-    delivery pass racing the one the next webhook or full-pass item triggers.
-    A pending row is that server's unfinished business alone.
+    already have their own row (uploaded/written, skipped, or independently
+    pending), and re-running them here would be a second, uncoordinated pass
+    racing the one the next webhook or full-pass item triggers.
+
+    ``server`` narrows the pass to one server's rows and ``run_id`` to one
+    catch-up's (spec §3): with neither, the pass behaves exactly as it did
+    across every server. Both filters apply to both tables, because a
+    catch-up marks both.
 
     ``pipeline.compose_badged_bytes`` is imported lazily, inside the
     function: a top-level import in that direction risks a cycle, since
@@ -272,16 +280,52 @@ async def retry_pending_deliveries(
     from autoposter.render.pipeline import upsert_server_ref
 
     now = now or datetime.now(timezone.utc)
-    due = (await session.execute(
+    # Read once per pass, not per row: a config swap mid-pass would otherwise
+    # let one pass apply two budgets, and the rows it bounded first would be
+    # judged by a number the operator has already replaced.
+    max_attempts = config.scheduler.delivery_attempts
+
+    def _scoped(stmt, table):
+        if server is not None:
+            stmt = stmt.where(table.server == server)
+        if run_id is not None:
+            stmt = stmt.where(table.run_id == run_id)
+        return stmt
+
+    due = (await session.execute(_scoped(
         select(RenderDelivery, Render, MediaItem)
         .join(Render, Render.id == RenderDelivery.render_id)
         .join(MediaItem, MediaItem.id == Render.item_id)
         .where(RenderDelivery.status == "pending", RenderDelivery.next_attempt_at <= now)
         .order_by(RenderDelivery.next_attempt_at)
-        .limit(500)
-    )).all()
+        .limit(500),
+        RenderDelivery,
+    ))).all()
+    metadata_due = (await session.execute(_scoped(
+        select(MetadataWrite, MediaItem)
+        .join(MediaItem, MediaItem.id == MetadataWrite.item_id)
+        .where(MetadataWrite.status == "pending", MetadataWrite.next_attempt_at <= now)
+        .order_by(MetadataWrite.next_attempt_at)
+        .limit(500),
+        MetadataWrite,
+    ))).all()
 
-    uploaded = still_pending = 0
+    uploaded = written = still_pending = 0
+    per_server: dict[str, dict[str, int]] = {}
+
+    def _tally(name: str, outcome: str) -> None:
+        """One clause of spec §2's sentence, per server.
+
+        ``due`` counts every row this pass looked at; the other four count
+        what it DID. They deliberately need not add up: a row skipped because
+        the server's toggle is off was due and produced nothing, and a
+        sentence that hid that would read as work the pass never did.
+        """
+        counts = per_server.setdefault(
+            name, {"due": 0, "uploaded": 0, "written": 0, "pending": 0, "failed": 0}
+        )
+        counts[outcome] += 1
+
     for delivery, render, item in due:
         # One row's own failure -- a bug, a bad refs_for lookup, anything not
         # already turned into a delivery outcome below -- must not take the
@@ -301,6 +345,7 @@ async def retry_pending_deliveries(
         # savepoint back is automatic on the way out of this block, and
         # leaves every other row's work, and every object, untouched.
         render_id, server_name = render.id, delivery.server
+        _tally(server_name, "due")
         try:
             async with session.begin_nested():
                 server = servers.get(delivery.server)
@@ -309,6 +354,7 @@ async def retry_pending_deliveries(
                     # removed the block); no amount of retrying resolves that,
                     # unlike an ItemNotFound or a transport hiccup.
                     await record(session, render.id, delivery.server, "failed", detail="config: server removed")
+                    _tally(delivery.server, "failed")
                     await rollup(session, render.id)
                     continue
 
@@ -332,25 +378,39 @@ async def retry_pending_deliveries(
                     # like every other one -- category plus class name, never the
                     # exception's own message, which carries an operator path.
                     await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                    _tally(delivery.server, "failed")
                     await rollup(session, render.id)
                     continue
                 except ItemNotFound:
-                    # Not on this server yet -- keep waiting, no cap (spec §5.3).
+                    # Not on this server yet -- a wait, not an attempt at the
+                    # delivery, so it spends no budget (spec §2, §5.3).
                     await record(
                         session, render.id, delivery.server, "pending",
                         retry_in=RETRY_SECONDS, count_attempt=False,
                     )
                     still_pending += 1
+                    _tally(delivery.server, "pending")
                     await rollup(session, render.id)
                     continue
                 except Exception as exc:
                     # A transport error: the server may simply be down right now.
                     logger.warning("delivery to %s failed to resolve (%s)", delivery.server, failure_detail(exc))
-                    await record(
+                    attempts = await record(
                         session, render.id, delivery.server, "pending",
                         detail=failure_detail(exc), retry_in=RETRY_SECONDS,
                     )
-                    still_pending += 1
+                    if attempts >= max_attempts:
+                        # Spec §2: nothing retries forever. The row stays
+                        # visible as `failed` until the next full pass or
+                        # catch-up re-arms it.
+                        await record(
+                            session, render.id, delivery.server, "failed",
+                            detail=failure_detail(exc),
+                        )
+                        _tally(delivery.server, "failed")
+                    else:
+                        still_pending += 1
+                        _tally(delivery.server, "pending")
                     await rollup(session, render.id)
                     continue
 
@@ -380,6 +440,7 @@ async def retry_pending_deliveries(
                         # §6.2) -- the same `failed` the delivery server's own
                         # resolve records two blocks above.
                         await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                        _tally(delivery.server, "failed")
                         await rollup(session, render.id)
                         continue
                     except Exception as exc:
@@ -397,6 +458,7 @@ async def retry_pending_deliveries(
                             retry_in=RETRY_SECONDS, count_attempt=False,
                         )
                         still_pending += 1
+                        _tally(delivery.server, "pending")
                         await rollup(session, render.id)
                         continue
 
@@ -449,6 +511,7 @@ async def retry_pending_deliveries(
                     # `failed`, not another `pending`).
                     logger.warning("delivery to %s failed (%s)", delivery.server, failure_detail(exc))
                     await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                    _tally(delivery.server, "failed")
                     await rollup(session, render.id)
                     continue
 
@@ -457,6 +520,7 @@ async def retry_pending_deliveries(
                     fingerprint=composed.get("fingerprint"),
                 )
                 uploaded += 1
+                _tally(delivery.server, "uploaded")
                 await rollup(session, render.id)
         except Exception as exc:
             logger.warning(
@@ -465,7 +529,132 @@ async def retry_pending_deliveries(
             )
             still_pending += 1
 
-    summary = f"pending deliveries: {len(due)} due, {uploaded} uploaded, {still_pending} still pending"
+    for write_row, item in metadata_due:
+        item_id, server_name = item.id, write_row.server
+        _tally(server_name, "due")
+        # The same SAVEPOINT-per-row isolation the artwork loop documents
+        # above: one row's database failure must not abort the pass.
+        try:
+            async with session.begin_nested():
+                target = servers.get(server_name)
+                if target is None:
+                    await record_metadata(
+                        session, item_id, server_name, "failed",
+                        detail="config: server removed",
+                    )
+                    _tally(server_name, "failed")
+                    continue
+                row_config = config_for_library(config, item.library)
+                if not getattr(row_config.operations, f"write_to_{server_name}", False):
+                    await record_metadata(
+                        session, item_id, server_name, "skipped",
+                        detail=f"config: operations.write_to_{server_name} is off",
+                    )
+                    continue
+                refs = await refs_for(session, item_id)
+                try:
+                    resolved_item = await target.resolve(_intent_for(item, refs))
+                except PathMismatch as exc:
+                    # No retry fixes a mount mismatch (spec §6.2) -- the same
+                    # ruling the artwork half makes above.
+                    await record_metadata(
+                        session, item_id, server_name, "failed", detail=failure_detail(exc),
+                    )
+                    _tally(server_name, "failed")
+                    continue
+                except ItemNotFound:
+                    await record_metadata(
+                        session, item_id, server_name, "pending",
+                        retry_in=RETRY_SECONDS, count_attempt=False,
+                    )
+                    still_pending += 1
+                    _tally(server_name, "pending")
+                    continue
+                except Exception as exc:
+                    logger.warning(
+                        "metadata retry on %s failed to resolve (%s)",
+                        server_name, failure_detail(exc),
+                    )
+                    await record_metadata(
+                        session, item_id, server_name, "pending",
+                        detail=failure_detail(exc), retry_in=RETRY_SECONDS,
+                        count_attempt=False,
+                    )
+                    still_pending += 1
+                    _tally(server_name, "pending")
+                    continue
+
+                await upsert_server_ref(session, item_id, resolved_item)
+                # The facts the DATABASE holds, never a fresh provider
+                # gather: a retry exists to get what this service already
+                # decided onto a server that refused it, and re-gathering
+                # would make this a second metadata pipeline with its own
+                # provider budget. The `ItemFacts` row is read the way
+                # `compose_badged_bytes` reads it -- duck-compatible with
+                # `GatheredFacts` at every field the writer touches.
+                facts = (await session.execute(
+                    select(ItemFacts).where(ItemFacts.item_id == item_id)
+                )).scalar_one_or_none() or GatheredFacts()
+                overrides: dict[str, object] = {}
+                if row_config.operations.item_overrides_enabled:
+                    overrides = await load_overrides(session, item_id)
+                try:
+                    exempt = exemption_reason(
+                        row_config.operations, resolved_item.native_id, resolved_item.imdb_id,
+                        await target.item_labels(resolved_item.ref),
+                    )
+                    if exempt is not None:
+                        await record_metadata(
+                            session, item_id, server_name, "skipped", detail=exempt,
+                        )
+                        continue
+                    # `parental_categories=None`: row 85's categories are
+                    # fetched by the full pass, which holds the IMDb client.
+                    # Passing None means this retry writes the facts and
+                    # leaves those labels to the pass that owns them.
+                    await target.apply_facts(
+                        resolved_item.ref, facts, row_config.operations, None, overrides,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "metadata retry on %s failed (%s)", server_name, failure_detail(exc),
+                    )
+                    attempts = await record_metadata(
+                        session, item_id, server_name, "pending",
+                        detail=failure_detail(exc), retry_in=RETRY_SECONDS,
+                    )
+                    if attempts >= max_attempts:
+                        await record_metadata(
+                            session, item_id, server_name, "failed",
+                            detail=failure_detail(exc),
+                        )
+                        _tally(server_name, "failed")
+                    else:
+                        still_pending += 1
+                        _tally(server_name, "pending")
+                    continue
+                await record_metadata(session, item_id, server_name, "written")
+                written += 1
+                _tally(server_name, "written")
+        except Exception as exc:
+            logger.warning(
+                "metadata retry for item %s/%s failed unexpectedly (%s)",
+                item_id, server_name, type(exc).__name__,
+            )
+            still_pending += 1
+
+    summary = (
+        f"pending deliveries: {len(due) + len(metadata_due)} due, "
+        f"{uploaded + written} done, {still_pending} still pending"
+    )
+    if per_server:
+        # Spec §2's sentence, one clause per server, sorted so the run
+        # history's detail reads the same way twice for the same work.
+        summary += "; " + "; ".join(
+            f"{name}: {c['due']} due, {c['uploaded']} uploaded, {c['written']} written, "
+            f"{c['pending']} pending, {c['failed']} failed"
+            for name, c in sorted(per_server.items())
+        )
     try:
         await session.commit()
     except Exception as exc:

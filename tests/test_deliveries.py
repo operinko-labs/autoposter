@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from autoposter import deliveries
@@ -76,7 +76,10 @@ async def test_pending_rows_become_due_and_are_re_delivered(session, config_with
         session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
     )
     assert jf.uploads and jf.uploads[0][0].native_id == "j1"
-    assert summary == "pending deliveries: 1 due, 1 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 1 done, 0 still pending; "
+        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+    )
     assert await deliveries.rollup(session, render.id) == "uploaded"
 
 
@@ -88,7 +91,10 @@ async def test_server_removed_from_config_fails_the_delivery(session, config_wit
     summary = await deliveries.retry_pending_deliveries(
         session, Servers({}), config_with_badges, now=datetime.now(timezone.utc)
     )
-    assert summary == "pending deliveries: 1 due, 0 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 0 still pending; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed"
+    )
     # Column-only, not a full-entity select: retry_pending_deliveries' own
     # `due` query already loaded this row's RenderDelivery instance into the
     # session's identity map, and a plain `select(RenderDelivery)` here would
@@ -118,7 +124,10 @@ async def test_transport_error_during_resolve_stays_pending(session, config_with
     summary = await deliveries.retry_pending_deliveries(
         session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
     )
-    assert summary == "pending deliveries: 1 due, 0 uploaded, 1 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 1 still pending; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed"
+    )
     # Column-only select -- see the note in test_server_removed_from_config_
     # fails_the_delivery on why a full-entity select would read stale.
     row = (await session.execute(select(RenderDelivery.status, RenderDelivery.detail))).one()
@@ -150,7 +159,10 @@ async def test_identity_resolution_wait_leaves_the_budget_alone(session, config_
         session, Servers({"jellyfin": jf, "plex": plex}), config_with_badges, now=datetime.now(timezone.utc)
     )
 
-    assert summary == "pending deliveries: 1 due, 0 uploaded, 1 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 1 still pending; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed"
+    )
     row = (await session.execute(select(RenderDelivery.status, RenderDelivery.attempts))).one()
     assert row.status == "pending"
     assert row.attempts == seeded_attempts
@@ -178,7 +190,10 @@ async def test_upload_exception_records_failed_not_pending(session, config_with_
     summary = await deliveries.retry_pending_deliveries(
         session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
     )
-    assert summary == "pending deliveries: 1 due, 0 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 0 still pending; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed"
+    )
     # Column-only select -- see the note in test_server_removed_from_config_
     # fails_the_delivery on why a full-entity select would read stale.
     row = (await session.execute(select(RenderDelivery.status, RenderDelivery.detail))).one()
@@ -235,7 +250,10 @@ async def test_library_override_gates_the_retry_per_row(session, monkeypatch):
     assert await deliveries.rollup(session, gated_render.id) == "skipped"
     assert await deliveries.rollup(session, open_render.id) == "uploaded"
     assert len(jf.uploads) == 1 and jf.uploads[0][0].native_id == "j2"
-    assert summary == "pending deliveries: 2 due, 1 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 2 due, 1 done, 0 still pending; "
+        "jellyfin: 2 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+    )
 
 
 async def test_a_failed_delivery_keeps_the_renders_uploaded_at(session):
@@ -323,7 +341,10 @@ async def test_a_database_error_on_one_row_does_not_abort_the_pass(
         session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
     )
 
-    assert summary == "pending deliveries: 2 due, 1 uploaded, 1 still pending"
+    assert summary == (
+        "pending deliveries: 2 due, 1 done, 1 still pending; "
+        "jellyfin: 2 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+    )
     assert [u[0].native_id for u in jf.uploads] == ["j1", "j2"], "the second row was never attempted"
     # A separate session, because the point of the assertion is that the
     # second row's work was COMMITTED and not lost with the first row's.
@@ -364,7 +385,10 @@ async def test_nothing_left_to_compose_records_skipped_not_a_failed_upload(
         session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
     )
 
-    assert summary == "pending deliveries: 1 due, 0 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 0 still pending; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 0 failed"
+    )
     assert jf.uploads == [], "there was nothing to upload"
     # Column-only select -- see the note in test_server_removed_from_config_
     # fails_the_delivery on why a full-entity select would read stale.
@@ -392,7 +416,7 @@ async def test_a_migration_backfilled_row_is_never_due(session, config_with_badg
         session, Servers({}), config_with_badges, now=datetime.now(timezone.utc)
     )
 
-    assert summary == "pending deliveries: 0 due, 0 uploaded, 0 still pending"
+    assert summary == "pending deliveries: 0 due, 0 done, 0 still pending"
     row = (
         await session.execute(
             select(RenderDelivery.status, RenderDelivery.attempted_at)
@@ -457,7 +481,10 @@ async def test_a_rolled_back_row_keeps_every_other_rows_work(
         session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
     )
 
-    assert summary == "pending deliveries: 3 due, 2 uploaded, 1 still pending"
+    assert summary == (
+        "pending deliveries: 3 due, 2 done, 1 still pending; "
+        "jellyfin: 3 due, 2 uploaded, 0 written, 0 pending, 0 failed"
+    )
     assert [u[0].native_id for u in jf.uploads] == ["j1", "j2", "j3"], (
         "every row must still be attempted"
     )
@@ -500,7 +527,10 @@ async def test_a_path_mismatch_on_the_identity_server_fails_rather_than_waiting_
         now=datetime.now(timezone.utc),
     )
 
-    assert summary == "pending deliveries: 1 due, 0 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 0 still pending; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed"
+    )
     assert jf.uploads == [], "nothing may be delivered when the identity cannot be sampled"
     # Column-only select -- see the note in test_server_removed_from_config_
     # fails_the_delivery on why a full-entity select would read stale.
@@ -678,3 +708,114 @@ async def test_the_retry_records_the_fingerprint_it_actually_delivered(
     assert row.status == "uploaded"
     assert row.fingerprint == "fp-composed-just-now"
     assert row.fingerprint != "fp-from-the-last-full-pass"
+
+
+async def _item_with_facts(session, native="j9"):
+    from conftest import seed_media_item
+    return await seed_media_item(session, native, server="jellyfin", title="A", library="Movies")
+
+
+async def test_a_due_metadata_row_is_written_and_recorded(session, config_with_badges):
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    item = await _item_with_facts(session)
+    await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j9", file_path="/m.mkv")
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert jf.facts_written and jf.facts_written[0][0].native_id == "j9"
+    row = (await session.execute(select(MetadataWrite.status, MetadataWrite.attempts))).one()
+    assert row.status == "written" and row.attempts == 0
+    assert summary.startswith("pending deliveries: 1 due, 1 done, 0 still pending")
+    assert "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed" in summary
+
+
+async def test_a_metadata_resolution_miss_stays_pending_without_spending_budget(
+    session, config_with_badges
+):
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    item = await _item_with_facts(session, native="j10")
+    seeded_attempts = await deliveries.record_metadata(
+        session, item.id, "jellyfin", "pending", retry_in=0
+    )
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)  # resolves nothing
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+
+    await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    row = (await session.execute(select(MetadataWrite.status, MetadataWrite.attempts))).one()
+    # The seeded value, unmoved: a server that has not scanned the item yet is
+    # a wait, not an attempt at the write (the same reading
+    # `test_an_uncounted_pending_leaves_the_budget_alone` pins for artwork).
+    assert row.status == "pending" and row.attempts == seeded_attempts
+
+
+async def test_the_server_filter_leaves_every_other_servers_rows_alone(
+    session, config_with_badges
+):
+    from autoposter.servers.registry import Servers
+
+    render = await _render(session)
+    await deliveries.record(session, render.id, "plex", "pending", retry_in=0)
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({}), config_with_badges, now=datetime.now(timezone.utc),
+        server="jellyfin",
+    )
+
+    assert summary.startswith("pending deliveries: 1 due")
+    rows = dict((await session.execute(
+        select(RenderDelivery.server, RenderDelivery.status)
+    )).all())
+    assert rows == {"plex": "pending", "jellyfin": "failed"}
+
+
+async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_badges):
+    from autoposter.scheduler.run_history import open_run
+    from autoposter.servers.registry import Servers
+
+    render = await _render(session)
+    # Its own identity, not `_render(native="2")`: `resolved()` defaults
+    # `tmdb_id=1`, so a second render under the same tmdb id is the same
+    # `media_items` row and the same render -- the shape every other
+    # two-render test in this file builds explicitly.
+    other_item = await pipeline._upsert_media_item(
+        session, resolved("plex", "2", tmdb_id=2, file_path="/m2.mkv")
+    )
+    other = await pipeline._get_or_create_render(session, other_item, "poster", "/a/p2.jpg")
+    run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await deliveries.record(session, other.id, "jellyfin", "pending", retry_in=0)
+    await session.execute(
+        update(RenderDelivery)
+        .where(RenderDelivery.render_id == render.id)
+        .values(run_id=run_id, previous_status="uploaded")
+    )
+    await session.commit()
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({}), config_with_badges, now=datetime.now(timezone.utc),
+        run_id=run_id,
+    )
+
+    assert summary.startswith("pending deliveries: 1 due")
+    statuses = dict((await session.execute(
+        select(RenderDelivery.render_id, RenderDelivery.status)
+    )).all())
+    assert statuses == {render.id: "failed", other.id: "pending"}
