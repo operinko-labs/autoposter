@@ -1574,12 +1574,15 @@ async def open_catch_up_runs(session: AsyncSession) -> set[int]:
     row is an ordinary row again and the doors treat it as one.
 
     Read ONCE per item and handed down, the shape ``absent_servers_for``
-    above already takes, and for a sharper version of the same reason
-    (controller ruling): this used to be a primary-key SELECT per door hit,
-    and nothing ever clears `run_id` off a terminal outcome -- so every row a
-    catch-up had touched went on paying that lookup on every later pass, for
-    ever. There are at most as many open catch-ups as there are servers, so
-    the whole set costs no more than one of those lookups did.
+    above already takes, and for the same reason (controller ruling): this
+    used to be a primary-key SELECT per door hit, and the doors sit inside
+    ``apply_metadata``'s per-server loop and ``deliver``'s -- so an item on
+    two servers, each with a row a live catch-up had touched, paid one lookup
+    per server per render. A row carries its `run_id` until that run closes
+    (``catchup.finish_catch_up`` releases them), so through the whole of a
+    drain that is every row the catch-up marked. There are at most as many
+    open catch-ups as there are servers, so the whole set costs no more than
+    one of those lookups did.
     """
     # The run's id alone, not a `(server, run_id)` pair: `run_id` is already
     # unique, the row that carries it was armed by that run's own server, and
@@ -2383,11 +2386,10 @@ async def deliver(
                         # re-arming it would take it out of a run that is still
                         # counting it and still able to cancel it.
                         #
-                        # INSIDE this branch, not above it: nothing clears
-                        # `run_id` on a terminal outcome, so an `uploaded` row
-                        # a catch-up once touched carries its run id for ever
-                        # -- and a row that could not be re-armed anyway has
-                        # no business consulting the run that armed it.
+                        # INSIDE this branch, not above it: an `uploaded` row
+                        # a catch-up touched carries its run id until that run
+                        # closes, and a row that could not be re-armed anyway
+                        # has no business consulting the run that armed it.
                         continue
                     # A re-arm, not an attempt: this pass composed no new
                     # bytes for this server, so nothing was actually tried
