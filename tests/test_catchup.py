@@ -383,6 +383,9 @@ async def test_a_catch_up_is_refused_while_one_is_in_flight(session, catch_up_co
     with pytest.raises(catchup.CatchUpRefused) as excinfo:
         await catchup.start_catch_up(session, servers, catch_up_config, "jellyfin", now=NOW)
     assert str(excinfo.value) == "a catch-up for jellyfin is already in flight"
+    # Review I1: not transient -- the work is already happening, so an
+    # automatic request for it is dropped rather than re-queued.
+    assert excinfo.value.transient is False
 
 
 async def test_two_concurrent_starts_open_exactly_one_run(
@@ -439,6 +442,9 @@ async def test_a_catch_up_is_refused_while_the_server_is_down(session, catch_up_
     assert str(excinfo.value) == (
         "jellyfin is not reachable right now; try again once it is back"
     )
+    # Review I1: transient -- a down server comes back, and spec §3's
+    # post-restart trigger fires only once, so its request is re-queued.
+    assert excinfo.value.transient is True
 
 
 async def test_a_catch_up_is_refused_for_a_server_this_deployment_does_not_have(
@@ -447,6 +453,8 @@ async def test_a_catch_up_is_refused_for_a_server_this_deployment_does_not_have(
     with pytest.raises(catchup.CatchUpRefused) as excinfo:
         await catchup.start_catch_up(session, Servers({}), catch_up_config, "emby", now=NOW)
     assert str(excinfo.value) == "no media server named 'emby' is configured"
+    # Review I1: not transient -- waiting never makes a server configured.
+    assert excinfo.value.transient is False
 
 
 async def test_a_catch_up_refusal_never_carries_the_servers_address(
@@ -466,6 +474,9 @@ async def test_a_catch_up_refusal_never_carries_the_servers_address(
         )
     assert str(excinfo.value) == "jellyfin could not list its libraries (ConnectError)"
     assert "jellyfin.internal" not in str(excinfo.value)
+    # Review I1: transient -- a live network round trip against a server that
+    # may still be starting up is the boot trigger's own failure mode.
+    assert excinfo.value.transient is True
 
 
 async def test_the_run_carries_the_cadence_the_button_asked_for(session, catch_up_config):
@@ -1150,3 +1161,166 @@ async def test_the_drain_takes_only_the_rows_of_the_run_it_is_draining(
     assert left == before and left.status == "pending"
     run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
     assert run.status == "ok"
+
+
+async def test_a_run_that_moves_nothing_twice_stops_and_frees_the_server(
+    session, catch_up_config
+):
+    """Review I2: a resolution miss is a wait, not a failure -- it spends no
+    attempt budget -- so a row for a file the server will never scan is `due`
+    for ever, and the in-flight check would refuse every later catch-up for
+    that server, automatic ones included. A run whose batch moves nothing
+    twice running closes, and its rows go back to being ordinary pending
+    waits for the unscoped retry pass."""
+    catch_up_config.operations.enabled = True
+    await _item_with_render(session, "s1")
+    jf = _jellyfin()  # resolves nothing, for ever
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin",
+        cadence_seconds=60, now=NOW,
+    )
+    await session.commit()
+
+    first = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": jf}), catch_up_config, now=NOW,
+    )
+    assert first == "catch-up: jellyfin 2 still due, 0 done, 0 failed"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.finished_at is None
+    # Stamped so the next batch can tell whether this one moved anything.
+    assert (run.processed, run.failed, run.deferred) == (2, 0, 2)
+
+    later = NOW + timedelta(seconds=60)
+    second = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": jf}), catch_up_config, now=later,
+    )
+
+    assert second == "catch-up: jellyfin stopped with 2 still due, 0 done, 0 failed"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.status == "ok" and run.finished_at is not None
+    assert run.detail == "catch-up: stopped with 2 still due, 0 done, 0 failed"
+    # Released: ordinary pending rows again, which the unscoped pass drains.
+    art = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert (art.status, art.run_id, art.previous_status) == ("pending", None, None)
+    # And the server is free, which is the whole point of closing it.
+    again = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin", now=later,
+    )
+    await session.commit()
+    assert again != run_id
+
+
+async def test_a_row_on_a_future_horizon_keeps_its_run_open(session, catch_up_config):
+    """The finish condition counts every `pending` row the run owns, with no
+    horizon predicate, while the BATCH takes only rows due now. The asymmetry
+    is deliberate: a row waiting on a horizon is still owed, so the run stays
+    open and comes back for it at its next cadence."""
+    catch_up_config.operations.enabled = False
+    item, render = await _item_with_render(session, "s2")
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.execute(
+        update(RenderDelivery)
+        .where(RenderDelivery.run_id == run_id)
+        .values(next_attempt_at=NOW + timedelta(hours=6))
+    )
+    await session.commit()
+
+    summary = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, now=NOW,
+    )
+
+    # The batch took nothing -- the row is not due yet -- and the run is open.
+    assert summary == "catch-up: jellyfin 1 still due, 0 done, 0 failed"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.finished_at is None
+    row = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert row.next_attempt_at == NOW + timedelta(hours=6) and row.attempts == 0
+
+
+async def test_two_open_runs_are_drained_independently_and_reported_in_order(
+    session, catch_up_config
+):
+    """One clause per run, joined in `runs.id` order, each on its OWN cadence:
+    a run mid-cadence waits while another drains in the same pass."""
+    catch_up_config.operations.enabled = False
+    await _item_with_render(session, "s3")
+    jf, plex = _jellyfin(), FakeMediaServer(name="plex", libraries={"Movies"})
+    servers = Servers({"jellyfin": jf, "plex": plex})
+
+    waiting = await catchup.start_catch_up(
+        session, servers, catch_up_config, "jellyfin", cadence_seconds=600, now=NOW,
+    )
+    await session.execute(
+        update(Run).where(Run.id == waiting)
+        .values(last_drained_at=NOW - timedelta(seconds=30))
+    )
+    draining = await catchup.start_catch_up(
+        session, servers, catch_up_config, "plex", now=NOW,
+    )
+    await session.commit()
+
+    summary = await catchup.drain_catch_ups(session, servers, catch_up_config, now=NOW)
+
+    assert summary == (
+        "catch-up: jellyfin waiting 600s between batches; "
+        "plex 1 still due, 0 done, 0 failed"
+    )
+    rows = dict((await session.execute(select(Run.id, Run.last_drained_at))).all())
+    assert rows[waiting] == NOW - timedelta(seconds=30)   # untouched
+    assert rows[draining] == NOW
+
+
+async def test_the_drain_commits_its_own_bookkeeping(session, session_factory, catch_up_config):
+    """Read back through a SECOND session: every other test here reads through
+    the one that ran the pass, so a missing commit would go unnoticed -- and
+    the run's close is what the next poll's in-flight check reads."""
+    catch_up_config.operations.enabled = False
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+
+    await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, now=NOW,
+    )
+
+    async with session_factory() as other:
+        run = (await other.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.finished_at is not None and run.last_drained_at == NOW
+    assert run.detail == "catch-up: 0 done, 0 failed"
+
+
+async def test_one_runs_failure_does_not_skip_the_runs_behind_it(
+    session, catch_up_config, monkeypatch
+):
+    """Review M2: the runs are walked in a stable `runs.id` order, so a raise
+    outside a row -- the retry pass contains the per-row ones itself -- used to
+    abort the whole pass and leave the same run first in line on the next
+    poll, with the runs behind it never getting a batch. Contained per run,
+    and the clause carries a class NAME, never the exception's message."""
+    catch_up_config.operations.enabled = False
+    await _item_with_render(session, "s5")
+    servers = Servers({
+        "jellyfin": _jellyfin(), "plex": FakeMediaServer(name="plex", libraries={"Movies"}),
+    })
+    await catchup.start_catch_up(session, servers, catch_up_config, "jellyfin", now=NOW)
+    await catchup.start_catch_up(session, servers, catch_up_config, "plex", now=NOW)
+    await session.commit()
+
+    real = catchup.retry_pending_deliveries
+
+    async def explode(session, servers, config, **kwargs):
+        if kwargs.get("server") == "jellyfin":
+            raise RuntimeError("https://jellyfin.internal/Items")
+        return await real(session, servers, config, **kwargs)
+
+    monkeypatch.setattr(catchup, "retry_pending_deliveries", explode)
+
+    summary = await catchup.drain_catch_ups(session, servers, catch_up_config, now=NOW)
+
+    assert summary == (
+        "catch-up: jellyfin failed (RuntimeError); plex 1 still due, 0 done, 0 failed"
+    )
+    assert "jellyfin.internal" not in summary

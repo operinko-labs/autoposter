@@ -52,7 +52,21 @@ class CatchUpRefused(Exception):
     Row 213: the sentence is built from fixed words plus a server NAME and an
     exception CLASS name. Never an address, never a credential, never an
     exception's own message.
+
+    ``transient`` says whether the reason can pass on its own, which is what
+    an AUTOMATIC request needs to know (review I1): a server that is down, or
+    that could not answer when asked for its libraries, will be up again --
+    and spec §3's post-restart trigger fires exactly ONCE, on the first poll
+    after boot, which is precisely when a co-restarting Jellyfin is still
+    starting up. Such a request is re-queued. "Not configured" and "already in
+    flight" never resolve themselves that way -- the second because the work
+    is already happening -- and are dropped, which is what keeps a queue of
+    names from growing forever.
     """
+
+    def __init__(self, message: str, *, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
 def _run_name(server_name: str) -> str:
@@ -93,7 +107,10 @@ async def start_catch_up(
 
     poller = (health or {}).get(name)
     if poller is not None and not poller.healthy:
-        raise CatchUpRefused(f"{name} is not reachable right now; try again once it is back")
+        raise CatchUpRefused(
+            f"{name} is not reachable right now; try again once it is back",
+            transient=True,
+        )
 
     # BEFORE the in-flight check, and so before this transaction has read or
     # written anything: this is a network round trip against a media server
@@ -105,7 +122,8 @@ async def start_catch_up(
         present = await present_libraries(server)
     except Exception as exc:
         raise CatchUpRefused(
-            f"{name} could not list its libraries ({type(exc).__name__})"
+            f"{name} could not list its libraries ({type(exc).__name__})",
+            transient=True,
         ) from exc
 
     # The in-flight check and the `open_run` INSERT below are one READ
@@ -523,11 +541,32 @@ async def drain_catch_ups(
     what closes it, so the tallies are stamped on the run row BEFORE the rows
     they were counted from are released.
 
+    A run that MOVED NOTHING across two consecutive batches closes too, with
+    the same `ok` and a detail naming what it left (review I2). A resolution
+    miss is a wait, not a failure -- it spends no attempt budget -- so a row
+    for a file the server will never scan stays `pending` for ever, and
+    without this the run would drain empty batches for ever while
+    ``start_catch_up``'s in-flight check refused every later catch-up for that
+    server, automatic ones included. Nothing is lost by closing: the release
+    hands those rows back as ORDINARY pending waits, which the unscoped
+    pending-deliveries pass keeps retrying on its own cadence. The previous
+    batch's numbers are read back off the run row's own three count columns
+    -- the ones ``finish_catch_up`` stamps -- so this needs no new column.
+
+    Each run's batch is contained: a failure outside a row (the retry pass
+    contains those itself, behind savepoints) would otherwise abort the whole
+    pass, and since the runs are walked in a stable order the same run would
+    be first in line on the next poll and the ones behind it would never get
+    a batch (review M2).
+
     Commits, like every scheduled pass's body.
     """
     now = now or datetime.now(timezone.utc)
     open_runs = (await session.execute(
-        select(Run.id, Run.server, Run.cadence_seconds, Run.last_drained_at)
+        select(
+            Run.id, Run.server, Run.cadence_seconds, Run.last_drained_at,
+            Run.processed, Run.failed, Run.deferred,
+        )
         .where(Run.kind == CATCH_UP_KIND, Run.finished_at.is_(None))
         .order_by(Run.id)
     )).all()
@@ -535,39 +574,82 @@ async def drain_catch_ups(
         return "catch-up: nothing in flight"
 
     clauses = []
-    for run_id, server_name, cadence_seconds, last_drained_at in open_runs:
-        cadence = cadence_seconds or MIN_CADENCE_SECONDS
+    for run in open_runs:
+        run_id, server_name = run.id, run.server
+        # `is None`, not `or`: the column's invariant is that
+        # `start_catch_up` already floored it, so the fallback is for a row
+        # that somehow carries NULL -- and an explicit `0` there is the
+        # fastest drain an operator can ask for, exactly as the write site
+        # says (review M4).
+        cadence = (
+            MIN_CADENCE_SECONDS if run.cadence_seconds is None else run.cadence_seconds
+        )
         if (
-            last_drained_at is not None
-            and (now - last_drained_at).total_seconds() < cadence
+            run.last_drained_at is not None
+            and (now - run.last_drained_at).total_seconds() < cadence
         ):
             clauses.append(f"{server_name} waiting {cadence}s between batches")
             continue
-        # The retry pass commits per row, so nothing below may rely on an ORM
-        # object loaded before it -- which is why the run's fields are read
-        # into locals above rather than kept as a `Run` instance.
-        await retry_pending_deliveries(
-            session, servers, config, http=http, mdblist=mdblist, now=now,
-            server=server_name, run_id=run_id,
-        )
-        await session.execute(
-            update(Run).where(Run.id == run_id).values(last_drained_at=now)
-        )
-        tallies = await run_tallies(session, run_id)
-        if tallies["due"] == 0:
-            detail = f"catch-up: {tallies['done']} done, {tallies['failed']} failed"
-            await finish_catch_up(
-                session, run_id, status="ok", detail=detail, tallies=tallies,
+        try:
+            # The retry pass commits per row, so nothing below may rely on an
+            # ORM object loaded before it -- which is why the run's fields are
+            # read into locals above rather than kept as a `Run` instance.
+            await retry_pending_deliveries(
+                session, servers, config, http=http, mdblist=mdblist, now=now,
+                server=server_name, run_id=run_id,
             )
-            clauses.append(
-                f"{server_name} finished, {tallies['done']} done, "
-                f"{tallies['failed']} failed"
+            await session.execute(
+                update(Run).where(Run.id == run_id).values(last_drained_at=now)
             )
-        else:
-            clauses.append(
-                f"{server_name} {tallies['due']} still due, "
-                f"{tallies['done']} done, {tallies['failed']} failed"
+            tallies = await run_tallies(session, run_id)
+            # What the LAST batch left, as it was stamped below. NULL means
+            # this is the run's first batch, which can never be a stall.
+            before = (run.processed, run.failed, run.deferred)
+            now_at = (tallies["total"], tallies["failed"], tallies["due"])
+            if tallies["due"] == 0:
+                detail = f"catch-up: {tallies['done']} done, {tallies['failed']} failed"
+                await finish_catch_up(
+                    session, run_id, status="ok", detail=detail, tallies=tallies,
+                )
+                clauses.append(
+                    f"{server_name} finished, {tallies['done']} done, "
+                    f"{tallies['failed']} failed"
+                )
+            elif run.processed is not None and before == now_at:
+                detail = (
+                    f"catch-up: stopped with {tallies['due']} still due, "
+                    f"{tallies['done']} done, {tallies['failed']} failed"
+                )
+                await finish_catch_up(
+                    session, run_id, status="ok", detail=detail, tallies=tallies,
+                )
+                clauses.append(
+                    f"{server_name} stopped with {tallies['due']} still due, "
+                    f"{tallies['done']} done, {tallies['failed']} failed"
+                )
+            else:
+                # Stamped so the NEXT batch can tell whether this one moved
+                # anything. Harmless on an open run: `catch_up_progress`
+                # counts a run that is still in flight from the rows
+                # themselves and reads these three only once it has finished.
+                await session.execute(
+                    update(Run).where(Run.id == run_id).values(
+                        processed=tallies["total"], failed=tallies["failed"],
+                        deferred=tallies["due"],
+                    )
+                )
+                clauses.append(
+                    f"{server_name} {tallies['due']} still due, "
+                    f"{tallies['done']} done, {tallies['failed']} failed"
+                )
+        except Exception as exc:
+            # Row 213: the class name, never the message -- this can be a
+            # transport error carrying a server's address.
+            logger.warning(
+                "catch-up drain for %s failed (%s)", server_name, type(exc).__name__,
             )
+            await session.rollback()
+            clauses.append(f"{server_name} failed ({type(exc).__name__})")
     await session.commit()
     return "catch-up: " + "; ".join(clauses)
 

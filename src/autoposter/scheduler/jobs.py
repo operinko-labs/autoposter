@@ -1126,11 +1126,15 @@ def make_catch_up_drain_job(
     session that can turn a name into a run. Starting them here also means a
     queued request and the drain it needs share one transaction boundary.
 
-    A refused request is DROPPED rather than re-queued: the two refusals it
-    can hit are "already in flight" -- in which case the work is already
-    happening -- and "the server is down", which the next trigger or the
-    operator's own button will raise again. Re-queueing would turn a down
-    server into a growing list nothing ever clears.
+    A refusal is re-queued only when it is TRANSIENT (review I1). "Not
+    configured" and "already in flight" are dropped: the first never becomes
+    true by waiting and the second means the work is already happening, so
+    re-queueing either would turn one name into a list nothing ever clears.
+    "The server is down" and "could not list its libraries" are re-queued,
+    because spec §3's post-restart trigger fires ONCE -- on the first poll
+    after boot, which is exactly when a co-restarting Jellyfin is still
+    starting up -- and dropping it there loses the catch-up the spec promises
+    with no way back but the operator's own button.
 
     Registered inside ``scheduler.enabled`` beside the pending-deliveries
     pass and, like it, not conditioned on ``config.plex``.
@@ -1141,7 +1145,7 @@ def make_catch_up_drain_job(
     """
 
     async def run(session: AsyncSession) -> str:
-        started = []
+        started, waiting = [], []
         requests = requests_ref()
         while requests:
             name = requests.pop(0)
@@ -1155,9 +1159,15 @@ def make_catch_up_drain_job(
                 # can refuse, so the refusal leaves a transaction behind that
                 # the next queued name would otherwise run inside.
                 await session.rollback()
+                if exc.transient:
+                    waiting.append(name)
                 continue
             await session.commit()
             started.append(name)
+        # Put back AFTER the loop, never inside it: appending to the list this
+        # loop is draining would spin the pass forever on a server that is
+        # down. The name is taken again on the NEXT look, one poll later.
+        requests.extend(waiting)
         drained = await drain_catch_ups(
             session, servers_ref(), holder.current, http=http, mdblist=mdblist,
         )

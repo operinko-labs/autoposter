@@ -77,16 +77,54 @@ async def test_a_queued_request_starts_a_catch_up_before_the_drain(session, conf
 async def test_a_refused_request_is_dropped_rather_than_retried_forever(
     session, config_factory
 ):
-    """Both refusals this can hit -- "already in flight" and "the server is
-    down" -- are answered by dropping the name: the work is either already
-    happening or the next trigger raises it again. Re-queueing would turn a
-    down server into a growing list nothing ever clears."""
+    """A refusal that waiting cannot fix is dropped: "not configured" never
+    becomes true on its own, and "already in flight" means the work is
+    happening. Re-queueing either would turn one name into a list nothing
+    ever clears."""
     holder = ConfigHolder(config_factory())
     requests = ["emby"]
     job = _job(holder, requests=requests)
 
     assert await job.run(session) == "catch-up: nothing in flight"
     assert requests == []
+
+
+async def test_a_transient_refusal_is_put_back_for_the_next_look(session, config_factory):
+    """Review I1: spec §3's post-restart trigger fires ONCE, on the first poll
+    after boot -- exactly when a co-restarting Jellyfin is still starting up.
+    A refusal that can pass on its own goes back on the queue rather than
+    being lost, and goes back AFTER the loop, or this pass would spin on it."""
+    holder = ConfigHolder(config_factory())
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS, libraries={"Movies"})
+    requests = ["jellyfin"]
+    job = _job(
+        holder, servers=Servers({"jellyfin": jf}), requests=requests,
+        health={"jellyfin": SimpleNamespace(healthy=False)},
+    )
+
+    assert await job.run(session) == "catch-up: nothing in flight"
+    assert requests == ["jellyfin"]
+    assert (await session.execute(select(Run))).scalars().all() == []
+
+
+async def test_a_server_that_cannot_list_its_libraries_is_put_back_too(
+    session, config_factory
+):
+    """The other transient refusal, and the one the boot trigger actually
+    hits: a live round trip against a server that has not finished starting."""
+    import httpx
+
+    async def boom():
+        raise httpx.ConnectError("https://jellyfin.internal/Library/VirtualFolders")
+
+    holder = ConfigHolder(config_factory())
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS, libraries={"Movies"})
+    jf.library_names = boom
+    requests = ["jellyfin"]
+    job = _job(holder, servers=Servers({"jellyfin": jf}), requests=requests)
+
+    assert await job.run(session) == "catch-up: nothing in flight"
+    assert requests == ["jellyfin"]
 
 
 async def test_a_refused_request_leaves_the_session_usable_for_the_next_one(
