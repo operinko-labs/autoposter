@@ -1829,11 +1829,21 @@ async def compose_badged_bytes(
     facts=None,
     solo_delivery: tuple[str, object, ServerItemRef] | None = None,
     force: bool = False,
+    out: dict | None = None,
 ) -> bytes | None:
     """Compose one render's badged bytes, or ``None`` when there is nothing to
     compose -- badges off for this library, a background (never badged), a
     render that never produced a base image, or a fingerprint that has not
     moved since the last successful delivery (spec §5: "render once").
+
+    ``out``, when given, has ``out["fingerprint"]`` set to the fingerprint
+    the returned bytes were actually composed under. Only the ``force=True``
+    caller needs it: a forced compose deliberately does NOT write
+    ``render.badge_fingerprint`` (see the comment on that branch below), so
+    it is the one caller for which the render's stored fingerprint is by
+    construction not the one it is holding -- and recording the stored one
+    against those bytes is what would make a server holding different
+    artwork read as up to date to the catch-up.
 
     The COMPOSE half of the old, single-server ``apply_badges``: it lives
     here, once per render; ``deliver`` (below) fans the
@@ -2100,6 +2110,8 @@ async def compose_badged_bytes(
         # to every server to get back to the one it did.
         render.badge_fingerprint = fingerprint
         await session.flush()
+    if out is not None:
+        out["fingerprint"] = fingerprint
     return data
 
 

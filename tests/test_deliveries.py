@@ -636,3 +636,45 @@ async def test_a_terminal_call_without_a_fingerprint_keeps_the_stored_one(sessio
     await deliveries.record(session, render.id, "plex", "uploaded")
     row = (await session.execute(select(RenderDelivery))).scalar_one()
     assert row.fingerprint == "fp1"
+
+
+async def test_the_retry_records_the_fingerprint_it_actually_delivered(
+    session, config_with_badges, monkeypatch
+):
+    """Review I1/T3: `compose_badged_bytes(force=True)` deliberately does not
+    write `render.badge_fingerprint`, so the render's stored fingerprint is by
+    construction not the one these bytes were composed under -- the two differ
+    routinely, most sharply when the item has no Plex ref and the forced
+    compose drops the resolution/format overlays. Recording the stored one
+    would make a server holding visibly different artwork read as up to date
+    to Phase C's catch-up, which is the failure mode it exists to find."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+    render = await _render(session)
+    render.badge_fingerprint = "fp-from-the-last-full-pass"
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
+
+    async def fake_compose(session, config, render, item, *, out=None, **kwargs):
+        # What the real one does on the forced path: hand back the fingerprint
+        # these bytes were composed under and leave the column alone.
+        assert kwargs["force"] is True
+        if out is not None:
+            out["fingerprint"] = "fp-composed-just-now"
+        return b"badged"
+
+    monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
+    config_with_badges.badges.upload_to_jellyfin = True
+
+    await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
+    )
+
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.fingerprint)
+    )).one()
+    assert row.status == "uploaded"
+    assert row.fingerprint == "fp-composed-just-now"
+    assert row.fingerprint != "fp-from-the-last-full-pass"

@@ -401,8 +401,21 @@ async def retry_pending_deliveries(
                         continue
 
                 try:
+                    # What the compose below actually produced, which is NOT
+                    # `render.badge_fingerprint`: a forced compose deliberately
+                    # leaves that column alone, and the two differ routinely --
+                    # this pass runs hours later and folds in MDBList's
+                    # per-pass ratings, the current definitions digest and,
+                    # when the item has no Plex ref, a `plex_item=None` that
+                    # drops the resolution/format overlays entirely. Recording
+                    # the render's own fingerprint against these bytes is what
+                    # would make a server holding visibly different artwork
+                    # read as up to date to the catch-up -- the failure mode
+                    # the catch-up exists to find.
+                    composed: dict = {}
                     data = await _pipeline.compose_badged_bytes(
                         session, row_config, render, item, http=http, mdblist=mdblist,
+                        out=composed,
                         server=servers.get(identity_name) if identity_item is not None else None,
                         ref=identity_item.ref if identity_item is not None else None,
                         # A due row means THIS server
@@ -439,7 +452,10 @@ async def retry_pending_deliveries(
                     await rollup(session, render.id)
                     continue
 
-                await record(session, render.id, delivery.server, "uploaded", fingerprint=render.badge_fingerprint)
+                await record(
+                    session, render.id, delivery.server, "uploaded",
+                    fingerprint=composed.get("fingerprint"),
+                )
                 uploaded += 1
                 await rollup(session, render.id)
         except Exception as exc:
