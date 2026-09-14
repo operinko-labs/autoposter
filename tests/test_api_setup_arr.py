@@ -1288,6 +1288,73 @@ async def test_a_resolved_secret_proceeds_at_the_address_the_document_names(
     assert seen == {"service": "sonarr", "base_url": SONARR_BASE, "secret": SECRET}
 
 
+async def test_a_resolved_secret_proceeds_at_the_address_the_stored_document_names(
+    monkeypatch,
+):
+    """The same rule on a deployment whose document lives only in the database.
+
+    `boot` reads the store and hands the document to this application, so the
+    address bound is against THAT document. Asked only of the file, the helper
+    would answer nothing at all here -- there is no file at either path -- and
+    the refusal would be one no operator could satisfy: the address the
+    deployment really names could never equal a document that was never read.
+    """
+    import yaml
+
+    monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", SECRET)
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    document["sonarr"]["base_url"] = SONARR_BASE
+    app = setup_api.build_setup_app(document)
+    seen = {}
+
+    async def capture(service, base_url, api_key, public_url, secret):
+        seen.update(service=service, base_url=base_url, secret=secret)
+        return "created", None
+
+    monkeypatch.setattr(setup_arr, "register", capture)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _authenticate(client)
+        await _staged(client, app.state.setup, token, secret=False)
+        response = await client.post(
+            "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert seen == {"service": "sonarr", "base_url": SONARR_BASE, "secret": SECRET}
+
+
+async def test_a_resolved_secret_is_still_refused_at_an_address_the_store_does_not_name(
+    monkeypatch,
+):
+    """And the bound still binds there: the stored document names a different
+    address for the service, so a token-holder who points Sonarr at a host
+    they control does not learn this deployment's resolved secret that way."""
+    import yaml
+
+    monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", SECRET)
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    document["sonarr"]["base_url"] = "http://sonarr.elsewhere.invalid:8989"
+    app = setup_api.build_setup_app(document)
+
+    async def _must_not_register(*_args, **_kwargs):
+        raise AssertionError("the registration ran at an address the store does not name")
+
+    monkeypatch.setattr(setup_arr, "register", _must_not_register)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        token = await _authenticate(client)
+        await _staged(client, app.state.setup, token, secret=False)
+        response = await client.post(
+            "/api/setup/arr/webhook", json={"service": "sonarr"}, headers=_headers(token)
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.RESOLVED_SECRET_ADDRESS_MISMATCH
+    assert SECRET not in response.text
+
+
 async def test_a_staged_secret_still_proceeds_at_any_checked_address(
     setup_client, setup_state, monkeypatch, tmp_path
 ):

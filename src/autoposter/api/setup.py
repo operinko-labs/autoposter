@@ -597,7 +597,7 @@ def _require_http_url(value: str, refusal: str) -> str:
     return cleaned.rstrip("/")
 
 
-def _resolving_arr_base_url(service: str) -> str | None:
+def _resolving_arr_base_url(service: str, stored: dict | None = None) -> str | None:
     """The base URL the RESOLVING configuration document names for one *arr
     service, normalised the way ``_require_http_url`` normalises a typed one
     -- or ``None`` when there is no resolving document, it fails to parse or
@@ -608,16 +608,29 @@ def _resolving_arr_base_url(service: str) -> str | None:
     session is this deployment's own, given by its environment or its state
     file and never by this wizard, so the address it may be sent to is bound
     to that SAME deployment's own document rather than to whatever a check
-    happened to stage. Read exactly the way ``boot`` would read it --
-    ``config_document_path`` plus the config step's own
-    ``read_config_document``/``build_config`` idiom -- and never written
-    anywhere; this is a read of what the deployment already has.
+    happened to stage.
+
+    Read exactly the way ``boot`` would read it, which is the STORE's document
+    first and the file only when there is none: ``stored`` is the document
+    ``boot`` handed this application, and the file read below is the fallback
+    it takes itself. Asking only the file would answer ``None`` for every
+    service on a deployment whose document lives only in the database, and the
+    bound above would then be a refusal no operator could satisfy -- the
+    address the deployment really names can never equal a document that was
+    never read. Never written anywhere; this is a read of what the deployment
+    already has.
     """
-    path = config_document_path()
-    if path is None:
-        return None
+    document = stored
+    if document is None:
+        path = config_document_path()
+        if path is None:
+            return None
+        try:
+            document = read_config_document(path)
+        except Exception:
+            return None
     try:
-        config = build_config(read_config_document(path))
+        config = build_config(document)
     except Exception:
         return None
     raw = getattr(config, service).base_url
@@ -1426,7 +1439,9 @@ async def register_arr_webhook(body: ArrWebhookRequest, request: Request) -> dic
         # follow the address the SAME deployment's own resolving document
         # names for this service -- never whatever address a check happened
         # to stage, since a check proves only that a host ANSWERED.
-        if base_url != _resolving_arr_base_url(body.service):
+        if base_url != _resolving_arr_base_url(
+            body.service, request.app.state.setup_document
+        ):
             raise HTTPException(status_code=400, detail=RESOLVED_SECRET_ADDRESS_MISMATCH)
 
     # The in-flight guard: a second POST for this service while the first is
@@ -1637,8 +1652,16 @@ async def stage_config_document(body: ConfigRequest, request: Request) -> dict:
     route around. A document this wizard merely STAGED is a different thing and
     is simply replaced -- nothing here reaches the Plex server the URL names,
     so a well-formed wrong address is accepted and has to stay correctable.
+
+    "Already resolves" is both places the next boot looks: the STORE's
+    document, which ``boot`` handed this application, as well as the file. A
+    store-held document that this step could be POSTed over would be written
+    to the volume at finish, declined by the store, which already holds one,
+    and then ignored by the next boot, which asks the store first -- the
+    operator's work discarded without a word, through the API rather than
+    through the page.
     """
-    if config_document_path() is not None:
+    if config_document_path() is not None or request.app.state.setup_document is not None:
         raise HTTPException(status_code=400, detail=CONFIG_ALREADY_PROVIDED)
 
     state = request.app.state.setup
@@ -1876,7 +1899,10 @@ async def _write_document_to_store(document: dict, database_url: str) -> None:
     ``seed_store`` and not a write: it fills an EMPTY store and returns
     whatever a non-empty one already held, so a second finish against a
     database somebody has since configured cannot replace their configuration
-    with this wizard's.
+    with this wizard's. When that happens it is SAID, at INFO and by section
+    name: a store that quietly kept its own document while the operator was
+    told the wizard had finished is the one shape here an operator could not
+    otherwise account for.
 
     A missing table is tolerated exactly as the credential write below
     tolerates it, and for the same fact: the migration this step runs may have
@@ -1895,10 +1921,11 @@ async def _write_document_to_store(document: dict, database_url: str) -> None:
     from autoposter.db.base import make_engine, make_session_factory
 
     engine = make_engine(database_url)
+    held: dict | None = None
     try:
         factory = make_session_factory(engine)
         async with factory() as session:
-            await seed_store(session, document)
+            held = await seed_store(session, document)
             await session.commit()
     except Exception as exc:
         if not _table_is_missing(exc):
@@ -1909,8 +1936,19 @@ async def _write_document_to_store(document: dict, database_url: str) -> None:
             "sections are not in the store: %s",
             ", ".join(sorted(document)),
         )
+        return
     finally:
         await engine.dispose()
+    if held != document:
+        # The store had its own document and kept it. SECTION NAMES only, and
+        # the store's rather than this wizard's, because the question an
+        # operator is about to ask is what the deployment will actually run.
+        logger.info(
+            "first-start setup: the configuration store already held a "
+            "document, so the one written to the state file was not stored; "
+            "the store's sections are: %s",
+            ", ".join(sorted(held)) or "(none)",
+        )
 
 
 async def _persist_staged_secrets(state: SetupState, database_url: str) -> list[str]:
@@ -2165,12 +2203,19 @@ async def finish(request: Request) -> JSONResponse:
         # be told to go back and type them again.
         stored = {name: state.staged[name] for name in written}
     persisted = resolve_secret_values(stored or None)
-    if not boot.is_configured(persisted):
+    # The stored document goes with it, because the next boot asks the store
+    # before the volume: without it this gate reads the FILE, and on a
+    # deployment whose document lives only in the database there is no file --
+    # the config step was never offered, so nothing was written to the volume
+    # either. Everything above would have persisted, and then this would
+    # answer 400 naming the one step the page deliberately hides, forever.
+    if not boot.is_configured(persisted, request.app.state.setup_document):
         raise HTTPException(
             status_code=400,
-            detail=_unmet_step(
-                persisted, config_document_path() is not None, _document_for_boot(request)
-            )
+            # `_config_ready` and not `config_document_path()`: the same
+            # question, asked of both places the next boot looks, so the step
+            # this names is the step that is actually unmet.
+            detail=_unmet_step(persisted, _config_ready(request), _document_for_boot(request))
             or STEP_NOT_CONFIRMED,
         )
     logger.info("first-start setup: complete; restarting into the application")

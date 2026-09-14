@@ -218,7 +218,7 @@ def stored_config_document(database_url: str) -> dict | None:
             await engine.dispose()
 
     try:
-        return asyncio.run(asyncio.wait_for(read(), PROBE_TIMEOUT_SECONDS))
+        document = asyncio.run(asyncio.wait_for(read(), PROBE_TIMEOUT_SECONDS))
     except Exception as exc:
         # The CLASS NAME only, for the reason spelled out above: a connection
         # error's text carries the DSN. INFO, not WARNING: on a first boot
@@ -229,6 +229,17 @@ def stored_config_document(database_url: str) -> dict | None:
             type(exc).__name__,
         )
         return None
+    if document is None:
+        # And the other half of that pair, so that the two states are always
+        # told apart in the log. Every refusal downstream of this read -- the
+        # boot decision's own error line, and `main.build`'s -- can then say
+        # "no document came from the store" without having to guess which of
+        # the two it was: the line above it has already said.
+        logger.info(
+            "the configuration store holds no document; the configuration file "
+            "answers instead"
+        )
+    return document
 
 
 def is_configured(resolved: dict[str, str], document: dict | None = None) -> bool:
@@ -263,12 +274,19 @@ def is_configured(resolved: dict[str, str], document: dict | None = None) -> boo
             # Paths, never contents. The two candidates are named because "no
             # config document" is otherwise indistinguishable from "the wrong
             # one", and this is the line an operator has to read to fix the
-            # restart loop the caller is about to enter. The database is named
-            # too, and without a DSN: with the store asked first, "nothing at
-            # either path" is no longer the whole of why there is no document.
+            # restart loop the caller is about to enter. The store is named
+            # too, and without a DSN: with it asked first, "nothing at either
+            # path" is no longer the whole of why there is no document. It is
+            # named as "answered none" rather than as "empty", because from
+            # here the two are the same fact -- the read's own INFO line, one
+            # of the pair `stored_config_document` always logs, is what says
+            # whether the store was unreadable or simply holds nothing, and an
+            # operator told "empty" during an outage would go and reconfigure
+            # a deployment that is already configured.
             logger.error(
                 "this deployment has credentials but no config document: "
-                "nothing at %s, nothing at %s, and nothing in the database",
+                "nothing at %s, nothing at %s, and the configuration store "
+                "answered none",
                 os.environ.get("AUTOPOSTER_CONFIG") or "(AUTOPOSTER_CONFIG unset)",
                 state_config_path(),
             )
@@ -391,6 +409,20 @@ def main(argv: list[str] | None = None) -> None:
     # what the application will actually run, so it is what "configured" is
     # asked of. `None` is an empty or unreadable store and sends the question
     # back to the mounted file, which is where it has always gone.
+    #
+    # AHEAD of the credential check and not behind it, even though
+    # `is_configured` takes the credentials first and answers on its own when
+    # one is missing. That shape is exactly when the WIZARD is served, and the
+    # wizard is handed this document below: it has no session of its own, and
+    # without the document it would offer the config step to a deployment that
+    # already has one and then collect a document the next boot ignores. So a
+    # read only the configured path made would be a read the one caller that
+    # needs it never gets.
+    #
+    # The cost of that is one bounded read on a boot that is heading for the
+    # wizard anyway -- `PROBE_TIMEOUT_SECONDS`, the same bound the secrets read
+    # above already pays, against a database this boot has to name before
+    # either read happens at all.
     document = stored_config_document(resolved.get("AUTOPOSTER_DATABASE_URL", ""))
 
     if not is_configured(resolved, document):

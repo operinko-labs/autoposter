@@ -471,6 +471,66 @@ async def test_the_wizard_is_not_asked_for_a_document_the_store_already_holds(
     del held["AUTOPOSTER_TMDB_TOKEN"]
     _write_state_secrets(held)
 
+    from autoposter.api import setup as setup_api
+
+    wizard = await asyncio.to_thread(_serve_the_wizard, monkeypatch)
+    # The upgrade the finish step runs for itself. This database's schema was
+    # built from the models rather than from the migrations, so a real alembic
+    # run fails on the first table it already has -- which is tolerated, and
+    # is not what this test is about.
+    monkeypatch.setattr(setup_api, "_migrate_for_the_store", lambda url: True)
+
+    transport = ASGITransport(app=wizard)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (
+            await client.post("/api/setup/password", json={"password": MASTER_PASSWORD})
+        ).json()["token"]
+        headers = {"X-Setup-Token": token}
+        progress = await client.get("/api/setup/progress", headers=headers)
+        # The one name this deployment is missing, which is the only reason
+        # the wizard was served at all.
+        typed = await client.post(
+            "/api/setup/providers",
+            json={"values": {"AUTOPOSTER_TMDB_TOKEN": "typed-at-the-wizard"}},
+            headers=headers,
+        )
+        finished = await client.post("/api/setup/finish", headers=headers)
+
+    body = progress.json()
+    assert body["config"] is True
+    assert body["config_source"] == "configured"
+    assert body["servers"]["plex"]["configured"] is True
+    assert typed.status_code == 200, typed.text
+    # And the wizard can be FINISHED. The gate at the end of that route asks
+    # the same question the next boot will: with no file at either path, one
+    # that read the volume instead would answer 400 naming the one step this
+    # page deliberately hides, with nothing an operator could do about it.
+    assert finished.status_code == 200, finished.text
+    assert finished.json() == {"restarting": True}
+
+
+@pytest.mark.asyncio
+async def test_a_document_cannot_be_staged_over_the_one_the_store_holds(
+    monkeypatch, session_factory, database_url
+):
+    """The config step's refusal is a SERVER rule and not a client courtesy:
+    the page stops offering the step, and a direct POST must not route around
+    it.
+
+    Accepted, the staged document would be written to the volume at finish,
+    declined by a store that already holds one, and then ignored by the next
+    boot, which asks the store first -- the operator's work discarded without
+    a word.
+    """
+    async with session_factory() as session:
+        await seed_store(session, _example_document())
+        await session.commit()
+    held = _hard_secrets(database_url, AUTOPOSTER_PLEX_TOKEN="x")
+    del held["AUTOPOSTER_TMDB_TOKEN"]
+    _write_state_secrets(held)
+
+    from autoposter.api import setup as setup_api
+
     wizard = await asyncio.to_thread(_serve_the_wizard, monkeypatch)
 
     transport = ASGITransport(app=wizard)
@@ -478,11 +538,68 @@ async def test_the_wizard_is_not_asked_for_a_document_the_store_already_holds(
         token = (
             await client.post("/api/setup/password", json={"password": MASTER_PASSWORD})
         ).json()["token"]
-        progress = await client.get(
-            "/api/setup/progress", headers={"X-Setup-Token": token}
+        response = await client.post(
+            "/api/setup/config",
+            json={"plex_url": "http://plex.elsewhere.test:32400"},
+            headers={"X-Setup-Token": token},
         )
 
-    body = progress.json()
-    assert body["config"] is True
-    assert body["config_source"] == "configured"
-    assert body["servers"]["plex"]["configured"] is True
+    assert response.status_code == 400
+    assert response.json()["detail"] == setup_api.CONFIG_ALREADY_PROVIDED
+    assert wizard.state.setup.config_document is None
+
+
+@pytest.mark.asyncio
+async def test_a_mounted_file_makes_build_read_no_store_at_all(tmp_path, monkeypatch):
+    """The cheap half of the same decision. Every deployment that mounts a
+    document must go on paying nothing for the store at build time -- a
+    regression that always read it would still be green on the test above,
+    because that one has no file to prefer.
+    """
+    import autoposter.main as main_module
+    from autoposter.config.schema import Secrets
+
+    path = tmp_path / "autoposter.yaml"
+    path.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def _must_not_be_read(url):
+        raise AssertionError("the file is there; the store must not be read")
+
+    class _Secrets:
+        @staticmethod
+        def from_env() -> Secrets:
+            return Secrets(
+                database_url="postgresql+asyncpg://unused",
+                plex_token="x", tmdb_token="x", tvdb_apikey="x",
+                fanart_apikey="x", webhook_secret="x", admin_password_hash="",
+            )
+
+    monkeypatch.setattr(main_module, "CONFIG_PATH", path)
+    monkeypatch.setattr(main_module, "stored_config_document", _must_not_be_read)
+    monkeypatch.setattr(main_module, "Secrets", _Secrets)
+    monkeypatch.setattr(main_module, "make_engine", lambda url: object())
+    monkeypatch.setattr(main_module, "spa_dist", lambda: None)
+
+    app = main_module.build()
+
+    assert app.state.config.plex.url == "https://<plex-host>"
+
+
+def test_build_refuses_when_neither_the_file_nor_the_store_answers(tmp_path, monkeypatch):
+    """Unreachable through `boot`, which serves the wizard for this shape
+    rather than exec'ing this module -- so it is raised rather than invented,
+    and it names both places without claiming the deployment was never
+    configured. From here an outage and an empty store are the same fact, and
+    the read's own log line is what tells them apart.
+    """
+    import autoposter.main as main_module
+
+    monkeypatch.setattr(main_module, "CONFIG_PATH", tmp_path / "nothing.yaml")
+
+    with pytest.raises(ValueError) as caught:
+        main_module._boot_config("postgresql+asyncpg://nobody@127.0.0.1:1/x")
+
+    message = str(caught.value)
+    assert "nothing.yaml" in message
+    assert "answered none" in message
+    assert "nobody" not in message, "the refusal never carries the DSN"

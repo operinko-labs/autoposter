@@ -8,7 +8,8 @@ from fastapi import FastAPI
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
 from autoposter.boot import stored_config_document
-from autoposter.config.loader import DEFAULT_CONFIG_PATH, build_config, load_config
+from autoposter.config.loader import DEFAULT_CONFIG_PATH, load_config
+from autoposter.config.overrides import _validated
 from autoposter.config.schema import Config, Secrets
 from autoposter.db.base import make_engine, make_session_factory
 from autoposter.servers.registry import Servers, build_servers
@@ -61,20 +62,32 @@ def _boot_config(database_url: str) -> Config:
     lifespan replaces it with ``load_effective_config``'s before a request is
     served (app.py). It exists because the ``FastAPI`` object has to.
 
+    The stored document is validated through the overrides layer's own
+    ``_validated`` rather than through ``build_config`` alone, so that the one
+    document gets one verdict: every other reader of the store -- the
+    lifespan's ``load_effective_config``, the config write path -- refuses a
+    stored ``secrets`` key there, and a boot-time ``Config`` that accepted one
+    the lifespan is about to refuse would be two answers to one question.
+
     Neither a file nor a store is unreachable through ``boot``, which serves
     the wizard for that shape rather than exec'ing this module. It is raised
-    rather than invented so that a direct caller is told, and named after both
-    places that were looked at.
+    rather than invented so that a direct caller is told, and it says the
+    store ANSWERED NONE rather than that this deployment is unconfigured: from
+    here those are the same fact, and the read's own log line -- one of the
+    pair ``stored_config_document`` always writes -- is what says whether the
+    store was unreadable or simply holds nothing. Reporting an outage as
+    "never configured" would send an operator to reconfigure a deployment that
+    is already configured.
     """
     if CONFIG_PATH.is_file():
         return load_config(CONFIG_PATH)
     document = _stored_document(database_url)
     if document is None:
         raise ValueError(
-            f"no configuration document: nothing at {CONFIG_PATH} and nothing "
-            "in the database; this deployment has not been configured"
+            f"no configuration document: nothing at {CONFIG_PATH}, and the "
+            "configuration store answered none"
         )
-    return build_config(document)
+    return _validated(document)
 
 
 def build() -> FastAPI:
