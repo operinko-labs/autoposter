@@ -378,7 +378,8 @@ class Job(Base):
     kind: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     dedupe_key: Mapped[str | None] = mapped_column(String(255))
-    # pending | running | deferred | done | failed | parked | dismissed
+    # pending | running | deferred | done | done_with_warnings | failed |
+    # parked | dismissed
     #
     # ``deferred`` is a wait, not a failure: Plex cannot see the item yet, so
     # the job comes back on a long horizon with no attempt cap at all
@@ -386,8 +387,21 @@ class Job(Base):
     # pending once ``run_after`` passes, and it is presented as waiting rather
     # than failed -- the Failures page never sees one. No CHECK constraint
     # governs this column, in the model or in any migration, so the vocabulary
-    # widens here without a schema change.
-    state: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    # widens here without one.
+    #
+    # ``done_with_warnings`` is FINISHED, not failed: the item was processed,
+    # but a server it touched ended the pass still owed something, and
+    # ``last_error`` holds the sentence naming which. The queue never retries
+    # one -- the per-server rows in ``render_deliveries`` and
+    # ``metadata_writes`` carry their own retry.
+    #
+    # The LENGTH is what the vocabulary widened past: ``done_with_warnings``
+    # is eighteen characters and the column was ``String(16)``, which
+    # PostgreSQL enforces even with no CHECK constraint in sight -- so this
+    # one word did need a migration after all (``b3d91f7c05ea``). Twenty-four
+    # matches the two outcome tables' own status columns, which is the width
+    # this project already reaches for when a state name has to grow.
+    state: Mapped[str] = mapped_column(String(24), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     claimed_by: Mapped[str | None] = mapped_column(String(64))

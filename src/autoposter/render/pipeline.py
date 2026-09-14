@@ -2539,6 +2539,8 @@ async def process_item(
     mdblist=None,
     imdb_parental=None,
     plex_generated_base=None,
+    *,
+    warnings: list[str] | None = None,
 ) -> list[Render]:
     """Resolve one intent on EVERY configured server, render once, and
     deliver per server (spec §5.1).
@@ -2574,6 +2576,13 @@ async def process_item(
 
     ``plex_generated_base`` is passed straight to ``render_artifact``; see
     its own docstring for what it does and why it is optional.
+
+    ``warnings`` is an out-parameter, not a widened return type: this
+    function returns ``list[Render]`` to some forty call sites and tests, and
+    the queue needs one more thing from it -- whether any server it touched
+    ended the pass still owed something (spec §4). When a list is passed, the
+    sentence ``deliveries.outcome_warnings`` builds is appended to it, and
+    the job's handler turns that into ``done_with_warnings``.
     """
     # Resolve on every configured server (spec §5.1). The first success is the
     # identity the render keys on; every success is a ref; a miss is a pending
@@ -2848,4 +2857,14 @@ async def process_item(
                 item.native_id, exc_info=True,
             )
 
+    if warnings is not None:
+        # Every server this pass CONSIDERED -- resolved or missed. A miss is
+        # exactly the case worth reporting: the item is not there yet and the
+        # row says so, which is the fact a plain `done` used to lose. The
+        # servers left out are the ones this pass never asked: an `absent`
+        # server, and any server this deployment no longer configures.
+        touched = set(resolved_on) | set(misses)
+        sentence = await deliveries.outcome_warnings(session, media_item.id, touched)
+        if sentence is not None:
+            warnings.append(sentence)
     return results

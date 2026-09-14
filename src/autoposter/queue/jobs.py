@@ -317,8 +317,19 @@ _DISMISS_DEFERRED_SIBLINGS_SQL = text(
 )
 
 
-async def complete(session: AsyncSession, job_id: int) -> None:
+async def complete(
+    session: AsyncSession, job_id: int, *, warnings: str | None = None
+) -> None:
     """Mark a job done, and retire any deferred row still waiting on the same item.
+
+    ``warnings``, when given, finishes the job as ``done_with_warnings``
+    instead (spec §4): the work happened, but a server it touched ended the
+    pass still owed something. It is a FINISHED state, not a failure -- the
+    queue does not retry it, because the per-server rows in
+    ``render_deliveries`` and ``metadata_writes`` carry their own retry and
+    re-running the whole job would re-render an item whose artwork is already
+    on disk. The sentence goes in ``last_error``, which is the column the
+    Jobs and Action Center listings already read.
 
     The second half handles what the widened dedupe index cannot: 'running'
     rows fall outside uq_jobs_pending_dedupe's partial predicate, so an event
@@ -333,8 +344,8 @@ async def complete(session: AsyncSession, job_id: int) -> None:
     this is narrower than it once was but not gone.
     """
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
-    job.state = "done"
-    job.last_error = None
+    job.state = "done_with_warnings" if warnings else "done"
+    job.last_error = warnings or None
     if job.dedupe_key is not None:
         await session.execute(
             _DISMISS_DEFERRED_SIBLINGS_SQL,

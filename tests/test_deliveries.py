@@ -1534,3 +1534,43 @@ async def test_both_filters_select_rows_that_then_do_real_work(session, config_w
         select(MetadataWrite.server, MetadataWrite.status)
     )).all())
     assert statuses == {"jellyfin": "written", "plex": "written"}
+
+
+async def test_outcome_warnings_names_each_unsettled_server_and_kind(session):
+    """Spec §4's sentence: one clause per unsettled (server, kind), artwork
+    before metadata, with the stored detail in brackets."""
+    render = await _render(session, native="w1")
+    await deliveries.record(
+        session, render.id, "jellyfin", "pending", detail="connect: ConnectError", retry_in=60,
+    )
+    await deliveries.record_metadata(
+        session, render.item_id, "jellyfin", "failed", detail="status: HTTPStatusError 400",
+    )
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await session.commit()
+
+    sentence = await deliveries.outcome_warnings(
+        session, render.item_id, ["jellyfin", "plex"],
+    )
+
+    assert sentence == (
+        "jellyfin: artwork pending (connect: ConnectError); "
+        "jellyfin: metadata failed (status: HTTPStatusError 400)"
+    )
+
+
+async def test_outcome_warnings_is_none_when_everything_settled(session):
+    render = await _render(session, native="w2")
+    await deliveries.record(session, render.id, "jellyfin", "uploaded", fingerprint="fp1")
+    await deliveries.record_metadata(session, render.item_id, "jellyfin", "absent")
+    await session.commit()
+
+    assert await deliveries.outcome_warnings(session, render.item_id, ["jellyfin"]) is None
+
+
+async def test_outcome_warnings_ignores_servers_this_pass_did_not_touch(session):
+    render = await _render(session, native="w3")
+    await deliveries.record(session, render.id, "jellyfin", "failed", detail="error: X")
+    await session.commit()
+
+    assert await deliveries.outcome_warnings(session, render.item_id, ["plex"]) is None

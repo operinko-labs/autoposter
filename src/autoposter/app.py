@@ -333,7 +333,10 @@ def create_app(
         # entries here as they land -- this is the one place that both holds the
         # per-process dependencies a handler needs and can reach app.state.
         async def process_item_handler(session, job):
-            await handler(session, RenderIntent.from_payload(job.payload))
+            # Returned, not awaited and dropped: _handle_intent answers with
+            # the warning sentence (spec §4) the worker completes the job
+            # `done_with_warnings` on, or None for the ordinary success.
+            return await handler(session, RenderIntent.from_payload(job.payload))
 
         handlers = {"process_item": process_item_handler}
         imdb_refresh = ImdbAutoRefresh(
@@ -851,7 +854,7 @@ def _build_mdblist(
 async def _handle_intent(
     session, intent, *, config_holder, http, servers, providers, tmdb_facts=None, mdblist=None,
     imdb_parental=None, plex_generated_base=None,
-):
+) -> str | None:
     # Dereferenced once per job, at the top: process_item takes a config per
     # call already, so one read here is all it takes for a config swap to be
     # visible to the very next item a worker picks up. One read rather than
@@ -860,11 +863,13 @@ async def _handle_intent(
     # process_item's fifth positional is the whole registry now:
     # it resolves on every configured server itself, so there is no single
     # server to choose here any more.
+    warnings: list[str] = []
     try:
         await process_item(
             session, config, http, servers, providers, intent,
             tmdb_facts=tmdb_facts, mdblist=mdblist,
             imdb_parental=imdb_parental, plex_generated_base=plex_generated_base,
+            warnings=warnings,
         )
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         # PlexHealth (see plex/health.py) gating run_worker's claiming is now
@@ -901,3 +906,7 @@ async def _handle_intent(
         # normally.
         exc.max_attempts = 1
         raise
+    # One sentence per job, whatever the item's shape: the list holds at most
+    # one entry, and joining is what keeps that an implementation detail of
+    # process_item's out-parameter rather than something this return promises.
+    return "; ".join(warnings) or None

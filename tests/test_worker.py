@@ -788,3 +788,36 @@ async def test_a_cancel_requested_mid_attempt_is_still_honoured(session):
     job = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
     await session.refresh(job)
     assert job.state == "dismissed"
+
+
+async def test_a_handler_returning_a_sentence_finishes_the_job_with_warnings(session):
+    """Spec §4: the handler's return value is the job's warning sentence."""
+    job_id = await enqueue_due(
+        session, "process_item", {"title": "A"}, dedupe_key="w-warn-1",
+    )
+
+    async def handler(session_, job):
+        return "jellyfin: metadata failed (error: X)"
+
+    assert await run_once(session, "worker-0", {"process_item": handler}) is True
+    row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(row)
+    assert row.state == "done_with_warnings"
+    assert row.last_error == "jellyfin: metadata failed (error: X)"
+    # The per-server rows carry the retry, so the JOB is finished: the claim's
+    # own attempt is the only one charged and nothing reschedules it.
+    assert row.attempts == 1
+
+
+async def test_a_handler_returning_none_still_finishes_done(session):
+    job_id = await enqueue_due(
+        session, "process_item", {"title": "A"}, dedupe_key="w-warn-2",
+    )
+
+    async def handler(session_, job):
+        return None
+
+    await run_once(session, "worker-0", {"process_item": handler})
+    row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(row)
+    assert row.state == "done" and row.last_error is None

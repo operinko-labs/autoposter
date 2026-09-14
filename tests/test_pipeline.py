@@ -2836,3 +2836,53 @@ async def test_an_absent_only_deliver_does_no_rollup_and_no_commit(
         select(RenderDelivery.status, RenderDelivery.detail)
     )).one()
     assert row.status == "absent" and row.detail == ABSENT_DETAIL
+
+
+async def test_process_item_reports_a_failed_metadata_write_as_a_warning(
+    session, config_with_badges, monkeypatch,
+):
+    """Spec §4, through the real entry point: a metadata write that fails
+    hands the caller the sentence its job finishes `done_with_warnings` on."""
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers()
+    response = httpx.Response(400, request=httpx.Request("POST", "https://jf.internal/Items/j1"))
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.HTTPStatusError("bad", request=response.request, response=response)
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == ["jellyfin: metadata pending (status: HTTPStatusError 400)"]
+    assert len(plex.facts_written) == 1, "the server that settled is not in the sentence"
+
+
+async def test_process_item_reports_nothing_when_every_server_settled(
+    session, config_with_badges, monkeypatch,
+):
+    """The other half: both tables settle on both servers, so the job that
+    ran this item finishes plain `done`."""
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers()
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == []

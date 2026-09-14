@@ -61,8 +61,8 @@ async def test_status_on_an_empty_database_returns_zeroed_counts(client, auth_he
     assert response.status_code == 200
     body = response.json()
     assert body["jobs_by_state"] == {
-        "pending": 0, "running": 0, "deferred": 0, "done": 0, "failed": 0,
-        "parked": 0, "dismissed": 0,
+        "pending": 0, "running": 0, "deferred": 0, "done": 0,
+        "done_with_warnings": 0, "failed": 0, "parked": 0, "dismissed": 0,
     }
     assert body["processed_last_24h"] == 0
     assert body["scheduled_jobs"] == []
@@ -101,7 +101,8 @@ async def test_status_reports_dismissed_jobs_in_the_same_shape(client, auth_head
     body = response.json()
     assert body["jobs_by_state"]["dismissed"] == 1
     assert set(body["jobs_by_state"]) == {
-        "pending", "running", "deferred", "done", "failed", "parked", "dismissed",
+        "pending", "running", "deferred", "done", "done_with_warnings", "failed",
+        "parked", "dismissed",
     }
 
 
@@ -122,6 +123,26 @@ async def test_status_processed_24h_window_excludes_older_rows(client, auth_head
 
     response = await client.get("/api/status", headers=auth_headers)
     assert response.json()["processed_last_24h"] == 1
+
+
+async def test_status_counts_a_done_with_warnings_job_as_processed(
+    client, auth_headers, session
+):
+    """Spec §4's state is FINISHED work: it gets its own count, it is never
+    folded in with `failed`, and it must not vanish from `processed_last_24h`
+    -- which would have a server being down read as the queue doing less."""
+    session.add_all([
+        Job(kind="render", payload={}, state="done"),
+        Job(kind="render", payload={}, state="done_with_warnings",
+            last_error="jellyfin: metadata failed (error: X)"),
+    ])
+    await session.commit()
+
+    body = (await client.get("/api/status", headers=auth_headers)).json()
+    assert body["jobs_by_state"]["done_with_warnings"] == 1
+    assert body["jobs_by_state"]["done"] == 1
+    assert body["jobs_by_state"]["failed"] == 0
+    assert body["processed_last_24h"] == 2
 
 
 async def test_status_reports_scheduled_job_last_run_and_status(client, auth_headers, session):

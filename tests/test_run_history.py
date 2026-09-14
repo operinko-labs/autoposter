@@ -229,6 +229,23 @@ async def test_window_counts_take_jobs_by_state_and_never_parked(session):
     assert "parked" not in counts
 
 
+async def test_window_counts_read_done_with_warnings_as_processed(session):
+    """Spec §4's state is a FINISHED job whose item was processed -- only a
+    server it touched is still owed something. Counting it anywhere but
+    `processed` would have a pass read as having done less work than it did,
+    or as having failed items it did not."""
+    start = await _now(session)
+    for state in ("done", "done_with_warnings", "done_with_warnings"):
+        session.add(Job(kind="process_item", payload={}, state=state))
+    await session.commit()
+    end = await _now(session)
+
+    counts = await window_counts(session, start, end)
+
+    assert counts["processed"] == 3
+    assert counts["failed"] == 0
+
+
 async def test_only_process_item_jobs_are_counted(session):
     """`process_item` is the only kind the worker pool dispatches today
     (app.py's `handlers` map), so this changes no number now -- and it is what

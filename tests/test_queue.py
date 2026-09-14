@@ -689,3 +689,24 @@ async def test_reclaim_stale_does_not_re_pend_a_row_already_reclaimed_and_re_cla
     assert row.state == "running", "the reclaimed-and-re-claimed row was re-pended"
     assert row.claimed_by == "worker-fresh"
     assert row.claimed_at is not None
+
+
+async def test_complete_with_warnings_finishes_the_job_in_its_own_state(session):
+    """Spec §4: the work happened, but a server it touched is still owed
+    something -- a FINISHED state, with the sentence in `last_error`."""
+    job_id = await enqueue(session, "process_item", {"title": "A"}, dedupe_key="k-warn-1")
+    await complete(session, job_id, warnings="jellyfin: metadata failed (error: X)")
+
+    row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(row)
+    assert row.state == "done_with_warnings"
+    assert row.last_error == "jellyfin: metadata failed (error: X)"
+
+
+async def test_complete_without_warnings_is_unchanged(session):
+    job_id = await enqueue(session, "process_item", {"title": "A"}, dedupe_key="k-warn-2")
+    await complete(session, job_id)
+
+    row = (await session.execute(select(Job).where(Job.id == job_id))).scalar_one()
+    await session.refresh(row)
+    assert row.state == "done" and row.last_error is None
