@@ -16,16 +16,19 @@ tables and the same per-row savepoint.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, case, literal, or_, select, text, true, update
+from sqlalchemy import (
+    and_, case, delete, func, literal, or_, select, text, true, update,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.db.models import (
     ItemFacts, ItemMetadataOverride, MediaItem, MetadataWrite, Render, RenderDelivery, Run,
 )
-from autoposter.scheduler.run_history import open_run
+from autoposter.deliveries import RETRY_SECONDS
+from autoposter.scheduler.run_history import close_run, open_run
 from autoposter.servers.presence import (
     apply_presence, present_libraries, rollup_stamped_renders,
 )
@@ -358,3 +361,162 @@ async def start_catch_up(
     # the two statements above wrote.
     await rollup_stamped_renders(session, name, now)
     return run_id
+
+
+# What "done" means in each table, so progress can count them together.
+_DONE_STATUS = {RenderDelivery: "uploaded", MetadataWrite: "written"}
+
+
+async def catch_up_progress(session: AsyncSession, name: str) -> dict | None:
+    """The current or last catch-up for ``name``, with its progress.
+
+    Counted from the outcome rows themselves rather than stored on the run:
+    stored counters would be a third thing that can disagree with the two
+    tables, and the two tables are what the operator is actually asking
+    about. ``due`` is what is still pending, ``done`` what settled, ``failed``
+    what ran out of budget.
+    """
+    run = (await session.execute(
+        select(Run)
+        .where(Run.kind == CATCH_UP_KIND, Run.server == name)
+        .order_by(Run.started_at.desc(), Run.id.desc())
+        .limit(1)
+    )).scalars().first()
+    if run is None:
+        return None
+
+    counts = {"due": 0, "done": 0, "failed": 0}
+    for table, done_status in _DONE_STATUS.items():
+        rows = (await session.execute(
+            select(table.status, func.count())
+            .where(table.run_id == run.id)
+            .group_by(table.status)
+        )).all()
+        for status, total in rows:
+            if status == "pending":
+                counts["due"] += int(total)
+            elif status == done_status:
+                counts["done"] += int(total)
+            elif status == "failed":
+                counts["failed"] += int(total)
+
+    return {
+        "run_id": run.id,
+        "server": run.server,
+        "status": run.status,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "cadence_seconds": run.cadence_seconds,
+        "detail": run.detail,
+        "total": counts["due"] + counts["done"] + counts["failed"],
+        **counts,
+    }
+
+
+async def cancel_catch_up(
+    session: AsyncSession, name: str, *, now: datetime | None = None
+) -> dict:
+    """Stop the catch-up in flight for ``name`` and put its due rows back.
+
+    Only rows still ``pending`` are restored: anything this run already got
+    written or uploaded stays exactly as it is (spec §3, "nothing already
+    written is undone"). A row the run CREATED has no previous status to
+    return to, so it is removed rather than left as an invented ``pending``
+    nothing will ever drain.
+
+    Every remaining row of the run is then released -- the settled ones
+    included, which keep their outcome and lose only the two scope columns. A
+    cancelled run owns nothing afterwards, or a later progress query would go
+    on counting for a run that is over, and the ordinary pipeline's own
+    release (``leave_run``) would be the only thing ever clearing them, one
+    row at a time, if it happened to touch them at all.
+
+    Does not commit.
+    """
+    now = now or datetime.now(timezone.utc)
+    run = (await session.execute(
+        select(Run).where(
+            Run.kind == CATCH_UP_KIND, Run.server == name, Run.finished_at.is_(None)
+        )
+    )).scalars().first()
+    if run is None:
+        raise CatchUpRefused(f"no catch-up for {name} is in flight")
+
+    restored = removed = 0
+    for table in (RenderDelivery, MetadataWrite):
+        removed += (await session.execute(
+            delete(table).where(
+                table.run_id == run.id,
+                table.status == "pending",
+                table.previous_status.is_(None),
+            )
+        )).rowcount
+        restored += (await session.execute(
+            update(table)
+            .where(
+                table.run_id == run.id,
+                table.status == "pending",
+                table.previous_status.isnot(None),
+            )
+            .values(
+                status=table.previous_status,
+                # A row that was ALREADY pending before the catch-up marked
+                # it gets the ordinary horizon back rather than the one this
+                # run shortened it to; anything else has no horizon at all.
+                # The exact pre-catch-up instant is not stored, and a fresh
+                # horizon is the honest approximation -- it delays that row by
+                # at most one retry interval and never strands it.
+                next_attempt_at=case(
+                    (table.previous_status == "pending", now + timedelta(seconds=RETRY_SECONDS)),
+                    else_=None,
+                ),
+                previous_status=None,
+                run_id=None,
+            )
+        )).rowcount
+        await session.execute(
+            update(table).where(table.run_id == run.id)
+            .values(previous_status=None, run_id=None)
+        )
+
+    detail = f"cancelled: {restored} restored, {removed} removed"
+    await close_run(session, run.id, status="cancelled", detail=detail)
+    return {"run_id": run.id, "restored": restored, "removed": removed, "detail": detail}
+
+
+async def retry_failed(
+    session: AsyncSession, name: str, *, now: datetime | None = None
+) -> dict:
+    """Re-arm ``name``'s ``failed`` rows in both tables, without a catch-up.
+
+    The narrow half of the Servers tab's two buttons (spec §5): a catch-up
+    re-arms everything that is behind, this re-arms only what gave up. The
+    budget is reset with the status, or the very next pass would fail the row
+    again on its first attempt.
+
+    EVERY ``failed`` row for that server, inside a run or outside one, and as
+    an ORDINARY row -- both scope columns back to NULL (controller ruling 1).
+    The unscoped retry pass takes ``run_id IS NULL`` rows only, so a row left
+    in the run that armed it would be re-armed here and then drained by
+    nothing until that run's own cadence came round; and a run whose rows this
+    took back is no longer the owner of them.
+
+    Does not commit.
+    """
+    now = now or datetime.now(timezone.utc)
+    counts = {}
+    for key, table in (("artwork", RenderDelivery), ("metadata", MetadataWrite)):
+        counts[key] = (await session.execute(
+            update(table)
+            .where(table.server == name, table.status == "failed")
+            .values(
+                status="pending", detail=None, next_attempt_at=now, attempts=0,
+                previous_status=None, run_id=None,
+            )
+        )).rowcount
+    # The roll-up `start_catch_up` owes for the same reason and by the same
+    # selector: this is a set-shaped write to `render_deliveries` stamped
+    # `next_attempt_at = now`, and nothing else recomputes
+    # `renders.upload_status` behind it.
+    await rollup_stamped_renders(session, name, now)
+    return {"server": name, **counts}
