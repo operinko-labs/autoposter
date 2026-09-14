@@ -647,7 +647,9 @@ def _comparable(document: dict) -> dict | None:
     """
     try:
         dumped = build_config(document).model_dump(mode="json")
-    except ValueError:
+    except (ValueError, TypeError):
+        # TypeError: a YAML file whose top-level key resolves to a non-string
+        # (a bare ``on:``) fails in ``Config(**data)`` before pydantic sees it.
         # pydantic's ValidationError is a ValueError, and so is every refusal
         # `Config`'s own validators raise.
         return None
