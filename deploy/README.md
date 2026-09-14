@@ -894,12 +894,15 @@ them here would be a second, uncoordinated pass racing the one the next
 webhook triggers. It does read the identity server as well, where that is a
 different one, to sample the media info the badge needs — composing without it
 would put visibly different artwork on the retried server until the next full
-pass. A row that still does not resolve stays `pending` and is deferred six
-hours, at no cost to its budget. A compose, upload or write that throws spends
-one of the row's attempts and records the reason — a category and an exception
-class name, never a URL — and the row is marked `failed` once
-`scheduler.delivery_attempts` is spent. One row's own failure never takes the
-rest of the pass down with it.
+pass. A row whose item the server still does not know stays `pending` and is
+deferred six hours at no cost to its budget: a server that has not scanned the
+file yet is a wait, not a failure. A resolve that fails on the wire is deferred
+the same six hours but does spend an attempt. A path the server cannot map to
+its own library is marked `failed` at once, since no retry fixes a mount
+mismatch. A compose, upload or write that throws spends one of the row's
+attempts and records the reason — a category and an exception class name, never
+a URL — and the row is marked `failed` once `scheduler.delivery_attempts` is
+spent. One row's own failure never takes the rest of the pass down with it.
 
 The per-server rows roll up into the render's `upload_status`, so every
 existing query and dashboard that reads it keeps working. The precedence is
@@ -1497,8 +1500,8 @@ Four rules govern what these numbers mean:
 - **`status` is `running`, `ok`, `failed`, `timed_out`, `interrupted` or
   `cancelled`.** A full pass has no end of its own — the button returns as
   soon as the work is queued and the queue drains for hours afterwards — so
-  the scheduler closes
-  the row when no `process_item` job created at or after the run's start is
+  the scheduler closes the row when no `process_item` job created at or after
+  the run's start is
   still pending or running. Deferred jobs are counted and do **not** hold the
   run open (a deferred job waits six hours by design), and a pass still
   holding a job after **24 hours** is closed as `timed_out`. `interrupted` is
