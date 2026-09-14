@@ -2564,10 +2564,14 @@ async def test_the_pipeline_re_arming_a_row_takes_it_out_of_its_catch_up_run(
     its life -- including after the ordinary pipeline re-armed it weeks later.
     Phase C's run-scoped progress and its cancel would then act on rows that
     run no longer owns. A row leaves a run when the pipeline re-arms it;
-    a terminal outcome INSIDE a run keeps its scope."""
+    a terminal outcome INSIDE a run keeps its scope.
+
+    The run is FINISHED here: a row whose run is still in flight is already
+    pending under it and the pipeline leaves it alone entirely, `run_id` and
+    all (spec §3, and `tests/test_catchup.py`'s open-run pair)."""
     from sqlalchemy import update
     from autoposter.db.models import MetadataWrite
-    from autoposter.scheduler.run_history import open_run
+    from autoposter.scheduler.run_history import close_run, open_run
 
     config_with_badges.badges.upload_to_jellyfin = True
     config_with_badges.operations.enabled = True
@@ -2594,6 +2598,7 @@ async def test_the_pipeline_re_arming_a_row_takes_it_out_of_its_catch_up_run(
         .where(MetadataWrite.server == "jellyfin")
         .values(status="failed", run_id=run_id, previous_status="written")
     )
+    await close_run(session, run_id, status="ok", detail="drained")
     await session.commit()
 
     async def nothing_new(session, config, render, media_item, **_kwargs):

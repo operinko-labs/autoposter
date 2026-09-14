@@ -28,7 +28,7 @@ from autoposter.config.loader import config_for_library, render_version_for
 from autoposter.config.schema import Config, TextStyle
 from autoposter import deliveries
 from autoposter.db.models import (
-    ItemFacts, MediaItem, MediaItemServerRef, MetadataWrite, Render, RenderDelivery,
+    ItemFacts, MediaItem, MediaItemServerRef, MetadataWrite, Render, RenderDelivery, Run,
 )
 from autoposter.db.refs import item_id_for
 from autoposter.facts.gather import gather_facts, persist_facts
@@ -1560,6 +1560,28 @@ async def absent_servers_for(session: AsyncSession, item_id: int) -> set[str]:
     )).scalars())
 
 
+async def _run_is_open(session: AsyncSession, run_id: int | None) -> bool:
+    """Whether ``run_id`` names a run that has not finished yet (spec §3).
+
+    The gate on all three of this module's re-arm doors. A row an IN-FLIGHT
+    catch-up armed is already `pending` under that run, so re-arming it is at
+    best a no-op -- and `leave_run` on it is not: clearing `run_id` and
+    `previous_status` would take the row out of the run while the run is
+    still counting it, so the run's progress would under-report and its
+    cancel would leave the row `pending` forever with nothing to restore.
+    Once the run is FINISHED (or cancelled -- both stamp `finished_at`) the
+    row is an ordinary row again and the doors treat it as one.
+
+    ``None`` is not a run: a row no catch-up armed answers False, and its
+    door re-arms it exactly as it always has.
+    """
+    if run_id is None:
+        return False
+    return (await session.execute(
+        select(Run.id).where(Run.id == run_id, Run.finished_at.is_(None))
+    )).scalar_one_or_none() is not None
+
+
 async def apply_metadata(
     session: AsyncSession,
     config: Config,
@@ -1737,11 +1759,23 @@ async def apply_metadata(
             # failure IS a real attempt as well as a fresh start; the reset
             # is asked for only when the row was actually exhausted, so an
             # ordinary streak of failures still climbs to the cap.
-            re_armed = (await session.execute(
-                select(MetadataWrite.status).where(
+            #
+            # Withheld, both flags, while the row belongs to an OPEN catch-up
+            # (spec §3): that run is counting this row and its cancel has to
+            # be able to restore it, so the ordinary pass neither resets its
+            # budget nor takes it out of the run. The failure is still
+            # recorded -- this is the only place that records one -- it is
+            # only the RE-ARM that waits for the run to finish.
+            existing = (await session.execute(
+                select(MetadataWrite.status, MetadataWrite.run_id).where(
                     MetadataWrite.item_id == media_item_id, MetadataWrite.server == name,
                 )
-            )).scalar_one_or_none() == "failed"
+            )).one_or_none()
+            re_armed = (
+                existing is not None
+                and existing.status == "failed"
+                and not await _run_is_open(session, existing.run_id)
+            )
             await deliveries.record_metadata(
                 session, media_item_id, name, "pending",
                 detail=deliveries.failure_detail(exc), retry_in=deliveries.RETRY_SECONDS,
@@ -2299,14 +2333,21 @@ async def deliver(
                 # the retry stays once per full pass, and it costs no
                 # ImageMagick work for the servers that already have the
                 # bytes. `uploaded` and `skipped` are still left alone.
-                existing_status = (
+                existing = (
                     await session.execute(
-                        select(RenderDelivery.status).where(
+                        select(RenderDelivery.status, RenderDelivery.run_id).where(
                             RenderDelivery.render_id == render.id,
                             RenderDelivery.server == name,
                         )
                     )
-                ).scalar_one_or_none()
+                ).one_or_none()
+                existing_status = existing.status if existing is not None else None
+                if existing is not None and await _run_is_open(session, existing.run_id):
+                    # A row an in-flight catch-up armed is already pending
+                    # under that run (spec §3). Left alone entirely: re-arming
+                    # it would take it out of a run that is still counting it
+                    # and still able to cancel it.
+                    continue
                 if existing_status in (None, "pending", "failed"):
                     # A re-arm, not an attempt: this pass composed no new
                     # bytes for this server, so nothing was actually tried
@@ -2377,13 +2418,21 @@ async def deliver(
             # passes, could never mature and the retry pass never saw it.
             existing = (
                 await session.execute(
-                    select(RenderDelivery.status, RenderDelivery.next_attempt_at).where(
+                    select(
+                        RenderDelivery.status, RenderDelivery.next_attempt_at,
+                        RenderDelivery.run_id,
+                    ).where(
                         RenderDelivery.render_id == render.id,
                         RenderDelivery.server == name,
                     )
                 )
             ).one_or_none()
             if existing is not None and existing.status == "pending" and existing.next_attempt_at is not None:
+                continue
+            if existing is not None and await _run_is_open(session, existing.run_id):
+                # The same rule the `data is None` door above states: a row an
+                # in-flight catch-up owns is left to that run, `run_id` and
+                # `previous_status` intact, whatever status it has reached.
                 continue
             # A `failed` row falls through to here too, and is a re-arm the
             # same way the `data is None` branch above is: `reset_attempts`,
