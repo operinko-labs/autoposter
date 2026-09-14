@@ -18,6 +18,7 @@ that could not see it would treat a deployment that has a password as one that
 has never had one and hand a setup token to whoever asked first.
 """
 import asyncio
+import logging
 import os
 import time
 from pathlib import Path
@@ -118,9 +119,8 @@ def _in_a_thread(url: str):
     It owns an `asyncio.run`, which is correct for the frame it is written for
     -- `main` is synchronous and runs before uvicorn -- and raises outright
     from inside a running loop like an async test's. Calling it directly there
-    would land in its own catch-all and answer `{}`, which is
-    indistinguishable from a store that held nothing: the test would pass for
-    the wrong reason the day the read broke.
+    would land in its own catch-all and report a failed read that never
+    happened: the test would pass for the wrong reason the day the read broke.
     """
     return asyncio.to_thread(boot.stored_secrets_for_boot, url)
 
@@ -131,25 +131,35 @@ async def test_boot_reads_the_stored_secrets(session_factory, database_url):
         await secret_store.store_secret(session, "AUTOPOSTER_TMDB_TOKEN", "stored-tok")
         await session.commit()
 
-    assert await _in_a_thread(database_url) == {"AUTOPOSTER_TMDB_TOKEN": "stored-tok"}
-
-
-def test_boot_answers_empty_when_the_database_is_unreachable():
-    """The resolver then falls through to the state file and the environment,
-    which is exactly how every deployment that predates this behaved."""
-    assert (
-        boot.stored_secrets_for_boot(
-            "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nothing"
-        )
-        == {}
+    assert await _in_a_thread(database_url) == boot.StoredSecrets(
+        {"AUTOPOSTER_TMDB_TOKEN": "stored-tok"}, None
     )
+
+
+def test_an_unreachable_database_is_a_failed_read_rather_than_an_empty_store():
+    """The resolver still falls through to the state file and the environment,
+    which is how every deployment that predates this behaved -- but a
+    deployment configured by nothing else must not be handed the first-start
+    wizard over a postgres rollout, and this is the only fact that separates
+    the outage from a first start.
+
+    The class name and nothing else: the DSN carries a password."""
+    read = boot.stored_secrets_for_boot(
+        "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nothing"
+    )
+
+    assert read.values == {}
+    assert read.failure is not None
+    assert "nobody" not in read.failure and "127.0.0.1" not in read.failure
 
 
 def test_boot_answers_empty_when_there_is_no_database_url_at_all():
     """The first-start shape: the wizard has not been through yet, so nothing
     names a database and there is nothing to connect to. Answered without an
-    engine rather than by failing to build one."""
-    assert boot.stored_secrets_for_boot("") == {}
+    engine rather than by failing to build one -- and as an empty store rather
+    than as a failure, or the boot that exists to collect a database URL would
+    exit instead of offering the form."""
+    assert boot.stored_secrets_for_boot("") == boot.StoredSecrets({}, None)
 
 
 @pytest.mark.asyncio
@@ -158,8 +168,12 @@ async def test_boot_answers_empty_when_the_table_does_not_exist_yet(tableless_da
     `except` is uniquely responsible for: the database answers perfectly and
     the migration that creates the table has not run, because it runs AFTER
     this read. A refusal here would mean no deployment could ever migrate.
+
+    An empty store and NOT a failed read, which is the same claim one step on:
+    the boot that must serve the wizard here is exactly the boot that has no
+    credentials anywhere, and a failure would exit it instead.
     """
-    assert await _in_a_thread(tableless_database_url) == {}
+    assert await _in_a_thread(tableless_database_url) == boot.StoredSecrets({}, None)
 
 
 @pytest.mark.asyncio
@@ -185,7 +199,8 @@ async def test_a_database_that_never_answers_does_not_block_the_boot(
     stored = await _in_a_thread(database_url)
     elapsed = time.monotonic() - started
 
-    assert stored == {}
+    assert stored.values == {}
+    assert stored.failure == "TimeoutError", "abandoned, and said so"
     assert elapsed < 10, "the read is abandoned on a bound, not waited out"
 
 
@@ -293,9 +308,8 @@ def _document_in_a_thread(url: str):
 
     `_in_a_thread`'s reason, restated because the trap is the same one: this
     function owns an `asyncio.run` too, so calling it directly from an async
-    test would land in its own catch-all and answer `None` -- which is
-    indistinguishable from an empty store, and would pass for the wrong reason
-    the day the read broke.
+    test would land in its own catch-all and report an outage that never
+    happened, which would pass for the wrong reason the day the read broke.
     """
     return asyncio.to_thread(boot.stored_config_document, url)
 
@@ -325,7 +339,8 @@ async def test_configured_is_answered_from_the_store_not_the_file(
         await session.commit()
 
     resolved = _hard_secrets(database_url, AUTOPOSTER_PLEX_TOKEN="x")
-    stored = await _document_in_a_thread(database_url)
+    stored, failure = await _document_in_a_thread(database_url)
+    assert failure is None
     assert stored is not None and "plex" in stored
     assert boot.is_configured(resolved, stored) is True
     assert boot.is_configured(resolved, None) is False, (
@@ -345,7 +360,7 @@ async def test_a_stored_server_without_its_credential_is_not_configured(
         await seed_store(session, _example_document())
         await session.commit()
 
-    stored = await _document_in_a_thread(database_url)
+    stored = (await _document_in_a_thread(database_url)).document
     assert boot.is_configured(_hard_secrets(database_url), stored) is False
 
 
@@ -357,7 +372,9 @@ def test_an_empty_store_leaves_the_file_answering(tmp_path, monkeypatch):
         EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8"
     )
     unreachable = "postgresql+asyncpg://nobody@127.0.0.1:1/x"
-    assert boot.stored_config_document(unreachable) is None
+    read = boot.stored_config_document(unreachable)
+    assert read.document is None
+    assert read.failure is not None, "unreachable, and not merely empty"
     assert (
         boot.is_configured(_hard_secrets(unreachable, AUTOPOSTER_PLEX_TOKEN="x"), None)
         is True
@@ -365,8 +382,10 @@ def test_an_empty_store_leaves_the_file_answering(tmp_path, monkeypatch):
 
 
 def test_no_database_url_at_all_reads_no_store():
-    """The first-start shape, answered without building an engine."""
-    assert boot.stored_config_document("") is None
+    """The first-start shape, answered without building an engine -- and as an
+    empty store rather than as a read that failed, because there was no store
+    to read."""
+    assert boot.stored_config_document("") == boot.StoredDocument(None, None)
 
 
 @pytest.mark.asyncio
@@ -384,7 +403,7 @@ async def test_a_delta_era_store_leaves_the_file_answering(
         await write_store(session, {"workers": 3}, store_meta(format_=1))
         await session.commit()
 
-    assert await _document_in_a_thread(database_url) is None
+    assert await _document_in_a_thread(database_url) == boot.StoredDocument(None, None)
 
 
 @pytest.mark.asyncio
@@ -409,6 +428,67 @@ async def test_boot_hands_over_to_the_application_with_no_file_anywhere(
     await asyncio.to_thread(boot.main, [])
 
     assert served == [], "a deployment whose store holds its document is configured"
+    assert exec_calls == [list(boot.DEFAULT_COMMAND)]
+
+
+UNREACHABLE_DATABASE = "postgresql+asyncpg://nobody:nobody@127.0.0.1:1/nothing"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_store_exits_rather_than_serving_the_wizard(
+    monkeypatch, caplog
+):
+    """The shape the spec makes a goal -- a database URL and a volume and
+    nothing else -- during a postgres rollout. Every hard credential is in a
+    table this boot cannot reach, so nothing resolves and the deployment looks
+    exactly like a first start.
+
+    Serving the wizard there puts an unauthenticated credential-collecting
+    form on the port the Service already points at, and leaves it there:
+    `uvicorn.run` does not return, so nothing re-checks until a human restarts
+    the pod. Exiting non-zero is what this shape did before the store existed
+    and what makes the orchestrator retry it.
+    """
+    _write_state_secrets({"AUTOPOSTER_DATABASE_URL": UNREACHABLE_DATABASE})
+    served: list[object] = []
+    exec_calls: list[list[str]] = []
+    monkeypatch.setattr(boot, "_migrate", lambda: None)
+    monkeypatch.setattr(boot.uvicorn, "run", lambda app, **kwargs: served.append(app))
+    monkeypatch.setattr(boot.os, "execv", lambda path, argv: exec_calls.append(argv))
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(SystemExit) as raised:
+            await asyncio.to_thread(boot.main, [])
+
+    assert raised.value.code == 1
+    assert served == [] and exec_calls == []
+    assert "the stored secrets could not be read" in caplog.text
+    # The class name is what it carries out of the failure, and nothing that
+    # would put a DSN in a log.
+    assert "nobody" not in caplog.text and "127.0.0.1" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_store_still_boots_a_file_configured_deployment(monkeypatch):
+    """The same failed read on the deployment the store was added underneath:
+    `secrets.env` answers every hard name and the volume carries the document,
+    so the store having nothing to say -- for any reason -- changes nothing.
+    This is the boot every deployment that predates the store makes, and it
+    must stay exactly as loud and exactly as silent as it was."""
+    _write_state_secrets(_hard_secrets(UNREACHABLE_DATABASE, AUTOPOSTER_PLEX_TOKEN="x"))
+    state_module.write_state_file(
+        state_module.state_config_path(),
+        yaml.safe_dump({"workers": 2, "plex": {"url": "https://plex.example"}}),
+    )
+    served: list[object] = []
+    exec_calls: list[list[str]] = []
+    monkeypatch.setattr(boot, "_migrate", lambda: None)
+    monkeypatch.setattr(boot.uvicorn, "run", lambda app, **kwargs: served.append(app))
+    monkeypatch.setattr(boot.os, "execv", lambda path, argv: exec_calls.append(argv))
+
+    await asyncio.to_thread(boot.main, [])
+
+    assert served == []
     assert exec_calls == [list(boot.DEFAULT_COMMAND)]
 
 
@@ -549,48 +629,84 @@ async def test_a_document_cannot_be_staged_over_the_one_the_store_holds(
     assert wizard.state.setup.config_document is None
 
 
-@pytest.mark.asyncio
-async def test_a_mounted_file_makes_build_read_no_store_at_all(tmp_path, monkeypatch):
-    """The cheap half of the same decision. Every deployment that mounts a
-    document must go on paying nothing for the store at build time -- a
-    regression that always read it would still be green on the test above,
-    because that one has no file to prefer.
-    """
-    import autoposter.main as main_module
+def _stub_build(monkeypatch, main_module, *, path, database_url: str) -> None:
+    """Everything `build()` needs besides the document decision under test."""
     from autoposter.config.schema import Secrets
-
-    path = tmp_path / "autoposter.yaml"
-    path.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
-
-    def _must_not_be_read(url):
-        raise AssertionError("the file is there; the store must not be read")
 
     class _Secrets:
         @staticmethod
         def from_env() -> Secrets:
             return Secrets(
-                database_url="postgresql+asyncpg://unused",
+                database_url=database_url,
                 plex_token="x", tmdb_token="x", tvdb_apikey="x",
                 fanart_apikey="x", webhook_secret="x", admin_password_hash="",
             )
 
     monkeypatch.setattr(main_module, "CONFIG_PATH", path)
-    monkeypatch.setattr(main_module, "stored_config_document", _must_not_be_read)
     monkeypatch.setattr(main_module, "Secrets", _Secrets)
     monkeypatch.setattr(main_module, "make_engine", lambda url: object())
     monkeypatch.setattr(main_module, "spa_dist", lambda: None)
 
-    app = main_module.build()
+
+@pytest.mark.asyncio
+async def test_the_store_answers_build_even_when_a_file_is_mounted(
+    tmp_path, monkeypatch, session_factory, database_url
+):
+    """The two boot-time readers of "the document" must answer the same
+    question the same way: `boot.is_configured` asks the store first, and the
+    application object is built from what the store holds whenever it holds
+    anything.
+
+    A file preferred here is not merely a second opinion. `api_docs_enabled`
+    is taken from THIS generation and the lifespan never revisits it, so a
+    deployment whose stored document turned it on would go on getting the
+    file's answer for it at every restart -- a one-way door, silently held
+    shut by a copy of the document nobody edits any more.
+    """
+    import autoposter.main as main_module
+
+    document = _example_document()
+    document["plex"]["url"] = "http://plex.stored.test:32400"
+    async with session_factory() as session:
+        await seed_store(session, document)
+        await session.commit()
+    path = tmp_path / "autoposter.yaml"
+    path.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    _stub_build(monkeypatch, main_module, path=path, database_url=database_url)
+
+    app = await asyncio.to_thread(main_module.build)
+
+    assert app.state.config.plex.url == "http://plex.stored.test:32400"
+
+
+@pytest.mark.asyncio
+async def test_a_mounted_file_answers_build_when_the_store_holds_nothing(
+    tmp_path, monkeypatch, session_factory, database_url
+):
+    """The other arm, and every deployment that predates the store: the store
+    answers none and the file is what the application object is built from,
+    byte for byte the load this module has always done.
+
+    `session_factory` is taken for the empty table it guarantees, which is the
+    whole condition of this case."""
+    import autoposter.main as main_module
+
+    path = tmp_path / "autoposter.yaml"
+    path.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    _stub_build(monkeypatch, main_module, path=path, database_url=database_url)
+
+    app = await asyncio.to_thread(main_module.build)
 
     assert app.state.config.plex.url == "https://<plex-host>"
 
 
 def test_build_refuses_when_neither_the_file_nor_the_store_answers(tmp_path, monkeypatch):
-    """Unreachable through `boot`, which serves the wizard for this shape
-    rather than exec'ing this module -- so it is raised rather than invented,
-    and it names both places without claiming the deployment was never
-    configured. From here an outage and an empty store are the same fact, and
-    the read's own log line is what tells them apart.
+    """Unreachable through `boot`, which serves the wizard or exits for this
+    shape rather than exec'ing this module -- so it is raised rather than
+    invented, and it names both places without claiming the deployment was
+    never configured. The store here is UNREACHABLE, so the refusal says so
+    and names the exception class rather than reporting an outage as a
+    deployment nobody ever configured.
     """
     import autoposter.main as main_module
 
@@ -601,5 +717,24 @@ def test_build_refuses_when_neither_the_file_nor_the_store_answers(tmp_path, mon
 
     message = str(caught.value)
     assert "nothing.yaml" in message
-    assert "answered none" in message
+    assert "could not be read" in message
     assert "nobody" not in message, "the refusal never carries the DSN"
+
+
+@pytest.mark.asyncio
+async def test_build_says_answered_none_when_the_store_is_merely_empty(
+    tmp_path, monkeypatch, session_factory, database_url
+):
+    """The other half of that pair. A store that answers and holds nothing is
+    a deployment with no document anywhere, which is a different sentence and
+    a different thing for an operator to do about it.
+
+    `session_factory` is taken for the empty table it guarantees."""
+    import autoposter.main as main_module
+
+    monkeypatch.setattr(main_module, "CONFIG_PATH", tmp_path / "nothing.yaml")
+
+    with pytest.raises(ValueError) as caught:
+        await asyncio.to_thread(main_module._boot_config, database_url)
+
+    assert "answered none" in str(caught.value)

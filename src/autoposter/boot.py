@@ -39,9 +39,15 @@ The database's ANSWER is part of the decision; its availability is not. It is
 read twice, for the stored secrets (``stored_secrets_for_boot`` below) and for
 the stored document (``stored_config_document``), and every failure of either
 read -- no database, no table yet, no key, an unreachable or silent host --
-answers "nothing stored" rather than stopping anything: the layers beneath,
-the state file and the mounted document, are how every deployment that
-predates the store is configured. A deployment that has both halves on the
+answers "nothing stored" rather than stopping anything BY ITSELF: the layers
+beneath, the state file and the mounted document, are how every deployment
+that predates the store is configured. Each read says which of the two it met,
+and the one shape that turns on the difference is a deployment nothing else
+configures: there a failed secrets read is an outage wearing a first start's
+clothes, and ``main`` exits non-zero for the orchestrator to retry rather than
+serving an unauthenticated wizard on the port the Service points at.
+
+A deployment that has both halves on the
 volume boots exactly as it did before this module existed, including when
 postgres is down: the migration fails, the process exits non-zero, the
 orchestrator restarts it until the database answers. Demoting that boot into
@@ -52,13 +58,17 @@ probe still exists, in ``db/base.database_answers``, as the setup wizard's
 database-step validation -- where a human is waiting for the answer and no
 traffic is being served.
 
-There are four outcomes, and the wizard answers two of them:
+There are five outcomes, and the wizard answers two of them:
 
 * all three -- the resolved names are exported into this process's
   environment (so ``alembic/env.py`` and the exec'd application read a
   file-configured deployment exactly as they read an env-configured one),
   ``alembic upgrade head`` runs, and the real command is exec'd:
   byte-identical downstream to what the old shell line did;
+* a hard secret missing and the store READ FAILED -- one line naming the
+  exception class, and a non-zero exit. The credentials may be sitting in a
+  table this boot could not reach, and the wizard is not something a passing
+  outage may put on a serving port;
 * a hard secret missing -- no migration, no engine, no database session; the
   setup application is served instead;
 * every hard secret present, a document readable, but no usable media server
@@ -81,6 +91,7 @@ import logging
 import os
 import subprocess
 import sys
+from typing import NamedTuple
 
 import uvicorn
 
@@ -105,25 +116,81 @@ logger = logging.getLogger(__name__)
 # two boots.
 DEFAULT_COMMAND = (sys.executable, "-m", "autoposter.main")
 
+# PostgreSQL's SQLSTATE for "relation does not exist", and the one database
+# answer below that is NOT a failed read: the table is created by the very
+# migration this module runs after it has decided, so on a first boot its
+# absence says "nothing is stored here" as plainly as an empty table does.
+# Written out here rather than imported from `api/setup.py`, which reads the
+# same SQLSTATE at the wizard's write path: that module is the setup SURFACE a
+# configured boot must never import.
+_UNDEFINED_TABLE = "42P01"
 
-def stored_secrets_for_boot(database_url: str) -> dict[str, str]:
+
+def _table_is_missing(exc: BaseException) -> bool:
+    """Whether ``exc`` is the database saying the secrets table is not there.
+
+    The driver's own SQLSTATE rather than the exception's text: the message
+    names the relation, which is harmless, but matching on it would make this
+    a string comparison against a server's locale and version.
+    """
+    return getattr(getattr(exc, "orig", None), "sqlstate", None) == _UNDEFINED_TABLE
+
+
+class StoredSecrets(NamedTuple):
+    """What one bounded read of the secrets table answered.
+
+    ``values`` is what it holds, and is empty both for a table with no rows
+    and for a read that never happened. ``failure`` is what separates those
+    two: the exception's CLASS NAME when the read failed, and ``None`` when it
+    succeeded. The pair exists because the two states are not the same fact
+    about a deployment -- "this deployment stores nothing" is how every
+    deployment that predates the store looks, and "this deployment's store
+    could not be read" is an outage -- and a caller deciding whether to serve
+    an unauthenticated first-start wizard must not confuse them.
+
+    The class name and never the exception itself: a connection error's text
+    carries the DSN, and every sentence built from this reaches a log.
+    """
+
+    values: dict[str, str]
+    failure: str | None
+
+
+class StoredDocument(NamedTuple):
+    """What one bounded read of the configuration store answered.
+
+    ``StoredSecrets`` above, for the other half of the boot decision, and the
+    same two states told apart for the same reason: ``document`` is ``None``
+    both for a store that holds none and for a read that failed, and
+    ``failure`` is the exception's CLASS NAME when it was the second.
+    """
+
+    document: dict | None
+    failure: str | None
+
+
+def stored_secrets_for_boot(database_url: str) -> StoredSecrets:
     """The secrets table, read once, before anything else exists.
 
-    Answers ``{}`` for every failure there is: no database, a database whose
-    migrations have not run (the table does not exist on a first boot), an
-    unreadable key, an unreachable host. None of them may stop a boot, because
-    the layers beneath the store -- the state file and the environment -- are
-    how every deployment that predates this one is configured, and a boot that
-    refused over an empty table would break all of them at once.
+    Answers no values for every failure there is: no database, a database
+    whose migrations have not run (the table does not exist on a first boot),
+    an unreadable key, an unreachable host. None of them may stop a boot BY
+    THEMSELVES, because the layers beneath the store -- the state file and the
+    environment -- are how every deployment that predates this one is
+    configured, and a boot that refused over an empty table would break all of
+    them at once. What the failure DOES do is tell ``main`` that a deployment
+    whose credentials resolve from nowhere else is looking at an outage rather
+    than at a first start, which is the one shape that must not be handed the
+    wizard.
 
     A private event loop, because this frame has none: ``main`` below is
     synchronous and runs before uvicorn. ``asyncio.run`` owns and closes the
     loop, so nothing is left behind for the ``os.execv`` that follows. The
     corollary is that this function MUST NOT be called from inside a running
-    loop: ``asyncio.run`` raises there, the catch-all below turns that into
-    ``{}``, and an in-loop caller would get a silently empty store rather than
-    an error. There is no such caller -- ``resolve_secret_values`` takes the
-    map as an argument precisely so that there need not be one.
+    loop: ``asyncio.run`` raises there, the catch-all below turns that into a
+    failed read, and an in-loop caller would get an outage's answer rather
+    than an error. There is no such caller -- ``resolve_secret_values`` takes
+    the map as an argument precisely so that there need not be one.
 
     The whole read is bounded by ``PROBE_TIMEOUT_SECONDS``, the same five
     seconds ``db/base.database_answers`` chose and for the same reason it
@@ -136,7 +203,11 @@ def stored_secrets_for_boot(database_url: str) -> dict[str, str]:
     has to be a bound and not an intention.
     """
     if not database_url:
-        return {}
+        # Not a failure: a deployment that names no database has no store to
+        # be unable to read, and it is the ordinary first start. Answering
+        # otherwise here would turn the shape the wizard exists for into an
+        # exit.
+        return StoredSecrets({}, None)
 
     # Imported here rather than at module scope, like the engine below: a boot
     # with no database URL answers without importing the database layer at all.
@@ -155,8 +226,18 @@ def stored_secrets_for_boot(database_url: str) -> dict[str, str]:
             await engine.dispose()
 
     try:
-        return asyncio.run(asyncio.wait_for(read(), PROBE_TIMEOUT_SECONDS))
+        values = asyncio.run(asyncio.wait_for(read(), PROBE_TIMEOUT_SECONDS))
     except Exception as exc:
+        if _table_is_missing(exc):
+            # The ordinary first boot: the database answers perfectly and the
+            # migration that creates this table has not run, because it runs
+            # after the decision below. Nothing is stored here and nothing
+            # failed, so this deployment is still the wizard's to finish.
+            logger.info(
+                "the stored secrets table does not exist yet; the state file "
+                "and the environment answer instead"
+            )
+            return StoredSecrets({}, None)
         # The CLASS NAME only, never the exception's own message: a connection
         # error's text carries the DSN -- host, user and password. A timeout
         # arrives here as `TimeoutError`, which is a class name like any other.
@@ -166,17 +247,21 @@ def stored_secrets_for_boot(database_url: str) -> dict[str, str]:
             "environment answer instead",
             type(exc).__name__,
         )
-        return {}
+        return StoredSecrets({}, type(exc).__name__)
+    return StoredSecrets(values, None)
 
 
-def stored_config_document(database_url: str) -> dict | None:
-    """The configuration document the store holds, or ``None``.
+def stored_config_document(database_url: str) -> StoredDocument:
+    """The configuration document the store holds, and why it holds none.
 
-    ``None`` for every failure and for an empty store, exactly as
-    ``stored_secrets_for_boot`` answers ``{}``: on a first boot the table does
-    not exist yet, and a deployment configured before the store held the
+    No document for every failure and for an empty store, exactly as
+    ``stored_secrets_for_boot`` answers no values: on a first boot the table
+    does not exist yet, and a deployment configured before the store held the
     document has nothing in it. The caller falls back to the file, which is
-    what every deployment that predates this does today.
+    what every deployment that predates this does today -- and ``failure``
+    is what lets a caller with nothing to fall back on say which of the two it
+    met rather than telling an operator mid-outage that their deployment was
+    never configured.
 
     ``None`` for a store that still holds a DELTA as well -- a row whose
     metadata does not carry the current format. Such a row is a partial
@@ -191,12 +276,14 @@ def stored_config_document(database_url: str) -> dict | None:
     the boot decision, the migration and the exec -- so "never blocks a boot"
     has to be a bound rather than an intention. The same corollary holds too:
     it MUST NOT be called from inside a running loop, where ``asyncio.run``
-    raises into the catch-all below and an unreadable store would be
-    indistinguishable from an empty one. ``main.build`` is the one caller that
+    raises into the catch-all below and an unreadable store would be reported
+    as an outage that never happened. ``main.build`` is the one caller that
     may have a loop, and it calls this from a worker thread.
     """
     if not database_url:
-        return None
+        # No database named is no store to fail to read, the way
+        # ``stored_secrets_for_boot`` answers the same shape.
+        return StoredDocument(None, None)
 
     # Imported here rather than at module scope, like the engine below: a boot
     # with no database URL answers without importing the database layer at all.
@@ -228,7 +315,7 @@ def stored_config_document(database_url: str) -> dict | None:
             "file answers instead",
             type(exc).__name__,
         )
-        return None
+        return StoredDocument(None, type(exc).__name__)
     if document is None:
         # And the other half of that pair, so that the two states are always
         # told apart in the log. Every refusal downstream of this read -- the
@@ -239,7 +326,7 @@ def stored_config_document(database_url: str) -> dict | None:
             "the configuration store holds no document; the configuration file "
             "answers instead"
         )
-    return document
+    return StoredDocument(document, None)
 
 
 def is_configured(resolved: dict[str, str], document: dict | None = None) -> bool:
@@ -358,7 +445,8 @@ def main(argv: list[str] | None = None) -> None:
     # needs it. So the first resolve is the two lower layers, and the second
     # adds the store on top of them.
     resolved = resolve_secret_values()
-    stored = stored_secrets_for_boot(resolved.get("AUTOPOSTER_DATABASE_URL", ""))
+    secrets_read = stored_secrets_for_boot(resolved.get("AUTOPOSTER_DATABASE_URL", ""))
+    stored = secrets_read.values
     if stored:
         resolved = resolve_secret_values(stored)
 
@@ -407,8 +495,8 @@ def main(argv: list[str] | None = None) -> None:
 
     # The store's document, read with the same URL the secrets were: it is
     # what the application will actually run, so it is what "configured" is
-    # asked of. `None` is an empty or unreadable store and sends the question
-    # back to the mounted file, which is where it has always gone.
+    # asked of. No document -- an empty store or an unreadable one -- sends the
+    # question back to the mounted file, which is where it has always gone.
     #
     # AHEAD of the credential check and not behind it, even though
     # `is_configured` takes the credentials first and answers on its own when
@@ -423,9 +511,35 @@ def main(argv: list[str] | None = None) -> None:
     # wizard anyway -- `PROBE_TIMEOUT_SECONDS`, the same bound the secrets read
     # above already pays, against a database this boot has to name before
     # either read happens at all.
-    document = stored_config_document(resolved.get("AUTOPOSTER_DATABASE_URL", ""))
+    document = stored_config_document(resolved.get("AUTOPOSTER_DATABASE_URL", "")).document
 
     if not is_configured(resolved, document):
+        if missing_hard_secret_names(resolved) and secrets_read.failure is not None:
+            # A credential this deployment may well hold, behind a store this
+            # boot could not read: a postgres rollout, a five-second hiccup, a
+            # pod restarted mid-failover. The shape spec section 2 makes a
+            # goal -- a database URL and a volume and nothing else -- has every
+            # other hard name in that table, so an outage looks exactly like a
+            # deployment that was never configured, and serving the wizard here
+            # would put an unauthenticated credential-collecting form on the
+            # port the Service already points at and leave it there: uvicorn.run
+            # does not return, so nothing re-checks until a human restarts the
+            # pod. Exiting non-zero is the restart loop this shape had before
+            # the store existed, and the orchestrator is what retries it.
+            #
+            # The CLASS NAME, which is all the read is allowed to carry out of
+            # a message that would otherwise hold the DSN, and no URL of any
+            # kind. The deployment's own credentials are not named either: if
+            # the file or the environment answers them this branch is not
+            # reached at all, and the line says which it is.
+            logger.error(
+                "the stored secrets could not be read (%s) and neither the "
+                "state file nor the environment supplies this deployment's "
+                "credentials; exiting rather than serving the first-start "
+                "wizard to a deployment that is only unreachable",
+                secrets_read.failure,
+            )
+            raise SystemExit(1)
         if (
             not missing_hard_secret_names(resolved)
             and document is None

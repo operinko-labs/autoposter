@@ -7,7 +7,7 @@ from fastapi import FastAPI
 
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
-from autoposter.boot import stored_config_document
+from autoposter.boot import StoredDocument, stored_config_document
 from autoposter.config.loader import DEFAULT_CONFIG_PATH, load_config
 from autoposter.config.overrides import _validated
 from autoposter.config.schema import Config, Secrets
@@ -24,7 +24,7 @@ CONFIG_PATH = DEFAULT_CONFIG_PATH
 logger = logging.getLogger(__name__)
 
 
-def _stored_document(database_url: str) -> dict | None:
+def _stored_document(database_url: str) -> StoredDocument:
     """``boot.stored_config_document``, off this thread.
 
     That function owns a private event loop, which is correct for the frame it
@@ -32,12 +32,11 @@ def _stored_document(database_url: str) -> dict | None:
     and raises outright from inside a running one. ``build()`` may well have
     one: ``uvicorn autoposter.main:build --factory``, the dev-compose reload
     command, calls it from the server's own loop. Called there directly, the
-    read would land in that function's catch-all and answer ``None``, which is
-    indistinguishable from a store that holds nothing -- so a deployment whose
-    configuration is entirely in the database would be told it has none
-    anywhere. A worker thread has no loop of its own, so the read runs exactly
-    as it does at boot; blocking this thread for it is what reading the file
-    already did.
+    read would land in that function's catch-all and report an outage that
+    never happened -- and a deployment whose configuration is entirely in the
+    database would be told it has none anywhere. A worker thread has no loop of
+    its own, so the read runs exactly as it does at boot; blocking this thread
+    for it is what reading the file already did.
     """
     with ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(stored_config_document, database_url).result()
@@ -46,17 +45,25 @@ def _stored_document(database_url: str) -> dict | None:
 def _boot_config(database_url: str) -> Config:
     """The configuration this application OBJECT is built from.
 
-    The FILE when there is one, byte for byte the load this module has always
-    done, and the store's document only when there is not. Every deployment
-    that mounts a document is therefore unaffected, including in
-    ``api_docs_enabled`` -- the one setting ``create_app`` takes from this
-    generation and the one the schema documents as file-only.
+    The STORE's document when the store answers one, and the mounted file only
+    when it does not -- ``boot.is_configured``'s order, and spec section 2's:
+    the store is what the application runs, and the file is the copy a boot
+    whose database is briefly unreachable can still start from. Two boot-time
+    readers of "the document" that answered differently would be two answers to
+    one question, and the one setting that survives this generation --
+    ``api_docs_enabled``, which ``create_app`` takes here and the lifespan does
+    not revisit -- is a one-way door: a deployment whose store has been edited
+    would keep getting the file's answer for it forever.
 
-    The second arm is what makes the file removable. Until it existed, a
+    The store's arm is what makes the file removable. Until it existed, a
     deployment whose document and secrets both lived in the database still
     died here on ``FileNotFoundError``: ``boot`` would decide it was
     configured, exec this module, and this line would raise before the
     lifespan -- which loads the store -- ever ran.
+
+    The cost is one bounded read on every boot rather than only on a boot with
+    no file: ``PROBE_TIMEOUT_SECONDS`` against a database this process has to
+    name before it can do anything at all, once per process.
 
     This is a BOOT-TIME config and not the effective one either way: the
     lifespan replaces it with ``load_effective_config``'s before a request is
@@ -70,29 +77,34 @@ def _boot_config(database_url: str) -> Config:
     the lifespan is about to refuse would be two answers to one question.
 
     Neither a file nor a store is unreachable through ``boot``, which serves
-    the wizard for that shape rather than exec'ing this module. It is raised
-    rather than invented so that a direct caller is told, and it says the
-    store ANSWERED NONE rather than that this deployment is unconfigured: from
-    here those are the same fact, and the read's own log line -- one of the
-    pair ``stored_config_document`` always writes -- is what says whether the
-    store was unreadable or simply holds nothing. Reporting an outage as
-    "never configured" would send an operator to reconfigure a deployment that
-    is already configured.
+    the wizard or exits for that shape rather than exec'ing this module. It is
+    raised rather than invented so that a direct caller is told, and it says
+    which of the two it met: a store that ANSWERED NONE is a deployment with
+    nothing configured anywhere, and a store that could not be READ is an
+    outage, named by its exception class. Reporting the second as the first
+    would send an operator to reconfigure a deployment that is already
+    configured.
     """
+    document, failure = _stored_document(database_url)
+    if document is not None:
+        return _validated(document)
     if CONFIG_PATH.is_file():
         return load_config(CONFIG_PATH)
-    document = _stored_document(database_url)
-    if document is None:
+    if failure is not None:
         raise ValueError(
             f"no configuration document: nothing at {CONFIG_PATH}, and the "
-            "configuration store answered none"
+            f"configuration store could not be read ({failure})"
         )
-    return _validated(document)
+    raise ValueError(
+        f"no configuration document: nothing at {CONFIG_PATH}, and the "
+        "configuration store answered none"
+    )
 
 
 def build() -> FastAPI:
     """The application, constructed from one config *document* alone -- the
-    mounted file's, or the store's when there is no file (``_boot_config``).
+    store's, or the mounted file's when the store answers none
+    (``_boot_config``).
 
     Nothing here awaits or blocks on the database, and that is the whole
     contract: ``uvicorn autoposter.main:build --factory`` -- the dev-compose
@@ -101,9 +113,8 @@ def build() -> FastAPI:
     to the async overrides read (``asyncio.run``) therefore cannot live here;
     it raises ``RuntimeError: asyncio.run() cannot be called from a running
     event loop`` and takes every hot-reload boot down with it. The one read
-    ``_boot_config`` may make -- the store's document, on a deployment with no
-    mounted file -- goes through a worker thread for exactly that reason, and
-    is not made at all by a deployment that has a file.
+    ``_boot_config`` makes -- the store's document -- goes through a worker
+    thread for exactly that reason, and is bounded there.
 
     The database overrides are merged in by the lifespan instead, at its very
     first statement, before any consumer is built from the config -- see
