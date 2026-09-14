@@ -246,6 +246,23 @@ async def test_window_counts_read_done_with_warnings_as_processed(session):
     assert counts["failed"] == 0
 
 
+async def test_a_warned_job_still_counts_as_processed(session):
+    """The test above writes the `done_with_warnings` state directly; this one
+    goes through the real entry point, `queue.jobs.complete(warnings=...)`, so
+    a mismatch between what that function writes and what this module reads
+    cannot hide behind two tests that each construct their own row."""
+    from autoposter.queue.jobs import complete, enqueue
+
+    started = await _now(session)
+    job_id = await enqueue(session, "process_item", {"title": "A"}, dedupe_key="wc-1")
+    await complete(session, job_id, warnings="jellyfin: metadata failed (error: X)")
+    finished = await _now(session)
+
+    counts = await window_counts(session, started, finished)
+
+    assert counts["processed"] == 1 and counts["failed"] == 0
+
+
 async def test_only_process_item_jobs_are_counted(session):
     """`process_item` is the only kind the worker pool dispatches today
     (app.py's `handlers` map), so this changes no number now -- and it is what

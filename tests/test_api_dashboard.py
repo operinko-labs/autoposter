@@ -145,6 +145,17 @@ async def test_status_counts_a_done_with_warnings_job_as_processed(
     assert body["processed_last_24h"] == 2
 
 
+async def test_done_with_warnings_has_its_own_tile(client, auth_headers):
+    """The dashboard renders `jobs_by_state` in dict order, so the tile must
+    sit beside `failed` -- between `done` and `failed`, per JOB_STATES -- on
+    an empty database too, not only once a warned job exists to prove the
+    count is separate (already covered by
+    test_status_counts_a_done_with_warnings_job_as_processed above)."""
+    body = (await client.get("/api/status", headers=auth_headers)).json()
+    keys = list(body["jobs_by_state"])
+    assert keys.index("done") < keys.index("done_with_warnings") < keys.index("failed")
+
+
 async def test_status_reports_scheduled_job_last_run_and_status(client, auth_headers, session):
     session.add(
         ScheduledRun(

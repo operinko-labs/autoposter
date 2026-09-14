@@ -39,6 +39,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.actions import flags
 from autoposter.api.auth import require_session
+from autoposter.api.jobs import _number, _text
 from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
 from autoposter.db.refs import native_ids, refs_for_items
@@ -1267,3 +1268,69 @@ async def backfill_trigger(
         "blocked": blocked,
         "detail": detail,
     }
+
+
+@router.get("/actions/job-warnings")
+async def job_warnings(
+    request: Request,
+    limit: int = DEFAULT_ACTIONS_LIMIT,
+    offset: int = 0,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Jobs that finished with warnings, newest first (spec §4).
+
+    Beside the flag queue rather than inside it: every other row in this
+    module is a PREDICATE over ``renders``, recomputed against the live
+    config, and this is a stored outcome about a job. Same page, different
+    kind of fact, so it gets its own route rather than a flag that would have
+    to lie about what it reads.
+
+    The payload is never echoed wholesale -- the same four naming fields
+    ``/api/jobs/parked`` lifts out (``_text``/``_number``, imported from
+    that module rather than redefined here), for the same reason.
+    """
+    capped_limit = min(max(limit, 1), MAX_ACTIONS_LIMIT)
+    capped_offset = max(offset, 0)
+    session_factory = request.app.state.session_factory
+    async with session_factory() as session:
+        total = (
+            await session.execute(
+                select(func.count())
+                .select_from(Job)
+                .where(Job.state == "done_with_warnings")
+            )
+        ).scalar_one()
+        rows = (
+            (
+                await session.execute(
+                    select(Job)
+                    .where(Job.state == "done_with_warnings")
+                    # id breaks ties: a batch of jobs finishing in the same
+                    # pass shares an updated_at to the microsecond, and
+                    # without a total order a paged read can repeat or skip
+                    # rows.
+                    .order_by(Job.updated_at.desc(), Job.id.desc())
+                    .limit(capped_limit)
+                    .offset(capped_offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    jobs = []
+    for row in rows:
+        payload = row.payload if isinstance(row.payload, dict) else {}
+        jobs.append(
+            {
+                "id": row.id,
+                "kind": row.kind,
+                "attempts": row.attempts,
+                "reason": row.last_error,
+                "updated_at": row.updated_at,
+                "title": _text(payload, "title"),
+                "item_kind": _text(payload, "kind"),
+                "season_number": _number(payload, "season_number"),
+                "episode_number": _number(payload, "episode_number"),
+            }
+        )
+    return {"jobs": jobs, "total": total}
