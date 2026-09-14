@@ -34,7 +34,9 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('item_id', 'server', name='uq_metadata_write_item_server'),
     )
-    op.create_index('ix_metadata_writes_item_id', 'metadata_writes', ['item_id'])
+    # No index of its own on item_id: uq_metadata_write_item_server already
+    # indexes (item_id, server) with item_id leading, so every WHERE
+    # item_id = ? lookup is served by it (review minor 3).
     op.create_index('ix_metadata_writes_next_attempt_at', 'metadata_writes', ['next_attempt_at'])
     # server_default, not just default: ADD COLUMN NOT NULL would otherwise
     # fail against the populated render_deliveries a deployed instance has.
@@ -49,5 +51,4 @@ def downgrade() -> None:
     op.drop_column('render_deliveries', 'fingerprint')
     op.drop_column('render_deliveries', 'attempts')
     op.drop_index('ix_metadata_writes_next_attempt_at', table_name='metadata_writes')
-    op.drop_index('ix_metadata_writes_item_id', table_name='metadata_writes')
     op.drop_table('metadata_writes')

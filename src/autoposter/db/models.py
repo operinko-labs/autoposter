@@ -286,8 +286,13 @@ class MetadataWrite(Base):
     __table_args__ = (UniqueConstraint("item_id", "server", name="uq_metadata_write_item_server"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # No `index=True`: uq_metadata_write_item_server above already indexes
+    # (item_id, server) with item_id leading, so every `WHERE item_id = ?`
+    # lookup -- the item page's own query, and `apply_metadata`'s absent-set
+    # read -- is served by it. A second index would be one more to maintain
+    # on every write, over ~32k rows, for nothing.
     item_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE")
     )
     server: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(24), default="pending", server_default="pending")

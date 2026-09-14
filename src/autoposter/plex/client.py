@@ -348,25 +348,26 @@ class PlexClient:
         self.base_url = base_url
         self._headers = {"X-Plex-Token": token} if token else {}
 
-    def _sections(self, wanted_type: str):
-        """The non-excluded library sections of one Plex type ("movie"/"show").
+    def _sections(self, *wanted_types: str):
+        """The non-excluded library sections of the given Plex types
+        ("movie"/"show").
 
         Constraining the walk by type is what keeps a movie library from
         answering a show-shaped intent — see the GUID-namespace note in
-        `_search_sync`.
+        `_search_sync`. Every caller but one asks for a single type;
+        `_library_names_sync` below asks for both rather than keeping a second
+        copy of "non-excluded and of the right type" that a change to this one
+        would not reach.
         """
         # plexapi exposes `library` as a property and `sections` as a method.
         return [
             s
             for s in self._server.library.sections()
-            if s.title not in self._excluded and s.type == wanted_type
+            if s.title not in self._excluded and s.type in wanted_types
         ]
 
     def _library_names_sync(self) -> set[str]:
-        return {
-            s.title for s in self._server.library.sections()
-            if s.title not in self._excluded and s.type in ("movie", "show")
-        }
+        return {s.title for s in self._sections("movie", "show")}
 
     async def library_names(self) -> set[str]:
         # plexapi's sections() is a blocking HTTP call of up to several
