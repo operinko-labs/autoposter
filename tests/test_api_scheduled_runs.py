@@ -155,6 +155,21 @@ async def test_the_twin_merge_can_be_run_from_the_dashboard(client, auth_headers
     assert row.last_started_at is None
 
 
+async def test_the_catch_up_drain_can_be_triggered_by_hand(client, auth_headers, session):
+    """Spec §3: the drain LOOKS on its own cadence, so an operator who has
+    just pressed Catch up and does not want to wait for the next look needs
+    this button -- which is a 404 unless ``catch_up_drain`` is in
+    ``SCHEDULED_JOB_NAMES``."""
+    response = await client.post(
+        "/api/scheduled-runs/catch_up_drain/run", headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    row = (await session.execute(select(ScheduledRun))).scalars().one()
+    assert row.name == "catch_up_drain"
+    assert row.last_started_at is None
+
+
 def test_the_run_now_allowlist_agrees_with_the_job_factories():
     """Roadmap row 107. ``SCHEDULED_JOB_NAMES`` is spelled out in api/routes.py
     rather than imported from the factories (importing them would pull plexapi

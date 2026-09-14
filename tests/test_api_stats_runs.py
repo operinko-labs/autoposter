@@ -103,6 +103,7 @@ async def test_the_endpoint_answers_the_documented_shape(client, session_headers
     assert set(full) == {
         "id", "kind", "name", "started_at", "finished_at", "status",
         "duration_seconds", "rendered", "processed", "failed", "deferred",
+        "server", "detail",
     }
     assert full["kind"] == "full_pass"
     assert full["status"] == "ok"
@@ -112,6 +113,10 @@ async def test_the_endpoint_answers_the_documented_shape(client, session_headers
         "poster": 2, "season_poster": 0, "background": 1, "title_card": 0
     }
     assert (full["processed"], full["failed"], full["deferred"]) == (5, 1, 0)
+    # A full pass carries no server; its detail is the same narrowed sentence
+    # its closer wrote.
+    assert full["server"] is None
+    assert full["detail"] == "drained: 5 processed, 1 failed, 0 deferred"
 
 
 async def test_an_unattributed_run_serves_nulls_rather_than_zeroes(client, session_headers, session):
@@ -186,6 +191,45 @@ async def test_no_served_string_carries_a_path_or_an_error(client, session_heade
     assert LEAKY_ERROR not in text_body
     assert "/mnt/user" not in text_body
     assert "PlexPathMismatch" not in text_body
+
+
+async def test_the_runs_list_shows_a_catch_up_by_server_with_its_sentence(
+    client, session_headers, session
+):
+    """Spec §5: the runs list groups a catch-up by ``server`` and shows the
+    counts sentence its close stamped in ``detail`` -- both added by this
+    task beside ``processed``/``failed``/``deferred``, which a catch-up
+    already served.
+
+    ``processed``/``failed``/``deferred`` are stamped here the way
+    ``catchup.finish_catch_up`` stamps them, so ``rendered`` exercises the
+    ``CATCH_UP_KIND`` guard in ``api/stats.py::_rendered`` rather than only
+    its pre-existing ``processed is None`` branch -- a catch-up's own tallies
+    must never be reported as "nothing was composited".
+    """
+    from sqlalchemy import update
+
+    from autoposter.db.models import Run
+    from autoposter.scheduler.run_history import close_run, open_run
+
+    run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
+    await session.execute(
+        update(Run).where(Run.id == run_id).values(
+            server="jellyfin", processed=41, failed=1, deferred=0,
+        )
+    )
+    await close_run(session, run_id, status="ok", detail="catch-up: 40 done, 1 failed")
+    await session.commit()
+
+    rows = (await client.get("/api/stats/runs", headers=session_headers)).json()["runs"]
+
+    row = next(r for r in rows if r["id"] == run_id)
+    assert row["kind"] == "catch_up" and row["server"] == "jellyfin"
+    assert row["detail"] == "catch-up: 40 done, 1 failed"
+    assert (row["processed"], row["failed"], row["deferred"]) == (41, 1, 0)
+    # The false claim this guard exists to stop: a catch-up never renders
+    # anything, so this must be None despite carrying a non-null `processed`.
+    assert row["rendered"] is None
 
 
 def test_the_readme_documents_the_runs_widget_with_a_header_and_never_a_query_string():

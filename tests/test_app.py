@@ -29,6 +29,8 @@ from autoposter.render.pipeline import SourceRefused
 from autoposter.scheduler.run_history import UNRECORDED
 from autoposter.servers.registry import Servers
 
+from conftest import seed_media_item
+
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
 
@@ -838,6 +840,39 @@ async def test_pending_deliveries_is_registered_for_a_jellyfin_only_deployment(
         assert "pending_deliveries" not in UNRECORDED
 
 
+async def test_the_catch_up_drain_is_registered_for_a_jellyfin_only_deployment(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """Spec §3. The drain sits beside the retry pass it uses and inside the
+    same gate: not Plex-gated, since a catch-up is for whatever server the
+    deployment has, and not ahead of the gate like ``stale_job_reclaim``,
+    since its runs ARE recorded and trimmed by the cleanup pass.
+    """
+    await _store_override(session, {"plex": None, "jellyfin": {"url": "https://jf"}})
+
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
+
+    async with app.router.lifespan_context(app):
+        assert app.state.config.plex is None, (
+            "precondition: the override actually removed the plex block"
+        )
+        assert "catch_up_drain" in app.state.scheduler_intervals
+        assert any(job.name == "catch_up_drain" for job in app.state.scheduler_jobs)
+        assert "catch_up_drain" not in UNRECORDED
+
+
+def test_every_application_publishes_the_catch_up_request_queue(
+    session_factory, secrets
+):
+    """The automatic triggers' queue is owned by the application object and
+    mutated in place, so a process without the background services -- every
+    test app, and any replica running with the scheduler off -- still has to
+    have the attribute for ``swap_config`` to append to."""
+    app = create_app(load_config(EXAMPLE), session_factory, secrets)
+
+    assert app.state.catch_up_requests == []
+
+
 async def test_a_config_swap_reaches_the_next_job_the_lifespan_s_handler_processes(
     session_factory, secrets, stubbed_background_services, monkeypatch
 ):
@@ -1065,3 +1100,99 @@ async def test_a_plex_less_app_boots_and_serves_status(session_factory):
         ).json()
 
     assert body["capabilities"] == {"plex": False, "jellyfin": True}
+
+
+async def test_the_lifespan_queues_a_catch_up_for_a_server_it_has_never_recorded(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """Spec §3's restart trigger, through the real lifespan.
+
+    The database already holds an item and an outcome for `jellyfin`, and the
+    registry this boot builds holds `plex` -- a server this deployment has
+    never recorded anything for, which is exactly the shape a restart that
+    introduced one leaves behind. The queue is what the drain job turns into
+    a run, so a trigger that never reaches `app.state.catch_up_requests`
+    silently never runs.
+    """
+    from autoposter import catchup, deliveries
+
+    item = await seed_media_item(session, "boot-1", title="A")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "written")
+    await session.commit()
+    assert await catchup.servers_never_seen(session, ["plex"]) == ["plex"], (
+        "precondition: plex has no outcome row on a populated database"
+    )
+
+    app = _background_app(
+        load_config(EXAMPLE), session_factory, secrets,
+        servers_factory=lambda config, http: Servers({"plex": "the-plex-client"}),
+    )
+    assert app.state.catch_up_requests == [], (
+        "precondition: create_app alone queues nothing"
+    )
+
+    async with app.router.lifespan_context(app):
+        assert app.state.catch_up_requests == ["plex"], (
+            "the lifespan never compared the registry against the outcome "
+            "tables, so a restart that introduced a server would leave it "
+            f"behind until the next full pass ({app.state.catch_up_requests!r})"
+        )
+
+
+async def test_the_lifespan_queues_nothing_for_a_server_that_has_been_seen(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """The other half, and the reason this trigger needs no extra state: the
+    catch-up's own marking writes the rows, so an ordinary restart of a
+    deployment that has been running queues nothing."""
+    from autoposter import deliveries
+    from autoposter.render import pipeline
+
+    item = await seed_media_item(session, "boot-2", title="A")
+    render = await pipeline._get_or_create_render(session, item, "poster", "/a/p.jpg")
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await session.commit()
+
+    app = _background_app(
+        load_config(EXAMPLE), session_factory, secrets,
+        servers_factory=lambda config, http: Servers({"plex": "the-plex-client"}),
+    )
+
+    async with app.router.lifespan_context(app):
+        assert app.state.catch_up_requests == []
+
+
+async def test_the_lifespan_does_not_queue_a_server_it_delivers_nothing_to(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """The same boot as the test above, with `plex` switched off on
+    both halves: a catch-up for such a server writes no outcome row, so an
+    unfiltered boot trigger would queue it again on the next restart, and the
+    next, opening a no-op run each time. The example config's
+    `badges.upload_to_plex` is already False, so the stored override only has
+    to turn `operations.write_to_plex` off -- which is exactly what makes the
+    test above queue `plex` at all.
+    """
+    from autoposter import deliveries
+
+    item = await seed_media_item(session, "boot-3", title="A")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "written")
+    await _store_override(session, {"operations": {"write_to_plex": False}})
+
+    app = _background_app(
+        load_config(EXAMPLE), session_factory, secrets,
+        servers_factory=lambda config, http: Servers({"plex": "the-plex-client"}),
+    )
+
+    async with app.router.lifespan_context(app):
+        assert app.state.config.badges.upload_to_plex is False, (
+            "precondition: the example config uploads no badges to plex"
+        )
+        assert app.state.config.operations.write_to_plex is False, (
+            "precondition: the override turned the other half off too"
+        )
+        assert app.state.catch_up_requests == [], (
+            "a server this deployment writes nothing to was queued for a "
+            "catch-up that can only close as a no-op, and would be queued "
+            f"again on every restart ({app.state.catch_up_requests!r})"
+        )

@@ -4007,6 +4007,16 @@ class SchedulerConfig(BaseModel):
             "not scanned the file yet is a wait, not a failure."
         ),
     )
+    catch_up_poll_seconds: int = Field(
+        default=60,
+        ge=1,
+        description=(
+            "How often the catch-up drain LOOKS for work. Each catch-up run "
+            "carries its own cadence -- the pending-deliveries cadence by "
+            "default, shortened by the button that started it -- and this "
+            "only bounds how finely that cadence can be honoured."
+        ),
+    )
 
 
 class RadarrConfig(BaseModel):

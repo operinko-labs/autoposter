@@ -1231,3 +1231,38 @@ class Run(Base):
     # matter the Action Center owns, and a run's rollup is not where it
     # belongs.
     deferred: Mapped[int | None] = mapped_column(Integer)
+
+    # --- the catch-up run's own three columns (spec §3) -------------------
+    #
+    # A catch-up is a run of kind `catch_up` FOR one media server, so the
+    # server belongs on the row rather than being parsed back out of `name`
+    # -- the runs list filters and groups by it, and a name is a label.
+    # NULL for every other kind.
+    server: Mapped[str | None] = mapped_column(String(16))
+    # How often this run's backlog is drained. Defaults to the scheduler's
+    # pending-deliveries cadence and can be SHORTENED by the button that
+    # starts the run, because a catch-up over a large library is thousands of
+    # rows drained in batches of 500 and an operator watching it should not
+    # have to wait a quarter of an hour per batch.
+    cadence_seconds: Mapped[int | None] = mapped_column(Integer)
+    # When the drain job last took a batch of this run's rows. The per-run
+    # cadence is enforced against this, which is why it is a column and not
+    # process state: two replicas share the database and share nothing else.
+    last_drained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # How many CONSECUTIVE batches of this run have moved nothing. Any batch
+    # that moves a row puts it back to 0, and the drain stops the run when it
+    # reaches two (`catchup.drain_catch_ups`): a resolution miss is a wait
+    # rather than a failure, so it changes neither status nor attempts, and a
+    # row for a file the server will never scan would otherwise hold the run
+    # -- and with it the in-flight guard that refuses the next catch-up for
+    # that server -- open for ever.
+    #
+    # Its own column rather than a comparison against the three count columns
+    # above: a snapshot of the counts cannot tell "this batch moved nothing"
+    # from "two in a row moved nothing", so a run that moves rows on
+    # alternating batches was stopped at its first idle one -- and one brief
+    # outage mid-drain, which turns every row of a batch into a resolution
+    # miss, is enough to cause that.
+    idle_drains: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )

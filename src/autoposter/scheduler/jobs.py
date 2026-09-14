@@ -28,6 +28,7 @@ from autoposter.arr.sync import (
     enqueue_unknown_items,
     sync_section,
 )
+from autoposter.catchup import CatchUpRefused, drain_catch_ups, start_catch_up
 from autoposter.collections.credits import scan_credits
 from autoposter.collections.playlists import PlaylistsPassFailed, reconcile_playlists
 from autoposter.collections.service import (
@@ -1104,5 +1105,78 @@ def make_pending_deliveries_job(
     return Job(
         name="pending_deliveries",
         interval_seconds=lambda: max(60, holder.current.scheduler.pending_deliveries_minutes * 60),
+        run=run,
+    )
+
+
+def make_catch_up_drain_job(
+    holder: ConfigHolder,
+    servers_ref: Callable[[], object],
+    requests_ref: Callable[[], list],
+    health_ref: Callable[[], dict],
+    http: httpx.AsyncClient | None,
+    mdblist,
+) -> Job:
+    """Build the catch-up drain (``catchup.py``, spec §3).
+
+    Two jobs in one pass, and deliberately: the automatic triggers queue
+    server NAMES (a config swap and a boot have no session of their own, and
+    starting a run from inside ``swap_config`` would mean a synchronous
+    function opening a transaction), and this pass is the first thing with a
+    session that can turn a name into a run. Starting them here also means a
+    queued request and the drain it needs share one transaction boundary.
+
+    A refusal is re-queued only when it is TRANSIENT. "Not
+    configured" and "already in flight" are dropped: the first never becomes
+    true by waiting and the second means the work is already happening, so
+    re-queueing either would turn one name into a list nothing ever clears.
+    "The server is down" and "could not list its libraries" are re-queued,
+    because spec §3's post-restart trigger fires ONCE -- on the first poll
+    after boot, which is exactly when a co-restarting Jellyfin is still
+    starting up -- and dropping it there loses the catch-up the spec promises
+    with no way back but the operator's own button.
+
+    Registered inside ``scheduler.enabled`` beside the pending-deliveries
+    pass and, like it, not conditioned on ``config.plex``.
+
+    ``catch_up_poll_seconds`` is how often this LOOKS; each open run's own
+    ``cadence_seconds`` decides whether its next batch is actually taken, so
+    the floor here bounds only how finely those cadences can be honoured.
+    """
+
+    async def run(session: AsyncSession) -> str:
+        started, waiting = [], []
+        requests = requests_ref()
+        while requests:
+            name = requests.pop(0)
+            try:
+                await start_catch_up(
+                    session, servers_ref(), holder.current, name, health=health_ref(),
+                )
+            except CatchUpRefused as exc:
+                logger.info("catch-up for %s not started: %s", name, exc)
+                # `start_catch_up` takes an advisory lock and reads before it
+                # can refuse, so the refusal leaves a transaction behind that
+                # the next queued name would otherwise run inside.
+                await session.rollback()
+                if exc.transient:
+                    waiting.append(name)
+                continue
+            await session.commit()
+            started.append(name)
+        # Put back AFTER the loop, never inside it: appending to the list this
+        # loop is draining would spin the pass forever on a server that is
+        # down. The name is taken again on the NEXT look, one poll later.
+        requests.extend(waiting)
+        drained = await drain_catch_ups(
+            session, servers_ref(), holder.current, http=http, mdblist=mdblist,
+        )
+        if started:
+            return f"started {', '.join(started)}; {drained}"
+        return drained
+
+    return Job(
+        name="catch_up_drain",
+        interval_seconds=lambda: max(60, holder.current.scheduler.catch_up_poll_seconds),
         run=run,
     )

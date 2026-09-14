@@ -22,6 +22,7 @@ from autoposter.api.errors import validation_error_without_input
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.api.version import ReleasePoller, _running_version
+from autoposter.catchup import servers_never_seen, servers_with_delivery_enabled
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
@@ -51,6 +52,7 @@ from autoposter.scheduler.core import Scheduler
 from autoposter.scheduler.jobs import (
     make_arr_sync_job,
     make_asset_stats_job,
+    make_catch_up_drain_job,
     make_cleanup_job,
     make_collections_job,
     make_credits_job,
@@ -274,6 +276,24 @@ def create_app(
 
         async with session_factory() as session:
             reclaimed = await reclaim_stale(session)
+            # Spec §3: a restart that INTRODUCED a server triggers its
+            # catch-up. Compared against the outcome tables rather than
+            # against a stored copy of the previous boot's registry: the rows
+            # are the durable record of which servers this deployment has
+            # actually dealt with, and they are written by the catch-up
+            # itself, so this cannot fire a second time for the same server.
+            # Here rather than earlier because `app.state.servers` is built
+            # above and this is the first session the lifespan opens.
+            # Filtered first: a server this config delivers nothing to gets
+            # no outcome rows from a catch-up either, so it would be
+            # reported as never-seen on every single boot and open a no-op
+            # run each time.
+            app.state.catch_up_requests.extend(
+                await servers_never_seen(
+                    session,
+                    servers_with_delivery_enabled(config, app.state.servers.names),
+                )
+            )
         if reclaimed:
             logger.info("reclaimed %d stale job(s)", reclaimed)
 
@@ -495,6 +515,19 @@ def create_app(
             # exists inside this same gate.
             scheduler_jobs.append(make_pending_deliveries_job(
                 holder, lambda: app.state.servers, http, app.state.mdblist
+            ))
+            # The catch-up drain (spec §3), beside the retry pass it uses and
+            # inside the same gate, for the same two reasons.
+            # `catch_up_requests` is the list the automatic triggers push
+            # server names onto; this job is the first thing with a session
+            # that can turn one into a run.
+            scheduler_jobs.append(make_catch_up_drain_job(
+                holder,
+                lambda: app.state.servers,
+                lambda: app.state.catch_up_requests,
+                lambda: app.state.server_health,
+                http,
+                app.state.mdblist,
             ))
         # Published so config.live.swap_config can recompute the cadences
         # below without rebuilding the jobs -- it has no other way to reach
@@ -721,6 +754,12 @@ def create_app(
     # cadences. Empty and unconditionally set for the same reason as above:
     # swap_config must work on an app whose lifespan never ran.
     app.state.scheduler_jobs = []
+    # The automatic catch-up triggers' queue (spec §3). A plain list, owned by
+    # the application object and mutated in place: a synchronous trigger
+    # (config.live's swap_config) appends to it without a session of its own,
+    # and the drain job is what turns the names into runs. Published here for
+    # the reason above: an app whose lifespan never ran still has to have it.
+    app.state.catch_up_requests = []
     # Created here so /api/dashboard/stream always has one to subscribe to --
     # the log_buffer precedent above. No lifespan work: the poll loop is
     # subscriber-driven and its task is created from subscribe(), which runs

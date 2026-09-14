@@ -458,3 +458,28 @@ async def test_closing_nothing_appends_nothing(session):
     windows: list = []
     assert await close_drained_full_passes(session, closed_windows=windows) == 0
     assert windows == []
+
+
+async def test_a_run_row_can_name_a_server_and_a_cadence(session):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
+    stamped = datetime(2026, 9, 14, tzinfo=timezone.utc)
+    await session.execute(
+        update(Run).where(Run.id == run_id)
+        .values(server="jellyfin", cadence_seconds=120, last_drained_at=stamped)
+    )
+    await session.commit()
+
+    row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.server == "jellyfin" and row.cadence_seconds == 120
+    assert row.last_drained_at == stamped
+
+
+async def test_a_full_pass_row_names_no_server(session):
+    run_id = await open_run(session, kind="full_pass", name=FULL_PASS_NAME)
+    await session.commit()
+    row = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert row.server is None and row.cadence_seconds is None and row.last_drained_at is None

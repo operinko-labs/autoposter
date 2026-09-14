@@ -35,6 +35,7 @@ from autoposter.api.manual import router as manual_router
 from autoposter.api.mismatches import router as mismatches_router
 from autoposter.api.playlists import router as playlists_router
 from autoposter.api.secret_rotation import router as secret_rotation_router
+from autoposter.api.servers import router as servers_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
 from autoposter.api.testing import router as testing_router
 from autoposter.api.version import router as version_router
@@ -117,6 +118,7 @@ SCHEDULED_JOB_NAMES = frozenset({
     "plex_merge",
     "stale_job_reclaim",
     "pending_deliveries",
+    "catch_up_drain",
 })
 
 DEFAULT_EVENTS_LIMIT = 50
@@ -275,6 +277,12 @@ router.include_router(secret_rotation_router)
 # the name rule, the protected set, the double-realpath containment and the
 # `referenced_by` check -- are the substance of it.
 router.include_router(files_router)
+
+# The per-server catch-up and retry-failed buttons (spec §5). Its own module
+# because it is the one surface that turns a CatchUpRefused into the 409 the
+# button shows, and that translation is the whole of what it does -- every
+# rule about what a catch-up may do lives in catchup.py.
+router.include_router(servers_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.

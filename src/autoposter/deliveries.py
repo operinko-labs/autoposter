@@ -11,7 +11,7 @@ from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -95,7 +95,7 @@ async def _upsert_outcome(
     session: AsyncSession, model, constraint: str, key: dict[str, object], status: str, *,
     detail: str | None, retry_in: float | None, count_attempt: bool,
     terminal_status: str, terminal_at: str, extra_terminal: dict[str, object] | None = None,
-    reset_attempts: bool = False, leave_run: bool = False,
+    reset_attempts: bool = False, leave_run: bool = False, keep_next_attempt: bool = False,
 ) -> int:
     """Shared upsert body for ``record`` and ``record_metadata`` (spec §1/§2).
 
@@ -125,6 +125,13 @@ async def _upsert_outcome(
     would have a later cancel or progress query act on rows the run no longer
     owns. A terminal outcome inside a run keeps both columns; clearing them
     when the run closes is the run's own business.
+
+    ``keep_next_attempt`` is the third half of that: a row inside an OPEN run
+    keeps the horizon that run gave it, because the run's own drain owns its
+    timing (spec §3) and an ordinary pass pushing it six hours out would stall
+    the drain of a row the run is still counting. ``COALESCE``, not a blanket
+    keep: a stored NULL is a row with no horizon at all, and a ``pending`` row
+    with no ``next_attempt_at`` is never due, so that one takes the new value.
     """
     if status not in STATUSES and status != terminal_status:
         raise ValueError(f"{status!r} is not an outcome status")
@@ -145,6 +152,10 @@ async def _upsert_outcome(
         values[column] = value if is_terminal else None
     stmt = insert(model).values(**values)
     updatable = {k: v for k, v in values.items() if k not in key}
+    if keep_next_attempt:
+        updatable["next_attempt_at"] = func.coalesce(
+            model.next_attempt_at, values["next_attempt_at"]
+        )
     if not is_terminal:
         # A failed, skipped or pending outcome must never
         # erase what this server DID deliver/write last time. ``rollup`` reads
@@ -197,6 +208,7 @@ async def record(
     detail: str | None = None, retry_in: float | None = None,
     fingerprint: str | None = None, count_attempt: bool = True,
     reset_attempts: bool = False, leave_run: bool = False,
+    keep_next_attempt: bool = False,
 ) -> int:
     """Upsert this render's delivery row for ``server``; return its ``attempts``.
 
@@ -244,6 +256,7 @@ async def record(
         terminal_status="uploaded", terminal_at="uploaded_at",
         extra_terminal={"fingerprint": fingerprint},
         reset_attempts=reset_attempts, leave_run=leave_run,
+        keep_next_attempt=keep_next_attempt,
     )
 
 
@@ -251,6 +264,7 @@ async def record_metadata(
     session: AsyncSession, item_id: int, server: str, status: str, *,
     detail: str | None = None, retry_in: float | None = None,
     count_attempt: bool = True, reset_attempts: bool = False, leave_run: bool = False,
+    keep_next_attempt: bool = False,
 ) -> int:
     """Upsert this item's metadata-write row for ``server``; return ``attempts``.
 
@@ -266,6 +280,7 @@ async def record_metadata(
         detail=detail, retry_in=retry_in, count_attempt=count_attempt,
         terminal_status="written", terminal_at="written_at",
         reset_attempts=reset_attempts, leave_run=leave_run,
+        keep_next_attempt=keep_next_attempt,
     )
 
 
@@ -601,9 +616,15 @@ async def retry_pending_deliveries(
                         continue
                     except Exception as exc:
                         # Never deliver overlay-less bytes: not being able to
-                        # sample the identity server is a wait, exactly like
-                        # the delivery server's own miss above, and the row
-                        # keeps its normal horizon.
+                        # sample the identity server is a wait, and the row
+                        # keeps its normal horizon. Uncounted for EVERY
+                        # failure here, transport errors included -- which is
+                        # deliberately NOT the delivery server's own rule two
+                        # blocks above, where a transport error is counted and
+                        # exhaustible. Nothing was attempted against the
+                        # server this row is owed to; a third party being
+                        # unreachable must not spend that row's budget and
+                        # turn it `failed`.
                         logger.warning(
                             "delivery to %s waits on %s (%s)",
                             delivery.server, identity_name, failure_detail(exc),

@@ -60,7 +60,7 @@ async def apply_presence(
     ITEMS, ``artwork`` counts RENDERS. Does not commit -- the caller (a full
     pass's opening, a catch-up's step 1) owns the transaction.
 
-    Applied to the IDENTITY SERVER too, by decision (review I5). "Not carried"
+    Applied to the IDENTITY SERVER too, by decision. "Not carried"
     is a fact about a server, and Plex is a server: a section renamed after
     ingest, one added to ``excluded_libraries`` later, or one since retyped
     genuinely no longer holds the item under the name the row records, and
@@ -146,7 +146,7 @@ async def apply_presence(
         )).rowcount
 
     if artwork["absent"] or artwork["rearmed"]:
-        await _rollup_stamped_renders(session, server_name, now)
+        await rollup_stamped_renders(session, server_name, now)
 
     if server_name == IDENTITY_SERVER and (metadata["absent"] or artwork["absent"]):
         # Library NAMES, which are the operator's own words for his own
@@ -164,9 +164,31 @@ async def apply_presence(
     return {"metadata": metadata, "artwork": artwork}
 
 
-async def _rollup_stamped_renders(session: AsyncSession, server_name: str, now: datetime) -> int:
+async def rollup_stamped_renders(
+    session: AsyncSession, server_name: str | None = None, now: datetime | None = None,
+    *, render_ids: list[int] | None = None,
+) -> int:
     """``deliveries.rollup``'s precedence ladder, set-shaped, over the renders
     this call just restamped.
+
+    PUBLIC, and named rather than private, because ``apply_presence`` is not
+    its only caller: ``catchup.start_catch_up`` writes ``render_deliveries``
+    set-shaped too, with the same ``next_attempt_at = now`` stamp, and owes
+    the roll-up for exactly the same reason. The selector below is what makes
+    one function serve both -- it names the rows by the timestamp, not by who
+    wrote them.
+
+    ``render_ids`` is the OTHER entry, for a caller whose rows carry no such
+    stamp: ``catchup.cancel_catch_up`` puts each restored row back on the
+    horizon it had before the catch-up and DELETES the rows its run created,
+    so nothing is left to name them by except the render ids it collected
+    before it wrote. The ladder and the write below are the same either way
+    -- only the choice of rows differs, which is what makes this one function
+    rather than two copies of a precedence ladder. A render in that set whose
+    delivery rows were all deleted has nothing left to aggregate and keeps
+    the status it carries: no rows at all is exactly the state it was in
+    before the catch-up created one, so recomputing it would be the change
+    rather than the correction.
 
     ``apply_presence`` writes ``render_deliveries`` directly and nothing else
     recomputes what it touched, so a render rolled up ``pending`` because of a
@@ -195,16 +217,29 @@ async def _rollup_stamped_renders(session: AsyncSession, server_name: str, now: 
         (func.bool_or(RenderDelivery.status == "uploaded"), "uploaded"),
         else_="skipped",
     )
-    stamped = select(RenderDelivery.render_id).where(
-        RenderDelivery.server == server_name,
-        or_(
-            and_(RenderDelivery.status == "absent", RenderDelivery.attempted_at == now),
-            and_(RenderDelivery.status == "pending", RenderDelivery.next_attempt_at == now),
-        ),
-    )
+    if render_ids is not None:
+        if not render_ids:
+            return 0
+        chosen = RenderDelivery.render_id.in_(render_ids)
+    else:
+        chosen = RenderDelivery.render_id.in_(
+            select(RenderDelivery.render_id).where(
+                RenderDelivery.server == server_name,
+                or_(
+                    and_(
+                        RenderDelivery.status == "absent",
+                        RenderDelivery.attempted_at == now,
+                    ),
+                    and_(
+                        RenderDelivery.status == "pending",
+                        RenderDelivery.next_attempt_at == now,
+                    ),
+                ),
+            )
+        )
     recomputed = (
         select(RenderDelivery.render_id.label("render_id"), ladder.label("status"))
-        .where(RenderDelivery.render_id.in_(stamped))
+        .where(chosen)
         .group_by(RenderDelivery.render_id)
         .subquery()
     )

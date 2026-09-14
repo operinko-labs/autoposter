@@ -151,6 +151,24 @@ def swap_config(app, new_config) -> None:
     arr_sync job does not register it, which is why ``scheduler.enabled`` and
     those two ``enabled`` flags are in ``FROZEN_SECTIONS``.
     """
+    # Spec §3: a save that changes a server's library map, its exclusions or
+    # one of its delivery toggles changes what that server is owed, so it
+    # triggers a catch-up. Queued by NAME rather than started here: this
+    # function is synchronous and holds no session, and the drain job is the
+    # first thing with one. De-duplicated, so a second save before the
+    # drain's next tick does not queue the same server twice.
+    #
+    # Imported inside the body on purpose: the predicate lives beside the
+    # catch-up it feeds, and that module pulls in the ORM and `deliveries`,
+    # which nothing else in this one needs.
+    from autoposter.catchup import servers_with_changed_libraries
+
+    requests = getattr(app.state, "catch_up_requests", None)
+    if requests is not None:
+        for name in servers_with_changed_libraries(app.state.config, new_config):
+            if name not in requests:
+                requests.append(name)
+
     app.state.config_holder.swap(new_config)
     app.state.config = new_config
 
