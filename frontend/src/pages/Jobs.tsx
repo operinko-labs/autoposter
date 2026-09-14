@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "../api/client";
 import type { CancelJobResponse, QueuedJob, QueuedJobsResponse } from "../api/types";
-import { formatTime } from "../format";
+import { formatTime, seasonEpisode } from "../format";
 import "./jobs.css";
 
 /** How often the list is re-read. Polled rather than streamed: this is a small
@@ -27,16 +27,6 @@ function formatCountdown(seconds: number): string {
   if (seconds < 60) return `in ${seconds}s`;
   if (seconds < 3600) return `in ${Math.ceil(seconds / 60)}m`;
   return `in ${Math.ceil(seconds / 3600)}h`;
-}
-
-/** The season/episode suffix Plex users read titles by, or null when the job
- * is not for an episode or a season. */
-function seasonEpisode(job: QueuedJob): string | null {
-  const { season_number: season, episode_number: episode } = job;
-  if (season === null) return null;
-  const padded = String(season).padStart(2, "0");
-  if (episode === null) return `S${padded}`;
-  return `S${padded}E${String(episode).padStart(2, "0")}`;
 }
 
 /** A per-row outcome from the last cancel on that row.
