@@ -1126,10 +1126,26 @@ async def test_the_sentinel_never_reaches_storage_or_the_running_config(
 async def test_get_config_advertises_what_it_redacted_and_the_marker_to_send_back(
     client, auth_headers
 ):
+    """What THIS body withheld, not what the endpoint withholds in general.
+
+    A client cannot re-derive the list from the served values: the reduction
+    answers `""` both for a stored URL it can find no host in and for a setting
+    that was never set, so from outside the two are the same string. The list
+    is collected as the redaction happens, and it moves when the setting does.
+    """
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["redacted_paths"] == ["notifications.url"]
+    assert body["redacted_paths"] == [], "nothing is stored at that path yet"
     assert body["keep_sentinel"] == KEEP_SENTINEL
     assert body["keep_sentinel"], "a client with no marker cannot keep anything"
+
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"notifications": {"url": WEBHOOK_URL}}},
+    )
+
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["redacted_paths"] == ["notifications.url"]
+    assert body["notifications"]["url"] != WEBHOOK_URL, "and it really was reduced"
 
 
 async def test_the_sentinel_at_a_path_that_was_never_redacted_is_a_422(

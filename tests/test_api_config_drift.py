@@ -196,17 +196,16 @@ def _document_from_config(served: dict) -> dict:
     """What `documentFromConfig` builds in the browser, in Python.
 
     The whole served configuration minus the provenance keys and `secrets`,
-    with the keep sentinel at every path the response actually redacted -- the
-    server's own predicate, which is a NON-EMPTY string and nothing else. An
-    empty string and an absent key are sent as served, because at neither was
-    the page denied anything to ask back for.
+    with the keep sentinel at exactly the paths this response says it redacted
+    and nowhere else. No predicate of its own: the page cannot tell what was
+    reduced from what was served, and a copy of the server's rule here would
+    be one more thing that has to agree about the same set.
     """
     document = {
         key: value for key, value in served.items() if key not in PROVENANCE_KEYS
     }
     for path in served["redacted_paths"]:
-        value = _read(document, path)
-        if not isinstance(value, str) or not value:
+        if _read(document, path) is _ABSENT:
             continue
         _write(document, path, served["keep_sentinel"])
     return document
@@ -318,12 +317,15 @@ async def test_the_page_saves_against_a_store_that_has_no_notifications_section(
 
     `seed_store` writes the file's raw, sparse document, so such a store has no
     `notifications.url` key at all. The served configuration still carries one
-    -- the schema defaults it to `""` -- so a page that wrote the keep sentinel
-    wherever the response listed a redacted path would be asking the server to
+    -- the schema defaults it to `""` -- so a page that put the keep sentinel
+    wherever the endpoint redacts *in general* would be asking the server to
     keep a stored value that does not exist. The answer is a 422 naming the
     path, on every Save, Preview and Apply from every panel that builds its
     body this way, and the operator cannot clear it from the UI: the only thing
     that would put the key into the store is the save being refused.
+
+    What keeps the sentinel out is the response itself: nothing was redacted
+    here, so `redacted_paths` is empty and the page has nothing to mark.
     """
     document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
     document.pop("notifications")
@@ -346,7 +348,7 @@ async def test_the_page_saves_against_a_store_that_has_no_notifications_section(
         # Served from the defaulted configuration, not from the store: the
         # path the page is about to decide on is present and empty.
         assert served["notifications"]["url"] == ""
-        assert "notifications.url" in served["redacted_paths"]
+        assert served["redacted_paths"] == [], "nothing was withheld from this body"
 
         body = _document_from_config(served)
         assert _read(body, "notifications.url") == ""
@@ -361,3 +363,61 @@ async def test_the_page_saves_against_a_store_that_has_no_notifications_section(
             },
         )
     assert response.status_code == 200, response.text
+
+
+@pytest.mark.asyncio
+async def test_a_stored_url_the_reduction_shortens_to_nothing_survives_a_page_save(
+    tmp_path, session_factory
+):
+    """The served value cannot be the page's evidence about what was withheld.
+
+    `_host_only` answers `""` for any URL it cannot find a host in, and nothing
+    validates the setting -- a relative `/webhook/t0ken` is stored and served
+    happily. What the page then sees at that path is a bare `""`, exactly what
+    it sees when nothing is stored there at all. A page that decided from the
+    value would send the `""` back and the save would write it over the token,
+    silently: the corruption the keep marker exists to prevent, arrived by the
+    other door.
+
+    `redacted_paths` is what makes the two distinguishable, because it is
+    collected by the loop that does the redacting rather than asserted about
+    the path in general.
+    """
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    document["notifications"]["url"] = "/webhook/t0ken"
+    path = tmp_path / "autoposter.yaml"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    application = create_app(build_config(document), session_factory, _secrets())
+    application.state.config_path = path
+    async with session_factory() as session:
+        await seed_store(session, document)
+        await session.commit()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        login = await client.post("/api/login", json={"password": PASSWORD})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        served = (await client.get("/api/config", headers=headers)).json()
+        assert served["notifications"]["url"] == "", "the reduction found no host"
+        assert served["redacted_paths"] == ["notifications.url"], (
+            "the response has to say it withheld this one"
+        )
+
+        body = _document_from_config(served)
+        assert _read(body, "notifications.url") == served["keep_sentinel"]
+
+        response = await client.put(
+            "/api/config/overrides",
+            headers=headers,
+            json={
+                "document": body,
+                "expected_revision": served["overrides_revision"],
+            },
+        )
+    assert response.status_code == 200, response.text
+
+    async with session_factory() as session:
+        stored, _meta = await load_store(session)
+    assert stored["notifications"]["url"] == "/webhook/t0ken", "the save ate the token"

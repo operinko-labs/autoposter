@@ -59,19 +59,35 @@ describe("documentFromConfig", () => {
     expect(JSON.stringify(document)).not.toContain("kuma.example.com");
   });
 
-  it("sends an empty redacted setting as served, without the marker", () => {
-    // The server redacts a non-empty string and nothing else, so `""` arrives
-    // exactly as it is stored. Asking to "keep" it would be asking for a value
-    // that was never withheld -- and on a store whose document has no
-    // `notifications.url` key at all that ask is a 422 the operator cannot
-    // clear, because the only way to put the key there is the save it refuses.
+  it("sends a path this response did not redact exactly as it was served", () => {
+    // `redacted_paths` names what THIS body redacted, not what the endpoint
+    // redacts in general, and the empty list is the ordinary answer on a
+    // deployment with no notification URL stored. Asking to keep a value that
+    // was never withheld is a 422 the operator cannot clear from the UI: the
+    // only thing that would put the key into the store is the save it refuses.
     const document = documentFromConfig({
       ...CONFIG,
-      notifications: { enabled: true, url: "" },
+      notifications: { enabled: false, url: "" },
+      redacted_paths: [],
     }) as { notifications: { enabled: boolean; url: string } };
 
     expect(document.notifications.url).toBe("");
     expect(JSON.stringify(document)).not.toContain("***KEEP***");
+  });
+
+  it("marks a redacted path whose served value came out empty", () => {
+    // The reduction answers `""` for a stored URL whose host it cannot parse
+    // -- a relative one, say. What is served is then indistinguishable from
+    // "nothing is stored here", so the page must not decide from the value:
+    // the response said it redacted this path, and that is the whole rule.
+    // Sending the `""` back would store it over the real setting, silently.
+    const document = documentFromConfig({
+      ...CONFIG,
+      notifications: { enabled: true, url: "" },
+      redacted_paths: ["notifications.url"],
+    }) as { notifications: { enabled: boolean; url: string } };
+
+    expect(document.notifications.url).toBe("***KEEP***");
   });
 
   it("leaves a redacted path alone when the response never served it", () => {

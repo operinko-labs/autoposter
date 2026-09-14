@@ -1644,6 +1644,12 @@ async def get_config(
     values this response is *not* telling the truth about, and give the
     editor the one token it can send back for them without either destroying
     the stored value or dropping it (see ``KEEP_SENTINEL``).
+    ``redacted_paths`` names what *this* body actually redacted, not what the
+    endpoint redacts in general: the reduction can answer ``""`` for a stored
+    value it cannot parse, so "is the value beside this path the stored one"
+    is a question only the response that built it can answer, and a client
+    re-deriving it from the served value would send a truncation back as the
+    setting.
     ``field_descriptions`` maps each setting's dotted path to what that
     setting does, condensed from the schema's own comments (roadmap row 217)
     -- what the page renders as the row's hover text. It deliberately says
@@ -1688,10 +1694,18 @@ async def get_config(
         name: override.model_dump(mode="json", exclude_unset=True)
         for name, override in config.libraries.items()
     }
+    # Collected by the loop that does the redacting rather than listed beside
+    # it, so what this response advertises as redacted is true of THIS body by
+    # construction. No client can re-derive it: `_host_only` answers `""` for a
+    # URL whose host it cannot parse, so a served `""` means either "nothing is
+    # stored here" or "what is stored reduced to nothing", and only this side
+    # can tell those two apart.
+    redacted_here: list[str] = []
     for path, redact in _REDACTORS.items():
         value = _read_path(body, path)
         if isinstance(value, str) and value:
             _set_path(body, path, redact(value))
+            redacted_here.append(path)
     body["secrets"] = {field: _REDACTED for field in secrets.model_dump()}
     async with request.app.state.session_factory() as session:
         try:
@@ -1715,7 +1729,7 @@ async def get_config(
     body["overrides_revision"] = document_revision(document)
     body["restart_paths"] = list(meta.get("restart_paths") or [])
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
-    body["redacted_paths"] = list(REDACTED_PATHS)
+    body["redacted_paths"] = redacted_here
     body["keep_sentinel"] = KEEP_SENTINEL
     body["field_descriptions"] = dict(FIELD_DESCRIPTIONS)
     body["computed_paths"] = list(COMPUTED_PATHS)
