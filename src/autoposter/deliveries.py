@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.loader import config_for_library
-from autoposter.db.models import MediaItem, Render, RenderDelivery
+from autoposter.db.models import MediaItem, MetadataWrite, Render, RenderDelivery
 from autoposter.db.refs import refs_for
 from autoposter.intake.arr import RenderIntent
 from autoposter.servers.base import CAP_LOCK_ARTWORK, ItemNotFound, PathMismatch
@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 # existing "no finite cap" stance for an unresolved server, just moved from
 # the job to the delivery row.
 RETRY_SECONDS = 6 * 60 * 60
+
+# The status vocabulary, spelled once (spec §1/§5.2). These four words are
+# shared by both outcome tables; each table's own terminal word (``uploaded``
+# for a delivery, ``written`` for a metadata write) is ``_upsert_outcome``'s
+# ``terminal_status`` argument, and the check below admits that one too.
+#
+# Checked rather than left to a docstring: the column is a plain
+# ``String(24)``, so a typo at a call site (``"write"`` for ``"written"``)
+# stores silently and then reads as neither written nor pending -- invisible
+# until an operator asks the item page why a server says nothing.
+STATUSES = ("pending", "failed", "skipped", "absent")
 
 
 def failure_detail(exc: Exception) -> str:
@@ -46,38 +57,136 @@ def failure_detail(exc: Exception) -> str:
     return f"error: {type(exc).__name__}"
 
 
+async def _upsert_outcome(
+    session: AsyncSession, model, constraint: str, key: dict[str, object], status: str, *,
+    detail: str | None, retry_in: float | None, count_attempt: bool,
+    terminal_status: str, terminal_at: str, extra_terminal: dict[str, object] | None = None,
+) -> int:
+    """Shared upsert body for ``record`` and ``record_metadata`` (spec §1/§2).
+
+    ``terminal_status``/``terminal_at`` are ``"uploaded"``/``"uploaded_at"``
+    for deliveries and ``"written"``/``"written_at"`` for metadata writes;
+    ``extra_terminal`` is the one further column that rides along with the
+    terminal timestamp (``fingerprint``, deliveries only). Both are stamped
+    only on a terminal-status call and, on conflict, never erased by a later
+    non-terminal one -- see ``record``'s own docstring for why.
+
+    An ``absent`` row is never written over from here, whatever the caller
+    asks for: spec §1 says an item whose library a server does not carry "is
+    never resolved there, and is never retried", and making that a clause on
+    the conflict rather than a check each caller remembers is what makes it
+    true of the callers Phases B-D have yet to add. Postgres re-evaluates the
+    clause against the latest row version after taking the row lock, so it
+    also closes the window where a caller's own snapshot predates a full
+    pass's presence stamp. ``presence.apply_presence``'s re-arm is a plain
+    ``UPDATE`` and is unaffected -- it is the one thing entitled to move a
+    row off ``absent``.
+    """
+    if status not in STATUSES and status != terminal_status:
+        raise ValueError(f"{status!r} is not an outcome status")
+    now = datetime.now(timezone.utc)
+    counted = count_attempt and status in ("pending", "failed")
+    is_terminal = status == terminal_status
+    values = dict(
+        **key, status=status, detail=detail,
+        attempted_at=now,
+        next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
+        attempts=1 if counted else 0,
+    )
+    values[terminal_at] = now if is_terminal else None
+    for column, value in (extra_terminal or {}).items():
+        values[column] = value if is_terminal else None
+    stmt = insert(model).values(**values)
+    updatable = {k: v for k, v in values.items() if k not in key}
+    if not is_terminal:
+        # A failed, skipped or pending outcome must never
+        # erase what this server DID deliver/write last time. ``rollup`` reads
+        # ``uploaded_at`` back into ``renders.uploaded_at``, which the item
+        # page's Uploaded column shows, and an operator reads a blank there as
+        # "never delivered" rather than "delivered, then broke" -- the
+        # distinction the single-server code kept by leaving the column alone
+        # on a failure.
+        updatable.pop(terminal_at)
+        for column in (extra_terminal or {}):
+            updatable.pop(column)
+    else:
+        # And a TERMINAL call that names no value for one of those columns
+        # keeps what is stored, for the same reason: `record(..., "uploaded")`
+        # without a `fingerprint=` is a caller that does not know which bytes
+        # this server holds, not one asserting it holds none.
+        for column, value in (extra_terminal or {}).items():
+            if value is None:
+                updatable.pop(column)
+    if counted:
+        # The EXISTING row's value plus one: naming the column in `set_`
+        # renders `attempts = <table>.attempts + 1`, which is what makes the
+        # increment atomic against a concurrent pass.
+        updatable["attempts"] = model.attempts + 1
+    elif status in ("pending", "failed"):
+        updatable.pop("attempts")
+    stmt = stmt.on_conflict_do_update(
+        constraint=constraint,
+        set_=updatable,
+        where=model.status != "absent",
+    ).returning(model.attempts)
+    # `scalar_one_or_none`, because the clause above can leave the conflicting
+    # row alone and then there is no RETURNING row at all. Zero is the honest
+    # answer for the budget: nothing was attempted against an absent server.
+    attempts = (await session.execute(stmt)).scalar_one_or_none() or 0
+    await session.flush()
+    return attempts
+
+
 async def record(
     session: AsyncSession, render_id: int, server: str, status: str, *,
     detail: str | None = None, retry_in: float | None = None,
-) -> None:
-    """Upsert this render's delivery row for ``server``.
+    fingerprint: str | None = None, count_attempt: bool = True,
+) -> int:
+    """Upsert this render's delivery row for ``server``; return its ``attempts``.
 
     ``attempted_at`` is stamped on every call, ``skipped`` included: it is
     the "we last looked at this server" timestamp, not a success marker.
+
+    ``attempts`` is the retry budget's counter (spec §2). It climbs on a
+    ``pending`` or ``failed`` outcome and is reset to zero by anything that
+    settles the row -- so the budget bounds the CURRENT streak of trouble
+    rather than the row's whole history. ``count_attempt=False`` is the
+    resolution-miss case: the item is simply not on that server yet, which
+    is a wait and not an attempt at delivering anything, and spending budget
+    on it would turn "the server has not scanned this file" into a
+    permanent ``failed``.
+
+    ``fingerprint`` is the badge fingerprint actually delivered. Stored on
+    ``uploaded`` only, and -- exactly like ``uploaded_at`` -- never erased by
+    a later non-``uploaded`` outcome, because the catch-up's "is this row
+    behind the render" question is about what this server IS serving.
     """
-    now = datetime.now(timezone.utc)
-    values = dict(
-        render_id=render_id, server=server, status=status, detail=detail,
-        attempted_at=now,
-        uploaded_at=now if status == "uploaded" else None,
-        next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
+    return await _upsert_outcome(
+        session, RenderDelivery, "uq_delivery_render_server",
+        {"render_id": render_id, "server": server}, status,
+        detail=detail, retry_in=retry_in, count_attempt=count_attempt,
+        terminal_status="uploaded", terminal_at="uploaded_at",
+        extra_terminal={"fingerprint": fingerprint},
     )
-    stmt = insert(RenderDelivery).values(**values)
-    updatable = {k: v for k, v in values.items() if k not in ("render_id", "server")}
-    if status != "uploaded":
-        # A failed, skipped or pending outcome must never
-        # erase what this server DID deliver last time. ``rollup`` reads these
-        # values back into ``renders.uploaded_at``, which the item page's
-        # Uploaded column shows, and an operator reads a blank there as "never
-        # delivered" rather than "delivered, then broke" -- the distinction
-        # the single-server code kept by leaving the column alone on a failure.
-        updatable.pop("uploaded_at")
-    stmt = stmt.on_conflict_do_update(
-        constraint="uq_delivery_render_server",
-        set_=updatable,
+
+
+async def record_metadata(
+    session: AsyncSession, item_id: int, server: str, status: str, *,
+    detail: str | None = None, retry_in: float | None = None,
+    count_attempt: bool = True,
+) -> int:
+    """Upsert this item's metadata-write row for ``server``; return ``attempts``.
+
+    The sibling of ``record`` (spec §1), field for field, with ``written``
+    where artwork says ``uploaded`` and ``written_at`` where it says
+    ``uploaded_at``. Keyed on the ITEM: a metadata write has no art kind.
+    """
+    return await _upsert_outcome(
+        session, MetadataWrite, "uq_metadata_write_item_server",
+        {"item_id": item_id, "server": server}, status,
+        detail=detail, retry_in=retry_in, count_attempt=count_attempt,
+        terminal_status="written", terminal_at="written_at",
     )
-    await session.execute(stmt)
-    await session.flush()
 
 
 async def rollup(session: AsyncSession, render_id: int) -> str:
@@ -105,6 +214,13 @@ async def rollup(session: AsyncSession, render_id: int) -> str:
     elif "uploaded" in statuses:
         status = "uploaded"
     else:
+        # `absent` sits HERE, alongside `skipped`, by decision rather than by
+        # falling through: a server that does not carry the item's library has
+        # nothing to say about this render, so an absent row must never raise
+        # the roll-up above what the servers that DO carry it report -- and a
+        # render whose every row is absent or skipped is exactly the "nothing
+        # to report" that `skipped` means. Phase D's item page reads this
+        # back, so it is written down rather than left to be rediscovered.
         status = "skipped"
     uploaded_at = max((u for _, u in rows if u is not None), default=None)
     values: dict[str, object] = {"upload_status": status}
@@ -220,7 +336,10 @@ async def retry_pending_deliveries(
                     continue
                 except ItemNotFound:
                     # Not on this server yet -- keep waiting, no cap (spec §5.3).
-                    await record(session, render.id, delivery.server, "pending", retry_in=RETRY_SECONDS)
+                    await record(
+                        session, render.id, delivery.server, "pending",
+                        retry_in=RETRY_SECONDS, count_attempt=False,
+                    )
                     still_pending += 1
                     await rollup(session, render.id)
                     continue
@@ -275,15 +394,28 @@ async def retry_pending_deliveries(
                         await record(
                             session, render.id, delivery.server, "pending",
                             detail=None if isinstance(exc, ItemNotFound) else failure_detail(exc),
-                            retry_in=RETRY_SECONDS,
+                            retry_in=RETRY_SECONDS, count_attempt=False,
                         )
                         still_pending += 1
                         await rollup(session, render.id)
                         continue
 
                 try:
+                    # What the compose below actually produced, which is NOT
+                    # `render.badge_fingerprint`: a forced compose deliberately
+                    # leaves that column alone, and the two differ routinely --
+                    # this pass runs hours later and folds in MDBList's
+                    # per-pass ratings, the current definitions digest and,
+                    # when the item has no Plex ref, a `plex_item=None` that
+                    # drops the resolution/format overlays entirely. Recording
+                    # the render's own fingerprint against these bytes is what
+                    # would make a server holding visibly different artwork
+                    # read as up to date to the catch-up -- the failure mode
+                    # the catch-up exists to find.
+                    composed: dict = {}
                     data = await _pipeline.compose_badged_bytes(
                         session, row_config, render, item, http=http, mdblist=mdblist,
+                        out=composed,
                         server=servers.get(identity_name) if identity_item is not None else None,
                         ref=identity_item.ref if identity_item is not None else None,
                         # A due row means THIS server
@@ -320,7 +452,10 @@ async def retry_pending_deliveries(
                     await rollup(session, render.id)
                     continue
 
-                await record(session, render.id, delivery.server, "uploaded")
+                await record(
+                    session, render.id, delivery.server, "uploaded",
+                    fingerprint=composed.get("fingerprint"),
+                )
                 uploaded += 1
                 await rollup(session, render.id)
         except Exception as exc:

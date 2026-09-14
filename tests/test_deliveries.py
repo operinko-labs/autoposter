@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 
 import httpx
+import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from autoposter import deliveries
-from autoposter.db.models import Render, RenderDelivery
+from autoposter.db.models import MetadataWrite, Render, RenderDelivery
 from autoposter.render import pipeline
 from media_server_doubles import resolved
 
@@ -122,6 +124,36 @@ async def test_transport_error_during_resolve_stays_pending(session, config_with
     row = (await session.execute(select(RenderDelivery.status, RenderDelivery.detail))).one()
     assert row.status == "pending" and row.detail == "connect: ConnectError"
     assert await deliveries.rollup(session, render.id) == "pending"
+
+
+async def test_identity_resolution_wait_leaves_the_budget_alone(session, config_with_badges):
+    """The identity server (Plex) failing to resolve is a wait for the
+    DELIVERY server's row too -- the branch's own comment says it is "exactly
+    like the delivery server's own miss above" (the `ItemNotFound` branch,
+    which IS `count_attempt=False`) -- so it must not spend this row's
+    retry budget either."""
+    from autoposter.db.models import MediaItemServerRef
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    render = await _render(session)
+    session.add(MediaItemServerRef(item_id=render.item_id, server="plex", native_id="p1", library="Movies"))
+    seeded_attempts = await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
+    plex = FakeMediaServer(name="plex", raise_on_resolve=httpx.ConnectError("plex is down"))
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf, "plex": plex}), config_with_badges, now=datetime.now(timezone.utc)
+    )
+
+    assert summary == "pending deliveries: 1 due, 0 uploaded, 1 still pending"
+    row = (await session.execute(select(RenderDelivery.status, RenderDelivery.attempts))).one()
+    assert row.status == "pending"
+    assert row.attempts == seeded_attempts
 
 
 async def test_upload_exception_records_failed_not_pending(session, config_with_badges, monkeypatch):
@@ -474,3 +506,175 @@ async def test_a_path_mismatch_on_the_identity_server_fails_rather_than_waiting_
     # fails_the_delivery on why a full-entity select would read stale.
     row = (await session.execute(select(RenderDelivery.status, RenderDelivery.detail))).one()
     assert row.status == "failed" and row.detail == "error: PathMismatch"
+
+
+async def test_metadata_write_is_unique_per_item_and_server(session):
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-mw", title="A")
+    session.add(MetadataWrite(item_id=item.id, server="jellyfin", status="pending"))
+    await session.commit()
+    session.add(MetadataWrite(item_id=item.id, server="jellyfin", status="pending"))
+    with pytest.raises(IntegrityError):
+        await session.commit()
+
+
+async def test_render_delivery_carries_attempts_and_the_delivered_fingerprint(session):
+    render = await _render(session)
+    session.add(RenderDelivery(render_id=render.id, server="plex", status="uploaded", fingerprint="abc"))
+    await session.commit()
+    row = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert row.attempts == 0 and row.fingerprint == "abc"
+
+
+async def test_attempts_climb_on_pending_and_reset_on_success(session):
+    render = await _render(session)
+    assert await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=60) == 1
+    assert await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=60) == 2
+    assert await deliveries.record(session, render.id, "jellyfin", "failed", detail="error: X") == 3
+    assert await deliveries.record(session, render.id, "jellyfin", "uploaded") == 0
+
+
+async def test_an_uncounted_pending_leaves_the_budget_alone(session):
+    """A resolution miss is a wait, not an attempt at the write (spec §2)."""
+    render = await _render(session)
+    assert await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=60) == 1
+    assert await deliveries.record(
+        session, render.id, "jellyfin", "pending", retry_in=60, count_attempt=False
+    ) == 1
+
+
+async def test_the_delivered_fingerprint_is_kept_and_never_erased(session):
+    render = await _render(session)
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await deliveries.record(session, render.id, "plex", "pending", retry_in=60)
+    row = (await session.execute(
+        select(RenderDelivery.fingerprint, RenderDelivery.status)
+    )).one()
+    assert row.fingerprint == "fp1" and row.status == "pending"
+
+
+async def test_record_metadata_writes_one_row_per_item_and_server(session):
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-rm", title="A")
+    assert await deliveries.record_metadata(session, item.id, "jellyfin", "written") == 0
+    assert await deliveries.record_metadata(
+        session, item.id, "jellyfin", "pending", detail="connect: ConnectError", retry_in=60
+    ) == 1
+    row = (await session.execute(select(
+        MetadataWrite.status, MetadataWrite.detail, MetadataWrite.attempts,
+        MetadataWrite.written_at, MetadataWrite.next_attempt_at,
+    ))).one()
+    assert row.status == "pending" and row.detail == "connect: ConnectError"
+    assert row.attempts == 1
+    # The written_at half of the `uploaded_at` rule: a later failure must not
+    # erase the fact that this server DID hold the metadata once.
+    assert row.written_at is not None and row.next_attempt_at is not None
+
+
+async def test_record_metadata_skipped_keeps_its_reason(session):
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-sk", title="A")
+    await deliveries.record_metadata(
+        session, item.id, "jellyfin", "skipped",
+        detail="config: operations.write_to_jellyfin is off",
+    )
+    row = (await session.execute(select(MetadataWrite.status, MetadataWrite.detail))).one()
+    assert row.status == "skipped"
+    assert row.detail == "config: operations.write_to_jellyfin is off"
+
+
+async def test_an_absent_row_is_never_written_over_by_either_writer(session):
+    """Review C1/I4: the `absent` rule is a clause on the upsert, not a
+    convention each caller remembers. Both writers, both tables."""
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-abs", title="A")
+    render = await pipeline._get_or_create_render(session, item, "poster", "/a/p.jpg")
+    await session.commit()
+    await deliveries.record(session, render.id, "jellyfin", "absent", detail="library: x")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "absent", detail="library: x")
+
+    # Zero, not a climbing counter: nothing was attempted against a server
+    # that does not carry the library.
+    assert await deliveries.record(
+        session, render.id, "jellyfin", "pending", retry_in=60
+    ) == 0
+    assert await deliveries.record(session, render.id, "jellyfin", "uploaded", fingerprint="fp") == 0
+    assert await deliveries.record_metadata(session, item.id, "jellyfin", "written") == 0
+
+    delivery = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert delivery.status == "absent" and delivery.next_attempt_at is None
+    assert delivery.fingerprint is None and delivery.uploaded_at is None
+    metadata = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert metadata.status == "absent" and metadata.written_at is None
+
+
+async def test_an_unknown_status_is_refused_rather_than_stored(session):
+    """Review minor 4: the vocabulary is `deliveries.STATUSES` plus each
+    table's own terminal word, and `status` is a plain String(24) -- so a
+    typo would otherwise store and read as neither."""
+    from conftest import seed_media_item
+    item = await seed_media_item(session, "rk-vocab", title="A")
+    render = await pipeline._get_or_create_render(session, item, "poster", "/a/p.jpg")
+    await session.commit()
+
+    assert deliveries.STATUSES == ("pending", "failed", "skipped", "absent")
+    with pytest.raises(ValueError):
+        await deliveries.record_metadata(session, item.id, "jellyfin", "write")
+    with pytest.raises(ValueError):
+        # Each table admits only its OWN terminal word.
+        await deliveries.record_metadata(session, item.id, "jellyfin", "uploaded")
+    with pytest.raises(ValueError):
+        await deliveries.record(session, render.id, "jellyfin", "written")
+
+
+async def test_a_terminal_call_without_a_fingerprint_keeps_the_stored_one(session):
+    """Review minor 1: `record(..., "uploaded")` with no `fingerprint=` is a
+    caller that does not know which bytes the server holds, not one asserting
+    it holds none."""
+    render = await _render(session)
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await deliveries.record(session, render.id, "plex", "uploaded")
+    row = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert row.fingerprint == "fp1"
+
+
+async def test_the_retry_records_the_fingerprint_it_actually_delivered(
+    session, config_with_badges, monkeypatch
+):
+    """Review I1/T3: `compose_badged_bytes(force=True)` deliberately does not
+    write `render.badge_fingerprint`, so the render's stored fingerprint is by
+    construction not the one these bytes were composed under -- the two differ
+    routinely, most sharply when the item has no Plex ref and the forced
+    compose drops the resolution/format overlays. Recording the stored one
+    would make a server holding visibly different artwork read as up to date
+    to Phase C's catch-up, which is the failure mode it exists to find."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+    render = await _render(session)
+    render.badge_fingerprint = "fp-from-the-last-full-pass"
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.items["process_item:movie:tmdb1"] = resolved("jellyfin", "j1", file_path="/m.mkv")
+
+    async def fake_compose(session, config, render, item, *, out=None, **kwargs):
+        # What the real one does on the forced path: hand back the fingerprint
+        # these bytes were composed under and leave the column alone.
+        assert kwargs["force"] is True
+        if out is not None:
+            out["fingerprint"] = "fp-composed-just-now"
+        return b"badged"
+
+    monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
+    config_with_badges.badges.upload_to_jellyfin = True
+
+    await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
+    )
+
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.fingerprint)
+    )).one()
+    assert row.status == "uploaded"
+    assert row.fingerprint == "fp-composed-just-now"
+    assert row.fingerprint != "fp-from-the-last-full-pass"

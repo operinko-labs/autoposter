@@ -119,9 +119,40 @@ class LibraryIndex:
         name = folder["Name"]
         return self._map.get(name, name)
 
+    def library_names(self) -> set[str]:
+        """Every folder this index holds, under its PLEX-facing name.
+
+        `_folders` is already filtered by `excluded` and by CollectionType,
+        so an excluded library is absent by construction -- which is right:
+        an excluded library is one this deployment does not manage on this
+        server, and "not carried" is the honest thing to say about it.
+        """
+        return {self._map.get(f["Name"], f["Name"]) for f in self._folders}
+
     # --- build ---
     def _stale(self) -> bool:
         return self.built_at is not None and (_monotonic() - self.built_at) >= self._max_age_seconds
+
+    async def _fetch_folders(self) -> list[dict]:
+        # capture -> "/Library/VirtualFolders" -> get
+        return [f for f in await self._api.virtual_folders()
+                if f.get("Name") not in self._excluded and f.get("CollectionType") in ("movies", "tvshows")]
+
+    async def refresh_folders(self) -> None:
+        """The folder list alone -- one cheap call, no item index.
+
+        `library_names()` is the only thing that needs it, and it needs
+        nothing else. Asking `rebuild()` for it made a full pass's opening
+        pay the WHOLE index: every virtual folder enumerated and then
+        `/Items?recursive=true` per folder for the entire library, inside the
+        request handler and (because presence has already issued its first
+        statements) with a database transaction open and idle throughout.
+
+        `_by_key`/`_by_id`/`built` are left exactly as they are: this is not
+        a build, and it must neither serve nor invalidate a resolve.
+        """
+        async with self._lock:
+            self._folders = await self._fetch_folders()
 
     async def rebuild(self) -> None:
         async with self._lock:
@@ -132,9 +163,7 @@ class LibraryIndex:
                 # `max_age_seconds` is treated as not built here too (spec
                 # §4.4 step 6's fixed interval).
                 return
-            # capture -> "/Library/VirtualFolders" -> get
-            folders = [f for f in await self._api.virtual_folders()
-                       if f.get("Name") not in self._excluded and f.get("CollectionType") in ("movies", "tvshows")]
+            folders = await self._fetch_folders()
             by_key, by_id = {}, {}
             for f in folders:
                 types = "Movie" if f["CollectionType"] == "movies" else "Series"

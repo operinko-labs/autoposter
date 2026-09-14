@@ -11,7 +11,8 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import Job, MediaItem, MediaItemServerRef, Run
+from autoposter.db.models import Job, MediaItem, MediaItemServerRef, MetadataWrite, RenderDelivery, Run
+from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, PLEX_CAPS
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
@@ -116,7 +117,7 @@ async def test_full_pass_covers_every_kind_not_just_movies_and_shows(
 
     response = await client.post("/api/full-pass", headers=auth_headers)
     assert response.status_code == 200
-    assert response.json() == {"total": 4, "queued": 4, "skipped": 0}
+    assert response.json() == {"total": 4, "queued": 4, "skipped": 0, "presence": {}}
 
     jobs = (await session.execute(select(Job))).scalars().all()
     assert len(jobs) == 4
@@ -172,8 +173,8 @@ async def test_second_trigger_reports_the_dedupe_instead_of_queueing_again(
     first = await client.post("/api/full-pass", headers=auth_headers)
     second = await client.post("/api/full-pass", headers=auth_headers)
 
-    assert first.json() == {"total": 4, "queued": 4, "skipped": 0}
-    assert second.json() == {"total": 4, "queued": 0, "skipped": 4}
+    assert first.json() == {"total": 4, "queued": 4, "skipped": 0, "presence": {}}
+    assert second.json() == {"total": 4, "queued": 0, "skipped": 4, "presence": {}}
 
     jobs = (await session.execute(select(Job))).scalars().all()
     assert len(jobs) == 4
@@ -193,7 +194,7 @@ async def test_duplicate_dedupe_keys_within_one_pass_queue_once(
     await session.commit()
 
     response = await client.post("/api/full-pass", headers=auth_headers)
-    assert response.json() == {"total": 2, "queued": 1, "skipped": 1}
+    assert response.json() == {"total": 2, "queued": 1, "skipped": 1, "presence": {}}
     assert len((await session.execute(select(Job))).scalars().all()) == 1
 
 
@@ -208,12 +209,12 @@ async def test_a_done_job_does_not_block_a_new_pass(client, auth_headers, sessio
     await session.commit()
 
     response = await client.post("/api/full-pass", headers=auth_headers)
-    assert response.json() == {"total": 1, "queued": 1, "skipped": 0}
+    assert response.json() == {"total": 1, "queued": 1, "skipped": 0, "presence": {}}
 
 
 async def test_an_empty_library_reports_zeroes(client, auth_headers):
     response = await client.post("/api/full-pass", headers=auth_headers)
-    assert response.json() == {"total": 0, "queued": 0, "skipped": 0}
+    assert response.json() == {"total": 0, "queued": 0, "skipped": 0, "presence": {}}
 
 
 async def test_a_library_sized_pass_answers_inside_one_request(
@@ -239,7 +240,7 @@ async def test_a_library_sized_pass_answers_inside_one_request(
     response = await client.post("/api/full-pass", headers=auth_headers)
     elapsed = time.perf_counter() - started
 
-    assert response.json() == {"total": 15_000, "queued": 15_000, "skipped": 0}
+    assert response.json() == {"total": 15_000, "queued": 15_000, "skipped": 0, "presence": {}}
     print(f"\nfull pass over 15,000 items answered in {elapsed:.2f}s")
     # 60 s, not 10: the bound separates one set-based insert (seconds) from
     # a commit per item (minutes), and that is all it needs to separate. At
@@ -279,7 +280,7 @@ async def test_the_response_does_not_wait_on_the_webhook(
     response = await client.post("/api/full-pass", headers=auth_headers)
     elapsed = time.perf_counter() - started
 
-    assert response.json() == {"total": 4, "queued": 4, "skipped": 0}
+    assert response.json() == {"total": 4, "queued": 4, "skipped": 0, "presence": {}}
     assert not notifier.done.is_set(), (
         "the endpoint waited for the webhook before answering"
     )
@@ -334,7 +335,7 @@ async def test_the_response_body_is_unchanged(client, auth_headers, session):
 
     body = (await client.post("/api/full-pass", headers=auth_headers)).json()
 
-    assert set(body) == {"total", "queued", "skipped"}
+    assert set(body) == {"total", "queued", "skipped", "presence"}
     assert body["total"] == body["queued"] + body["skipped"]
 
 
@@ -354,3 +355,216 @@ async def test_a_second_press_opens_a_second_run(client, auth_headers, session):
     rows = (await session.execute(select(Run).order_by(Run.id))).scalars().all()
     assert len(rows) == 2
     assert all(row.status == "running" for row in rows)
+
+
+async def test_a_full_pass_marks_a_library_jellyfin_does_not_carry_absent(
+    client, auth_headers, session
+):
+    """spec §6: a dual registry with one library absent on Jellyfin records
+    `absent` once per library and never resolves those items there."""
+    from sqlalchemy import select
+    from autoposter.render import pipeline
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    photo = await seed_media_item(session, "rk-a", library="Photos", title="P")
+    render = await pipeline._get_or_create_render(session, photo, "poster", "/a/p.jpg")
+    render.status = "rendered"
+    await seed_media_item(session, "rk-b", library="Movies", title="M")
+    await session.commit()
+
+    client._transport.app.state.servers = Servers({
+        "plex": FakeMediaServer(name="plex", capabilities=PLEX_CAPS, libraries={"Movies", "Photos"}),
+        "jellyfin": FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS, libraries={"Movies"}),
+    })
+
+    body = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    # Counted per table (review minor 2): one ITEM's metadata row and one
+    # RENDER's delivery row, not an unreadable `2`.
+    assert body["presence"]["jellyfin"] == {
+        "metadata": {"absent": 1, "rearmed": 0},
+        "artwork": {"absent": 1, "rearmed": 0},
+    }
+    assert body["presence"]["plex"] == {
+        "metadata": {"absent": 0, "rearmed": 0},
+        "artwork": {"absent": 0, "rearmed": 0},
+    }
+    rows = (await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status, MetadataWrite.item_id)
+    )).all()
+    assert rows == [("jellyfin", "absent", photo.id)]
+    delivery = (await session.execute(
+        select(RenderDelivery.server, RenderDelivery.status)
+    )).one()
+    assert delivery == ("jellyfin", "absent")
+
+
+async def test_a_full_pass_survives_a_server_that_cannot_list_its_libraries(
+    client, auth_headers, session
+):
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    await seed_media_item(session, "rk-c", library="Movies", title="M")
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+
+    async def boom():
+        raise RuntimeError("down")
+
+    jf.library_names = boom
+    client._transport.app.state.servers = Servers({"jellyfin": jf})
+
+    response = await client.post("/api/full-pass", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["presence"] == {}
+    assert response.json()["queued"] == 1
+
+
+async def test_a_plex_only_pass_whose_sections_all_match_changes_nothing(
+    client, auth_headers, session
+):
+    """Review I5/T5: the binding constraint "Plex-only deployments see no
+    behaviour change beyond recorded rows". Every existing presence test here
+    runs with an empty registry and asserts `presence == {}`, which exercises
+    neither Plex's own `library_names()` nor the absent path on the identity
+    server -- so a Plex-only deployment's actual first pass was untested."""
+    from autoposter.render import pipeline
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    movie = await seed_media_item(session, "rk-p1", library="Movies", title="M")
+    render = await pipeline._get_or_create_render(session, movie, "poster", "/a/p.jpg")
+    render.status = "rendered"
+    await seed_media_item(session, "rk-p2", library="TV Shows", kind="show", title="S")
+    await session.commit()
+
+    client._transport.app.state.servers = Servers({
+        "plex": FakeMediaServer(
+            name="plex", capabilities=PLEX_CAPS, libraries={"Movies", "TV Shows"},
+        ),
+    })
+
+    body = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert body["presence"] == {"plex": {
+        "metadata": {"absent": 0, "rearmed": 0},
+        "artwork": {"absent": 0, "rearmed": 0},
+    }}
+    assert body["queued"] == 2
+    # Not one row in either table, and the render's roll-up untouched: the
+    # pass recorded nothing it did not have to.
+    assert (await session.execute(select(MetadataWrite))).scalars().all() == []
+    assert (await session.execute(select(RenderDelivery))).scalars().all() == []
+
+
+async def test_an_excluded_plex_section_becomes_absent_on_plex_itself(
+    client, auth_headers, session
+):
+    """The other half of the same decision: a section the operator excluded
+    after ingest no longer carries the item under the name the row records, so
+    spec §1's rule applies to the identity server like any other."""
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    retired = await seed_media_item(session, "rk-p3", library="Home Videos", title="H")
+    await seed_media_item(session, "rk-p4", library="Movies", title="M")
+    await session.commit()
+
+    client._transport.app.state.servers = Servers({
+        "plex": FakeMediaServer(name="plex", capabilities=PLEX_CAPS, libraries={"Movies"}),
+    })
+
+    body = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert body["presence"]["plex"]["metadata"] == {"absent": 1, "rearmed": 0}
+    rows = (await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status, MetadataWrite.item_id)
+    )).all()
+    assert rows == [("plex", "absent", retired.id)]
+
+
+async def test_a_full_pass_never_rebuilds_the_jellyfin_item_index(
+    client, auth_headers, session
+):
+    """Review I3: the pass invalidates every index and then asks each server
+    which libraries it carries. Answering that through `LibraryIndex.rebuild`
+    put the whole `/Items?recursive=true` enumeration -- every folder, the
+    entire library -- inside the request handler, and (because Plex's stamps
+    have already been issued) with a database transaction open throughout.
+    The folder list is all presence needs."""
+    import httpx
+
+    from autoposter.jellyfin.client import JellyfinApi, JellyfinClient
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    called: list[str] = []
+
+    async def handler(request):
+        called.append(request.url.path)
+        if request.url.path == "/Library/VirtualFolders":
+            return httpx.Response(200, json=[
+                {"Name": "Movies", "CollectionType": "movies",
+                 "Locations": ["/media/Movies"], "ItemId": "lib1"},
+            ])
+        return httpx.Response(200, json={"Items": []})
+
+    await seed_media_item(session, "rk-jf", library="Movies", title="M")
+    await session.commit()
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    jellyfin = JellyfinClient(
+        JellyfinApi(http, "https://jf.example", api_key="k", version="v"),
+        excluded_libraries=[], library_map={}, replace_thumb_with_backdrop=False,
+    )
+    client._transport.app.state.servers = Servers({"jellyfin": jellyfin})
+
+    async with http:
+        body = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert body["presence"]["jellyfin"] == {
+        "metadata": {"absent": 0, "rearmed": 0},
+        "artwork": {"absent": 0, "rearmed": 0},
+    }
+    assert called == ["/Library/VirtualFolders"], f"the pass listed items: {called}"
+
+
+async def test_a_reappearing_library_is_re_armed_through_the_endpoint(
+    client, auth_headers, session
+):
+    """Task 5's deferred minor: "flipped back to `pending` when the library
+    reappears" is one of the branch's binding constraints and was proven only
+    at the `apply_presence` unit level. Two posts through the real endpoint,
+    with the double's libraries changing in between."""
+    from autoposter.render import pipeline
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    photo = await seed_media_item(session, "rk-r1", library="Photos", title="P")
+    render = await pipeline._get_or_create_render(session, photo, "poster", "/a/p.jpg")
+    render.status = "rendered"
+    await session.commit()
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS, libraries={"Movies"})
+    client._transport.app.state.servers = Servers({"jellyfin": jf})
+
+    first = (await client.post("/api/full-pass", headers=auth_headers)).json()
+    assert first["presence"]["jellyfin"]["artwork"] == {"absent": 1, "rearmed": 0}
+
+    # The library map corrected, or the library mounted at last.
+    jf.libraries = {"Movies", "Photos"}
+    second = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert second["presence"]["jellyfin"] == {
+        "metadata": {"absent": 0, "rearmed": 1},
+        "artwork": {"absent": 0, "rearmed": 1},
+    }
+    delivery = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.detail, RenderDelivery.next_attempt_at)
+    )).one()
+    assert delivery.status == "pending" and delivery.detail is None
+    assert delivery.next_attempt_at is not None, "a re-armed row is due for the ordinary retry"
+    metadata = (await session.execute(select(MetadataWrite.status))).scalar_one()
+    assert metadata == "pending"

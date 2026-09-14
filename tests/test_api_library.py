@@ -9,7 +9,13 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ItemFacts, ManagedCollection, Render, RenderDelivery
+from autoposter.db.models import (
+    ItemFacts,
+    ManagedCollection,
+    MetadataWrite,
+    Render,
+    RenderDelivery,
+)
 
 from conftest import seed_media_item
 
@@ -392,6 +398,99 @@ async def test_item_detail_movie_has_no_parent(client, auth_headers, session):
     assert body["parent"] is None
     assert body["season_number"] is None
     assert body["episode_number"] is None
+
+
+async def test_item_detail_serves_both_outcome_tables_per_server(client, auth_headers, session):
+    item = await _item(session, "rk-srv", "Movie")
+    render = Render(item_id=item.id, art_kind="poster", asset_path="/a/p.jpg", status="rendered")
+    session.add(render)
+    await session.flush()
+    session.add(RenderDelivery(
+        render_id=render.id, server="jellyfin", status="failed",
+        detail="status: HTTPStatusError 400", attempts=8,
+        attempted_at=datetime(2026, 9, 14, tzinfo=UTC),
+    ))
+    session.add(MetadataWrite(
+        item_id=item.id, server="jellyfin", status="absent",
+        detail="library: not carried by this server",
+    ))
+    session.add(MetadataWrite(item_id=item.id, server="plex", status="written",
+                              written_at=datetime(2026, 9, 14, tzinfo=UTC)))
+    await session.commit()
+
+    body = (await client.get(f"/api/items/{item.id}", headers=auth_headers)).json()
+
+    assert [entry["server"] for entry in body["servers"]] == ["jellyfin", "plex"]
+    jellyfin = body["servers"][0]
+    assert jellyfin["metadata"]["status"] == "absent"
+    assert jellyfin["metadata"]["detail"] == "library: not carried by this server"
+    assert jellyfin["artwork"] == [{
+        "art_kind": "poster", "status": "failed",
+        "detail": "status: HTTPStatusError 400", "attempts": 8,
+        "attempted_at": "2026-09-14T00:00:00Z", "uploaded_at": None,
+        "next_attempt_at": None,
+    }]
+    plex = body["servers"][1]
+    assert plex["metadata"]["status"] == "written" and plex["artwork"] == []
+
+
+async def test_item_detail_names_a_server_known_only_from_its_artwork_row(
+    client, auth_headers, session
+):
+    """Task 6's deferred minor: the artwork loop's own `setdefault` never
+    created an entry in the test above, because every server there already had
+    a `metadata_writes` row. A server that has only ever been delivered
+    artwork -- `operations.write_to_<server>` off, or nothing to write yet --
+    still belongs on the page, with `metadata: None` rather than missing."""
+    item = await _item(session, "rk-art-only", "Movie")
+    render = Render(item_id=item.id, art_kind="poster", asset_path="/a/p.jpg", status="rendered")
+    session.add(render)
+    await session.flush()
+    session.add(RenderDelivery(render_id=render.id, server="jellyfin", status="uploaded"))
+    await session.commit()
+
+    body = (await client.get(f"/api/items/{item.id}", headers=auth_headers)).json()
+
+    assert [entry["server"] for entry in body["servers"]] == ["jellyfin"]
+    assert body["servers"][0]["metadata"] is None
+    assert [row["status"] for row in body["servers"][0]["artwork"]] == ["uploaded"]
+
+
+async def test_item_detail_orders_a_servers_artwork_rows_deterministically(
+    client, auth_headers, session
+):
+    """Review minor 7: the sort key is (art_kind, render_id) -- a TOTAL order,
+    so the page's row order does not depend on what order the delivery query
+    happened to return within a kind.
+
+    Note that the review's own example (two renders of one art kind for one
+    item) cannot exist: `uq_render_item_kind` forbids it, so the render id is
+    a tie-break that has nothing to tie today. What is pinned here is the
+    order itself, for an item with several kinds recorded out of order."""
+    item = await _item(session, "rk-kinds", "Movie")
+    renders = [
+        Render(item_id=item.id, art_kind=kind, asset_path=f"/a/{kind}.jpg", status="rendered")
+        for kind in ("poster", "background", "title_card")
+    ]
+    session.add_all(renders)
+    await session.flush()
+    for render in reversed(renders):
+        session.add(RenderDelivery(render_id=render.id, server="plex", status="uploaded"))
+    await session.commit()
+
+    body = (await client.get(f"/api/items/{item.id}", headers=auth_headers)).json()
+
+    assert [row["art_kind"] for row in body["servers"][0]["artwork"]] == [
+        "background", "poster", "title_card",
+    ]
+
+
+async def test_item_detail_servers_is_empty_when_nothing_was_ever_recorded(
+    client, auth_headers, session
+):
+    item = await _item(session, "rk-none", "Movie")
+    body = (await client.get(f"/api/items/{item.id}", headers=auth_headers)).json()
+    assert body["servers"] == []
 
 
 # --- /api/collections ---

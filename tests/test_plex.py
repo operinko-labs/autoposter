@@ -211,6 +211,20 @@ async def test_resolve_finds_a_movie_by_tmdb_id(server, tmp_path):
     assert item.imdb_id == "tt15239678"
 
 
+async def test_library_names_answers_non_excluded_movie_and_show_titles():
+    """The behavioural half of servers/presence.py's absent rule (spec §1):
+    a non-movie/show section and an excluded movie library must both be
+    absent from library_names() -- conformance's isinstance check alone
+    cannot prove this, since it never calls the method."""
+    movies = FakeSection("Movies", "/mnt/Media/Movies", [])
+    shows = FakeSection("Shows", "/mnt/Media/Shows", [], section_type="show")
+    music = FakeSection("Music", "/mnt/Media/Music", [], section_type="artist")
+    kids = FakeSection("Kids", "/mnt/Media/Kids", [])
+    server = FakeServer([movies, shows, music, kids])
+    client = PlexClient(server=server, excluded_libraries=["Kids"])
+    assert await client.library_names() == {"Movies", "Shows"}
+
+
 async def test_fetch_item_fetches_by_rating_key_as_int():
     marker = object()
     server = FakeServer([], items_by_key={12345: marker})

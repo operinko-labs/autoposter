@@ -80,6 +80,7 @@ from autoposter.db.models import (
     ManagedCollection,
     ManagedPlaylist,
     MediaItem,
+    MetadataWrite,
     Render,
     RenderDelivery,
     ScheduledRun,
@@ -91,6 +92,7 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue, enqueue_batch
 from autoposter.render.pipeline import ART_KINDS_FOR, manual_override_path
 from autoposter.scheduler.run_history import FULL_PASS_NAME, open_run
+from autoposter.servers.presence import read_presence, refresh_presence
 from autoposter.servers.registry import require_plex
 
 logger = logging.getLogger(__name__)
@@ -572,6 +574,61 @@ async def item_detail(
                     )
                 ).scalar_one_or_none()
 
+        # Spec §5: the item page carries both tables' rows per server. One
+        # query each, not one per server -- the page shows every server at
+        # once and there are at most two.
+        metadata_rows = (
+            await session.execute(
+                select(MetadataWrite)
+                .where(MetadataWrite.item_id == item_id)
+                .order_by(MetadataWrite.server)
+            )
+        ).scalars().all()
+        art_kind_by_render = {render.id: render.art_kind for render in renders}
+        by_server: dict[str, dict] = {}
+        for row in metadata_rows:
+            by_server.setdefault(row.server, {"metadata": None, "artwork": []})["metadata"] = {
+                "status": row.status,
+                "detail": row.detail,
+                "attempts": row.attempts,
+                "attempted_at": row.attempted_at,
+                "written_at": row.written_at,
+                "next_attempt_at": row.next_attempt_at,
+            }
+        for render_id, rows in deliveries_by_render.items():
+            for delivery in rows:
+                by_server.setdefault(
+                    delivery.server, {"metadata": None, "artwork": []}
+                )["artwork"].append((render_id, {
+                    "art_kind": art_kind_by_render[render_id],
+                    "status": delivery.status,
+                    "detail": delivery.detail,
+                    "attempts": delivery.attempts,
+                    "attempted_at": delivery.attempted_at,
+                    "uploaded_at": delivery.uploaded_at,
+                    "next_attempt_at": delivery.next_attempt_at,
+                }))
+        servers_block = [
+            {
+                "server": name,
+                "metadata": entry["metadata"],
+                # Sorted by art kind so the table does not reorder between
+                # page loads -- the same rule the delivery chips already keep.
+                # By render id within the kind, because an item CAN hold two
+                # renders of one kind (a re-render row) and the art kind alone
+                # left those two in whatever order the query returned, which
+                # is the exact instability the sort was added to remove. The
+                # id rides alongside rather than in the payload: it is a sort
+                # key here, not something the page shows.
+                "artwork": [
+                    row for _, row in sorted(
+                        entry["artwork"], key=lambda pair: (pair[1]["art_kind"], pair[0])
+                    )
+                ],
+            }
+            for name, entry in sorted(by_server.items())
+        ]
+
         refs = await refs_for_items(session, [item.id])
 
     return {
@@ -597,6 +654,7 @@ async def item_detail(
             "studio": facts.studio,
             "originally_available": facts.originally_available,
         },
+        "servers": servers_block,
         "renders": [
             {
                 "art_kind": render.art_kind,
@@ -1059,6 +1117,13 @@ async def run_full_pass(
     the same drain. That is the honest consequence of a button that is not
     idempotent (see above); reusing an already-open row instead would mean a
     single row nothing ever closed could suppress every future pass's history.
+
+    Presence first (spec §1). Every configured server is asked which
+    libraries it carries, and the items of a library it does not carry are
+    stamped `absent` in both outcome tables -- once per library, not once per
+    attempt. A server that cannot answer right now is skipped rather than
+    treated as carrying nothing, because "unreachable" and "does not have it"
+    are different facts and only one of them is worth writing down.
     """
     # Spec §4.4 step 6: a Jellyfin index built once and reused between passes
     # (see jellyfin/index.py) would otherwise answer a full pass with
@@ -1073,8 +1138,23 @@ async def run_full_pass(
         if invalidate is not None:
             invalidate()
 
+    # ASKED here, outside the transaction below, and stamped inside it. Each
+    # answer is a network round trip against a media server -- and the loop
+    # above has just invalidated Jellyfin's index, so its answer is a live
+    # call rather than a cached one. Asking inside the transaction held it
+    # open and idle for every server's round trip.
+    present = await read_presence(request.app.state.servers)
+
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
+        # Spec §1: presence is recomputed at the START of every full pass, in
+        # this same transaction as the run row and the enqueue -- so a pass
+        # either opens with its `absent` rows stamped or does not open at
+        # all. A library that has reappeared on a server flips its items back
+        # to `pending` here and they flow through the ordinary retry, which
+        # is what makes a library map change eventually self-correcting even
+        # without the catch-up.
+        presence_outcomes = await refresh_presence(session, present)
         rows = (
             await session.execute(
                 select(
@@ -1122,7 +1202,7 @@ async def run_full_pass(
             {"total": total, "queued": queued, "skipped": skipped},
         )
     )
-    return {"total": total, "queued": queued, "skipped": skipped}
+    return {"total": total, "queued": queued, "skipped": skipped, "presence": presence_outcomes}
 
 
 class ModeFilterBody(BaseModel):

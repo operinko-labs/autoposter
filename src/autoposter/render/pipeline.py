@@ -27,7 +27,9 @@ from autoposter.badges.values import (
 from autoposter.config.loader import config_for_library, render_version_for
 from autoposter.config.schema import Config, TextStyle
 from autoposter import deliveries
-from autoposter.db.models import ItemFacts, MediaItem, MediaItemServerRef, Render, RenderDelivery
+from autoposter.db.models import (
+    ItemFacts, MediaItem, MediaItemServerRef, MetadataWrite, Render, RenderDelivery,
+)
 from autoposter.db.refs import item_id_for
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
@@ -1639,14 +1641,35 @@ async def apply_metadata(
     has_parental = parental_categories is not None
     has_overrides = bool(overrides)
 
-    async def _write(name: str, target_server, ref_item: ResolvedItem) -> None:
+    async def _write(name: str, target_server, ref_item: ResolvedItem, absent_servers: set[str]) -> None:
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
         # facts above are still gathered and persisted for an exempt item,
         # because the badge stage reads the persisted row rather than this
         # write. `ref_item`'s OWN native_id/imdb_id/ref/labels, never
         # `item`'s: a Jellyfin ref is not a Plex one, even for the
         # same media_items row.
-        if target_server is None or not getattr(config.operations, f"write_to_{name}", False):
+        if target_server is None:
+            # Nothing is owed to a server this deployment does not have, so
+            # there is no row to write -- unlike the toggle below, which IS a
+            # deliberate decision about a server that exists (spec §1).
+            return
+        # `presence.apply_presence` (servers/presence.py) has already
+        # stamped `absent` for a library this server does not carry, and
+        # spec §1 is explicit that such an item is "never resolved there,
+        # and never retried" -- checked before the toggle below, because
+        # absent overrides even a write turned on: there is still nothing to
+        # write to. Without this, a resolve that finds the item anyway (a
+        # cross-library id match, a run that predates this pass's presence
+        # refresh) would flip the row back out of `absent` on the next write.
+        # `absent_servers` is read ONCE per item, by the caller below, rather
+        # than by a SELECT here on every one of this loop's calls.
+        if name in absent_servers:
+            return
+        if not getattr(config.operations, f"write_to_{name}", False):
+            await deliveries.record_metadata(
+                session, media_item_id, name, "skipped",
+                detail=f"config: operations.write_to_{name} is off",
+            )
             return
         # Each server's write stands or falls alone (spec §6.1). Without
         # this a Plex `apply_facts` failure aborts before Jellyfin is
@@ -1660,8 +1683,12 @@ async def apply_metadata(
             )
             if exempt is not None:
                 logger.info("%s: skipped writing %s: %s", target_server.name, ref_item.native_id, exempt)
+                await deliveries.record_metadata(
+                    session, media_item_id, name, "skipped", detail=exempt,
+                )
             else:
                 await target_server.apply_facts(ref_item.ref, facts, config.operations, parental_categories, overrides)
+                await deliveries.record_metadata(session, media_item_id, name, "written")
         except AttributeError:
             # The convention both of `process_item`'s containments follow:
             # a server missing `item_labels` or
@@ -1674,14 +1701,29 @@ async def apply_metadata(
                 "%s: metadata write failed for %s (%s)",
                 target_server.name, ref_item.native_id, deliveries.failure_detail(exc),
             )
+            # The whole point of spec §0: a warning in the log and a `done`
+            # job left no row anywhere saying the server still lacks this
+            # item's metadata. Now it does, and the pass in Phase B drains it.
+            await deliveries.record_metadata(
+                session, media_item_id, name, "pending",
+                detail=deliveries.failure_detail(exc), retry_in=deliveries.RETRY_SECONDS,
+            )
 
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:
-        await _write(item.server, server, item)
+        # One query per ITEM, not one per server per item: every `_write`
+        # call below shares this same set rather than each asking its own
+        # SELECT (review M1).
+        absent_servers = set((await session.execute(
+            select(MetadataWrite.server).where(
+                MetadataWrite.item_id == media_item_id, MetadataWrite.status == "absent",
+            )
+        )).scalars())
+        await _write(item.server, server, item, absent_servers)
         if servers is not None and resolved_on is not None:
             for name, resolved_item in resolved_on.items():
                 if name == item.server:
                     continue  # already written just above, via `server`
-                await _write(name, servers.get(name), resolved_item)
+                await _write(name, servers.get(name), resolved_item, absent_servers)
 
     # Row 269. A released sort position is acted on ONCE: the clear above
     # was sent -- or the item is exempt, row 99's own ruling for its DELETE
@@ -1787,11 +1829,21 @@ async def compose_badged_bytes(
     facts=None,
     solo_delivery: tuple[str, object, ServerItemRef] | None = None,
     force: bool = False,
+    out: dict | None = None,
 ) -> bytes | None:
     """Compose one render's badged bytes, or ``None`` when there is nothing to
     compose -- badges off for this library, a background (never badged), a
     render that never produced a base image, or a fingerprint that has not
     moved since the last successful delivery (spec §5: "render once").
+
+    ``out``, when given, has ``out["fingerprint"]`` set to the fingerprint
+    the returned bytes were actually composed under. Only the ``force=True``
+    caller needs it: a forced compose deliberately does NOT write
+    ``render.badge_fingerprint`` (see the comment on that branch below), so
+    it is the one caller for which the render's stored fingerprint is by
+    construction not the one it is holding -- and recording the stored one
+    against those bytes is what would make a server holding different
+    artwork read as up to date to the catch-up.
 
     The COMPOSE half of the old, single-server ``apply_badges``: it lives
     here, once per render; ``deliver`` (below) fans the
@@ -2009,7 +2061,7 @@ async def compose_badged_bytes(
             session, config, solo_server, solo_name, solo_ref, render, fingerprint,
         ):
             render.badge_fingerprint = fingerprint
-            await deliveries.record(session, render.id, solo_name, "uploaded")
+            await deliveries.record(session, render.id, solo_name, "uploaded", fingerprint=fingerprint)
             # `deliver` rolls up and commits only what IT
             # recorded, and this shortcut's `uploaded` is recorded here,
             # before `deliver` ever sees the render. So the roll-up and the
@@ -2058,6 +2110,8 @@ async def compose_badged_bytes(
         # to every server to get back to the one it did.
         render.badge_fingerprint = fingerprint
         await session.flush()
+    if out is not None:
+        out["fingerprint"] = fingerprint
     return data
 
 
@@ -2204,13 +2258,19 @@ async def deliver(
                     )
                 ).scalar_one_or_none()
                 if existing_status in (None, "pending", "failed"):
-                    await deliveries.record(session, render.id, name, "pending", retry_in=0)
+                    # A re-arm, not an attempt: this pass composed no new
+                    # bytes for this server, so nothing was actually tried
+                    # against it -- only the retry pass below actually
+                    # delivers, and that is where the budget is spent.
+                    await deliveries.record(
+                        session, render.id, name, "pending", retry_in=0, count_attempt=False,
+                    )
                     recorded = True
                 continue
             if await _already_delivered(
                 session, library_config, server, name, ref, render, render.badge_fingerprint,
             ):
-                await deliveries.record(session, render.id, name, "uploaded")
+                await deliveries.record(session, render.id, name, "uploaded", fingerprint=render.badge_fingerprint)
                 recorded = True
                 continue
             lock = library_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities
@@ -2222,7 +2282,7 @@ async def deliver(
                     session, render.id, name, "failed", detail=deliveries.failure_detail(exc),
                 )
             else:
-                await deliveries.record(session, render.id, name, "uploaded")
+                await deliveries.record(session, render.id, name, "uploaded", fingerprint=render.badge_fingerprint)
             recorded = True
         else:
             exc = misses.get(name)
@@ -2256,6 +2316,7 @@ async def deliver(
                 continue
             await deliveries.record(
                 session, render.id, name, "pending", retry_in=deliveries.RETRY_SECONDS,
+                count_attempt=False,
             )
             recorded = True
     if not recorded:

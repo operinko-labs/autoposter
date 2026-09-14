@@ -1626,6 +1626,17 @@ async def test_a_single_upload_enabled_server_skips_compose_on_matching_provenan
     assert poster.upload_status == "uploaded"
     assert poster.badge_fingerprint == fingerprint
     assert plex.uploads == [], "the real upload must not run either -- this is adoption, not a copy"
+    # The adoption shortcut's own `uploaded` row must carry the fingerprint
+    # provenance just matched -- otherwise a later catch-up reads it as
+    # unconfirmed and re-uploads adopted artwork on every run.
+    delivery_fingerprint = (
+        await session.execute(
+            select(RenderDelivery.fingerprint).where(
+                RenderDelivery.render_id == poster.id, RenderDelivery.server == "plex",
+            )
+        )
+    ).scalar_one()
+    assert delivery_fingerprint == poster.badge_fingerprint
 
 
 async def test_a_failed_compose_after_a_provenance_mismatch_leaves_the_fingerprint_untouched(
@@ -2016,6 +2027,13 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
             await session.execute(select(RenderDelivery).where(RenderDelivery.render_id == poster.id))
         ).scalars()
     } == {("plex", "uploaded"), ("jellyfin", "failed")}
+    first_pass_attempts = (
+        await session.execute(
+            select(RenderDelivery.attempts).where(
+                RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin",
+            )
+        )
+    ).scalar_one()
 
     # The second pass, with the upload no longer failing and the fingerprint
     # unchanged: no image work, no upload from `deliver` itself, and the
@@ -2027,7 +2045,7 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     assert len(plex.uploads) == 1 and jf.uploads == []
     row = (
         await session.execute(
-            select(RenderDelivery.status, RenderDelivery.next_attempt_at).where(
+            select(RenderDelivery.status, RenderDelivery.next_attempt_at, RenderDelivery.attempts).where(
                 RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin",
             )
         )
@@ -2037,6 +2055,10 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     # under it). That the stamp is DUE is proved behaviourally instead, by
     # the retry pass below reporting the row as `1 due`.
     assert row.status == "pending" and row.next_attempt_at is not None
+    # A re-arm is not an attempt: nothing was actually tried against
+    # jellyfin this pass (no compose, no upload), so the budget this row's
+    # `failed` outcome spent must not move again here.
+    assert row.attempts == first_pass_attempts
 
     summary = await deliveries.retry_pending_deliveries(
         session, servers, config_with_badges, now=datetime.now(timezone.utc),
@@ -2220,3 +2242,306 @@ async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
         )
     ).scalar_one()
     assert row == "pending"
+
+
+class _MinimalTMDBFacts:
+    """A ``tmdb_facts`` stub returning one populated field -- just enough for
+    ``apply_metadata``'s write gate (``facts.is_empty()``) to admit the
+    write, matching the fixture classes ``test_pipeline_facts.py`` already
+    uses for the same reason. These tests are about the WRITE's outcome, not
+    what TMDb said, so the value itself is arbitrary."""
+
+    async def movie(self, tmdb_id):
+        return GatheredFacts(audience_rating=6.3, sources={"audience_rating": "tmdb"})
+
+
+async def test_a_failed_metadata_write_is_recorded_pending_with_its_class_name(
+    session, config_with_badges, monkeypatch
+):
+    """spec §1: the per-server write records instead of only logging."""
+    import httpx
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    response = httpx.Response(400, request=httpx.Request("POST", "https://jf.internal/Items/1"))
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.HTTPStatusError("bad", request=response.request, response=response)
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    item = resolved("jellyfin", "j1")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.server == "jellyfin" and row.status == "pending"
+    assert row.detail == "status: HTTPStatusError 400"
+    assert row.next_attempt_at is not None and row.attempts == 1
+    assert "jf.internal" not in (row.detail or "")
+
+
+async def test_a_successful_write_is_recorded_written(session, config_with_badges):
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    item = resolved("jellyfin", "j2")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.status == "written" and row.written_at is not None and row.attempts == 0
+
+
+async def test_the_write_toggle_being_off_still_says_so_on_the_row(session, config_with_badges):
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = False
+    item = resolved("jellyfin", "j3")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.status == "skipped"
+    assert row.detail == "config: operations.write_to_jellyfin is off"
+    assert jf.facts_written == []
+
+
+async def test_an_exemption_is_recorded_skipped_with_its_reason(session, config_with_badges):
+    """Sibling of the toggle-off case: an exemption is a different reason on
+    the same `skipped` status (spec §1), and must not fall through to a write."""
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS, labels=["autoposter-exempt"])
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    config_with_badges.operations.ignore_labels = ["autoposter-exempt"]
+    item = resolved("jellyfin", "j4")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.status == "skipped" and row.detail
+    assert jf.facts_written == []
+
+
+async def test_a_server_absent_from_the_registry_gets_no_row(session, config_with_badges):
+    """`target_server is None`: there is nothing to be owed to a server this
+    deployment does not have (spec §1's closing sentence)."""
+    from sqlalchemy import select
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from media_server_doubles import resolved
+
+    config_with_badges.operations.enabled = True
+    item = resolved("plex", "p1")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, None,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    rows = (await session.execute(select(MetadataWrite))).scalars().all()
+    assert rows == []
+
+
+async def test_an_absent_row_is_left_alone_by_a_later_write(session, config_with_badges):
+    """spec §1: a library `presence.apply_presence` has already stamped
+    `absent` for this item/server owes it nothing, even if this pass's own
+    resolution found the item anyway -- the row must not flip back out of
+    `absent` (Task 3's `presence.py`, `ABSENT_DETAIL`)."""
+    from sqlalchemy import select
+    from autoposter import deliveries
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from autoposter.servers.presence import ABSENT_DETAIL
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    item = resolved("jellyfin", "j5")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    await deliveries.record_metadata(session, media_item.id, "jellyfin", "absent", detail=ABSENT_DETAIL)
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    row = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert row.status == "absent" and row.detail == ABSENT_DETAIL
+    assert jf.facts_written == [], "an absent row must never be written to"
+
+
+async def test_a_dual_registry_pass_writes_metadata_written_and_pending_per_server(
+    session, config_with_badges, monkeypatch,
+):
+    """Task 4 review I1: the branch matrix above is exercised directly against
+    `apply_metadata`; this proves the same outcomes through the real entry
+    point, `process_item`, on a dual registry -- Plex accepts the write,
+    Jellyfin's `apply_facts` raises -- and that the artwork path (an
+    unrelated seam) still completes for both servers regardless."""
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.operations.write_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers()
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise RuntimeError("jellyfin refused it")
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    poster = next(r for r in renders if r.art_kind == "poster")
+    assert poster.upload_status == "uploaded", "the artwork path must still complete for both servers"
+    assert plex.uploads and jf.uploads
+    from autoposter.db.models import MetadataWrite
+
+    rows = {row.server: row for row in (await session.execute(select(MetadataWrite))).scalars()}
+    assert rows["plex"].status == "written"
+    assert rows["jellyfin"].status == "pending"
+    assert rows["jellyfin"].attempts == 1
+    assert rows["jellyfin"].detail == "error: RuntimeError"
+
+
+async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
+    session, monkeypatch,
+):
+    """Task 4 review I1's second case: the same guard as the direct-call
+    absent test above, now proven through `process_item` -- presence has
+    already stamped Jellyfin's row `absent` for this item, and a pass that
+    resolves it there anyway (this double still has it in `jf.items`) must
+    never call `apply_facts` on Jellyfin or move the row off `absent`."""
+    from autoposter import deliveries
+    from autoposter.db.models import MetadataWrite
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config = load_config(EXAMPLE)
+    config.operations.write_to_jellyfin = True
+    # This test is about the metadata write loop, not badges -- disabled so
+    # the badge stage never runs at all (the established pattern above, in
+    # test_metadata_fan_out_reaches_every_resolved_server_with_its_own_ref).
+    config.badges.enabled = False
+    servers, plex, jf = _two_servers()
+    plex_item = plex.items[INTENT.dedupe_key]
+
+    media_item = await pipeline_module._upsert_media_item(session, plex_item)
+    await deliveries.record_metadata(session, media_item.id, "jellyfin", "absent", detail=ABSENT_DETAIL)
+    await session.commit()
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    await pipeline_module.process_item(
+        session, config, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    assert jf.facts_written == [], "an absent row must never be written to, even through the real pass"
+    row = (
+        await session.execute(
+            select(MetadataWrite).where(
+                MetadataWrite.item_id == media_item.id, MetadataWrite.server == "jellyfin",
+            )
+        )
+    ).scalar_one()
+    assert row.status == "absent" and row.detail == ABSENT_DETAIL
+
+
+async def test_a_second_pass_leaves_an_absent_jellyfin_artwork_row_untouched(
+    session, config_with_badges, monkeypatch,
+):
+    """The artwork half of the same rule, with the badge gate ON (review T1).
+
+    The metadata test above runs with `badges.enabled = False`, so `deliver`
+    returns at its first guard and only the metadata guard is proven. Here
+    badges and `upload_to_jellyfin` are both on and Jellyfin does not have
+    the item, which is the exact shape presence stamps `absent` for: the
+    pass composes bytes, `deliver` reaches its miss branch, and the row must
+    still be `absent` afterwards -- with no retry horizon -- rather than
+    flipped back to `pending` for the next pass's presence step to re-stamp.
+    """
+    from sqlalchemy import update
+
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers(jelly_has=False)
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+
+    # What a full pass's opening writes, set-shaped, before the jobs run
+    # (servers/presence.py): the row this pass left `pending` is reclassified.
+    await session.execute(
+        update(RenderDelivery)
+        .where(RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin")
+        .values(status="absent", detail=ABSENT_DETAIL, next_attempt_at=None, attempts=0)
+    )
+    await session.commit()
+
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+    )
+
+    rows = {
+        d.server: d
+        for d in (
+            await session.execute(
+                select(RenderDelivery).where(RenderDelivery.render_id == poster.id)
+            )
+        ).scalars()
+    }
+    assert rows["jellyfin"].status == "absent", "the pass flipped an absent row back"
+    assert rows["jellyfin"].detail == ABSENT_DETAIL
+    assert rows["jellyfin"].next_attempt_at is None, "an absent row must never gain a retry horizon"
+    assert jf.uploads == [], "nothing is ever delivered to a server that does not carry the library"
+    assert rows["plex"].status == "uploaded", "the other server is unaffected"

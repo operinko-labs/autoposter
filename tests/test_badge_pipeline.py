@@ -606,3 +606,19 @@ async def test_the_overlay_never_writes_the_operator_s_value_into_item_facts(
         await session.execute(_select(ItemFacts).where(ItemFacts.item_id == item_id))
     ).scalar_one()
     assert stored.critic_rating == 4.9
+
+
+async def test_compose_reports_back_the_fingerprint_it_composed(session, config_with_badges):
+    """Review I1: `out["fingerprint"]` is where `retry_pending_deliveries`
+    gets the value it records against the bytes it just uploaded. On the
+    ordinary path it is the same fingerprint the column receives -- which is
+    what makes it the render's own answer rather than a second, independently
+    computed one that could drift from it."""
+    item, render = await _render(session)
+    out: dict = {}
+    data = await compose_badged_bytes(
+        session, config_with_badges, render, item,
+        server=FakeServer(FakePlexItem()), ref=REF, facts=Facts(), out=out,
+    )
+    assert data is not None
+    assert out["fingerprint"] == render.badge_fingerprint
