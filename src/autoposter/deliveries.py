@@ -643,6 +643,9 @@ async def retry_pending_deliveries(
                     _tally(server_name, "failed")
                     continue
                 except ItemNotFound:
+                    # The ONE wait: the item is simply not on this server
+                    # yet, which is not an attempt at the write (spec §2's
+                    # "a resolution miss").
                     await record_metadata(
                         session, item_id, server_name, "pending",
                         retry_in=RETRY_SECONDS, count_attempt=False,
@@ -651,17 +654,30 @@ async def retry_pending_deliveries(
                     _tally(server_name, "pending")
                     continue
                 except Exception as exc:
+                    # A transport error is NOT a resolution miss: the server
+                    # is down, and spec §2's "nothing retries forever" has to
+                    # hold for the production failure mode it was written
+                    # for. Counted and exhaustible, exactly like the artwork
+                    # twin above -- the same event must not spend budget on
+                    # one table and not the other, or a Jellyfin that is down
+                    # reads `0 failed` on the metadata half forever.
                     logger.warning(
                         "metadata retry on %s failed to resolve (%s)",
                         server_name, failure_detail(exc),
                     )
-                    await record_metadata(
+                    attempts = await record_metadata(
                         session, item_id, server_name, "pending",
                         detail=failure_detail(exc), retry_in=RETRY_SECONDS,
-                        count_attempt=False,
                     )
-                    still_pending += 1
-                    _tally(server_name, "pending")
+                    if attempts >= max_attempts:
+                        await record_metadata(
+                            session, item_id, server_name, "failed",
+                            detail=failure_detail(exc),
+                        )
+                        _tally(server_name, "failed")
+                    else:
+                        still_pending += 1
+                        _tally(server_name, "pending")
                     continue
 
                 await upsert_server_ref(session, item_id, resolved_item)

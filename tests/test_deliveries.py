@@ -135,6 +135,88 @@ async def test_transport_error_during_resolve_stays_pending(session, config_with
     assert await deliveries.rollup(session, render.id) == "pending"
 
 
+async def test_a_transport_error_at_resolve_spends_budget_on_both_tables(
+    session, config_with_badges
+):
+    """Review I2: the same event -- the server is unreachable at resolve time
+    -- spent an attempt on `render_deliveries` and none on `metadata_writes`,
+    so spec §2's "nothing retries forever" did not hold for metadata in the
+    one production failure mode it was written for. Only `ItemNotFound`, a
+    real resolution miss, is a wait."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    item = await _item_with_facts(session, native="j-i2")
+    render = await pipeline._get_or_create_render(session, item, "poster", "/a/p.jpg")
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(
+        name="jellyfin", capabilities=JELLYFIN_CAPS,
+        raise_on_resolve=httpx.ConnectError("jellyfin is down"),
+    )
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+
+    await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges,
+        now=datetime.now(timezone.utc) + timedelta(hours=12),
+    )
+
+    artwork = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.attempts, RenderDelivery.detail)
+    )).one()
+    metadata = (await session.execute(
+        select(MetadataWrite.status, MetadataWrite.attempts, MetadataWrite.detail)
+    )).one()
+    # Both seeded rows were themselves counted `pending`s, so the second
+    # attempt is this pass's -- on BOTH tables.
+    assert artwork.status == "pending" and artwork.attempts == 2
+    assert metadata.status == "pending" and metadata.attempts == 2
+    assert artwork.detail == metadata.detail == "connect: ConnectError"
+
+
+async def test_an_unreachable_server_exhausts_a_metadata_rows_budget(
+    session, config_with_badges
+):
+    """The other half of I2: counting is only worth anything if the row can
+    then reach `failed`, which is what makes an unreachable server visible in
+    the run history rather than an endless `N pending, 0 failed`."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    config_with_badges.scheduler.delivery_attempts = 2
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    item = await _item_with_facts(session, native="j-i2b")
+    await deliveries.record_metadata(
+        session, item.id, "jellyfin", "pending", retry_in=0, count_attempt=False,
+    )
+    await session.commit()
+    jf = FakeMediaServer(
+        name="jellyfin", capabilities=JELLYFIN_CAPS,
+        raise_on_resolve=httpx.ConnectError("jellyfin is down"),
+    )
+    servers = Servers({"jellyfin": jf})
+
+    await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges,
+        now=datetime.now(timezone.utc) + timedelta(hours=12),
+    )
+    second = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges,
+        now=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+
+    row = (await session.execute(
+        select(MetadataWrite.status, MetadataWrite.detail, MetadataWrite.next_attempt_at)
+    )).one()
+    assert row.status == "failed" and row.detail == "connect: ConnectError"
+    assert row.next_attempt_at is None
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed" in second
+
+
 async def test_identity_resolution_wait_leaves_the_budget_alone(session, config_with_badges):
     """The identity server (Plex) failing to resolve is a wait for the
     DELIVERY server's row too -- the branch's own comment says it is "exactly
