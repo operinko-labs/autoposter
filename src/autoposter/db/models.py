@@ -974,6 +974,20 @@ class ConfigOverride(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    #: What the store knows about ITSELF, never about the configuration.
+    #:
+    #: ``format`` is 2 once the row holds the whole document rather than a
+    #: delta (config/overrides.py's ``STORE_FORMAT``); an empty object means
+    #: the row predates that and is a delta. ``restart_paths`` is the list of
+    #: frozen paths saved since the last restart -- kept here rather than in
+    #: memory so it survives a reload and shows to a second admin (spec §4).
+    #:
+    #: Deliberately not inside ``document``: everything in that column is
+    #: validated by ``build_config`` and an extra key there would be an
+    #: "unknown setting" 422 on the next save.
+    meta: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
 
 class ConfigOverrideSnapshot(Base):
@@ -999,12 +1013,43 @@ class ConfigOverrideSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     document: Mapped[dict] = mapped_column(JSONB, nullable=False)
     path_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 1 for a delta taken before the store became the document, 2 for a
+    #: document. Restoring a format-1 snapshot re-runs the merge the delta
+    #: described (api/routes.py's restore), which is the whole of spec §8's
+    #: "every existing snapshot stays restorable".
+    format: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
     # save | apply | restore | import -- what the write that displaced this
     # document was doing. Not nullable: every writer knows its own reason, and
     # a nullable column would only ever record that somebody forgot.
     reason: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class StoredSecret(Base):
+    """One secret the operator set from the UI, encrypted.
+
+    The NAME is the environment variable name every other reader of this
+    service speaks in (``AUTOPOSTER_TMDB_TOKEN``), so the store, the resolver
+    and the UI all key on one vocabulary. The VALUE is a Fernet token under
+    the key in the state directory (``config/secret_store.py``): the database
+    alone cannot reveal it, which is the trade spec §3 records -- losing the
+    volume loses the key and therefore every stored secret.
+
+    No ``source``, no ``set_by``, no history. What the UI needs is the name
+    and where the running value came from, and the second is computed by the
+    resolver rather than stored.
+    """
+
+    __tablename__ = "secrets"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
