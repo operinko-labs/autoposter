@@ -15,9 +15,9 @@ process that will not start and will not offer to be fixed.
 
 CONFIGURED means all three, in this order:
 
-1. every hard secret resolves -- the environment first, the state file second
-   (``config/schema.resolve_secret_values``), with an EMPTY value counting as
-   absent on both sides;
+1. every hard secret resolves -- the stored row, then the state file, then the
+   environment (``config/schema.resolve_secret_values``), with an EMPTY value
+   counting as absent on every layer;
 2. a config document is readable -- the ``AUTOPOSTER_CONFIG`` path when that
    file exists, the state directory's ``autoposter.yaml`` otherwise
    (``config/loader.config_document_path``);
@@ -26,7 +26,10 @@ CONFIGURED means all three, in this order:
    plex-only deployment's ``AUTOPOSTER_PLEX_TOKEN``, a jellyfin-only one's
    ``AUTOPOSTER_JELLYFIN_APIKEY``, both if both are configured.
 
-The database is NOT consulted. A deployment that has both halves boots exactly
+The database is NOT part of the decision. It is read once, for the stored
+secrets (``stored_secrets_for_boot`` below), and every failure of that read --
+no database, no table yet, no key -- answers an empty map rather than stopping
+anything. A deployment that has both halves boots exactly
 as it did before this module existed, including when postgres is down: the
 migration fails, the process exits non-zero, the orchestrator restarts it
 until the database answers. Demoting that boot into setup mode instead would
@@ -59,6 +62,7 @@ There are four outcomes, and the wizard answers two of them:
   paths were empty.
 """
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -83,6 +87,48 @@ logger = logging.getLogger(__name__)
 # its uvicorn --reload line, and that is now the only difference between the
 # two boots.
 DEFAULT_COMMAND = (sys.executable, "-m", "autoposter.main")
+
+
+def stored_secrets_for_boot(database_url: str) -> dict[str, str]:
+    """The secrets table, read once, before anything else exists.
+
+    Answers ``{}`` for every failure there is: no database, a database whose
+    migrations have not run (the table does not exist on a first boot), an
+    unreadable key, an unreachable host. None of them may stop a boot, because
+    the layers beneath the store -- the state file and the environment -- are
+    how every deployment that predates this one is configured, and a boot that
+    refused over an empty table would break all of them at once.
+
+    A private event loop, because this frame has none: ``main`` below is
+    synchronous and runs before uvicorn. ``asyncio.run`` owns and closes the
+    loop, so nothing is left behind for the ``os.execv`` that follows.
+    """
+    if not database_url:
+        return {}
+
+    async def read() -> dict[str, str]:
+        from autoposter.config.secret_store import load_stored_secrets
+        from autoposter.db.base import make_engine, make_session_factory
+
+        engine = make_engine(database_url)
+        try:
+            factory = make_session_factory(engine)
+            async with factory() as session:
+                return await load_stored_secrets(session)
+        finally:
+            await engine.dispose()
+
+    try:
+        return asyncio.run(read())
+    except Exception as exc:
+        # The CLASS NAME only: the URL carries a password. INFO, not WARNING:
+        # on a first boot this is the ordinary case.
+        logger.info(
+            "the stored secrets could not be read (%s); the state file and the "
+            "environment answer instead",
+            type(exc).__name__,
+        )
+        return {}
 
 
 def is_configured(resolved: dict[str, str]) -> bool:
@@ -140,8 +186,10 @@ def _export(resolved: dict[str, str]) -> None:
     """Publish the resolved names into this process's environment.
 
     A plain assignment, not ``setdefault``: ``resolved`` already encodes the
-    precedence rule (environment first, file second), so ``setdefault`` would
-    re-implement it -- and get it wrong for the one case that matters. A name
+    precedence rule (the stored row, then the state file, then the
+    environment), so ``setdefault`` would re-implement it -- and get it wrong
+    for the one case that matters, twice over now that the environment is the
+    bottom layer rather than the top one. A name
     that is present but EMPTY (``AUTOPOSTER_DATABASE_URL=`` in a copied .env,
     a blanked GitOps secret) counts as ABSENT everywhere else in this row --
     ``resolve_secret_values``, ``missing_hard_secret_names``, ``Secrets.load``
@@ -180,7 +228,13 @@ def main(argv: list[str] | None = None) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     command = list(argv if argv is not None else sys.argv[1:])
+    # The database URL itself can never come from the store: reading the store
+    # needs it. So the first resolve is the two lower layers, and the second
+    # adds the store on top of them.
     resolved = resolve_secret_values()
+    stored = stored_secrets_for_boot(resolved.get("AUTOPOSTER_DATABASE_URL", ""))
+    if stored:
+        resolved = resolve_secret_values(stored)
     if not is_configured(resolved):
         if not missing_hard_secret_names(resolved) and config_document_path() is None:
             # Credentials but no document. `is_configured` has already logged
@@ -205,8 +259,9 @@ def main(argv: list[str] | None = None) -> None:
         # harder here: uvicorn.run is called FROM this frame and does not return
         # for the whole life of the wizard, so a traceback renderer that prints
         # locals would dump every partially-resolved plaintext credential this
-        # deployment does already have.
-        del resolved
+        # deployment does already have. `stored` holds the same plaintext one
+        # layer up and goes with it.
+        del resolved, stored
         uvicorn.run(
             build_setup_app(), host="0.0.0.0", port=8080, timeout_graceful_shutdown=10
         )
@@ -221,12 +276,13 @@ def main(argv: list[str] | None = None) -> None:
     # Set unconditionally, including to "": an env-configured boot publishes
     # an explicit empty marker rather than no marker, and both read as "no
     # name came from the file" downstream. Names, never values.
-    os.environ[STATE_FILE_NAMES_ENV] = ",".join(state_file_secret_names())
+    os.environ[STATE_FILE_NAMES_ENV] = ",".join(state_file_secret_names(stored))
     _export(resolved)
     # The plaintext credentials leave this frame as soon as they are published:
     # any traceback renderer that prints locals (pytest --tb=long, an error
-    # reporter added later) would otherwise dump all fourteen of them.
-    del resolved
+    # reporter added later) would otherwise dump all fourteen of them, and
+    # `stored` holds the same plaintext one layer up.
+    del resolved, stored
     _migrate()
     if command:
         os.execvp(command[0], command)

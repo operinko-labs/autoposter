@@ -67,11 +67,33 @@ _SOFT_SECRET_ENV = {
 }
 
 
-def resolve_secret_values() -> dict[str, str]:
-    """Every secret env NAME that resolves to a value: environment first, the
-    state file second. Names that resolve to nothing are absent from the map.
+#: Every secret NAME this service reads, in the maps' own order. One list,
+#: because four callers iterate it: the resolver, the source map, ``boot``'s
+#: export and the secrets route.
+SECRET_NAMES: tuple[str, ...] = (
+    *_SECRET_ENV.values(),
+    *_SERVER_SECRET_ENV.values(),
+    *_SOFT_SECRET_ENV.values(),
+)
 
-    An EMPTY environment value counts as absent, here and in every other
+
+def resolve_secret_values(stored: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Every secret env NAME that resolves to a value.
+
+    Precedence: the STORED row, then the STATE FILE, then the ENVIRONMENT
+    (spec section 3, the operator's own order). The stored layer is new; the
+    other two have SWAPPED, and that is deliberate rather than incidental --
+    what an operator sets from the UI or the wizard must not be shadowed by a
+    variable they cannot see from the page they set it on.
+
+    "A deployment that never stores a secret sees no difference" still holds,
+    because no existing deployment has a name with a value on both layers: the
+    wizard writes to the state file only the names the environment did not
+    resolve (``api/setup.py``'s staging), so for every real deployment exactly
+    one of the two answers any given name and the order between them cannot be
+    observed.
+
+    An EMPTY value counts as absent at every layer, here and in every other
     reader of this map (``missing_hard_secret_names``, ``Secrets.load``, and
     ``boot._export``, which overwrites an empty value with the resolved one).
     ``AUTOPOSTER_DATABASE_URL=`` in a copied .env or a blanked GitOps secret
@@ -79,35 +101,83 @@ def resolve_secret_values() -> dict[str, str]:
     the reader that decides the boot mode and the writer that publishes the
     environment alembic then reads.
 
+    ``stored`` is passed IN rather than read here, and that is not an accident:
+    this function is synchronous and is called from inside running event loops
+    (``api/setup.py``'s ``_effective``), where an ``asyncio.run`` bridge raises
+    outright. The one caller that can read the table -- ``boot``, before any
+    loop exists -- does so and hands the map down. A caller with no session
+    passes nothing and gets the state file then the environment, which is the
+    right answer when no store is reachable.
+
     Keyed by environment variable name rather than by model field because its
     callers speak in environment variables: ``boot`` exports these, and
     ``alembic/env.py`` reads one of them directly out of ``os.environ``.
 
-    The file is opened only when the environment does not carry every hard
-    name -- a deployment whose environment is complete never opens it at all,
-    which is what makes the GitOps/ExternalSecrets exemption true by
-    construction. Once opened, a state directory with no file in it reads as
-    an empty mapping rather than failing. The corollary is that on an
-    env-complete deployment the file is unreachable for the SOFT names too: a
-    wizard-written ``AUTOPOSTER_API_KEY`` would be ignored there. That is
-    harmless because such a deployment never runs the wizard, and it is said
-    here so no later caller assumes otherwise.
+    The env-complete short-circuit is kept for the case it was written for: a
+    deployment whose environment carries every hard name and that stores
+    nothing never opens the state file at all. Once opened, a state directory
+    with no file in it reads as an empty mapping rather than failing. The
+    corollary is that on an env-complete deployment the file is unreachable
+    for the SOFT names too: a wizard-written ``AUTOPOSTER_API_KEY`` would be
+    ignored there. That is harmless because such a deployment never runs the
+    wizard, and it is said here so no later caller assumes otherwise. The swap
+    leaves it untouched: such a deployment has no file to outrank the
+    environment with.
     """
-    env_names = (*_SECRET_ENV.values(), *_SERVER_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
+    stored = stored or {}
     # A deployment whose environment carries every hard name never opens the
     # file at all -- not merely never uses its values. That is what makes the
     # GitOps/ExternalSecrets exemption true by construction: there is no file
     # read for that deployment to fail, race, or be denied by a mount that
     # is not there.
-    if all(os.environ.get(name) for name in _SECRET_ENV.values()):
-        return {name: os.environ[name] for name in env_names if os.environ.get(name)}
+    if not stored and all(os.environ.get(name) for name in _SECRET_ENV.values()):
+        return {name: os.environ[name] for name in SECRET_NAMES if os.environ.get(name)}
     from_file = read_secrets_file(secrets_file_path())
     resolved: dict[str, str] = {}
-    for env_name in env_names:
-        value = os.environ.get(env_name) or from_file.get(env_name, "")
+    for env_name in SECRET_NAMES:
+        value = (
+            stored.get(env_name)
+            or from_file.get(env_name, "")
+            or os.environ.get(env_name, "")
+        )
         if value:
             resolved[env_name] = value
     return resolved
+
+
+def secret_sources(stored: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Where each secret's running value comes from. Names and sources only.
+
+    One of ``stored``, ``state file``, ``environment``, ``unset`` (spec
+    section 3). What the Settings page's secrets accordion renders beside each
+    name, and the reason a cleared stored value can be described honestly: the
+    next source down takes over and this map says which.
+
+    The branches are in RESOLUTION order and must stay in it, the env-complete
+    short-circuit included. A source label that disagreed with the value
+    ``resolve_secret_values`` picks would send an operator to change a
+    variable that is not the one in force, which is the single most expensive
+    thing this map can be wrong about -- and on an env-complete deployment the
+    file is not read at all, so a name only the file holds resolves to nothing
+    there and "unset" is what nothing is called.
+    """
+    stored = stored or {}
+    if not stored and all(os.environ.get(name) for name in _SECRET_ENV.values()):
+        return {
+            name: "environment" if os.environ.get(name) else "unset" for name in SECRET_NAMES
+        }
+    from_file = read_secrets_file(secrets_file_path())
+    sources: dict[str, str] = {}
+    for name in SECRET_NAMES:
+        if stored.get(name):
+            sources[name] = "stored"
+        elif from_file.get(name):
+            sources[name] = "state file"
+        elif os.environ.get(name):
+            sources[name] = "environment"
+        else:
+            sources[name] = "unset"
+    return sources
 
 
 def missing_hard_secret_names(resolved: Mapping[str, str]) -> list[str]:
@@ -130,39 +200,35 @@ def missing_hard_secret_names(resolved: Mapping[str, str]) -> list[str]:
 STATE_FILE_NAMES_ENV = "AUTOPOSTER_STATE_FILE_SECRET_NAMES"
 
 
-def state_file_secret_names() -> list[str]:
-    """The secret NAMES the STATE FILE answers and the environment does not,
-    in ``_SECRET_ENV`` then ``_SOFT_SECRET_ENV`` order. Names, never values --
-    the same rule ``missing_hard_secret_names`` above follows and for the same
-    reason.
+def state_file_secret_names(stored: Mapping[str, str] | None = None) -> list[str]:
+    """The secret NAMES whose WINNING source is the STATE FILE, in
+    ``_SECRET_ENV`` then ``_SERVER_SECRET_ENV`` then ``_SOFT_SECRET_ENV``
+    order. Names, never values -- the same rule ``missing_hard_secret_names``
+    above follows and for the same reason.
 
     This exists because ``boot._export`` erases the distinction on purpose:
     it publishes the file's values into ``os.environ`` before the exec, which
     is what makes a file-configured deployment indistinguishable from an
     env-configured one downstream. Downstream is right to be indifferent;
-    the SETTINGS-PAGE ROTATION is not, because a value written to a file that
-    the next boot's short-circuit never opens would be un-rotated by the next
-    restart.
+    a caller asking which layer answers a name is not.
 
-    The precedence is ``resolve_secret_values``' precedence, name by name: a
-    name the environment carries is NOT from the file even when the file also
-    holds it -- and holds the same string, which is exactly the shape
-    ``deploy/README.md``'s ExternalSecrets migration produces. Comparing the
-    file's value to the running one gets that case wrong; this does not.
+    The predicate is ``resolve_secret_values``' precedence, name by name, and
+    it moved with that precedence: with the file above the environment there
+    is exactly one layer that can outrank it -- the store -- so that is the
+    only thing which excludes a name here. The old rule also excluded a name
+    the environment carried, which under this order would be wrong, because
+    the file is what answers it.
 
     The env-complete short-circuit is repeated rather than shared so the
     GitOps exemption stays structural here too: such a deployment returns
     ``[]`` without the file being opened at all. That costs one extra read of
     one small file on the file-configured boot, once per process.
     """
-    if all(os.environ.get(name) for name in _SECRET_ENV.values()):
+    stored = stored or {}
+    if not stored and all(os.environ.get(name) for name in _SECRET_ENV.values()):
         return []
     from_file = read_secrets_file(secrets_file_path())
-    return [
-        name
-        for name in (*_SECRET_ENV.values(), *_SERVER_SECRET_ENV.values(), *_SOFT_SECRET_ENV.values())
-        if not os.environ.get(name) and from_file.get(name)
-    ]
+    return [name for name in SECRET_NAMES if not stored.get(name) and from_file.get(name)]
 
 
 class Secrets(BaseModel):
@@ -308,7 +374,12 @@ class Secrets(BaseModel):
 
     @classmethod
     def load(cls) -> "Secrets":
-        """Every secret: the environment first, the state file second.
+        """Every secret: the state file first, the environment second.
+
+        No ``stored`` argument, and none is missing: this constructor has no
+        database session, and the stored layer reaches it through ``boot``,
+        which resolves the store before the exec and publishes the winning
+        values into the environment this then reads.
 
         The ordering is the load-bearing rule of roadmap row 121. A deployment
         whose environment carries all five hard names -- every
@@ -343,10 +414,10 @@ class Secrets(BaseModel):
         """The name every existing caller uses -- ``main.build()``, both CLIs
         and the suite -- kept so none of them has to change.
 
-        It now delegates to ``load`` above, which consults the state file for
-        any name the environment does not answer. For a deployment whose
-        environment is complete the two are indistinguishable, which is every
-        deployment that existed before roadmap row 121.
+        It now delegates to ``load`` above, which reads the state file and the
+        environment in that order. For a deployment whose environment is
+        complete the two are indistinguishable, which is every deployment that
+        existed before roadmap row 121.
         """
         return cls.load()
 

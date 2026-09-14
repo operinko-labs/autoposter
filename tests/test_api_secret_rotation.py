@@ -42,6 +42,7 @@ from test_api_setup import isolated_state  # noqa: F401
 
 WEBHOOK_ENV = "AUTOPOSTER_WEBHOOK_SECRET"
 OLD_SECRET = "row-255-old-webhook-secret-2a7c"
+ENV_SECRET = "row-255-env-webhook-secret-6b4d"
 UNRELATED = "row-255-unrelated-soft-value-9d3f"
 RADARR_BASE = "http://radarr.invalid:7878"
 SONARR_BASE = "http://sonarr.invalid:8989"
@@ -81,13 +82,8 @@ def _seed_state_file() -> None:
     )
 
 
-def _build(session_factory, document, secrets, from_state=True):
-    application = create_app(build_config(document), session_factory, secrets)
-    # What `boot` would have published. Set on the object rather than through
-    # the environment so a test that wants the refusal simply passes False --
-    # `create_app`'s own read is pinned in tests/test_app.py.
-    application.state.secret_from_state_file = {WEBHOOK_ENV: True} if from_state else {}
-    return application
+def _build(session_factory, document, secrets):
+    return create_app(build_config(document), session_factory, secrets)
 
 
 @pytest_asyncio.fixture
@@ -132,12 +128,17 @@ async def _rotate(client, auth):
 # --- the refusal --------------------------------------------------------------
 
 
-async def test_an_env_configured_deployment_is_refused_by_a_fixed_sentence(
+async def test_a_deployment_whose_environment_answers_is_refused_by_a_fixed_sentence(
     session_factory, monkeypatch
 ):
-    _seed_state_file()
+    """The condition is the WINNING source, not the boot-time marker it used
+    to stand in for. Under spec section 3's order the state file outranks the
+    environment, so the environment answers this name only when the file --
+    which holds an unrelated soft name here and nothing else -- does not."""
+    state_module.merge_secrets_file({"AUTOPOSTER_MDBLIST_APIKEY": UNRELATED})
+    monkeypatch.setenv(WEBHOOK_ENV, ENV_SECRET)
     before = state_module.secrets_file_path().read_bytes()
-    application = _build(session_factory, _document(), _secrets(), from_state=False)
+    application = _build(session_factory, _document(), _secrets())
     monkeypatch.setattr(setup_arr, "register", _accepting([]))
     transport = ASGITransport(app=application)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -149,6 +150,27 @@ async def test_an_env_configured_deployment_is_refused_by_a_fixed_sentence(
     # The point of the refusal is that NOTHING was written -- the bytes, not
     # just the status code.
     assert state_module.secrets_file_path().read_bytes() == before
+
+
+async def test_a_deployment_whose_state_file_answers_is_allowed_to_rotate(
+    session_factory, monkeypatch
+):
+    """The other half of the same condition, and the case the old
+    environment-first order got wrong: the environment carries this name too,
+    and the file is what answers it, so writing the file is not a write the
+    next boot would shadow."""
+    _seed_state_file()
+    monkeypatch.setenv(WEBHOOK_ENV, ENV_SECRET)
+    application = _build(session_factory, _document(), _secrets())
+    monkeypatch.setattr(setup_arr, "register", _accepting([]))
+    transport = ASGITransport(app=application)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.post("/api/login", json={"password": PASSWORD})).json()["token"]
+        response = await _rotate(client, {"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert held[WEBHOOK_ENV] == response.json()["webhook_secret"]
 
 
 def test_the_refusal_names_the_variable_and_nothing_else():

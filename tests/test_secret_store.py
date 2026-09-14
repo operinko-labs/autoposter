@@ -22,7 +22,13 @@ from cryptography.fernet import Fernet
 from sqlalchemy import select, update
 
 from autoposter.config import secret_store
-from autoposter.config.state import STATE_DIR_ENV
+from autoposter.config.schema import (
+    SECRET_NAMES,
+    resolve_secret_values,
+    secret_sources,
+    state_file_secret_names,
+)
+from autoposter.config.state import STATE_DIR_ENV, merge_secrets_file
 from autoposter.db.models import StoredSecret
 
 NAME = "AUTOPOSTER_TMDB_TOKEN"
@@ -307,3 +313,78 @@ async def test_a_key_file_fault_is_not_reported_as_a_bad_value(state, session_fa
     assert str(secret_store.secret_key_path()) in str(refused.value)
     assert "cannot be stored as it stands" not in str(refused.value)
     assert "a-fine-token" not in str(refused.value)
+
+
+# --- precedence: stored, then the state file, then the environment ----------
+
+
+def test_a_stored_value_wins_over_the_environment_and_the_file(state, monkeypatch):
+    monkeypatch.setenv("AUTOPOSTER_TMDB_TOKEN", "from-env")
+    merge_secrets_file({"AUTOPOSTER_TMDB_TOKEN": "from-file"})
+    resolved = resolve_secret_values({"AUTOPOSTER_TMDB_TOKEN": "from-store"})
+    assert resolved["AUTOPOSTER_TMDB_TOKEN"] == "from-store"
+
+
+def test_clearing_a_stored_value_falls_through_to_the_next_source(state, monkeypatch):
+    monkeypatch.setenv("AUTOPOSTER_TMDB_TOKEN", "from-env")
+    assert resolve_secret_values({})["AUTOPOSTER_TMDB_TOKEN"] == "from-env"
+
+
+def test_the_state_file_wins_over_the_environment(state, monkeypatch):
+    """spec section 3's order, which reverses the lower two layers.
+
+    No existing deployment has a name with a value on both layers -- the
+    wizard writes to the file only the names the environment did not resolve
+    -- so this is a rule about what the UI and the wizard may do from now on,
+    not a change to what any running deployment resolves to."""
+    monkeypatch.setenv("AUTOPOSTER_TMDB_TOKEN", "from-env")
+    merge_secrets_file({"AUTOPOSTER_TMDB_TOKEN": "from-file"})
+    assert resolve_secret_values()["AUTOPOSTER_TMDB_TOKEN"] == "from-file"
+
+
+def test_a_name_on_both_layers_reports_the_state_file_as_its_source(state, monkeypatch):
+    """The source label and the resolved value must never disagree: a page
+    that said "environment" about a value the file supplied would send an
+    operator to change the wrong thing."""
+    monkeypatch.setenv("AUTOPOSTER_TMDB_TOKEN", "from-env")
+    merge_secrets_file({"AUTOPOSTER_TMDB_TOKEN": "from-file"})
+    assert resolve_secret_values()["AUTOPOSTER_TMDB_TOKEN"] == "from-file"
+    assert secret_sources()["AUTOPOSTER_TMDB_TOKEN"] == "state file"
+
+
+def test_an_empty_stored_value_counts_as_absent(state, monkeypatch):
+    monkeypatch.setenv("AUTOPOSTER_TMDB_TOKEN", "from-env")
+    assert (
+        resolve_secret_values({"AUTOPOSTER_TMDB_TOKEN": ""})["AUTOPOSTER_TMDB_TOKEN"]
+        == "from-env"
+    )
+
+
+def test_sources_name_every_secret_and_no_values(state, monkeypatch):
+    monkeypatch.delenv("AUTOPOSTER_TMDB_TOKEN", raising=False)
+    monkeypatch.delenv("AUTOPOSTER_RADARR_APIKEY", raising=False)
+    monkeypatch.delenv("AUTOPOSTER_FANART_APIKEY", raising=False)
+    monkeypatch.setenv("AUTOPOSTER_TVDB_APIKEY", "from-env")
+    merge_secrets_file({"AUTOPOSTER_FANART_APIKEY": "from-file"})
+    sources = secret_sources({"AUTOPOSTER_TMDB_TOKEN": "from-store"})
+    assert sources["AUTOPOSTER_TMDB_TOKEN"] == "stored"
+    assert sources["AUTOPOSTER_TVDB_APIKEY"] == "environment"
+    assert sources["AUTOPOSTER_FANART_APIKEY"] == "state file"
+    assert sources["AUTOPOSTER_RADARR_APIKEY"] == "unset"
+    assert set(sources) == set(SECRET_NAMES)
+    assert set(sources.values()) <= {"stored", "state file", "environment", "unset"}
+
+
+def test_state_file_secret_names_now_lists_a_name_the_environment_also_carries(
+    state, monkeypatch
+):
+    """`state_file_secret_names` publishes which names the FILE answers, and
+    the rotation path reads it. With the file above the environment, a name on
+    both layers is answered by the file -- so it belongs on this list, where
+    the old environment-first rule excluded it."""
+    monkeypatch.setenv("AUTOPOSTER_TMDB_TOKEN", "from-env")
+    merge_secrets_file({"AUTOPOSTER_TMDB_TOKEN": "from-file"})
+    assert "AUTOPOSTER_TMDB_TOKEN" in state_file_secret_names()
+    assert "AUTOPOSTER_TMDB_TOKEN" not in state_file_secret_names(
+        {"AUTOPOSTER_TMDB_TOKEN": "from-store"}
+    )

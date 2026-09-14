@@ -117,7 +117,7 @@ def _must_not_run(*args, **kwargs):
     raise AssertionError("this boot must not migrate, exec, or open a database")
 
 
-# --- precedence: environment first, state file second -----------------------
+# --- precedence: stored, then the state file, then the environment ----------
 
 
 def test_a_hard_secret_missing_from_the_environment_is_read_from_the_state_file(monkeypatch):
@@ -129,11 +129,19 @@ def test_a_hard_secret_missing_from_the_environment_is_read_from_the_state_file(
     assert secrets.database_url == "from-file"
 
 
-def test_the_environment_wins_over_the_state_file(monkeypatch):
+def test_the_state_file_wins_over_the_environment(monkeypatch):
+    """Spec section 3's order, which reverses these two layers.
+
+    What an operator sets from the UI or the wizard must not be shadowed by a
+    variable they cannot see from the page they set it on. No deployment that
+    predates this can observe the swap: the wizard writes to the file only the
+    names the environment did not resolve, so exactly one of the two layers
+    answers any given name and the order between them is unobservable.
+    """
     _write_state_secrets({name: "from-file" for name in HARD})
     monkeypatch.setenv("AUTOPOSTER_PLEX_TOKEN", "from-env")
 
-    assert Secrets.load().plex_token == "from-env"
+    assert Secrets.load().plex_token == "from-file"
 
 
 def test_a_soft_secret_reads_from_the_state_file_too():
@@ -755,26 +763,27 @@ def test_a_state_file_boot_publishes_the_names_it_read_from_the_file(monkeypatch
 
 def test_an_env_configured_boot_publishes_an_empty_marker(monkeypatch):
     """Fail closed, structurally: an env-complete deployment never opens the
-    file at all (`schema.py:76`), so there is nothing for the marker to name
-    and the rotation refuses -- which is the whole point."""
+    file at all (`schema.py`'s short-circuit), so there is nothing for the
+    marker to name and the rotation refuses -- which is the whole point."""
     for name in HARD:
         monkeypatch.setenv(name, "from-env")
 
     assert _booted(monkeypatch) == ""
 
 
-def test_the_environment_wins_name_by_name_in_the_marker_too(monkeypatch):
+def test_a_name_the_environment_also_carries_is_on_the_marker_now(monkeypatch):
     """The migration `deploy/README.md:240-243` sends operators through: the
     file and the environment hold the SAME string for the webhook secret. The
     marker follows `resolve_secret_values`' precedence rather than the file's
-    contents, so that name is absent -- which is the case a value comparison
-    gets wrong and this design exists for."""
+    contents, and under spec section 3's order that precedence puts the file
+    ABOVE the environment -- so the file is what answers this name and it
+    belongs on the marker, where the old environment-first rule excluded it."""
     _write_state_secrets({name: "from-file" for name in HARD})
     monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", "from-file")
 
     marker = _booted(monkeypatch)
 
-    assert "AUTOPOSTER_WEBHOOK_SECRET" not in marker.split(",")
+    assert "AUTOPOSTER_WEBHOOK_SECRET" in marker.split(",")
     assert "AUTOPOSTER_PLEX_TOKEN" in marker.split(",")
 
 

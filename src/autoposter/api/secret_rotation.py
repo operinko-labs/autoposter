@@ -67,7 +67,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from autoposter.api import setup_arr
 from autoposter.api.auth import require_session
 from autoposter.api.setup_checks import CHECK_SYSTEMS
-from autoposter.config.schema import Secrets
+from autoposter.config import secret_store
+from autoposter.config.schema import Secrets, secret_sources
 from autoposter.config.state import merge_secrets_file, state_dir
 from autoposter.db.models import EventLog
 from autoposter.db.models import Session as SessionModel
@@ -140,7 +141,20 @@ async def rotate_webhook_secret(
     # deployment AUTOPOSTER_STATE_DIR is typically unset and `state_dir()` is
     # /state, which does not exist -- so the order here is what keeps the
     # refusal, and not a 503 about a directory, the answer that shape gets.
-    if not app.state.secret_from_state_file.get(WEBHOOK_SECRET_ENV, False):
+    #
+    # The question this guard asks is "would the next boot shadow what we are
+    # about to write", and the honest form of it is which source WINS for this
+    # name -- not which layer sits where, now that the state file outranks the
+    # environment. `secret_sources` is the one function that answers it, and it
+    # answers it in the same order `resolve_secret_values` resolves in, so the
+    # guard and the resolver cannot drift apart.
+    #
+    # `app.state.secret_from_state_file` is no longer consulted here: it was a
+    # boot-time marker standing in for this question, and it encodes the OLD
+    # order.
+    async with app.state.session_factory() as session:
+        stored = await secret_store.load_stored_secrets(session)
+    if secret_sources(stored)[WEBHOOK_SECRET_ENV] == "environment":
         raise HTTPException(status_code=400, detail=ENV_CONFIGURED_REFUSAL)
 
     lock = app.state.secret_rotation_lock
