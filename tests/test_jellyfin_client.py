@@ -282,9 +282,18 @@ async def test_library_names_excludes_and_translates_through_the_map():
     """The behavioural half of servers/presence.py's absent rule (spec §1):
     JellyfinClient.library_names() must apply the same exclusion/type/
     library_map rules as every other index-backed lookup, not just report
-    every VirtualFolder verbatim."""
+    every VirtualFolder verbatim.
+
+    And it must cost exactly ONE call (review I3). A full pass invalidates
+    every index and then asks this question, so answering it through
+    `rebuild()` moved the whole `/Items?recursive=true` enumeration -- every
+    folder, the entire library -- into the `POST /api/full-pass` handler, with
+    a database transaction open for its duration."""
+    called: list[str] = []
+
     async def handler(request):
         path = request.url.path
+        called.append(path)
         if path == "/Library/VirtualFolders":
             return httpx.Response(200, json=[
                 {"Name": "Films", "CollectionType": "movies", "Locations": ["/media/Films"], "ItemId": "lib1"},
@@ -298,6 +307,7 @@ async def test_library_names_excludes_and_translates_through_the_map():
     client = JellyfinClient(api, excluded_libraries=["Kids"], library_map={"Movies": "Films"}, replace_thumb_with_backdrop=False)
     async with http:
         assert await client.library_names() == {"Movies"}
+    assert called == ["/Library/VirtualFolders"], "library_names rebuilt the item index"
 
 
 async def test_keys_resolve_answers_only_for_the_stored_key():

@@ -95,7 +95,11 @@ async def test_present_libraries_reads_the_server_and_refresh_walks_the_registry
     jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS, libraries={"Movies"})
     assert await presence.present_libraries(jf) == {"Movies"}
 
-    outcomes = await presence.refresh_presence(session, Servers({"jellyfin": jf}))
+    # Read first (no database), stamped after: the full pass does the asking
+    # before it opens its transaction (review I3).
+    present = await presence.read_presence(Servers({"jellyfin": jf}))
+    assert present == {"jellyfin": {"Movies"}}
+    outcomes = await presence.refresh_presence(session, present)
     await session.commit()
     assert outcomes == {"jellyfin": {
         "metadata": {"absent": 1, "rearmed": 0},
@@ -110,7 +114,9 @@ async def test_a_server_that_cannot_list_its_libraries_is_skipped(session):
         raise RuntimeError("down")
 
     jf.library_names = boom
-    assert await presence.refresh_presence(session, Servers({"jellyfin": jf})) == {}
+    present = await presence.read_presence(Servers({"jellyfin": jf}))
+    assert present == {}
+    assert await presence.refresh_presence(session, present) == {}
 
 
 async def test_a_server_that_lists_no_libraries_at_all_is_skipped_too(session):
@@ -126,7 +132,9 @@ async def test_a_server_that_lists_no_libraries_at_all_is_skipped_too(session):
     jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
     assert await presence.present_libraries(jf) == set()
 
-    assert await presence.refresh_presence(session, Servers({"jellyfin": jf})) == {}
+    present = await presence.read_presence(Servers({"jellyfin": jf}))
+    assert present == {}
+    assert await presence.refresh_presence(session, present) == {}
     await session.commit()
 
     assert (await session.execute(select(MetadataWrite))).scalars().all() == []

@@ -218,8 +218,13 @@ async def _rollup_stamped_renders(session: AsyncSession, server_name: str, now: 
     )).rowcount
 
 
-async def refresh_presence(session: AsyncSession, servers) -> dict[str, dict]:
-    """``apply_presence`` for every configured server.
+async def read_presence(servers) -> dict[str, set[str]]:
+    """Ask every configured server which libraries it carries. No database.
+
+    Separate from ``refresh_presence`` below so a caller can do the ASKING
+    before it opens its transaction: each answer is a network round trip
+    against a media server, and a full pass that asked inside its transaction
+    held one open and idle for the whole of it.
 
     A server that cannot list its libraries right now contributes NO entry
     rather than an empty ``present`` set: an unreachable server would
@@ -236,18 +241,29 @@ async def refresh_presence(session: AsyncSession, servers) -> dict[str, dict]:
     this deployment manages has nothing here to say anything about anyway,
     so skipping it is both safe and honest.
     """
-    outcomes: dict[str, dict] = {}
+    present: dict[str, set[str]] = {}
     for name, server in servers.items():
         try:
-            present = await present_libraries(server)
+            libraries = await present_libraries(server)
         except Exception as exc:
             logger.warning(
                 "could not read %s's library list; leaving presence unchanged (%s)",
                 name, type(exc).__name__,
             )
             continue
-        if not present:
+        if not libraries:
             logger.warning("%s listed no libraries; leaving presence unchanged", name)
             continue
-        outcomes[name] = await apply_presence(session, name, present)
-    return outcomes
+        present[name] = libraries
+    return present
+
+
+async def refresh_presence(
+    session: AsyncSession, present: dict[str, set[str]],
+) -> dict[str, dict]:
+    """``apply_presence`` for every server ``read_presence`` got an answer
+    from, in the caller's own transaction."""
+    return {
+        name: await apply_presence(session, name, libraries)
+        for name, libraries in present.items()
+    }

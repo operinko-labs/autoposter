@@ -92,7 +92,7 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue, enqueue_batch
 from autoposter.render.pipeline import ART_KINDS_FOR, manual_override_path
 from autoposter.scheduler.run_history import FULL_PASS_NAME, open_run
-from autoposter.servers.presence import refresh_presence
+from autoposter.servers.presence import read_presence, refresh_presence
 from autoposter.servers.registry import require_plex
 
 logger = logging.getLogger(__name__)
@@ -1128,6 +1128,13 @@ async def run_full_pass(
         if invalidate is not None:
             invalidate()
 
+    # ASKED here, outside the transaction below, and stamped inside it. Each
+    # answer is a network round trip against a media server -- and the loop
+    # above has just invalidated Jellyfin's index, so its answer is a live
+    # call rather than a cached one. Asking inside the transaction held it
+    # open and idle for every server's round trip.
+    present = await read_presence(request.app.state.servers)
+
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         # Spec §1: presence is recomputed at the START of every full pass, in
@@ -1137,7 +1144,7 @@ async def run_full_pass(
         # to `pending` here and they flow through the ordinary retry, which
         # is what makes a library map change eventually self-correcting even
         # without the catch-up.
-        presence_outcomes = await refresh_presence(session, request.app.state.servers)
+        presence_outcomes = await refresh_presence(session, present)
         rows = (
             await session.execute(
                 select(

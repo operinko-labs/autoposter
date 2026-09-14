@@ -211,7 +211,11 @@ class JellyfinClient:
         return [await self._index.exists(intent) for intent in intents]
 
     async def library_names(self) -> set[str]:
-        await self._index.rebuild()  # no-op once built; the folder list is what we need
+        # The folder list is all this needs, so `refresh_folders` and not
+        # `rebuild`: a full pass invalidates every index and then asks this
+        # question immediately, and `rebuild` there moved the whole `/Items`
+        # enumeration into the button press (see the index's own docstring).
+        await self._index.refresh_folders()
         return self._index.library_names()
 
     async def _key_matches(self, dto: dict, intent) -> bool:

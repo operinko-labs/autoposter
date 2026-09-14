@@ -483,3 +483,49 @@ async def test_an_excluded_plex_section_becomes_absent_on_plex_itself(
         select(MetadataWrite.server, MetadataWrite.status, MetadataWrite.item_id)
     )).all()
     assert rows == [("plex", "absent", retired.id)]
+
+
+async def test_a_full_pass_never_rebuilds_the_jellyfin_item_index(
+    client, auth_headers, session
+):
+    """Review I3: the pass invalidates every index and then asks each server
+    which libraries it carries. Answering that through `LibraryIndex.rebuild`
+    put the whole `/Items?recursive=true` enumeration -- every folder, the
+    entire library -- inside the request handler, and (because Plex's stamps
+    have already been issued) with a database transaction open throughout.
+    The folder list is all presence needs."""
+    import httpx
+
+    from autoposter.jellyfin.client import JellyfinApi, JellyfinClient
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    called: list[str] = []
+
+    async def handler(request):
+        called.append(request.url.path)
+        if request.url.path == "/Library/VirtualFolders":
+            return httpx.Response(200, json=[
+                {"Name": "Movies", "CollectionType": "movies",
+                 "Locations": ["/media/Movies"], "ItemId": "lib1"},
+            ])
+        return httpx.Response(200, json={"Items": []})
+
+    await seed_media_item(session, "rk-jf", library="Movies", title="M")
+    await session.commit()
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    jellyfin = JellyfinClient(
+        JellyfinApi(http, "https://jf.example", api_key="k", version="v"),
+        excluded_libraries=[], library_map={}, replace_thumb_with_backdrop=False,
+    )
+    client._transport.app.state.servers = Servers({"jellyfin": jellyfin})
+
+    async with http:
+        body = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert body["presence"]["jellyfin"] == {
+        "metadata": {"absent": 0, "rearmed": 0},
+        "artwork": {"absent": 0, "rearmed": 0},
+    }
+    assert called == ["/Library/VirtualFolders"], f"the pass listed items: {called}"
