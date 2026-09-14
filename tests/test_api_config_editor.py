@@ -27,7 +27,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.api.auth import hash_password
-from autoposter.api.routes import KEEP_SENTINEL, _render_affecting
+from autoposter.api.routes import (
+    KEEP_SENTINEL,
+    STORE_CONVERTED_REFUSAL,
+    _render_affecting,
+)
 from autoposter.app import create_app
 from autoposter.config.loader import build_config, read_config_document, render_version_for
 from autoposter.config.overrides import (
@@ -1731,9 +1735,9 @@ async def test_a_write_that_drops_more_than_the_cap_is_refused(
 ):
     """The drop cap. A normal edit drops 0 or 1 path; the incident dropped 17.
 
-    `document_paths` is exactly the unit `GET /api/config`'s `overridden_paths`
-    reports, so the operator, the API and this refusal all count the same
-    things.
+    `document_paths` counts the leaves the stored document actually sets, and
+    the refusal names those same paths, so the operator and the refusal count
+    the same things.
     """
     await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
 
@@ -1914,8 +1918,8 @@ async def test_the_two_page_stale_save_is_refused_instead_of_clobbering(
     """Page A mounts. Page B saves separator_style. Page A saves again.
 
     Before the fix, page A's second save answered 200 and separator_style was
-    gone -- and not even listed in overridden_paths, so the page had nothing
-    to show the operator. It must now be a 409 that says what happened.
+    gone -- silently, with nothing in the response to show the operator what
+    had just been undone. It must now be a 409 that says what happened.
     """
     # The store as both pages find it: the incident document WITHOUT the
     # separator style, because that is the setting the operator was about to
@@ -2339,6 +2343,72 @@ async def test_a_save_keeps_the_metadata_it_did_not_write(
     assert snapshot.format == STORE_FORMAT, "the save was on a whole document"
 
 
+async def test_a_delta_save_is_refused_when_the_row_becomes_a_document_under_it(
+    client, auth_headers, session, session_factory, file_document, monkeypatch
+):
+    """The arm is chosen from an unlocked read; the format can move after it.
+
+    Another process's one-time conversion, or a CLI holding its own session,
+    can turn the row into a whole document between the read that says "this is
+    a delta" and the locked read that writes. What is in hand by then is a
+    fragment -- validated by merging it over the mounted file -- and the row
+    says its contents are the whole configuration. Writing it through would
+    stamp the fragment as whole, and the next boot would hand it to
+    `build_config` alone and die on the first required setting it does not
+    carry, with the editor that could repair the row behind an application that
+    will not start.
+
+    The mirror of the case the format stamp already closes: that one stops a
+    save RAISING the format of a delta; this one stops the format being raised
+    UNDER the save.
+    """
+    from autoposter.api import routes
+
+    await session.execute(
+        insert(ConfigOverride).values(id=1, document={"workers": 9}, meta={"format": 1})
+    )
+    await session.commit()
+
+    converted = _whole(file_document, {"workers": 7})
+    converted_meta = {"format": STORE_FORMAT}
+    validate = routes._validated_generation
+
+    async def convert_between_the_two_reads(*args, **kwargs):
+        result = await validate(*args, **kwargs)
+        async with session_factory() as other:
+            statement = insert(ConfigOverride).values(
+                id=1, document=converted, meta=converted_meta
+            )
+            await other.execute(
+                statement.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={"document": converted, "meta": converted_meta},
+                )
+            )
+            await other.commit()
+        return result
+
+    monkeypatch.setattr(routes, "_validated_generation", convert_between_the_two_reads)
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 8}}
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["message"] == STORE_CONVERTED_REFUSAL
+
+    # Nothing written: the converted row stands exactly as the other writer
+    # left it, and no snapshot was taken of a write that did not happen.
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.document == converted
+    assert row.meta == converted_meta
+    snapshots = (
+        await session.execute(select(func.count()).select_from(ConfigOverrideSnapshot))
+    ).scalar_one()
+    assert snapshots == 0
+
+
 @pytest.mark.parametrize(
     ("stale_document", "stale_meta"),
     [
@@ -2479,12 +2549,13 @@ async def test_restoring_a_delta_keeps_an_empty_object_the_file_spells_out(
     assert document["artwork"]["poster"]["text"]["newline_words"] == {}
 
 
-async def test_an_ordinary_save_with_an_empty_object_leaf_is_still_refused(
+async def test_a_save_on_a_delta_store_with_an_empty_object_leaf_is_still_refused(
     client, auth_headers
 ):
-    """The `{}`-leaf guard stays on for editor input -- only the delta-restore
-    merge turns it off. A save that hand-carries a `{}` leaf is refused
-    exactly as it always was."""
+    """The `{}`-leaf guard stays on for editor input ON A DELTA STORE -- the
+    only arm it has ever run on, because a delta is where `{}` would be
+    reported as an override of the whole section. A save that hand-carries a
+    `{}` leaf there is refused exactly as it always was."""
     response = await client.put(
         "/api/config/overrides",
         headers=auth_headers,
@@ -2500,6 +2571,40 @@ async def test_an_ordinary_save_with_an_empty_object_leaf_is_still_refused(
         item["path"] == "artwork.poster.text.newline_words"
         for item in response.json()["detail"]
     )
+
+
+async def test_a_save_on_a_whole_document_store_keeps_an_empty_object_leaf(
+    client, auth_headers, session, file_document
+):
+    """The other arm, which is every seeded deployment, and where the guard is
+    deliberately off.
+
+    In a whole document `{}` is the value the model holds rather than a
+    section a path walk would misreport -- the example file spells
+    `newline_words` exactly that way, so the seed puts it in the store and the
+    page sends it straight back. Refusing it here would refuse every save on
+    every seeded deployment, and dropping it would change what an explicitly
+    empty mapping means.
+    """
+    assert file_document["artwork"]["poster"]["text"]["newline_words"] == {}, (
+        "the fixture no longer carries the leaf this test is about"
+    )
+    await session.execute(
+        insert(ConfigOverride).values(
+            id=1, document=file_document, meta={"format": STORE_FORMAT}
+        )
+    )
+    await session.commit()
+
+    saved = _whole(file_document, {"workers": 8})
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": saved}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.document["artwork"]["poster"]["text"]["newline_words"] == {}
 
 
 async def test_restoring_a_delta_snapshot_with_a_secrets_key_is_refused(

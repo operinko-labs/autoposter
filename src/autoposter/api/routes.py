@@ -1862,6 +1862,16 @@ DEFINITIONS_GUARD_REFUSAL = (
     "file's definitions list"
 )
 
+# What a save composed as a delta is told when the row it was composed against
+# has become a whole document underneath it. The document in hand is a
+# fragment, and the row now says its contents are the whole configuration --
+# there is no label this write could carry that would be true.
+STORE_CONVERTED_REFUSAL = (
+    "the configuration store was converted to hold the whole configuration "
+    "while this save was in flight; nothing was saved -- reload the page and "
+    "make the change again"
+)
+
 
 async def _definitions_guard(request: Request, base: dict, document: dict) -> None:
     """Refuse the FIRST stored ``collections.definitions`` override while the
@@ -1937,8 +1947,11 @@ async def _validated_generation(
     entirely; the document is always sent whole, so an absent key is
     unambiguous. Both halves are pinned by tests.
 
-    ``check_empty_leaves`` guards the ``{}``-leaf refusal below and defaults
-    on for every editor-facing caller. A restored delta is not editor input:
+    ``check_empty_leaves`` guards the ``{}``-leaf refusal below, which runs on
+    the DELTA arm alone: it defaults on for every editor-facing caller, and
+    the refusal itself is then gated on the store still holding a delta,
+    because that is the only shape in which a ``{}`` leaf could be misreported
+    as an override of its whole section. A restored delta is not editor input:
     it is the mounted file plus a delta both already validated at boot, and
     the file is free to spell an unset optional model section as ``{}``
     (``text: TextStyle | None`` at ``config/schema.py`` -- unset means no
@@ -2183,6 +2196,25 @@ async def _persist_and_swap(
         # says once it has been read.
         row = await store_row(session, for_update=True)
         stored, meta = store_contents(row)
+        if not whole_document and meta.get("format") == STORE_FORMAT:
+            # The arm was chosen from an unlocked read, and the row's format
+            # moved between that read and this lock -- the one-time conversion
+            # on another process's boot, or a CLI holding its own session. The
+            # document in hand is a FRAGMENT, validated by merging it over the
+            # mounted file, and the row now says its contents are the whole
+            # configuration. Writing it through would leave the fragment under
+            # a label that promises `build_config` can validate it alone, and
+            # the next boot would die on the first required setting it does not
+            # carry -- with the editor that could repair the row sitting behind
+            # the application that will not start.
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": STORE_CONVERTED_REFUSAL,
+                    "current_revision": document_revision(stored),
+                    "changed_paths": [],
+                },
+            )
         if expected_revision is not None:
             current = document_revision(stored)
             if expected_revision != current:
