@@ -533,9 +533,10 @@ async def test_the_jobs_state_widening_is_reversible():
     row whose state does not fit, so the downgrade has to rewrite
     `done_with_warnings` rows to `done` FIRST. A downgrade that lost that
     UPDATE would look identical to a correct one until somebody rolled back a
-    deploy with such a row in the table -- and `alembic check` cannot catch a
-    width regression either, since `alembic/env.py` leaves `compare_type` at
-    its False default.
+    deploy with such a row in the table -- and `alembic check` cannot catch it
+    either: it compares the models against a database already at head and
+    never runs a downgrade at all, so nothing it reports says whether one
+    would survive the rows it would find.
     """
     if not await _postgres_reachable():
         _unreachable_postgres()
