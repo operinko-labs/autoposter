@@ -138,7 +138,7 @@ async def test_transport_error_during_resolve_stays_pending(session, config_with
 async def test_a_transport_error_at_resolve_spends_budget_on_both_tables(
     session, config_with_badges
 ):
-    """Review I2: the same event -- the server is unreachable at resolve time
+    """The same event -- the server is unreachable at resolve time
     -- spent an attempt on `render_deliveries` and none on `metadata_writes`,
     so spec §2's "nothing retries forever" did not hold for metadata in the
     one production failure mode it was written for. Only `ItemNotFound`, a
@@ -656,7 +656,7 @@ async def test_an_uncounted_pending_leaves_the_budget_alone(session):
 
 
 async def test_an_outcome_inside_a_run_keeps_its_scope(session):
-    """The other half of review I4: a row keeps `run_id`/`previous_status`
+    """A row keeps `run_id`/`previous_status`
     across every retry inside the run that armed it, terminal outcome
     included -- Phase C's progress counts by run AND status, and its cancel
     restores `previous_status`. Only `leave_run` clears them."""
@@ -687,7 +687,7 @@ async def test_an_outcome_inside_a_run_keeps_its_scope(session):
 
 
 async def test_a_re_arm_that_is_also_an_attempt_lands_at_one(session):
-    """Review M9: `reset_attempts` used to be silently ignored whenever
+    """`reset_attempts` used to be silently ignored whenever
     `count_attempt` was true, so a caller whose event is both a fresh start
     and a real attempt had no way to say so. Reset, then count -- 1."""
     render = await _render(session)
@@ -747,7 +747,7 @@ async def test_record_metadata_skipped_keeps_its_reason(session):
 
 
 async def test_an_absent_row_is_never_written_over_by_either_writer(session):
-    """Review C1/I4: the `absent` rule is a clause on the upsert, not a
+    """The `absent` rule is a clause on the upsert, not a
     convention each caller remembers. Both writers, both tables."""
     from conftest import seed_media_item
     item = await seed_media_item(session, "rk-abs", title="A")
@@ -804,7 +804,7 @@ async def test_a_terminal_call_without_a_fingerprint_keeps_the_stored_one(sessio
 async def test_the_retry_records_the_fingerprint_it_actually_delivered(
     session, config_with_badges, monkeypatch
 ):
-    """Review I1/T3: `compose_badged_bytes(force=True)` deliberately does not
+    """`compose_badged_bytes(force=True)` deliberately does not
     write `render.badge_fingerprint`, so the render's stored fingerprint is by
     construction not the one these bytes were composed under -- the two differ
     routinely, most sharply when the item has no Plex ref and the forced
@@ -844,7 +844,7 @@ async def test_the_retry_records_the_fingerprint_it_actually_delivered(
 
 
 async def _item_with_facts(session, native="j9"):
-    """The item AND the ``item_facts`` row the name promises (review M8).
+    """The item AND the ``item_facts`` row the name promises.
 
     Seeding none is why C1 was invisible to every metadata test in this file:
     the retry took the `or GatheredFacts()` fallback and never constructed the
@@ -888,7 +888,7 @@ async def test_a_due_metadata_row_is_written_and_recorded(session, config_with_b
 async def test_the_stored_facts_row_reaches_the_real_writer_and_a_write_lands(
     session, config_with_badges
 ):
-    """Review C1: the retry handed `plan_edits` the raw `ItemFacts` ORM row,
+    """The retry handed `plan_edits` the raw `ItemFacts` ORM row,
     which has none of the four `GatheredFacts` fields with no column
     (`user_rating`, `original_title`, `added_at`, `sort_title`). `plan_edits`
     dereferences `facts.user_rating` for every kind of item -- it is in all
@@ -987,7 +987,7 @@ async def test_the_server_filter_leaves_every_other_servers_rows_alone(
     render = await _render(session)
     await deliveries.record(session, render.id, "plex", "pending", retry_in=0)
     await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
-    # Both tables, because a catch-up marks both (review M1).
+    # Both tables, because a catch-up marks both.
     await deliveries.record_metadata(session, render.item_id, "plex", "pending", retry_in=0)
     await deliveries.record_metadata(session, render.item_id, "jellyfin", "pending", retry_in=0)
     await session.commit()
@@ -1024,7 +1024,7 @@ async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_
     run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
     await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
     await deliveries.record(session, other.id, "jellyfin", "pending", retry_in=0)
-    # Both tables, because a catch-up marks both (review M1).
+    # Both tables, because a catch-up marks both.
     await deliveries.record_metadata(session, render.item_id, "jellyfin", "pending", retry_in=0)
     await deliveries.record_metadata(session, other_item.id, "jellyfin", "pending", retry_in=0)
     await session.execute(
@@ -1056,7 +1056,7 @@ async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_
 
 
 async def test_the_scheduled_pass_never_drains_a_catch_ups_rows(session, config_with_badges):
-    """Review I5: the scheduled pass passed neither filter and therefore took
+    """The scheduled pass passed neither filter and therefore took
     every due row. A catch-up stamps its backlog `next_attempt_at = now` while
     ordinary rows sit six hours out, so `ORDER BY next_attempt_at LIMIT 500`
     handed the catch-up's thousands of rows the whole budget of every
@@ -1105,7 +1105,7 @@ async def test_the_scheduled_pass_never_drains_a_catch_ups_rows(session, config_
 async def test_metadata_operations_turned_off_records_a_skip_and_writes_nothing(
     session, config_with_badges
 ):
-    """Review I2: `apply_metadata` returns before it writes a row at all when
+    """`apply_metadata` returns before it writes a row at all when
     `operations.enabled` is off, so this pass was the one path that could
     still write to a server the operator had switched off entirely."""
     from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
@@ -1225,7 +1225,7 @@ async def test_the_budget_turns_a_persistently_failing_metadata_write_failed(
 
 
 async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_badges):
-    """Review I1: `failed` is itself a counted attempt, so an exhausted row
+    """`failed` is itself a counted attempt, so an exhausted row
     stayed permanently above the budget -- `deliver`'s re-arm left the
     counter where it was, and the next failure exhausted the row again on its
     FIRST attempt. Spec §2 promises a row re-armed by a full pass (or, in
@@ -1280,7 +1280,7 @@ async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_b
 
 
 async def test_a_failed_commit_costs_only_its_own_row(session, config_with_badges, monkeypatch):
-    """Review I3: the pass held ONE transaction over as many as 1,000 rows and
+    """The pass held ONE transaction over as many as 1,000 rows and
     committed once at the end, so a single failure there discarded every
     outcome row while the uploads and writes had already landed on real
     servers -- and the summary still claimed them. Each row now commits its

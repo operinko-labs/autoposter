@@ -487,7 +487,7 @@ async def test_one_unreadable_library_does_not_take_the_whole_preview_down(
 async def test_a_bundle_construction_failure_is_a_library_failure_not_a_500(
     client, auth_headers, monkeypatch
 ):
-    """Fix round F4: the source bundle used to be built once, above the
+    """The source bundle used to be built once, above the
     per-library loop and its ``try``, so a raise there took down the whole
     preview with a 500 -- the exact thing this endpoint's own docstring
     promises never happens to one library's failure (see
@@ -601,7 +601,7 @@ async def test_a_blank_collection_is_created_labelled_and_recorded(
 async def test_a_blank_collection_resets_a_stale_managed_row_to_operator_kind(
     client, auth_headers, section, session
 ):
-    """Fix round item 1: a ``managed_collections`` row can outlive the Plex
+    """A ``managed_collections`` row can outlive the Plex
     collection it describes -- rows are never reaped when the object vanishes
     straight out of Plex rather than through this service. If a definition
     built "Divider" once, an operator later hand-deleted it in Plex, and an

@@ -372,7 +372,7 @@ async def test_a_non_limit_error_body_is_cached_on_purpose(session):
 
 
 def test_a_mediatype_value_mdblist_has_never_served_raises():
-    """Fix round, finding 1: ``parse_list_items`` accepted any ``mediatype``
+    """``parse_list_items`` accepted any ``mediatype``
     string and left filtering to the builder, which compares it to the one
     value the library wants and silently drops everything else. If MDBList
     renamed 'show' to 'tv', every entry would compare unequal and the

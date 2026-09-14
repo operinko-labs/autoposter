@@ -284,7 +284,7 @@ async def test_library_names_excludes_and_translates_through_the_map():
     library_map rules as every other index-backed lookup, not just report
     every VirtualFolder verbatim.
 
-    And it must cost exactly ONE call (review I3). A full pass invalidates
+    And it must cost exactly ONE call. A full pass invalidates
     every index and then asks this question, so answering it through
     `rebuild()` moved the whole `/Items?recursive=true` enumeration -- every
     folder, the entire library -- into the `POST /api/full-pass` handler, with

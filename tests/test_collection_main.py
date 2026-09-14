@@ -272,7 +272,7 @@ async def test_the_cli_silences_httpxs_url_bearing_request_log(monkeypatch):
 
 
 async def test_the_cli_threads_a_real_source_bundle_to_the_reconcile(monkeypatch):
-    """Fix round F3: ``BuilderContext.sources`` defaults via
+    """``BuilderContext.sources`` defaults via
     ``default_factory``, so if ``main()`` ever stopped building and passing
     the bundle, every source-backed builder would just silently see "not
     configured" -- no error, nothing at config load or runtime. Pin that the

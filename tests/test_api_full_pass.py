@@ -425,7 +425,7 @@ async def test_a_full_pass_survives_a_server_that_cannot_list_its_libraries(
 async def test_a_plex_only_pass_whose_sections_all_match_changes_nothing(
     client, auth_headers, session
 ):
-    """Review I5/T5: the binding constraint "Plex-only deployments see no
+    """The binding constraint is "Plex-only deployments see no
     behaviour change beyond recorded rows". Every existing presence test here
     runs with an empty registry and asserts `presence == {}`, which exercises
     neither Plex's own `library_names()` nor the absent path on the identity
@@ -488,7 +488,7 @@ async def test_an_excluded_plex_section_becomes_absent_on_plex_itself(
 async def test_a_full_pass_never_rebuilds_the_jellyfin_item_index(
     client, auth_headers, session
 ):
-    """Review I3: the pass invalidates every index and then asks each server
+    """The pass invalidates every index and then asks each server
     which libraries it carries. Answering that through `LibraryIndex.rebuild`
     put the whole `/Items?recursive=true` enumeration -- every folder, the
     entire library -- inside the request handler, and (because Plex's stamps

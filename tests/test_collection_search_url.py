@@ -418,7 +418,7 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_moment_field():
 # rather than silently disappearing from the parametrize. `added` and
 # `last_played` repeat the boundary already pinned above (kept for a single
 # per-row table a reader can scan); `episode_added` and `episode_last_played`
-# are the two the review found missing. `release` and `episode_air_date` are
+# are the two that were previously missing. `release` and `episode_air_date` are
 # the date-only rows with a search half -- `last_episode_aired` is date-only
 # too but `search_field=None` (facts tier), so it has no wire half to render.
 MOMENT_TO_RENDERS = [
