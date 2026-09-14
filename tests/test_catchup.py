@@ -1187,8 +1187,8 @@ async def test_a_run_that_moves_nothing_twice_stops_and_frees_the_server(
     assert first == "catch-up: jellyfin 2 still due, 0 done, 0 failed"
     run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
     assert run.finished_at is None
-    # Stamped so the next batch can tell whether this one moved anything.
-    assert (run.processed, run.failed, run.deferred) == (2, 0, 2)
+    # Counted, not acted on: one idle batch is an outage, not a verdict.
+    assert run.idle_drains == 1
 
     later = NOW + timedelta(seconds=60)
     second = await catchup.drain_catch_ups(
@@ -1324,3 +1324,139 @@ async def test_one_runs_failure_does_not_skip_the_runs_behind_it(
         "catch-up: jellyfin failed (RuntimeError); plex 1 still due, 0 done, 0 failed"
     )
     assert "jellyfin.internal" not in summary
+
+
+async def _run_with_staggered_horizons(session, config, jf, monkeypatch, horizons):
+    """A catch-up whose rows come due at different times, so each drain can be
+    made to move exactly one row -- or none.
+
+    ``horizons`` is one offset from ``NOW`` per row; the first is left due
+    immediately. Uploads are made to succeed, so a row the batch takes moves.
+    """
+    from autoposter.render import pipeline as pipeline_module
+
+    async def fake_compose(session, config, render, media_item, **kwargs):
+        return b"badged"
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", fake_compose)
+    config.operations.enabled = False
+    jf.resolve_any = resolved("jellyfin", "n1", file_path="/m.mkv")
+
+    renders = []
+    for index, _ in enumerate(horizons):
+        _, render = await _item_with_render(session, f"n{index}")
+        renders.append(render)
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), config, "jellyfin",
+        cadence_seconds=60, now=NOW,
+    )
+    for render, offset in zip(renders, horizons):
+        if offset is None:
+            continue
+        await session.execute(
+            update(RenderDelivery)
+            .where(RenderDelivery.render_id == render.id)
+            .values(next_attempt_at=NOW + offset)
+        )
+    await session.commit()
+    return run_id
+
+
+async def test_a_run_that_moves_rows_again_after_an_idle_batch_stays_open(
+    session, catch_up_config, monkeypatch
+):
+    """Review N1, and the case that tells the two predicates apart: the rule
+    is TWO CONSECUTIVE idle batches, not "this batch left the counts where the
+    last one did". A run that moves rows, then moves nothing, then moves rows
+    again is working -- and a brief outage mid-drain, which turns every row of
+    a batch into a resolution miss, is exactly that shape."""
+    jf = _jellyfin()
+    run_id = await _run_with_staggered_horizons(
+        session, catch_up_config, jf, monkeypatch,
+        [None, timedelta(hours=1), timedelta(hours=3)],
+    )
+    servers = Servers({"jellyfin": jf})
+
+    first = await catchup.drain_catch_ups(session, servers, catch_up_config, now=NOW)
+    assert first == "catch-up: jellyfin 2 still due, 1 done, 0 failed"
+
+    # Nothing is due yet: an idle batch, counted but not acted on.
+    idle = await catchup.drain_catch_ups(
+        session, servers, catch_up_config, now=NOW + timedelta(seconds=60),
+    )
+    assert idle == "catch-up: jellyfin 2 still due, 1 done, 0 failed"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.finished_at is None and run.idle_drains == 1
+
+    # The second row comes due and moves: the counter goes back to zero.
+    third = await catchup.drain_catch_ups(
+        session, servers, catch_up_config, now=NOW + timedelta(hours=2),
+    )
+    assert third == "catch-up: jellyfin 1 still due, 2 done, 0 failed"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.finished_at is None and run.idle_drains == 0
+
+
+async def test_two_idle_batches_after_a_productive_one_stop_the_run(
+    session, catch_up_config, monkeypatch
+):
+    """The other half of the rule: the counter is CONSECUTIVE, so a run that
+    worked and then went quiet twice running is stopped all the same."""
+    jf = _jellyfin()
+    run_id = await _run_with_staggered_horizons(
+        session, catch_up_config, jf, monkeypatch, [None, timedelta(hours=3)],
+    )
+    servers = Servers({"jellyfin": jf})
+
+    assert await catchup.drain_catch_ups(session, servers, catch_up_config, now=NOW) == (
+        "catch-up: jellyfin 1 still due, 1 done, 0 failed"
+    )
+    await catchup.drain_catch_ups(
+        session, servers, catch_up_config, now=NOW + timedelta(seconds=60),
+    )
+    stopped = await catchup.drain_catch_ups(
+        session, servers, catch_up_config, now=NOW + timedelta(seconds=120),
+    )
+
+    assert stopped == "catch-up: jellyfin stopped with 1 still due, 1 done, 0 failed"
+    run = (await session.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.status == "ok" and run.finished_at is not None
+    assert run.idle_drains == 2
+
+
+async def test_a_failing_run_does_not_roll_back_an_earlier_runs_finish(
+    session, session_factory, catch_up_config, monkeypatch
+):
+    """Review N2: the sentence this pass returns is stored on the scheduled
+    run, so a clause claiming a finish has to be durable before a later run
+    can roll the transaction back."""
+    catch_up_config.operations.enabled = False
+    servers = Servers({
+        "jellyfin": _jellyfin(), "plex": FakeMediaServer(name="plex", libraries={"Movies"}),
+    })
+    # jellyfin's run marks nothing (no renders at all), so its first batch
+    # finishes it; plex's raises.
+    finished = await catchup.start_catch_up(
+        session, servers, catch_up_config, "jellyfin", now=NOW,
+    )
+    await catchup.start_catch_up(session, servers, catch_up_config, "plex", now=NOW)
+    await session.commit()
+
+    real = catchup.retry_pending_deliveries
+
+    async def explode(session, servers, config, **kwargs):
+        if kwargs.get("server") == "plex":
+            raise RuntimeError("boom")
+        return await real(session, servers, config, **kwargs)
+
+    monkeypatch.setattr(catchup, "retry_pending_deliveries", explode)
+
+    summary = await catchup.drain_catch_ups(session, servers, catch_up_config, now=NOW)
+
+    assert summary == (
+        "catch-up: jellyfin finished, 0 done, 0 failed; plex failed (RuntimeError)"
+    )
+    # What the sentence claims, read back through a second session.
+    async with session_factory() as other:
+        run = (await other.execute(select(Run).where(Run.id == finished))).scalar_one()
+    assert run.finished_at is not None and run.status == "ok"

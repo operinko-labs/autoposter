@@ -45,6 +45,16 @@ CATCH_UP_KIND = "catch_up"
 # request would only mean "every poll" while reading like something finer.
 MIN_CADENCE_SECONDS = 60
 
+# How many CONSECUTIVE batches may move nothing before the drain stops the
+# run (`runs.idle_drains`, review N1). Two rather than one: a media server
+# that is briefly unreachable turns every row of a batch into a resolution
+# miss, which by design changes neither status nor attempts, so one idle
+# batch is an outage and not a verdict. Two rather than more: every batch
+# past the first costs a scan of the run's rows and a poll's wait, and a run
+# that has moved nothing twice has nothing this pass can do -- its rows are
+# released and the unscoped retry pass carries on with them.
+MAX_IDLE_DRAINS = 2
+
 
 class CatchUpRefused(Exception):
     """Why a catch-up cannot start right now, in one sentence the button shows.
@@ -541,23 +551,29 @@ async def drain_catch_ups(
     what closes it, so the tallies are stamped on the run row BEFORE the rows
     they were counted from are released.
 
-    A run that MOVED NOTHING across two consecutive batches closes too, with
-    the same `ok` and a detail naming what it left (review I2). A resolution
-    miss is a wait, not a failure -- it spends no attempt budget -- so a row
-    for a file the server will never scan stays `pending` for ever, and
-    without this the run would drain empty batches for ever while
+    A run whose last ``MAX_IDLE_DRAINS`` batches moved NOTHING closes too,
+    with the same `ok` and a detail naming what it left (review I2). A
+    resolution miss is a wait, not a failure -- it spends no attempt budget --
+    so a row for a file the server will never scan stays `pending` for ever,
+    and without this the run would drain empty batches for ever while
     ``start_catch_up``'s in-flight check refused every later catch-up for that
     server, automatic ones included. Nothing is lost by closing: the release
     hands those rows back as ORDINARY pending waits, which the unscoped
-    pending-deliveries pass keeps retrying on its own cadence. The previous
-    batch's numbers are read back off the run row's own three count columns
-    -- the ones ``finish_catch_up`` stamps -- so this needs no new column.
+    pending-deliveries pass keeps retrying on its own cadence.
 
-    Each run's batch is contained: a failure outside a row (the retry pass
-    contains those itself, behind savepoints) would otherwise abort the whole
-    pass, and since the runs are walked in a stable order the same run would
-    be first in line on the next poll and the ones behind it would never get
-    a batch (review M2).
+    Whether a batch moved anything is this run's OWN tallies either side of
+    it, and the count of consecutive idle batches lives in ``runs.idle_drains``
+    -- a column, for ``last_drained_at``'s reason (two replicas share the
+    database and nothing else) and because a snapshot of the counts cannot
+    tell one idle batch from two in a row (review N1).
+
+    Each run's batch is contained AND committed on its own: a failure outside
+    a row (the retry pass contains those itself, behind savepoints) would
+    otherwise abort the whole pass -- and since the runs are walked in a
+    stable order, the same run would be first in line on the next poll and the
+    ones behind it would never get a batch (review M2). The per-run commit is
+    what keeps the containment's rollback from reaching back into an earlier
+    run's finish, which the returned sentence has already claimed (review N2).
 
     Commits, like every scheduled pass's body.
     """
@@ -565,7 +581,7 @@ async def drain_catch_ups(
     open_runs = (await session.execute(
         select(
             Run.id, Run.server, Run.cadence_seconds, Run.last_drained_at,
-            Run.processed, Run.failed, Run.deferred,
+            Run.idle_drains,
         )
         .where(Run.kind == CATCH_UP_KIND, Run.finished_at.is_(None))
         .order_by(Run.id)
@@ -591,6 +607,10 @@ async def drain_catch_ups(
             clauses.append(f"{server_name} waiting {cadence}s between batches")
             continue
         try:
+            # Taken BEFORE the batch and compared with the same numbers after
+            # it: that is what "this batch moved something" means, and it is
+            # read from this run's rows alone.
+            before = await run_tallies(session, run_id)
             # The retry pass commits per row, so nothing below may rely on an
             # ORM object loaded before it -- which is why the run's fields are
             # read into locals above rather than kept as a `Run` instance.
@@ -598,14 +618,12 @@ async def drain_catch_ups(
                 session, servers, config, http=http, mdblist=mdblist, now=now,
                 server=server_name, run_id=run_id,
             )
-            await session.execute(
-                update(Run).where(Run.id == run_id).values(last_drained_at=now)
-            )
             tallies = await run_tallies(session, run_id)
-            # What the LAST batch left, as it was stamped below. NULL means
-            # this is the run's first batch, which can never be a stall.
-            before = (run.processed, run.failed, run.deferred)
-            now_at = (tallies["total"], tallies["failed"], tallies["due"])
+            idle = 0 if tallies != before else run.idle_drains + 1
+            await session.execute(
+                update(Run).where(Run.id == run_id)
+                .values(last_drained_at=now, idle_drains=idle)
+            )
             if tallies["due"] == 0:
                 detail = f"catch-up: {tallies['done']} done, {tallies['failed']} failed"
                 await finish_catch_up(
@@ -615,7 +633,7 @@ async def drain_catch_ups(
                     f"{server_name} finished, {tallies['done']} done, "
                     f"{tallies['failed']} failed"
                 )
-            elif run.processed is not None and before == now_at:
+            elif idle >= MAX_IDLE_DRAINS:
                 detail = (
                     f"catch-up: stopped with {tallies['due']} still due, "
                     f"{tallies['done']} done, {tallies['failed']} failed"
@@ -628,20 +646,15 @@ async def drain_catch_ups(
                     f"{tallies['done']} done, {tallies['failed']} failed"
                 )
             else:
-                # Stamped so the NEXT batch can tell whether this one moved
-                # anything. Harmless on an open run: `catch_up_progress`
-                # counts a run that is still in flight from the rows
-                # themselves and reads these three only once it has finished.
-                await session.execute(
-                    update(Run).where(Run.id == run_id).values(
-                        processed=tallies["total"], failed=tallies["failed"],
-                        deferred=tallies["due"],
-                    )
-                )
                 clauses.append(
                     f"{server_name} {tallies['due']} still due, "
                     f"{tallies['done']} done, {tallies['failed']} failed"
                 )
+            # This run's own boundary (review N2): the clause above is already
+            # in the sentence this pass will return and store, so what it
+            # claims has to be durable before the next run gets a chance to
+            # roll the transaction back.
+            await session.commit()
         except Exception as exc:
             # Row 213: the class name, never the message -- this can be a
             # transport error carrying a server's address.
@@ -650,6 +663,8 @@ async def drain_catch_ups(
             )
             await session.rollback()
             clauses.append(f"{server_name} failed ({type(exc).__name__})")
+    # Each run committed its own work above; this closes the read transaction
+    # a pass in which every run was mid-cadence would otherwise leave open.
     await session.commit()
     return "catch-up: " + "; ".join(clauses)
 
