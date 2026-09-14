@@ -19,6 +19,7 @@ from autoposter.config.loader import build_config, load_config, read_config_docu
 from autoposter.config.overrides import OVERRIDES_ROW_ID
 from autoposter.config import state as state_module
 from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
     STATE_FILE_NAMES_ENV,
     STORED_SECRET_NAMES_ENV,
     Secrets,
@@ -1069,12 +1070,14 @@ def test_the_app_publishes_no_per_name_source_flag_of_its_own(secrets, session_f
 def test_an_app_that_never_booted_still_fails_closed(secrets, session_factory, monkeypatch, tmp_path):
     """Fail closed, now from the markers rather than from a per-app attribute.
     Every test application, and any operator running `python -m autoposter.main`
-    directly, has neither marker and no state file -- so nothing is stored,
-    nothing came from the file, and the rotation route's guard (`== "environment"`)
-    refuses. The right default, and the one a test has to opt OUT of."""
+    directly, has none of the three markers and no state file -- so nothing is
+    stored, nothing came from the file, the environment answers for itself, and
+    the rotation route's guard (`== "environment"`) refuses. The right default,
+    and the one a test has to opt OUT of."""
     monkeypatch.setenv(state_module.STATE_DIR_ENV, str(tmp_path / "state"))
     monkeypatch.delenv(STATE_FILE_NAMES_ENV, raising=False)
     monkeypatch.delenv(STORED_SECRET_NAMES_ENV, raising=False)
+    monkeypatch.delenv(ENVIRONMENT_SECRET_NAMES_ENV, raising=False)
     monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", "from-env")
 
     create_app(load_config(EXAMPLE), session_factory, secrets=secrets)
