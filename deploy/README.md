@@ -2483,14 +2483,15 @@ See `config/autoposter.example.yaml` for the full block.
 
 ## Periodic scheduler
 
-The `scheduler:` block in `autoposter.yaml` controls **ten** periodic passes —
-the collections reconcile (which carries the playlists pass), the ratings-drift
-sweep, the library-credits scan, the Plex maintenance pass, the orphaned-asset
-cleanup, the asset-size backfill, the `media_items` prune, the twin merge, the
-pending-deliveries retry, and the Radarr/Sonarr sync with its safety net (see
-"Radarr and Sonarr sync" below). An eleventh job, the stale-job reclaim, is
-registered whether or not this block is enabled, because it is queue
-correctness rather than maintenance. All eleven are run by a single background
+The `scheduler:` block in `autoposter.yaml` controls **eleven** periodic
+passes — the collections reconcile (which carries the playlists pass), the
+ratings-drift sweep, the library-credits scan, the Plex maintenance pass, the
+orphaned-asset cleanup, the asset-size backfill, the `media_items` prune, the
+twin merge, the pending-deliveries retry, the catch-up drain, and the
+Radarr/Sonarr sync with its safety net (see "Radarr and Sonarr sync" below). A
+twelfth job, the stale-job reclaim, is registered whether or not this block is
+enabled, because it is queue correctness rather than maintenance. All twelve
+are run by a single background
 task (the same `run(stop_event)` shape as the Plex health probe) started from
 the app lifespan. Their schedule lives in
 the database, not process memory: `scheduled_runs` records each job's last
