@@ -1055,6 +1055,53 @@ async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_
     assert writes == {render.item_id: "failed", other_item.id: "pending"}
 
 
+async def test_the_scheduled_pass_never_drains_a_catch_ups_rows(session, config_with_badges):
+    """Review I5: the scheduled pass passed neither filter and therefore took
+    every due row. A catch-up stamps its backlog `next_attempt_at = now` while
+    ordinary rows sit six hours out, so `ORDER BY next_attempt_at LIMIT 500`
+    handed the catch-up's thousands of rows the whole budget of every
+    scheduled pass until they drained -- while ordinary due rows waited, and
+    with the catch-up's own run-scoped progress advanced from outside it."""
+    from autoposter.scheduler.run_history import open_run
+    from autoposter.servers.registry import Servers
+
+    ordinary = await _item_with_facts(session, native="j-i5-plain")
+    scoped = await _item_with_facts(session, native="j-i5-run")
+    run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
+    await deliveries.record_metadata(session, ordinary.id, "jellyfin", "pending", retry_in=0)
+    await deliveries.record_metadata(session, scoped.id, "jellyfin", "pending", retry_in=0)
+    await session.execute(
+        update(MetadataWrite)
+        .where(MetadataWrite.item_id == scoped.id)
+        .values(run_id=run_id, previous_status="written")
+    )
+    await session.commit()
+
+    # `Servers({})`, so every row this pass DOES take goes `failed` and says
+    # which one it was.
+    unscoped_summary = await deliveries.retry_pending_deliveries(
+        session, Servers({}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert unscoped_summary.startswith("pending deliveries: 1 due")
+    statuses = dict((await session.execute(
+        select(MetadataWrite.item_id, MetadataWrite.status)
+    )).all())
+    assert statuses == {ordinary.id: "failed", scoped.id: "pending"}
+
+    # And the catch-up's own pass takes only its own row.
+    scoped_summary = await deliveries.retry_pending_deliveries(
+        session, Servers({}), config_with_badges, now=datetime.now(timezone.utc),
+        run_id=run_id,
+    )
+
+    assert scoped_summary.startswith("pending deliveries: 1 due")
+    statuses = dict((await session.execute(
+        select(MetadataWrite.item_id, MetadataWrite.status)
+    )).all())
+    assert statuses == {ordinary.id: "failed", scoped.id: "failed"}
+
+
 async def test_metadata_operations_turned_off_records_a_skip_and_writes_nothing(
     session, config_with_badges
 ):

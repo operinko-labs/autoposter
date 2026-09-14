@@ -1088,6 +1088,12 @@ def make_pending_deliveries_job(
     interval in this module effectively has by virtue of the scheduler's own
     poll cadence -- spelled out here because ``pending_deliveries_minutes``
     is operator-editable down to 1.
+
+    Neither filter is passed, which IS this job's scope: the rows no catch-up
+    armed. A catch-up's backlog is drained by a run-scoped pass of its own
+    (spec §3), so this one can neither starve ordinary due rows behind
+    thousands of `next_attempt_at = now` catch-up rows nor advance a run's
+    progress from outside it -- see ``retry_pending_deliveries``' docstring.
     """
 
     async def run(session: AsyncSession) -> str:

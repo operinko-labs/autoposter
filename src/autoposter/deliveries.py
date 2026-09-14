@@ -345,9 +345,14 @@ async def retry_pending_deliveries(
     racing the one the next webhook or full-pass item triggers.
 
     ``server`` narrows the pass to one server's rows and ``run_id`` to one
-    catch-up's (spec §3): with neither, the pass behaves exactly as it did
-    across every server. Both filters apply to both tables, because a
-    catch-up marks both.
+    catch-up's (spec §3); both filters apply to both tables, because a
+    catch-up marks both. NO ``run_id`` means the ORDINARY rows -- those no
+    catch-up armed -- and not "every row": a catch-up stamps its backlog
+    `next_attempt_at = now` while ordinary rows sit six hours out, so an
+    unscoped pass that took them would hand a catch-up's thousands of rows the
+    whole `LIMIT 500` budget of every scheduled pass until they drained --
+    days, on a 16k-row catch-up -- while ordinary due rows waited, and would
+    advance the catch-up's own run-scoped progress from outside it.
 
     ``pipeline.compose_badged_bytes`` is imported lazily, inside the
     function: a top-level import in that direction risks a cycle, since
@@ -365,8 +370,11 @@ async def retry_pending_deliveries(
     def _scoped(stmt, table):
         if server is not None:
             stmt = stmt.where(table.server == server)
-        if run_id is not None:
-            stmt = stmt.where(table.run_id == run_id)
+        # Always a clause on the scope, never "no clause": see the docstring
+        # on why an unscoped pass must not drain a catch-up's rows.
+        stmt = stmt.where(
+            table.run_id.is_(None) if run_id is None else table.run_id == run_id
+        )
         return stmt
 
     due = (await session.execute(_scoped(
