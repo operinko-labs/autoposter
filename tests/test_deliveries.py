@@ -1352,3 +1352,185 @@ async def test_an_exhausted_row_is_not_retried_again(session, config_with_badges
     )
 
     assert summary == "pending deliveries: 0 due, 0 done, 0 still pending, 0 failed, 0 skipped"
+
+
+async def test_a_database_error_on_one_metadata_row_does_not_abort_the_pass(
+    session, session_factory, config_with_badges, monkeypatch
+):
+    """Review test gap 2: both savepoint-isolation tests explode inside
+    `record`, i.e. the artwork half only. The metadata loop has its own
+    handler and its own `_tally(server, "pending")`, and neither was
+    exercised."""
+    from sqlalchemy import text
+
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    items = [await _item_with_facts(session, native=f"j-gap2-{n}") for n in range(3)]
+    # Ordered by next_attempt_at, so the exploding row is squarely first.
+    for offset, item in zip((-900, -600, -300), items, strict=True):
+        await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=offset)
+    await session.commit()
+    ids = [item.id for item in items]
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j-gap2", file_path="/m.mkv")
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+
+    real_record_metadata = deliveries.record_metadata
+
+    async def exploding_record_metadata(db, item_id, server, status, **kwargs):
+        if item_id == ids[0] and status == "written":
+            # A genuinely aborted transaction, not a bare Python raise: that
+            # is the failure class the isolation has to survive.
+            await db.execute(text("SELECT 1 / 0"))
+        return await real_record_metadata(db, item_id, server, status, **kwargs)
+
+    monkeypatch.setattr(deliveries, "record_metadata", exploding_record_metadata)
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert summary == (
+        "pending deliveries: 3 due, 2 done, 1 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 3 due, 0 uploaded, 2 written, 1 pending, 0 failed, 0 skipped"
+    )
+    assert len(jf.facts_written) == 3, "every row must still be attempted"
+    # A separate session: the point is that rows 2 and 3 were COMMITTED, not
+    # merely written and then erased by a neighbour's rollback.
+    async with session_factory() as fresh:
+        committed = dict((await fresh.execute(
+            select(MetadataWrite.item_id, MetadataWrite.status)
+        )).all())
+    assert committed[ids[0]] == "pending", "the exploding row keeps its seeded state"
+    assert committed[ids[1]] == committed[ids[2]] == "written"
+
+
+async def test_the_retrys_write_toggle_being_off_skips_the_row_through_the_pass(
+    session, config_with_badges
+):
+    """Review test gap 4: `operations.write_to_<server>` off is asserted by
+    calling `record_metadata` directly; only `operations.enabled` had a
+    pass-level test. The retry is the one path that could still write to a
+    server whose toggle the operator has turned off."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    item = await _item_with_facts(session, native="j-gap4")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j-gap4", file_path="/m.mkv")
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = False
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert jf.facts_written == [], "the toggle is off; nothing may be written"
+    assert jf.resolve_calls == 0, "the toggle is checked before the row costs a round trip"
+    row = (await session.execute(select(MetadataWrite.status, MetadataWrite.detail))).one()
+    assert row.status == "skipped"
+    assert row.detail == "config: operations.write_to_jellyfin is off"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 0 still pending, 0 failed, 1 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 0 failed, 1 skipped"
+    )
+
+
+async def test_a_dual_server_pass_reports_one_sorted_clause_per_server(
+    session, config_with_badges
+):
+    """Review test gap 5: every other test runs one server, so the sorted
+    multi-clause join -- the exact string spec §2 promises the dashboard --
+    was never asserted with more than one clause."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, PLEX_CAPS
+    from autoposter.servers.registry import Servers
+
+    item = await _item_with_facts(session, native="j-gap5")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=0)
+    await deliveries.record_metadata(session, item.id, "plex", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j-gap5", file_path="/m.mkv")
+    plex = FakeMediaServer(name="plex", capabilities=PLEX_CAPS)
+    plex.resolve_any = resolved("plex", "p-gap5", file_path="/m.mkv")
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.ConnectError("plex is down")
+
+    plex.apply_facts = boom
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    config_with_badges.operations.write_to_plex = True
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf, "plex": plex}), config_with_badges,
+        now=datetime.now(timezone.utc),
+    )
+
+    # Sorted, so the run history's detail reads the same way twice for the
+    # same work: jellyfin before plex whatever order the rows came back in.
+    assert summary == (
+        "pending deliveries: 2 due, 1 done, 1 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed, 0 skipped; "
+        "plex: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped"
+    )
+
+
+async def test_both_filters_select_rows_that_then_do_real_work(session, config_with_badges):
+    """Review test gap 8: both filter tests pass `Servers({})`, so every
+    selected row takes the `config: server removed` branch -- the filters are
+    proven to select, not to select rows that then get written."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, PLEX_CAPS
+    from autoposter.scheduler.run_history import open_run
+    from autoposter.servers.registry import Servers
+
+    mine = await _item_with_facts(session, native="j-gap8-mine")
+    theirs = await _item_with_facts(session, native="j-gap8-theirs")
+    run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
+    await deliveries.record_metadata(session, mine.id, "jellyfin", "pending", retry_in=0)
+    await deliveries.record_metadata(session, theirs.id, "plex", "pending", retry_in=0)
+    await session.execute(
+        update(MetadataWrite)
+        .where(MetadataWrite.item_id == mine.id)
+        .values(run_id=run_id, previous_status="written")
+    )
+    await session.commit()
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j-gap8", file_path="/m.mkv")
+    plex = FakeMediaServer(name="plex", capabilities=PLEX_CAPS)
+    plex.resolve_any = resolved("plex", "p-gap8", file_path="/m.mkv")
+    servers = Servers({"jellyfin": jf, "plex": plex})
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    config_with_badges.operations.write_to_plex = True
+
+    # The run filter, against a registry that can actually answer.
+    scoped = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges, now=datetime.now(timezone.utc), run_id=run_id,
+    )
+    assert scoped == (
+        "pending deliveries: 1 due, 1 done, 0 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed, 0 skipped"
+    )
+    assert [ref.native_id for ref, _ in jf.facts_written] == ["j-gap8"]
+    assert plex.facts_written == [], "the other server's row is not this run's"
+
+    # And the server filter, likewise -- a row that is written, not one that
+    # takes the `server removed` branch.
+    by_server = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges, now=datetime.now(timezone.utc), server="plex",
+    )
+    assert by_server == (
+        "pending deliveries: 1 due, 1 done, 0 still pending, 0 failed, 0 skipped; "
+        "plex: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed, 0 skipped"
+    )
+    statuses = dict((await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status)
+    )).all())
+    assert statuses == {"jellyfin": "written", "plex": "written"}

@@ -2765,3 +2765,69 @@ async def test_a_second_pass_leaves_an_absent_jellyfin_artwork_row_untouched(
     assert rows["jellyfin"].next_attempt_at is None, "an absent row must never gain a retry horizon"
     assert jf.uploads == [], "nothing is ever delivered to a server that does not carry the library"
     assert rows["plex"].status == "uploaded", "the other server is unaffected"
+
+
+async def test_an_absent_only_deliver_does_no_rollup_and_no_commit(
+    session, config_with_badges, monkeypatch,
+):
+    """Review test gap 7: `test_an_absent_server_is_never_asked_to_resolve`
+    pins `resolve_calls == 0`; the other half of spec §1's "no row, no
+    roll-up, no commit" rested on `recorded` staying False and was untested.
+    An UPDATE and a COMMIT per render per pass, for a server that has nothing
+    to do with the item, is exactly what that flag exists to avoid."""
+    from autoposter import deliveries
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    jf_item = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+    media_item = await pipeline_module._upsert_media_item(session, jf_item)
+    render = await pipeline_module._get_or_create_render(session, media_item, "poster", "/a/p.jpg")
+    render.status = "rendered"
+    await deliveries.record(session, render.id, "jellyfin", "absent", detail=ABSENT_DETAIL)
+    # A value the roll-up itself would never write, so "unchanged" is proof
+    # that `rollup` did not run rather than proof that it agreed.
+    await session.execute(
+        update(Render).where(Render.id == render.id).values(upload_status="rendered")
+    )
+    await session.commit()
+
+    commits = 0
+    real_commit = session.commit
+
+    async def counting_commit():
+        nonlocal commits
+        commits += 1
+        return await real_commit()
+
+    monkeypatch.setattr(session, "commit", counting_commit)
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+
+    # `data=None`: the unchanged-fingerprint pass, where nothing was composed
+    # and there is therefore nothing owed to the database either.
+    await pipeline_module.deliver(
+        session, config_with_badges, render, media_item,
+        Servers({"jellyfin": jf}), {"jellyfin": jf_item.ref}, None,
+        absent_servers={"jellyfin"},
+    )
+    assert commits == 0, "an absent-only render must not commit"
+
+    # And with bytes in hand the commit IS owed -- `compose_badged_bytes`
+    # flushed the fingerprint before handing them over -- but the roll-up
+    # still is not, because no delivery row was written either way.
+    await pipeline_module.deliver(
+        session, config_with_badges, render, media_item,
+        Servers({"jellyfin": jf}), {"jellyfin": jf_item.ref}, b"badged",
+        absent_servers={"jellyfin"},
+    )
+    assert commits == 1, "the compose's own commit, and no other"
+
+    assert jf.uploads == []
+    monkeypatch.setattr(session, "commit", real_commit)
+    status = (await session.execute(
+        select(Render.upload_status).where(Render.id == render.id)
+    )).scalar_one()
+    assert status == "rendered", "an absent-only render must not be rolled up"
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.detail)
+    )).one()
+    assert row.status == "absent" and row.detail == ABSENT_DETAIL

@@ -106,3 +106,53 @@ async def test_the_pass_summary_carries_the_per_server_sentence(session, config_
     )
 
     assert summary.endswith("jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped")
+
+
+async def test_the_per_server_sentence_lands_in_the_stored_run_row(session_factory):
+    """Review test gap 6: spec §2's binding constraint is that the per-server
+    sentence reaches the run history, and nothing proved it end to end -- the
+    scheduler test above asserts only the `0 due` prefix of a zero-due pass,
+    and the sentence test asserts the RETURNED string. `scheduler/core.py`
+    stores whatever the job returns, and the length of what it stores is a
+    `Text` column nobody had exercised with a real clause."""
+    from autoposter import deliveries
+    from autoposter.render import pipeline
+    from media_server_doubles import resolved
+
+    holder = ConfigHolder(_config(minutes=7))
+    # An empty registry, so the one due row takes the `config: server
+    # removed` branch: this test is about the sentence reaching the row, and
+    # that branch needs no server double and no badge config.
+    job = make_pending_deliveries_job(holder, lambda: {}, http=None, mdblist=None)
+
+    async with session_factory() as seed:
+        item = await pipeline._upsert_media_item(
+            seed, resolved("jellyfin", "j1", file_path="/m.mkv")
+        )
+        render = await pipeline._get_or_create_render(seed, item, "poster", "/a/p.jpg")
+        await deliveries.record(seed, render.id, "jellyfin", "pending", retry_in=0)
+        await deliveries.record_metadata(seed, item.id, "jellyfin", "pending", retry_in=0)
+        await seed.commit()
+
+    stop = asyncio.Event()
+    scheduler = Scheduler(session_factory, [job], poll_seconds=0.01)
+    task = asyncio.create_task(scheduler.run(stop))
+    row = None
+    try:
+        async with asyncio.timeout(60):
+            while row is None or row.last_finished_at is None:
+                await asyncio.sleep(0.01)
+                async with session_factory() as check:
+                    row = (await check.execute(select(ScheduledRun))).scalar_one_or_none()
+    except TimeoutError:
+        pass
+    finally:
+        stop.set()
+        await task
+
+    assert row is not None, "the registered job never recorded a run"
+    assert row.last_status == "ok"
+    assert row.last_detail == (
+        "pending deliveries: 2 due, 0 done, 0 still pending, 2 failed, 0 skipped; "
+        "jellyfin: 2 due, 0 uploaded, 0 written, 0 pending, 2 failed, 0 skipped"
+    )
