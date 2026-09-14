@@ -21,26 +21,36 @@ CONFIGURED means all three, in this order:
    name the stored layer cannot answer, and not by policy: reading the store
    needs it, so ``main``'s first resolve is the two lower layers and only its
    second has the store on top of them;
-2. a config document is readable -- the ``AUTOPOSTER_CONFIG`` path when that
-   file exists, the state directory's ``autoposter.yaml`` otherwise
-   (``config/loader.config_document_path``);
+2. a config document is readable -- the STORE's document when the store holds
+   one (``stored_config_document`` below), and the file otherwise: the
+   ``AUTOPOSTER_CONFIG`` path when that file exists, the state directory's
+   ``autoposter.yaml`` when it does not
+   (``config/loader.config_document_path``). The store first because the
+   store is what the application actually runs
+   (``config/overrides.load_effective_config``), so a server added from the
+   Settings page is a server the next boot knows about and a deployment whose
+   ConfigMap has been removed still boots;
 3. that document names at least one media server, and every server it names
    has its own credential set (``config/schema.missing_server_setup``) -- a
    plex-only deployment's ``AUTOPOSTER_PLEX_TOKEN``, a jellyfin-only one's
    ``AUTOPOSTER_JELLYFIN_APIKEY``, both if both are configured.
 
-The database is NOT part of the decision. It is read once, for the stored
-secrets (``stored_secrets_for_boot`` below), and every failure of that read --
-no database, no table yet, no key -- answers an empty map rather than stopping
-anything. A deployment that has both halves boots exactly
-as it did before this module existed, including when postgres is down: the
-migration fails, the process exits non-zero, the orchestrator restarts it
-until the database answers. Demoting that boot into setup mode instead would
-take a production pod restarted during a postgres rollout, stop it being the
-application, and put an unauthenticated first-start wizard on the port the
-Service and Ingress already point at. The ``SELECT 1`` probe still exists, in
-``db/base.database_answers``, as the setup wizard's database-step validation --
-where a human is waiting for the answer and no traffic is being served.
+The database's ANSWER is part of the decision; its availability is not. It is
+read twice, for the stored secrets (``stored_secrets_for_boot`` below) and for
+the stored document (``stored_config_document``), and every failure of either
+read -- no database, no table yet, no key, an unreachable or silent host --
+answers "nothing stored" rather than stopping anything: the layers beneath,
+the state file and the mounted document, are how every deployment that
+predates the store is configured. A deployment that has both halves on the
+volume boots exactly as it did before this module existed, including when
+postgres is down: the migration fails, the process exits non-zero, the
+orchestrator restarts it until the database answers. Demoting that boot into
+setup mode instead would take a production pod restarted during a postgres
+rollout, stop it being the application, and put an unauthenticated first-start
+wizard on the port the Service and Ingress already point at. The ``SELECT 1``
+probe still exists, in ``db/base.database_answers``, as the setup wizard's
+database-step validation -- where a human is waiting for the answer and no
+traffic is being served.
 
 There are four outcomes, and the wizard answers two of them:
 
@@ -54,8 +64,9 @@ There are four outcomes, and the wizard answers two of them:
 * every hard secret present, a document readable, but no usable media server
   in it -- the same setup application, so an operator can add a server or set
   the credential it is missing;
-* every hard secret present and no config document at all -- one line naming
-  the two paths that were looked at, and a non-zero exit. A deployment that
+* every hard secret present and no config document at all -- nothing in the
+  store and nothing at either path -- one line naming the two paths that were
+  looked at, and a non-zero exit. A deployment that
   holds credentials was configured by somebody, so a missing document is that
   somebody's mistake -- a ConfigMap whose key was renamed is the reachable
   shape -- and not a first start. Serving the wizard there would put an
@@ -158,8 +169,75 @@ def stored_secrets_for_boot(database_url: str) -> dict[str, str]:
         return {}
 
 
-def is_configured(resolved: dict[str, str]) -> bool:
+def stored_config_document(database_url: str) -> dict | None:
+    """The configuration document the store holds, or ``None``.
+
+    ``None`` for every failure and for an empty store, exactly as
+    ``stored_secrets_for_boot`` answers ``{}``: on a first boot the table does
+    not exist yet, and a deployment configured before the store held the
+    document has nothing in it. The caller falls back to the file, which is
+    what every deployment that predates this does today.
+
+    ``None`` for a store that still holds a DELTA as well -- a row whose
+    metadata does not carry the current format. Such a row is a partial
+    document that means nothing without the file it was a delta of, so
+    answering with it would tell a configured deployment it names no media
+    server and demote it into the wizard. ``load_effective_config`` gates on
+    the same fact and converts the delta there, in the session it has for it.
+
+    The private loop and the bound are ``stored_secrets_for_boot``'s, for the
+    reasons written down there: this frame has none, ``asyncio.run`` leaves
+    none behind for the ``os.execv`` that follows, and this read sits ahead of
+    the boot decision, the migration and the exec -- so "never blocks a boot"
+    has to be a bound rather than an intention. The same corollary holds too:
+    it MUST NOT be called from inside a running loop, where ``asyncio.run``
+    raises into the catch-all below and an unreadable store would be
+    indistinguishable from an empty one. ``main.build`` is the one caller that
+    may have a loop, and it calls this from a worker thread.
+    """
+    if not database_url:
+        return None
+
+    # Imported here rather than at module scope, like the engine below: a boot
+    # with no database URL answers without importing the database layer at all.
+    from autoposter.db.base import PROBE_TIMEOUT_SECONDS
+
+    async def read() -> dict | None:
+        from autoposter.config.overrides import STORE_FORMAT, load_store
+        from autoposter.db.base import make_engine, make_session_factory
+
+        engine = make_engine(database_url)
+        try:
+            factory = make_session_factory(engine)
+            async with factory() as session:
+                document, meta = await load_store(session)
+                if not document or meta.get("format") != STORE_FORMAT:
+                    return None
+                return document
+        finally:
+            await engine.dispose()
+
+    try:
+        return asyncio.run(asyncio.wait_for(read(), PROBE_TIMEOUT_SECONDS))
+    except Exception as exc:
+        # The CLASS NAME only, for the reason spelled out above: a connection
+        # error's text carries the DSN. INFO, not WARNING: on a first boot
+        # this is the ordinary case.
+        logger.info(
+            "the stored configuration could not be read (%s); the configuration "
+            "file answers instead",
+            type(exc).__name__,
+        )
+        return None
+
+
+def is_configured(resolved: dict[str, str], document: dict | None = None) -> bool:
     """Whether this deployment has been told what it is.
+
+    ``document`` is the STORE's, when there is one. ``None`` means the store
+    answered nothing and the file is asked instead, which is what every
+    deployment that predates the store gets and what the default keeps for
+    every caller that has no store to offer.
 
     Credentials first and short-circuiting, so a deployment that was never
     told anything does not go looking for a config document either -- and so
@@ -179,29 +257,32 @@ def is_configured(resolved: dict[str, str]) -> bool:
         # Names, never values: these are the variables an operator sets.
         logger.warning("credentials do not resolve; unset: %s", ", ".join(missing))
         return False
-    path = config_document_path()
-    if path is None:
-        # Paths, never contents. The two candidates are named because "no
-        # config document" is otherwise indistinguishable from "the wrong one",
-        # and this is the line an operator has to read to fix the restart loop
-        # the caller is about to enter.
-        logger.error(
-            "this deployment has credentials but no config document: "
-            "nothing at %s and nothing at %s",
-            os.environ.get("AUTOPOSTER_CONFIG") or "(AUTOPOSTER_CONFIG unset)",
-            state_config_path(),
-        )
-        return False
-    try:
-        document = read_config_document(path)
-    except Exception:
-        # A document that exists but fails to parse is not this function's
-        # failure to report -- this gate only ever asked "is there a
-        # document", never "is it valid"; that question belongs to the real
-        # config load, wherever this deployment's document is loaded as a
-        # `Config`. Crashing the boot decision itself over it would be new
-        # behaviour this row does not add.
-        return True
+    if document is None:
+        path = config_document_path()
+        if path is None:
+            # Paths, never contents. The two candidates are named because "no
+            # config document" is otherwise indistinguishable from "the wrong
+            # one", and this is the line an operator has to read to fix the
+            # restart loop the caller is about to enter. The database is named
+            # too, and without a DSN: with the store asked first, "nothing at
+            # either path" is no longer the whole of why there is no document.
+            logger.error(
+                "this deployment has credentials but no config document: "
+                "nothing at %s, nothing at %s, and nothing in the database",
+                os.environ.get("AUTOPOSTER_CONFIG") or "(AUTOPOSTER_CONFIG unset)",
+                state_config_path(),
+            )
+            return False
+        try:
+            document = read_config_document(path)
+        except Exception:
+            # A document that exists but fails to parse is not this function's
+            # failure to report -- this gate only ever asked "is there a
+            # document", never "is it valid"; that question belongs to the real
+            # config load, wherever this deployment's document is loaded as a
+            # `Config`. Crashing the boot decision itself over it would be new
+            # behaviour this row does not add.
+            return True
     problems = missing_server_setup(document, resolved)
     if problems:
         logger.warning("no usable media server: %s", "; ".join(problems))
@@ -306,10 +387,21 @@ def main(argv: list[str] | None = None) -> None:
         )
     _export(resolved)
 
-    if not is_configured(resolved):
-        if not missing_hard_secret_names(resolved) and config_document_path() is None:
-            # Credentials but no document. `is_configured` has already logged
-            # the two paths; exiting non-zero is the restart loop this shape
+    # The store's document, read with the same URL the secrets were: it is
+    # what the application will actually run, so it is what "configured" is
+    # asked of. `None` is an empty or unreadable store and sends the question
+    # back to the mounted file, which is where it has always gone.
+    document = stored_config_document(resolved.get("AUTOPOSTER_DATABASE_URL", ""))
+
+    if not is_configured(resolved, document):
+        if (
+            not missing_hard_secret_names(resolved)
+            and document is None
+            and config_document_path() is None
+        ):
+            # Credentials but no document, in neither place. `is_configured`
+            # has already logged both paths and the database; exiting non-zero
+            # is the restart loop this shape
             # produced before the wizard existed, and it is what keeps an
             # unauthenticated wizard off a configured deployment's port. A
             # server-credential problem (a document that is there, but names
@@ -333,8 +425,18 @@ def main(argv: list[str] | None = None) -> None:
         # deployment does already have. `stored` holds the same plaintext one
         # layer up and goes with it.
         del resolved, stored
+        # The stored document goes with it, for the reason the export above
+        # gives about the stored secrets: the wizard has no database session
+        # of its own, and one that could not see the store would offer the
+        # config step to a deployment that already has a document -- then
+        # write a second one to the volume, which the next boot would not
+        # read. It is configuration and not a credential, so it is handed over
+        # as a value rather than published into the environment.
         uvicorn.run(
-            build_setup_app(), host="0.0.0.0", port=8080, timeout_graceful_shutdown=10
+            build_setup_app(document),
+            host="0.0.0.0",
+            port=8080,
+            timeout_graceful_shutdown=10,
         )
         return
 

@@ -227,6 +227,14 @@ STATE_DIR_NOT_WRITABLE = "the state directory could not be written"
 # own text carries the DSN. Nothing is exec'd after it: the wizard stays on
 # the port with what the operator typed still staged in memory.
 CREDENTIALS_NOT_STORED = "the credentials could not be written to the database"
+# The same 503 for the other thing this step stores: the configuration
+# document, which the next boot now reads from the database ahead of the
+# volume. A fixed sentence for the same reason -- a connection error's own
+# text carries the DSN -- and nothing about what the document says, which is
+# the operator's configuration rather than a failure report's to quote. A
+# database that has simply not been migrated yet is NOT this: that one is
+# tolerated where it is raised, exactly as the credential write tolerates it.
+CONFIGURATION_NOT_STORED = "the configuration could not be written to the database"
 # The other half of the same write, and a different volume's fault: the key
 # the rows are encrypted with lives in the state directory, so a directory
 # that refuses the create -- or a ``secret.key`` that is not a key -- is the
@@ -702,7 +710,18 @@ def _config_source(request: Request) -> str | None:
     finish step will not write over. ``staged`` and ``null`` are the two the
     step stays offered for. The source is a WORD and never the path: /progress
     is a presence surface.
+
+    The STORE is asked first, and answers ``configured`` -- which is exactly
+    what is true of it: a document the next boot resolves, which this wizard
+    cannot replace and which the finish step will not write over. The shape is
+    a deployment configured from the UI and then sent back here by one blanked
+    credential: it has a document, in the one place ``boot`` looks before the
+    volume, and asking the operator for another would be asking for work the
+    next boot would ignore. No new word, because the page's decision is the
+    same one it already makes for a mounted document.
     """
+    if request.app.state.setup_document is not None:
+        return "configured"
     path = config_document_path()
     if path is not None:
         return "state" if path == state_config_path() else "configured"
@@ -721,8 +740,18 @@ def _document_for_boot(request: Request) -> dict | None:
     ``read_config_document`` can raise on a document an operator wrote by hand;
     a reporting surface answers "no document" for that, the way
     ``_config_source`` does, and the real load is where that is an error.
+
+    The store's document, when ``boot`` handed one over, comes ahead of both:
+    it is what the next boot resolves, so it is the document the server step
+    and the finish gate have to be asked about. Nothing can be staged over it
+    -- ``_config_source`` answers ``configured`` for it, so the page never
+    offers the step -- and the staged ADDRESSES still apply, so an operator
+    who re-checks a server here sees the same answer the gate will give.
     """
     state = request.app.state.setup
+    stored = request.app.state.setup_document
+    if stored is not None:
+        return _apply_staged_urls(copy.deepcopy(stored), state)
     if state.config_document is not None:
         return _apply_staged_urls(copy.deepcopy(state.config_document), state)
     path = config_document_path()
@@ -1834,6 +1863,56 @@ def _table_is_missing(exc: BaseException) -> bool:
     return getattr(getattr(exc, "orig", None), "sqlstate", None) == _UNDEFINED_TABLE
 
 
+async def _write_document_to_store(document: dict, database_url: str) -> None:
+    """Seed the store with the document this wizard just wrote.
+
+    Both the volume AND the store get a copy, and the asymmetry is the point.
+    The store is what the next boot asks first and what the application
+    actually runs; the volume copy is what a boot whose database is briefly
+    unreachable can still answer ``is_configured`` from, which is the shape
+    ``boot``'s own docstring argues for -- a production pod restarted during a
+    postgres rollout must not be demoted into an unauthenticated wizard.
+
+    ``seed_store`` and not a write: it fills an EMPTY store and returns
+    whatever a non-empty one already held, so a second finish against a
+    database somebody has since configured cannot replace their configuration
+    with this wizard's.
+
+    A missing table is tolerated exactly as the credential write below
+    tolerates it, and for the same fact: the migration this step runs may have
+    failed, and then the table does not exist. The document is already on the
+    volume at that point, so the next boot reads it from there -- which is
+    what every deployment that predates the store does -- and the wizard is
+    not failed over it.
+
+    The log names the document's SECTIONS and never a value. The document
+    carries no credential -- the wizard stages those separately and
+    ``config/overrides._reject_secrets`` refuses a ``secrets`` key in a stored
+    document -- and naming sections rather than values is what keeps the line
+    safe regardless.
+    """
+    from autoposter.config.overrides import seed_store
+    from autoposter.db.base import make_engine, make_session_factory
+
+    engine = make_engine(database_url)
+    try:
+        factory = make_session_factory(engine)
+        async with factory() as session:
+            await seed_store(session, document)
+            await session.commit()
+    except Exception as exc:
+        if not _table_is_missing(exc):
+            raise
+        logger.warning(
+            "first-start setup: this deployment has not been migrated yet, so "
+            "the configuration was written to the state file only; these "
+            "sections are not in the store: %s",
+            ", ".join(sorted(document)),
+        )
+    finally:
+        await engine.dispose()
+
+
 async def _persist_staged_secrets(state: SetupState, database_url: str) -> list[str]:
     """Write the staged credentials into the secrets table; the names written.
 
@@ -1923,9 +2002,10 @@ async def finish(request: Request) -> JSONResponse:
     then hand the process over.
 
     The write order is the config document FIRST and the credentials second,
-    each atomically -- and the credentials are themselves two writes, the
-    database URL to the state file and every other staged name into the
-    encrypted store. Both orders have a window; only this
+    each atomically -- and each half is itself two writes: the document to the
+    volume and then, once the migration has run, into the store the next boot
+    reads first; the database URL to the state file and every other staged
+    name into the encrypted store. Both orders have a window; only this
     one has a survivable window. Secrets-first crashing halfway leaves a
     deployment whose credentials all resolve and whose document does not, which
     ``boot`` reports as a configuration error and exits non-zero -- forever,
@@ -1965,15 +2045,16 @@ async def finish(request: Request) -> JSONResponse:
     url = effective["AUTOPOSTER_DATABASE_URL"]
 
     async with state.lock:
+        # Held rather than dumped and forgotten: the same document goes into
+        # the store below, once the migration that creates its table has run,
+        # and the two copies have to be the one document.
+        document = None
         if state.config_document is not None:
+            document = _apply_staged_urls(dict(state.config_document), state)
             _persist(
                 write_state_file,
                 state_config_path(),
-                yaml.safe_dump(
-                    _apply_staged_urls(dict(state.config_document), state),
-                    sort_keys=False,
-                    allow_unicode=True,
-                ),
+                yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
             )
         # An OSError here, after the document landed, is the same 503: the
         # document stays and the hard secrets stay ABSENT, which is the next
@@ -2029,6 +2110,26 @@ async def finish(request: Request) -> JSONResponse:
                 "the credentials go to the state file instead of the secrets "
                 "table"
             )
+        if document is not None:
+            # After the migration, because the table this writes into is one
+            # the migration creates; before the credentials, because that is
+            # this step's write order and its reason is unchanged -- an
+            # interruption here leaves a deployment with a document and no
+            # credentials, which is the wizard again.
+            try:
+                await _write_document_to_store(document, url)
+            except Exception as exc:
+                # The CLASS NAME only, in the log, and the fixed sentence in
+                # the response: the URL carries a password. The document is on
+                # the volume either way, so this refuses a finish whose
+                # database is genuinely broken rather than losing work.
+                logger.error(
+                    "first-start setup: the configuration could not be stored (%s)",
+                    type(exc).__name__,
+                )
+                raise HTTPException(
+                    status_code=503, detail=CONFIGURATION_NOT_STORED
+                ) from None
         try:
             written = await _persist_staged_secrets(state, url)
         except HTTPException:
@@ -2080,7 +2181,7 @@ def _exec_boot() -> None:
     os.execv(sys.executable, [sys.executable, "-m", "autoposter.boot"])
 
 
-def build_setup_app() -> FastAPI:
+def build_setup_app(document: dict | None = None) -> FastAPI:
     """The application an unconfigured deployment serves.
 
     No engine, no config, no scheduler, no worker pool, no log buffer, and no
@@ -2093,9 +2194,19 @@ def build_setup_app() -> FastAPI:
     No ``openapi_url``: an unauthenticated surface does not publish an
     enumeration of itself, and the real application already makes that a
     config decision (``api_docs_enabled``) rather than a default.
+
+    ``document`` is the one ``boot`` read out of the STORE, handed over for
+    the same reason it publishes the stored secrets before it branches: this
+    application has no database session of its own, and a wizard that could
+    not see the stored document would offer the config step to a deployment
+    that already has one -- then write a second document to the volume, which
+    the next boot would not read, because the store answers first. ``None``
+    for every wizard that has no stored document behind it, which is every
+    first start and every test that builds this directly.
     """
     app = FastAPI(title="autoposter setup", openapi_url=None, docs_url=None, redoc_url=None)
     app.state.setup = SetupState()
+    app.state.setup_document = document
     # Per process, the LoginRateLimiter contract. This process is replaced by
     # the exec at the end of the wizard, so the counter's lifetime is exactly
     # the wizard's.

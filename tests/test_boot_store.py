@@ -20,6 +20,7 @@ has never had one and hand a setup token to whoever asked first.
 import asyncio
 import os
 import time
+from pathlib import Path
 
 import pytest
 import yaml
@@ -29,6 +30,7 @@ from autoposter import boot
 from autoposter.api.auth import hash_password
 from autoposter.config import secret_store
 from autoposter.config import state as state_module
+from autoposter.config.overrides import seed_store, store_meta, write_store
 from autoposter.config.schema import (
     ENVIRONMENT_SECRET_NAMES_ENV,
     STATE_FILE_NAMES_ENV,
@@ -258,3 +260,229 @@ async def test_the_first_start_wizard_sees_a_stored_admin_password_hash(
     assert refused.status_code == 401, "a wrong password must not mint a setup token"
     assert "token" not in refused.json()
     assert accepted.status_code == 200, "the real password still gets in"
+
+
+# --- the store answers "configured" -----------------------------------------
+#
+# Three claims again, and the same independence.
+#
+# The DOCUMENT the boot decision is taken over is the store's when there is
+# one, so a server added from the Settings page is a server the next boot
+# knows about and a deployment whose ConfigMap has been removed still boots.
+#
+# The store's answer is the whole answer: a stored server whose credential is
+# unset is still not configured, and a store that holds nothing -- or holds a
+# delta from before the store became the document -- sends the question back
+# to the file, which is what every deployment that predates this gets.
+#
+# And both entry points that read a document at boot tolerate a missing file:
+# `boot.main`, which decides the mode, and `main.build`, which builds the
+# application object the mode hands over to. Before this, a deployment whose
+# document and secrets both lived in the database was told it was configured
+# and then died in `build()` on FileNotFoundError.
+
+EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+
+
+def _example_document() -> dict:
+    return yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+
+
+def _document_in_a_thread(url: str):
+    """`stored_config_document`, called the way `boot.main` calls it.
+
+    `_in_a_thread`'s reason, restated because the trap is the same one: this
+    function owns an `asyncio.run` too, so calling it directly from an async
+    test would land in its own catch-all and answer `None` -- which is
+    indistinguishable from an empty store, and would pass for the wrong reason
+    the day the read broke.
+    """
+    return asyncio.to_thread(boot.stored_config_document, url)
+
+
+def _hard_secrets(database_url: str, **extra: str) -> dict[str, str]:
+    return {
+        "AUTOPOSTER_DATABASE_URL": database_url,
+        "AUTOPOSTER_TMDB_TOKEN": "x",
+        "AUTOPOSTER_TVDB_APIKEY": "x",
+        "AUTOPOSTER_FANART_APIKEY": "x",
+        "AUTOPOSTER_WEBHOOK_SECRET": "x",
+        **extra,
+    }
+
+
+@pytest.mark.asyncio
+async def test_configured_is_answered_from_the_store_not_the_file(
+    tmp_path, monkeypatch, session_factory, database_url
+):
+    """The file on the volume names no server at all; the store names Plex.
+    The deployment is configured, because the store is what runs."""
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(tmp_path / "autoposter.yaml"))
+    (tmp_path / "autoposter.yaml").write_text("workers: 2\n", encoding="utf-8")
+
+    async with session_factory() as session:
+        await seed_store(session, _example_document())
+        await session.commit()
+
+    resolved = _hard_secrets(database_url, AUTOPOSTER_PLEX_TOKEN="x")
+    stored = await _document_in_a_thread(database_url)
+    assert stored is not None and "plex" in stored
+    assert boot.is_configured(resolved, stored) is True
+    assert boot.is_configured(resolved, None) is False, (
+        "the file alone names no server, which is what makes this test about "
+        "the store rather than about the file behind it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stored_server_without_its_credential_is_not_configured(
+    session_factory, database_url
+):
+    """The store's answer is the whole answer and not a shortcut past the
+    second half of the gate: a document that names Plex on a deployment with
+    no Plex token is the shape the wizard exists to fix."""
+    async with session_factory() as session:
+        await seed_store(session, _example_document())
+        await session.commit()
+
+    stored = await _document_in_a_thread(database_url)
+    assert boot.is_configured(_hard_secrets(database_url), stored) is False
+
+
+def test_an_empty_store_leaves_the_file_answering(tmp_path, monkeypatch):
+    """Every deployment that predates this: no store, a mounted file, and the
+    same answer it has always given."""
+    monkeypatch.setenv("AUTOPOSTER_CONFIG", str(tmp_path / "autoposter.yaml"))
+    (tmp_path / "autoposter.yaml").write_text(
+        EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    unreachable = "postgresql+asyncpg://nobody@127.0.0.1:1/x"
+    assert boot.stored_config_document(unreachable) is None
+    assert (
+        boot.is_configured(_hard_secrets(unreachable, AUTOPOSTER_PLEX_TOKEN="x"), None)
+        is True
+    )
+
+
+def test_no_database_url_at_all_reads_no_store():
+    """The first-start shape, answered without building an engine."""
+    assert boot.stored_config_document("") is None
+
+
+@pytest.mark.asyncio
+async def test_a_delta_era_store_leaves_the_file_answering(
+    session_factory, database_url
+):
+    """A row from before the store became the document is a PARTIAL document:
+    a handful of overridden leaves that mean nothing without the file they
+    were a delta of. Answering the boot decision with one would tell a
+    deployment that has run for a year that it names no media server, and put
+    an unauthenticated wizard on its port. `load_effective_config` gates on
+    the same metadata and converts the delta where there is a session for it.
+    """
+    async with session_factory() as session:
+        await write_store(session, {"workers": 3}, store_meta(format_=1))
+        await session.commit()
+
+    assert await _document_in_a_thread(database_url) is None
+
+
+@pytest.mark.asyncio
+async def test_boot_hands_over_to_the_application_with_no_file_anywhere(
+    monkeypatch, session_factory, database_url
+):
+    """The deployment this row exists for, through `boot.main` itself: the
+    document is in the store, the credentials resolve, and there is no mounted
+    file at either path. Before this it was served the wizard."""
+    async with session_factory() as session:
+        await seed_store(session, _example_document())
+        await session.commit()
+    _write_state_secrets(_hard_secrets(database_url, AUTOPOSTER_PLEX_TOKEN="x"))
+    assert not state_module.state_config_path().is_file()
+
+    served: list[object] = []
+    exec_calls: list[list[str]] = []
+    monkeypatch.setattr(boot, "_migrate", lambda: None)
+    monkeypatch.setattr(boot.uvicorn, "run", lambda app, **kwargs: served.append(app))
+    monkeypatch.setattr(boot.os, "execv", lambda path, argv: exec_calls.append(argv))
+
+    await asyncio.to_thread(boot.main, [])
+
+    assert served == [], "a deployment whose store holds its document is configured"
+    assert exec_calls == [list(boot.DEFAULT_COMMAND)]
+
+
+@pytest.mark.asyncio
+async def test_build_reads_the_store_when_there_is_no_configuration_file(
+    tmp_path, monkeypatch, session_factory, database_url
+):
+    """`main.build()` is the other half of the same deployment, and the half
+    that used to raise FileNotFoundError after `boot` had already decided the
+    deployment was configured and exec'd it.
+
+    Called straight from this test's own running event loop, which is the
+    `uvicorn autoposter.main:build --factory` shape: the store read may not
+    bridge an async call with `asyncio.run` from there.
+    """
+    import autoposter.main as main_module
+    from autoposter.config.schema import Secrets
+
+    document = _example_document()
+    document["plex"]["url"] = "http://plex.from-the-store.test:32400"
+    async with session_factory() as session:
+        await seed_store(session, document)
+        await session.commit()
+
+    class _Secrets:
+        @staticmethod
+        def from_env() -> Secrets:
+            return Secrets(
+                database_url=database_url,
+                plex_token="x", tmdb_token="x", tvdb_apikey="x",
+                fanart_apikey="x", webhook_secret="x", admin_password_hash="",
+            )
+
+    monkeypatch.setattr(main_module, "CONFIG_PATH", tmp_path / "nothing.yaml")
+    monkeypatch.setattr(main_module, "Secrets", _Secrets)
+    monkeypatch.setattr(main_module, "make_engine", lambda url: object())
+    monkeypatch.setattr(main_module, "spa_dist", lambda: None)
+
+    app = main_module.build()
+
+    assert app.state.config.plex.url == "http://plex.from-the-store.test:32400"
+
+
+@pytest.mark.asyncio
+async def test_the_wizard_is_not_asked_for_a_document_the_store_already_holds(
+    monkeypatch, session_factory, database_url
+):
+    """A deployment configured from the UI and then sent back here by ONE
+    blanked credential still has its document -- in the store, which the
+    wizard has no session to read. `boot` hands over what it read, so the
+    config step is not offered; without it the operator would be asked for a
+    second document, and the finish step would write it to a volume the next
+    boot does not read.
+    """
+    async with session_factory() as session:
+        await seed_store(session, _example_document())
+        await session.commit()
+    # Every hard name but one, which is what puts this boot in setup mode.
+    held = _hard_secrets(database_url, AUTOPOSTER_PLEX_TOKEN="x")
+    del held["AUTOPOSTER_TMDB_TOKEN"]
+    _write_state_secrets(held)
+
+    wizard = await asyncio.to_thread(_serve_the_wizard, monkeypatch)
+
+    transport = ASGITransport(app=wizard)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (
+            await client.post("/api/setup/password", json={"password": MASTER_PASSWORD})
+        ).json()["token"]
+        progress = await client.get(
+            "/api/setup/progress", headers={"X-Setup-Token": token}
+        )
+
+    body = progress.json()
+    assert body["config"] is True
+    assert body["config_source"] == "configured"
+    assert body["servers"]["plex"]["configured"] is True

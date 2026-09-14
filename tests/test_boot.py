@@ -610,7 +610,9 @@ def test_a_configured_boot_with_an_unreachable_database_still_migrates(monkeypat
     boot.main([])
 
     assert order == ["migrate", "execv"]
-    assert opened == [FAKE_DB_URL], "the store was reached for, and answered nothing"
+    # Twice, because the store is read twice: the secrets, then the document.
+    # Both answered nothing and neither stopped the boot, which is the claim.
+    assert opened == [FAKE_DB_URL, FAKE_DB_URL]
 
 
 def test_a_migration_that_fails_exits_instead_of_serving_the_wizard(monkeypatch):
@@ -641,7 +643,11 @@ def test_an_unconfigured_boot_runs_no_migration_and_serves_the_setup_app(monkeyp
     monkeypatch.setitem(
         sys.modules,
         "autoposter.api.setup",
-        SimpleNamespace(build_setup_app=lambda: SimpleNamespace(title="autoposter setup")),
+        SimpleNamespace(
+            build_setup_app=lambda document=None: SimpleNamespace(
+                title="autoposter setup", document=document
+            )
+        ),
     )
     served: list[object] = []
     monkeypatch.setattr(boot, "_migrate", _must_not_run)
@@ -653,6 +659,10 @@ def test_an_unconfigured_boot_runs_no_migration_and_serves_the_setup_app(monkeyp
 
     assert len(served) == 1
     assert served[0].title == "autoposter setup"
+    # What boot read out of the store, handed to the wizard rather than left
+    # for it to go looking for: nothing here, because this boot names no
+    # database at all.
+    assert served[0].document is None
 
 
 # --- the two entrypoints ----------------------------------------------------

@@ -11,6 +11,7 @@ adds:
   setup token, and the ONE open /api path on the real application is the
   probe -- checked against that application's own route table.
 """
+import asyncio
 import logging
 import os
 import stat
@@ -20,6 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 import asyncpg
 import pytest
 import pytest_asyncio
+import yaml
 from httpx import ASGITransport, AsyncClient
 
 # Aliased `setup_api`, not `setup_module`: a module-level name `setup_module`
@@ -1986,6 +1988,70 @@ async def test_finish_execs_when_the_store_cannot_be_read_back_after_writing(
     assert stored["AUTOPOSTER_PLEX_TOKEN"] == FAKE_PLEX_TOKEN
 
 
+async def test_finish_writes_the_document_into_the_store(
+    setup_client, monkeypatch, session_factory, database_url
+):
+    """The document goes into the store as well as onto the volume, and the
+    asymmetry is the point: the store is what the next boot asks first and
+    what the application runs, and the volume copy is what a boot whose
+    database is briefly unreachable can still answer `is_configured` from.
+
+    Written with the wizard's staged addresses already applied, because that
+    is what landed on the volume -- two copies of one document, or they are
+    not two copies.
+    """
+    from autoposter.config.overrides import STORE_FORMAT, load_store
+
+    token = await _authenticate(setup_client)
+    await _complete_every_step(
+        setup_client, token, monkeypatch, database_url=database_url
+    )
+    monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
+
+    response = await setup_client.post("/api/setup/finish", headers=_headers(token))
+    assert response.status_code == 200, response.text
+
+    async with session_factory() as session:
+        document, meta = await load_store(session)
+    assert meta["format"] == STORE_FORMAT
+    assert document["plex"]["url"] == PLEX_URL
+    # The same document, and not merely a document: the volume's copy is what
+    # a boot whose database is unreachable falls back to, so a store that
+    # disagreed with it would make which one answered visible.
+    assert document == yaml.safe_load(
+        state_module.state_config_path().read_text(encoding="utf-8")
+    )
+    # No credential rode along inside it: the document and the secrets are two
+    # writes into two tables on purpose, and a `secrets` key in a stored
+    # document is one `GET /api/config` would echo back.
+    assert "secrets" not in document
+
+
+async def test_the_next_boot_is_configured_by_the_store_the_wizard_just_wrote(
+    setup_client, monkeypatch, session_factory, database_url
+):
+    """The whole of what this wizard is for, asked the way `boot` asks it: the
+    document it stored is the one the next boot resolves, and it answers
+    `is_configured` with the credentials that boot resolves beside it.
+
+    Through `boot`'s own two reads rather than by reading the rows, because
+    the claim is about the functions that decide the boot mode -- and in
+    threads, because each owns a private event loop that raises inside a
+    running one.
+    """
+    token = await _authenticate(setup_client)
+    await _complete_every_step(
+        setup_client, token, monkeypatch, database_url=database_url
+    )
+    monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
+    await setup_client.post("/api/setup/finish", headers=_headers(token))
+
+    secrets = await asyncio.to_thread(boot.stored_secrets_for_boot, database_url)
+    stored = await asyncio.to_thread(boot.stored_config_document, database_url)
+    assert stored is not None and stored["plex"]["url"] == PLEX_URL
+    assert boot.is_configured(resolve_secret_values(secrets), stored) is True
+
+
 async def test_finish_falls_back_to_the_state_file_before_the_first_migration(
     setup_client, monkeypatch, tableless_database_url, caplog
 ):
@@ -1998,7 +2064,12 @@ async def test_finish_falls_back_to_the_state_file_before_the_first_migration(
     finish the wizard at all. The credentials go to the state file instead,
     where every one of them went before the store existed, and the log line
     names the NAMES so an operator can see which are on the volume rather than
-    in the table."""
+    in the table.
+
+    The CONFIGURATION meets the same 42P01 at the same moment, and is
+    tolerated the same way and for the same reason: it is already on the
+    volume, which is where every deployment that predates the store reads it
+    from. Its line names the document's SECTIONS and never a value."""
     token = await _authenticate(setup_client)
     await _complete_every_step(
         setup_client,
@@ -2022,8 +2093,13 @@ async def test_finish_falls_back_to_the_state_file_before_the_first_migration(
     assert held["AUTOPOSTER_WEBHOOK_SECRET"]
     # The next boot resolves every one of them from that file.
     assert boot.is_configured(resolve_secret_values()) is True
+    # And the document, which is the other write into a table that is not
+    # there: on the volume, readable, and named in the log by its sections.
+    assert load_config(state_module.state_config_path()).plex.url == PLEX_URL
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert "AUTOPOSTER_PLEX_TOKEN" in logged
+    assert "sections are not in the store" in logged
+    assert PLEX_URL not in logged
     for secret in (FAKE_PLEX_TOKEN, held["AUTOPOSTER_WEBHOOK_SECRET"]):
         assert secret not in logged
         assert secret not in response.text
