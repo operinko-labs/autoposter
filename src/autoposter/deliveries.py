@@ -601,9 +601,15 @@ async def retry_pending_deliveries(
                         continue
                     except Exception as exc:
                         # Never deliver overlay-less bytes: not being able to
-                        # sample the identity server is a wait, exactly like
-                        # the delivery server's own miss above, and the row
-                        # keeps its normal horizon.
+                        # sample the identity server is a wait, and the row
+                        # keeps its normal horizon. Uncounted for EVERY
+                        # failure here, transport errors included -- which is
+                        # deliberately NOT the delivery server's own rule two
+                        # blocks above, where a transport error is counted and
+                        # exhaustible. Nothing was attempted against the
+                        # server this row is owed to; a third party being
+                        # unreachable must not spend that row's budget and
+                        # turn it `failed`.
                         logger.warning(
                             "delivery to %s waits on %s (%s)",
                             delivery.server, identity_name, failure_detail(exc),
