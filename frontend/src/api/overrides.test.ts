@@ -59,6 +59,21 @@ describe("documentFromConfig", () => {
     expect(JSON.stringify(document)).not.toContain("kuma.example.com");
   });
 
+  it("sends an empty redacted setting as served, without the marker", () => {
+    // The server redacts a non-empty string and nothing else, so `""` arrives
+    // exactly as it is stored. Asking to "keep" it would be asking for a value
+    // that was never withheld -- and on a store whose document has no
+    // `notifications.url` key at all that ask is a 422 the operator cannot
+    // clear, because the only way to put the key there is the save it refuses.
+    const document = documentFromConfig({
+      ...CONFIG,
+      notifications: { enabled: true, url: "" },
+    }) as { notifications: { enabled: boolean; url: string } };
+
+    expect(document.notifications.url).toBe("");
+    expect(JSON.stringify(document)).not.toContain("***KEEP***");
+  });
+
   it("leaves a redacted path alone when the response never served it", () => {
     const { notifications: _dropped, ...without } = CONFIG;
     const document = documentFromConfig(without);

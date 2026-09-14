@@ -149,7 +149,15 @@ export function documentFromConfig(config: ConfigResponse): OverridesDocument {
     document = { ...document, [key]: value };
   }
   for (const path of keep.paths) {
-    if (readPath(document, path) === undefined) continue;
+    // The server's own redaction predicate, mirrored: it rewrites a path only
+    // when the value there is a NON-EMPTY string. An empty string is served
+    // exactly as it is stored, and an absent key is not served at all, so at
+    // either of those the page was denied nothing and has nothing to ask back.
+    // Asking anyway is a 422 ("there is no stored override here to keep") that
+    // no operator can clear from the UI, because the only way to put the key
+    // into the store is the save the sentinel just failed.
+    const served = readPath(document, path);
+    if (typeof served !== "string" || served === "") continue;
     document = withPath(document, path, keep.sentinel);
   }
   return document;

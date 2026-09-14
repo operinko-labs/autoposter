@@ -45,7 +45,13 @@ def _secrets() -> Secrets:
 @pytest.fixture
 def config_file(tmp_path) -> Path:
     path = tmp_path / "autoposter.yaml"
-    path.write_text(EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    # A real notification URL, where the example ships an empty string. The
+    # server redacts a non-empty string and nothing else, so with the example's
+    # `""` every claim below about the keep sentinel would pass vacuously --
+    # there would be nothing redacted for the page to ask back.
+    document["notifications"]["url"] = "http://n8n.example:5678/webhook/t0ken"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
     return path
 
 
@@ -190,14 +196,17 @@ def _document_from_config(served: dict) -> dict:
     """What `documentFromConfig` builds in the browser, in Python.
 
     The whole served configuration minus the provenance keys and `secrets`,
-    with the keep sentinel at every redacted path the response actually
-    carries.
+    with the keep sentinel at every path the response actually redacted -- the
+    server's own predicate, which is a NON-EMPTY string and nothing else. An
+    empty string and an absent key are sent as served, because at neither was
+    the page denied anything to ask back for.
     """
     document = {
         key: value for key, value in served.items() if key not in PROVENANCE_KEYS
     }
     for path in served["redacted_paths"]:
-        if _read(document, path) is _ABSENT:
+        value = _read(document, path)
+        if not isinstance(value, str) or not value:
             continue
         _write(document, path, served["keep_sentinel"])
     return document
@@ -299,3 +308,56 @@ async def test_the_page_round_trips_the_whole_store_without_truncating_it(
     async with session_factory() as session:
         rebuilt = await load_effective_config(config_file, session)
     assert rebuilt.model_dump(mode="json") == build_config(seeded).model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_the_page_saves_against_a_store_that_has_no_notifications_section(
+    tmp_path, session_factory
+):
+    """A mounted file with no `notifications:` block must still be savable.
+
+    `seed_store` writes the file's raw, sparse document, so such a store has no
+    `notifications.url` key at all. The served configuration still carries one
+    -- the schema defaults it to `""` -- so a page that wrote the keep sentinel
+    wherever the response listed a redacted path would be asking the server to
+    keep a stored value that does not exist. The answer is a 422 naming the
+    path, on every Save, Preview and Apply from every panel that builds its
+    body this way, and the operator cannot clear it from the UI: the only thing
+    that would put the key into the store is the save being refused.
+    """
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    document.pop("notifications")
+    path = tmp_path / "autoposter.yaml"
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    application = create_app(build_config(document), session_factory, _secrets())
+    application.state.config_path = path
+    async with session_factory() as session:
+        stored = await seed_store(session, document)
+        await session.commit()
+    assert "notifications" not in stored
+
+    async with AsyncClient(
+        transport=ASGITransport(app=application), base_url="http://test"
+    ) as client:
+        login = await client.post("/api/login", json={"password": PASSWORD})
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        served = (await client.get("/api/config", headers=headers)).json()
+        # Served from the defaulted configuration, not from the store: the
+        # path the page is about to decide on is present and empty.
+        assert served["notifications"]["url"] == ""
+        assert "notifications.url" in served["redacted_paths"]
+
+        body = _document_from_config(served)
+        assert _read(body, "notifications.url") == ""
+        assert served["keep_sentinel"] not in yaml.safe_dump(body)
+
+        response = await client.put(
+            "/api/config/overrides",
+            headers=headers,
+            json={
+                "document": body,
+                "expected_revision": served["overrides_revision"],
+            },
+        )
+    assert response.status_code == 200, response.text
