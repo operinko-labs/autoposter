@@ -1160,3 +1160,39 @@ async def test_the_lifespan_queues_nothing_for_a_server_that_has_been_seen(
 
     async with app.router.lifespan_context(app):
         assert app.state.catch_up_requests == []
+
+
+async def test_the_lifespan_does_not_queue_a_server_it_delivers_nothing_to(
+    session, session_factory, secrets, stubbed_background_services
+):
+    """Review M1. The same boot as the test above, with `plex` switched off on
+    both halves: a catch-up for such a server writes no outcome row, so an
+    unfiltered boot trigger would queue it again on the next restart, and the
+    next, opening a no-op run each time. The example config's
+    `badges.upload_to_plex` is already False, so the stored override only has
+    to turn `operations.write_to_plex` off -- which is exactly what makes the
+    test above queue `plex` at all.
+    """
+    from autoposter import deliveries
+
+    item = await seed_media_item(session, "boot-3", title="A")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "written")
+    await _store_override(session, {"operations": {"write_to_plex": False}})
+
+    app = _background_app(
+        load_config(EXAMPLE), session_factory, secrets,
+        servers_factory=lambda config, http: Servers({"plex": "the-plex-client"}),
+    )
+
+    async with app.router.lifespan_context(app):
+        assert app.state.config.badges.upload_to_plex is False, (
+            "precondition: the example config uploads no badges to plex"
+        )
+        assert app.state.config.operations.write_to_plex is False, (
+            "precondition: the override turned the other half off too"
+        )
+        assert app.state.catch_up_requests == [], (
+            "a server this deployment writes nothing to was queued for a "
+            "catch-up that can only close as a no-op, and would be queued "
+            f"again on every restart ({app.state.catch_up_requests!r})"
+        )

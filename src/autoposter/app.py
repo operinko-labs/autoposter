@@ -22,7 +22,7 @@ from autoposter.api.errors import validation_error_without_input
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.api.version import ReleasePoller, _running_version
-from autoposter.catchup import servers_never_seen
+from autoposter.catchup import servers_never_seen, servers_with_delivery_enabled
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
@@ -284,8 +284,15 @@ def create_app(
             # itself, so this cannot fire a second time for the same server.
             # Here rather than earlier because `app.state.servers` is built
             # above and this is the first session the lifespan opens.
+            # Filtered first: a server this config delivers nothing to gets
+            # no outcome rows from a catch-up either, so it would be
+            # reported as never-seen on every single boot and open a no-op
+            # run each time (review M1).
             app.state.catch_up_requests.extend(
-                await servers_never_seen(session, app.state.servers.names)
+                await servers_never_seen(
+                    session,
+                    servers_with_delivery_enabled(config, app.state.servers.names),
+                )
             )
         if reclaimed:
             logger.info("reclaimed %d stale job(s)", reclaimed)

@@ -849,16 +849,61 @@ def _toggle_states(config, section: str, field: str) -> dict[str, bool | None]:
 def _toggle_turned_on(old_config, new_config, section: str, field: str) -> bool:
     """Whether this toggle went ``False -> True`` in any scope.
 
-    A library present only in the new config is compared against the old
-    GLOBAL value, which is exactly what that library was effectively running
-    on before its block existed.
+    The UNION of both configs' scopes, not the new config's alone (review M2).
+    A library block can appear or disappear between generations as easily as
+    a field inside it can change, and a scope missing on one side falls back
+    to THAT side's global value -- which is exactly what the library was
+    effectively running on while it had no block. So a library whose
+    ``False`` override is dropped under a ``True`` global reads as the
+    `False -> True` flip it is, and a library that gains a ``True`` override
+    under a ``False`` global reads as one too.
     """
     old = _toggle_states(old_config, section, field)
     new = _toggle_states(new_config, section, field)
     return any(
-        value is True and old.get(scope, old[""]) is False
-        for scope, value in new.items()
+        new.get(scope, new[""]) is True and old.get(scope, old[""]) is False
+        for scope in old.keys() | new.keys()
     )
+
+
+def _toggle_ever_on(config, section: str, field: str) -> bool:
+    """Whether this toggle is on in ANY scope of one config.
+
+    ``section.enabled`` is the master switch for its half and is read per
+    scope the same way: metadata operations that are switched off write
+    nothing whatever ``write_to_<server>`` says, and badges that are switched
+    off upload nothing whatever ``upload_to_<server>`` says.
+    """
+    on = _toggle_states(config, section, field)
+    gate = _toggle_states(config, section, "enabled")
+    return any(
+        value is True and gate.get(scope, gate[""]) is not False
+        for scope, value in on.items()
+    )
+
+
+def servers_with_delivery_enabled(config, names) -> list[str]:
+    """Of ``names``, those this config actually delivers something to.
+
+    The boot trigger's filter (review M1). ``start_catch_up`` writes an
+    outcome row only for a half it is configured to deliver, so a server with
+    every toggle off is never recorded, ``servers_never_seen`` would keep
+    reporting it, and every restart would open and immediately close a no-op
+    run for it forever. A server this deployment writes nothing to has
+    nothing to catch up on, so it is simply not queued.
+
+    ON in ANY scope is enough: a single library that overrides one toggle to
+    True is a library this server is owed rows for. A name this module has no
+    toggles for is kept rather than dropped -- an unknown server is not one
+    this predicate is entitled to silence.
+    """
+    return [
+        name for name in names
+        if name not in _DELIVERY_TOGGLES or any(
+            _toggle_ever_on(config, section, field)
+            for section, field in _DELIVERY_TOGGLES[name]
+        )
+    ]
 
 
 def servers_with_changed_libraries(old_config, new_config) -> list[str]:
@@ -903,8 +948,16 @@ async def servers_never_seen(session: AsyncSession, names) -> list[str]:
     Spec §3's "a restart that introduced X", read against the only durable
     evidence there is: a server with no ``render_deliveries`` and no
     ``metadata_writes`` row, on a database that already holds items, is a
-    server this deployment has just gained. No extra state is needed, and it
-    cannot fire twice -- the catch-up's own marking writes those rows.
+    server this deployment has just gained. No extra state is needed, and the
+    catch-up's own marking writes those rows, so the answer stops being yes
+    once one has run.
+
+    That last sentence is only true of a server this deployment actually
+    delivers to: ``start_catch_up`` writes no row at all for a server whose
+    every toggle is off, and such a server would be reported here on every
+    boot forever. It is ``servers_with_delivery_enabled`` that keeps it out
+    of ``names`` -- the pair of predicates is what makes the trigger fire
+    once, not this one alone (review M1).
 
     Silent on an empty database: a fresh deployment's first full pass covers
     every server anyway, and a catch-up with nothing to catch up on is noise.
