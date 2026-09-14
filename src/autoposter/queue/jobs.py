@@ -230,10 +230,11 @@ _RECLAIM_SQL = text(
        --   sweep's own transaction start -- without this predicate the fresh
        --   claim gets wiped out from under the live worker.
        -- - state = 'running' independently fails the re-check when the row
-       --   finished instead: complete() sets state = 'done' but deliberately
-       --   leaves claimed_at alone, so a job that ran past the threshold and
-       --   then completed still has a stale claimed_at -- without this
-       --   predicate a done job gets resurrected to pending.
+       --   finished instead: complete() sets state = 'done' (or
+       --   'done_with_warnings') but deliberately leaves claimed_at alone, so
+       --   a job that ran past the threshold and then completed still has a
+       --   stale claimed_at -- without this predicate a finished job gets
+       --   resurrected to pending.
        -- Dropping either predicate reopens its own interleaving; neither is
        -- redundant with the other.
        AND jobs.state = 'running'

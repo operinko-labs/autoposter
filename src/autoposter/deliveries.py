@@ -908,7 +908,8 @@ _UNSETTLED = ("pending", "failed")
 
 
 async def outcome_warnings(
-    session: AsyncSession, item_id: int, servers: Iterable[str]
+    session: AsyncSession, item_id: int, servers: Iterable[str], *,
+    misses: Iterable[str] = (),
 ) -> str | None:
     """One sentence naming every server this item still owes something to.
 
@@ -924,10 +925,29 @@ async def outcome_warnings(
     own -- which is what keeps a job about one server from reporting
     another's unrelated backlog, and what keeps a server the deployment no
     longer configures out of the sentence entirely.
+
+    ``misses`` is the subset of those that did not resolve at all, named as
+    ``<server>: not found``. Rows alone are not enough to answer for one: a
+    missed server gets a ``pending`` delivery row only when the badge stage
+    runs AND that server's upload toggle is on, and it gets no
+    ``metadata_writes`` row at all, since those are written per RESOLVED
+    server. So on a badges-off deployment the item a server has never scanned
+    left no row anywhere and the job finished plain ``done`` -- the exact
+    silence this state exists to break. A server that has an unsettled ROW is
+    reported by the row: that says more than "not found" does, and a server
+    cannot honestly be both.
+
+    A miss on a server whose ``absent`` row says it does not carry this
+    item's library must never reach here -- spec §1 says such an item "is
+    never resolved there, and is never retried", so nothing is owed. Keeping
+    that set out of BOTH arguments is the caller's job: the caller is what
+    knows which servers it skipped for being absent and which it asked anyway
+    because the item's identity was not yet established.
     """
     wanted = set(servers)
     if not wanted:
         return None
+    missed = set(misses) & wanted
     artwork = (await session.execute(
         select(RenderDelivery.server, RenderDelivery.status, RenderDelivery.detail)
         .join(Render, Render.id == RenderDelivery.render_id)
@@ -948,6 +968,12 @@ async def outcome_warnings(
             if detail:
                 clause += f" ({detail})"
             clauses.append((server_name, kind, clause))
+    # The misses that no row already answers for. Sorted in with the rest by
+    # server name; the empty kind is a sort slot, not a word -- a server with
+    # a row is never also reported as a miss, so it never renders.
+    named_by_a_row = {server_name for server_name, _kind, _clause in clauses}
+    for server_name in missed - named_by_a_row:
+        clauses.append((server_name, "", f"{server_name}: not found"))
     if not clauses:
         return None
     # One clause per rendered sentence fragment: a movie has one poster and

@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import hashlib
+import logging
 from pathlib import Path
 
 import httpx
@@ -2871,6 +2872,8 @@ async def test_process_item_reports_nothing_when_every_server_settled(
 ):
     """The other half: both tables settle on both servers, so the job that
     ran this item finishes plain `done`."""
+    from autoposter.db.models import MetadataWrite
+
     config_with_badges.badges.upload_to_jellyfin = True
     config_with_badges.operations.enabled = True
     config_with_badges.operations.write_to_plex = True
@@ -2878,6 +2881,117 @@ async def test_process_item_reports_nothing_when_every_server_settled(
     servers, plex, jf = _two_servers()
     monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
     monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == []
+    # The vacuity guard: an empty list means "every row settled" only once
+    # there are rows. A pass that wrote none would assert the same thing.
+    assert {
+        (d.server, d.status)
+        for d in (await session.execute(select(RenderDelivery))).scalars()
+    } == {("plex", "uploaded"), ("jellyfin", "uploaded")}
+    assert dict((await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status)
+    )).all()) == {"plex": "written", "jellyfin": "written"}
+
+
+async def test_a_badge_stage_failure_stays_contained_with_warnings_asked_for(
+    session, config_with_badges, monkeypatch, caplog,
+):
+    """The badge stage's own `except` rolls the session back, which EXPIRES
+    every object it tracks -- `media_item` included. Reading an ORM attribute
+    after it, outside an awaited call, is a lazy refresh that raises
+    `MissingGreenlet`, and that escapes `process_item` into the worker's
+    generic failure branch: a contained badge failure became a charged
+    attempt and eventually a parked job, losing the containment this block
+    exists for. The artwork is already on disk either way."""
+    config_with_badges.badges.enabled = True
+    config_with_badges.badges.upload_to_plex = True
+    servers, plex, jf = _two_servers()
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    async def dirty_then_boom(session_, config, render, media_item, **_kwargs):
+        # Dirtying first is what makes the rollback expire objects rather than
+        # being a no-op on a clean session.
+        session_.add(MediaItem(identity_key="dirt", library="Movies", kind="movie", title="D"))
+        await session_.flush()
+        raise RuntimeError("badge stage blew up")
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", dirty_then_boom)
+
+    warnings: list[str] = []
+    with caplog.at_level(logging.WARNING, logger="autoposter.render.pipeline"):
+        await pipeline_module.process_item(
+            session, config_with_badges, None, servers, [], INTENT, warnings=warnings,
+        )
+
+    assert any("badge stage failed" in r.message for r in caplog.records)
+    # Whatever the rows say is fine; what must NOT happen is the call raising.
+    assert isinstance(warnings, list)
+
+
+async def test_process_item_reports_a_server_that_never_resolved(
+    session, config_with_badges, monkeypatch,
+):
+    """Badges off, so a missed server leaves no `pending` delivery row and no
+    metadata row at all -- the deployment shape where the old code finished
+    plain `done` and said nothing about a server that has never seen the
+    item."""
+    from sqlalchemy import select as _select
+    from autoposter.db.models import MetadataWrite
+
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers(jelly_has=False)
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == ["jellyfin: not found"]
+    # The vacuity guard for the premise: no row names jellyfin at all, which
+    # is why the miss had to be carried separately.
+    assert (await session.execute(_select(RenderDelivery))).all() == []
+    assert dict((await session.execute(
+        _select(MetadataWrite.server, MetadataWrite.status)
+    )).all()) == {"plex": "written"}
+
+
+async def test_process_item_never_reports_a_miss_on_an_absent_library(
+    session, config_with_badges, monkeypatch,
+):
+    """Spec §1: a server whose row says it does not carry this item's library
+    "is never resolved there, and is never retried", so it is owed nothing
+    and must not be named. A webhook intent carries no refs, so the resolve
+    loop's own absent check has nothing to key off yet and asks the server
+    anyway -- the sentence has to make the subtraction itself."""
+    from autoposter import deliveries as deliveries_module
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers(jelly_has=False)
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    seeded = await pipeline_module._upsert_media_item(
+        session, fake_resolved("plex", "p1", file_path="/plex/m.mkv"),
+    )
+    await deliveries_module.record_metadata(
+        session, seeded.id, "jellyfin", "absent", detail=ABSENT_DETAIL,
+    )
+    await session.commit()
 
     warnings: list[str] = []
     await pipeline_module.process_item(

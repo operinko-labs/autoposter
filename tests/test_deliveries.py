@@ -1574,3 +1574,58 @@ async def test_outcome_warnings_ignores_servers_this_pass_did_not_touch(session)
     await session.commit()
 
     assert await deliveries.outcome_warnings(session, render.item_id, ["plex"]) is None
+
+
+async def test_outcome_warnings_names_a_resolution_miss_that_left_no_row(session):
+    """A missed server leaves a row only when the badge stage ran AND its
+    upload toggle is on, and never leaves a metadata row at all -- so the
+    misses have to be told, or the case this state exists for reads as
+    nothing at all."""
+    render = await _render(session, native="w4")
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await session.commit()
+
+    sentence = await deliveries.outcome_warnings(
+        session, render.item_id, ["plex", "jellyfin"], misses=["jellyfin"],
+    )
+
+    assert sentence == "jellyfin: not found"
+
+
+async def test_outcome_warnings_prefers_a_servers_row_over_its_miss(session):
+    """A row says more than "not found" does, and a server is never honestly
+    both -- so the row wins and the miss adds no second clause."""
+    render = await _render(session, native="w5")
+    await deliveries.record(
+        session, render.id, "jellyfin", "pending", detail="connect: ConnectError", retry_in=60,
+    )
+    await session.commit()
+
+    sentence = await deliveries.outcome_warnings(
+        session, render.item_id, ["jellyfin"], misses=["jellyfin"],
+    )
+
+    assert sentence == "jellyfin: artwork pending (connect: ConnectError)"
+
+
+async def test_outcome_warnings_orders_a_miss_among_the_other_servers(session):
+    render = await _render(session, native="w6")
+    await deliveries.record_metadata(
+        session, render.item_id, "plex", "failed", detail="error: X",
+    )
+    await session.commit()
+
+    sentence = await deliveries.outcome_warnings(
+        session, render.item_id, ["plex", "jellyfin"], misses=["jellyfin"],
+    )
+
+    assert sentence == "jellyfin: not found; plex: metadata failed (error: X)"
+
+
+async def test_outcome_warnings_ignores_a_miss_on_a_server_it_was_not_given(session):
+    render = await _render(session, native="w7")
+    await session.commit()
+
+    assert await deliveries.outcome_warnings(
+        session, render.item_id, ["plex"], misses=["jellyfin"],
+    ) is None

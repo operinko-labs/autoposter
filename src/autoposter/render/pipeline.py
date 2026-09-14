@@ -2652,6 +2652,17 @@ async def process_item(
         raise not_found or next(iter(misses.values()))
     item = resolved_on.get("plex") or next(iter(resolved_on.values()))
     media_item = await _persist_identity(session, item, resolved_on)
+    # A plain int, taken while the object is live. `media_item` is re-bound
+    # three times below, always to this same row, but every one of those
+    # re-binds exists because a `rollback()` EXPIRED the old reference -- and
+    # the warnings block at the very end of this function runs after the
+    # badge stage's own containment, which may have rolled back without
+    # re-establishing anything. Reading `.id` there would be a lazy refresh
+    # outside an awaited call (`MissingGreenlet`), turning a contained badge
+    # failure into a failed job. The `logger.warning` in that same handler
+    # reaches for `item.native_id` -- a plain `ResolvedItem` attribute -- for
+    # exactly this reason.
+    media_item_id = media_item.id
     if media_item.id != known_item_id:
         # The intent named no ref this database knows, so the set above was
         # read for nothing (or for another row). Now that the identity is
@@ -2858,13 +2869,31 @@ async def process_item(
             )
 
     if warnings is not None:
-        # Every server this pass CONSIDERED -- resolved or missed. A miss is
-        # exactly the case worth reporting: the item is not there yet and the
-        # row says so, which is the fact a plain `done` used to lose. The
-        # servers left out are the ones this pass never asked: an `absent`
-        # server, and any server this deployment no longer configures.
-        touched = set(resolved_on) | set(misses)
-        sentence = await deliveries.outcome_warnings(session, media_item.id, touched)
+        # Every server this pass CONSIDERED -- resolved or missed -- and the
+        # misses by name. The servers left out are the ones this pass never
+        # asked: a server whose `absent` row says it does not carry this
+        # item's library, and any server this deployment no longer configures.
+        #
+        # The misses go in SEPARATELY because a miss does not always leave a
+        # row behind. `deliver` writes a missed server's `pending` row only
+        # inside the badge stage and only when that server's upload toggle is
+        # on, and `apply_metadata` writes a row per RESOLVED server -- so on a
+        # badges-off deployment an item the server has never scanned produces
+        # no row anywhere, and a row-only sentence would report the very case
+        # this state exists for as nothing at all.
+        #
+        # `absent_servers` is subtracted HERE and not left to the resolve
+        # loop's own `continue`: that loop reads the set keyed off the refs
+        # the INTENT carries, and a webhook intent carries none -- so an
+        # absent server is asked anyway on those passes, misses, and would be
+        # reported as not found. By the time this block runs the set has been
+        # re-read for the item itself, which is the honest one.
+        #
+        # `media_item_id`, not `media_item.id`: see the capture above.
+        considered = (set(resolved_on) | set(misses)) - absent_servers
+        sentence = await deliveries.outcome_warnings(
+            session, media_item_id, considered, misses=set(misses) - absent_servers,
+        )
         if sentence is not None:
             warnings.append(sentence)
     return results
