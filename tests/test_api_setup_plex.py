@@ -24,6 +24,7 @@ reason.
 
 import asyncio
 import logging
+import os
 
 import httpx
 import pytest
@@ -32,6 +33,11 @@ import pytest_asyncio
 from autoposter import boot
 from autoposter.api import setup as setup_api
 from autoposter.api import setup_plex
+from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
+)
 
 # The autouse env isolation, the hard-name tuple, the two token helpers and the
 # three the finish test below needs are the wizard suite's, imported rather than
@@ -47,6 +53,12 @@ from test_api_setup import (  # noqa: F401
     _headers,
     _NOT_PASTED,
     isolated_state,
+)
+
+BOOT_MARKERS = (
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
+    ENVIRONMENT_SECRET_NAMES_ENV,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -401,6 +413,13 @@ async def test_boot_clamps_httpx_before_this_flow_can_make_a_request(monkeypatch
     logging.getLogger("httpx").setLevel(logging.INFO)
     for name in HARD:
         monkeypatch.setenv(name, "x")
+    # `boot.main` assigns its three name markers into `os.environ` itself, and
+    # monkeypatch records no undo for a name this test never touched -- so
+    # without these they would outlive it and decide a source label in every
+    # later test in the same worker. Setting each to what it already holds is
+    # what registers that undo.
+    for marker in BOOT_MARKERS:
+        monkeypatch.setenv(marker, os.environ.get(marker, ""))
     monkeypatch.setenv("AUTOPOSTER_CONFIG", str(tmp_path / "absent.yaml"))
     monkeypatch.setattr(boot, "_migrate", _must_not_run)
     monkeypatch.setattr(boot.uvicorn, "run", _must_not_run)

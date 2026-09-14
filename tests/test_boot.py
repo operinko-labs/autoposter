@@ -30,6 +30,7 @@ from autoposter import boot
 from autoposter.config import loader as loader_module
 from autoposter.config import state as state_module
 from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
     STATE_FILE_NAMES_ENV,
     STORED_SECRET_NAMES_ENV,
     Secrets,
@@ -79,16 +80,20 @@ def clean_secret_environment(monkeypatch, tmp_path):
     records no undo entry for a name that was absent when the test began, so
     a boot test would otherwise leak a credential into every test after it.
     """
-    # Both boot markers join the save/restore list for the reason the
+    # All three boot markers join the save/restore list for the reason the
     # docstring above gives: `boot.main` assigns them into `os.environ`
     # directly, ahead of `_export`, so a boot test would otherwise leak them
-    # into every test after -- and `secret_sources` reads them.
+    # into every test after -- and `secret_sources` reads them. The
+    # environment one leaks hardest, because `boot.main` skips computing it
+    # when it is already there: a leftover would then decide what the NEXT
+    # boot test publishes, not merely what a later test reads.
     names = (
         *HARD,
         *SOFT,
         "AUTOPOSTER_CONFIG",
         STATE_FILE_NAMES_ENV,
         STORED_SECRET_NAMES_ENV,
+        ENVIRONMENT_SECRET_NAMES_ENV,
     )
     saved = {name: os.environ[name] for name in names if name in os.environ}
     for name in names:
@@ -828,6 +833,54 @@ def test_a_leftover_state_file_an_env_complete_boot_never_read_is_not_a_source(m
     assert state_module.secrets_file_path().is_file(), "the leftover is still there"
     assert resolve_secret_values()["AUTOPOSTER_WEBHOOK_SECRET"] == "from-env"
     assert secret_sources()["AUTOPOSTER_WEBHOOK_SECRET"] == "environment"
+
+
+def test_the_environment_marker_is_published_before_the_export(monkeypatch):
+    """The third marker, and the only one no later process can recompute.
+    `_export` overwrites `os.environ` for every name a higher layer won, so an
+    assignment on the wrong side of that line would publish "every name this
+    deployment resolved" under the heading "what this deployment's manifest
+    set" -- and a clear would then name a variable nobody wrote.
+
+    The stub is what pins the ORDER: it reads the marker at the moment
+    `_export` is called, which is the only moment at which the two answers
+    still differ. The file supplies the hard names here and the environment
+    supplies one soft name, so "before" and "after" are not the same string.
+    """
+    _write_state_secrets({name: "from-file" for name in HARD})
+    monkeypatch.setenv("AUTOPOSTER_MDBLIST_APIKEY", "from-env")
+    seen = {}
+    exported = boot._export
+
+    def _recording(resolved):
+        seen["marker"] = os.environ.get(ENVIRONMENT_SECRET_NAMES_ENV, "<absent>")
+        exported(resolved)
+
+    monkeypatch.setattr(boot, "_export", _recording)
+
+    _booted(monkeypatch)
+
+    assert seen["marker"] == "AUTOPOSTER_MDBLIST_APIKEY"
+    assert os.environ[ENVIRONMENT_SECRET_NAMES_ENV] == "AUTOPOSTER_MDBLIST_APIKEY"
+
+
+def test_a_second_boot_keeps_the_environment_the_first_one_recorded(monkeypatch):
+    """The wizard's finish and the restart button re-enter `boot.main` through
+    `os.execv`, which hands on the environment `_export` filled. A boot that
+    recomputed this marker there would call every name the previous boot
+    resolved part of this deployment's manifest: a clear would then answer
+    `environment` for a variable that does not exist, promise a restart that
+    restores nothing, and stop refusing the clear of a hard secret that leaves
+    the deployment unable to start."""
+    _write_state_secrets({name: "from-file" for name in HARD})
+    monkeypatch.setenv("AUTOPOSTER_MDBLIST_APIKEY", "from-env")
+
+    _booted(monkeypatch)
+    first = os.environ[ENVIRONMENT_SECRET_NAMES_ENV]
+    _booted(monkeypatch)
+
+    assert first == "AUTOPOSTER_MDBLIST_APIKEY", "the manifest, not the export"
+    assert os.environ[ENVIRONMENT_SECRET_NAMES_ENV] == first
 
 
 def test_a_name_the_environment_also_carries_is_on_the_marker_now(monkeypatch):

@@ -29,7 +29,11 @@ from autoposter import boot
 from autoposter.api.auth import hash_password
 from autoposter.config import secret_store
 from autoposter.config import state as state_module
-from autoposter.config.schema import STATE_FILE_NAMES_ENV, STORED_SECRET_NAMES_ENV
+from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
+)
 from autoposter.config.state import STATE_DIR_ENV
 from autoposter.db import base as db_base
 
@@ -59,12 +63,19 @@ def clean_secret_environment(monkeypatch, tmp_path):
 
     Saved and restored by hand rather than through `monkeypatch.delenv` alone,
     for `tests/test_boot.py`'s reason: `boot.main` assigns into `os.environ`
-    directly -- the two markers ahead of `_export`, then every resolved value
-    -- and monkeypatch records no undo entry for a name that was absent when
-    the test began, so a boot test would otherwise leak a credential into
+    directly -- the three markers ahead of `_export`, then every resolved
+    value -- and monkeypatch records no undo entry for a name that was absent
+    when the test began, so a boot test would otherwise leak a credential into
     every test after it.
     """
-    names = (*HARD, *SOFT, "AUTOPOSTER_CONFIG", STATE_FILE_NAMES_ENV, STORED_SECRET_NAMES_ENV)
+    names = (
+        *HARD,
+        *SOFT,
+        "AUTOPOSTER_CONFIG",
+        STATE_FILE_NAMES_ENV,
+        STORED_SECRET_NAMES_ENV,
+        ENVIRONMENT_SECRET_NAMES_ENV,
+    )
     saved = {name: os.environ[name] for name in names if name in os.environ}
     for name in names:
         monkeypatch.delenv(name, raising=False)

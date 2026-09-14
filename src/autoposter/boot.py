@@ -271,10 +271,10 @@ def main(argv: list[str] | None = None) -> None:
     # looks like an environment name and nothing downstream can tell the
     # layers apart. `_export` iterates `resolved` only, so it leaves these
     # three names alone, and `os.execv` below carries the whole environment
-    # into the new process image. All three are set unconditionally, including
-    # to "": an env-configured boot publishes an explicit empty marker rather
-    # than no marker, and each reads as "no name came from there" downstream.
-    # Names, never values.
+    # into the new process image. Each is present afterwards, including as "":
+    # an env-configured boot publishes an explicit empty marker rather than no
+    # marker, and an empty one reads as "no name came from there" downstream
+    # rather than as "nobody has looked". Names, never values.
     #
     # The export ahead of the branch, because the WIZARD reads the same
     # resolver this did and has no database session of its own: the store is
@@ -284,19 +284,26 @@ def main(argv: list[str] | None = None) -> None:
     # Publishing here is what makes the wizard's view of this deployment the
     # same as the application's.
     #
-    # The environment marker is read off `os.environ` while it is still the
-    # environment: `_export` below overwrites the entry for every name a
-    # higher layer won, and what it overwrites is exactly what an operator
-    # would be sent to change if the running process later had to name the
-    # bottom layer. It is the answer to "what did this deployment's manifest
-    # set", and after the export nothing can reconstruct it.
+    # The environment marker is the one that is INHERITED rather than
+    # recomputed, and it is computed at all only on a boot that finds none.
+    # The store and the file can both be re-read by any later boot; the
+    # environment cannot, because `_export` below overwrites its entry for
+    # every name a higher layer won -- and `os.execv` hands that environment
+    # to the next boot in the chain. The wizard's finish and the restart
+    # button both re-enter here that way, so a boot that recomputed this would
+    # publish "every name the previous boot resolved, from any layer" and call
+    # it the deployment's manifest. The first boot of a container is the only
+    # process that still sees the environment the deployment actually set;
+    # after that, what it published is the answer, and it does not change
+    # while the container lives.
     os.environ[STORED_SECRET_NAMES_ENV] = ",".join(
         name for name in SECRET_NAMES if stored.get(name)
     )
     os.environ[STATE_FILE_NAMES_ENV] = ",".join(state_file_secret_names(stored))
-    os.environ[ENVIRONMENT_SECRET_NAMES_ENV] = ",".join(
-        name for name in SECRET_NAMES if os.environ.get(name)
-    )
+    if ENVIRONMENT_SECRET_NAMES_ENV not in os.environ:
+        os.environ[ENVIRONMENT_SECRET_NAMES_ENV] = ",".join(
+            name for name in SECRET_NAMES if os.environ.get(name)
+        )
     _export(resolved)
 
     if not is_configured(resolved):
