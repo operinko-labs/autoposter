@@ -308,7 +308,7 @@ async def test_a_write_that_lands_while_a_delta_converts_is_not_overwritten(
     of what it took."""
     await _write_delta(session_factory, {"workers": 9})
     async with session_factory() as converting:
-        stale, _ = await load_store(converting)
+        await load_store(converting)
 
         async with session_factory() as other:
             await load_effective_config(config_file, other)
@@ -316,7 +316,7 @@ async def test_a_write_that_lands_while_a_delta_converts_is_not_overwritten(
             await write_store(other, saved, store_meta(restart_paths=["plex"]))
             await other.commit()
 
-        held = await migrate_delta_to_document(converting, _document(), stale)
+        held = await migrate_delta_to_document(converting, _document())
 
     assert held["workers"] == 4, "the conversion ran on a delta that was already gone"
     async with session_factory() as session:
@@ -327,6 +327,40 @@ async def test_a_write_that_lands_while_a_delta_converts_is_not_overwritten(
     assert row.document == saved
     assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}
     assert len(snapshots) == 1, "the late conversion snapshotted and wrote again"
+
+
+@pytest.mark.asyncio
+async def test_a_delta_saved_while_one_converts_is_the_delta_that_converts(
+    session_factory, config_file
+):
+    """The same window one step earlier, and the harder half: the write that
+    lands is itself a delta, so there is no format for the lock to catch it
+    on. What converts has to be the delta the LOCKED row holds rather than the
+    one the caller read a moment before, or the save vanishes into a merge of
+    a document nobody ever stored -- and the snapshot, the only trace left,
+    would hold the wrong delta too."""
+    await _write_delta(session_factory, {"workers": 9})
+    async with session_factory() as converting:
+        stale, _ = await load_store(converting)
+        assert stale == {"workers": 9}, "the read this test is about did not happen"
+
+        async with session_factory() as saving:
+            await write_store(saving, {"workers": 4}, {})
+            await saving.commit()
+
+        held = await migrate_delta_to_document(converting, _document())
+
+    assert held["workers"] == 4, "the merge carried a delta the row no longer held"
+    assert held["plex"]["url"] == _document()["plex"]["url"], "the file was not the base"
+    async with session_factory() as session:
+        row = (await session.execute(select(ConfigOverride))).scalar_one()
+        [snapshot] = (
+            await session.execute(select(ConfigOverrideSnapshot))
+        ).scalars().all()
+    assert row.document["workers"] == 4
+    assert row.meta == {"format": STORE_FORMAT}
+    assert snapshot.document == {"workers": 4}, "the snapshot kept the delta that was gone"
+    assert snapshot.format == 1
 
 
 @pytest.mark.asyncio

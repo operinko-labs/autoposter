@@ -242,18 +242,20 @@ async def test_dropping_a_stored_version_check_section_says_so(session, caplog):
     """Silent would be worse than the refusal: an operator whose stored
     override stopped doing anything is owed the reason, and the way out.
 
-    Exactly twice for this row, and the two are countable rather than
-    incidental: a row holding nothing but a stale section strips to empty, so
-    the load reads it once and the seed's own locked re-read reads it again
-    before deciding the row is not its to replace. Anything above two is the
-    spam this message must not become."""
+    Exactly three times for this row, on the one boot that converts it, and
+    the three are countable rather than incidental: a row holding nothing but
+    a stale section strips to empty, so the load reads it once, the seed's own
+    locked re-read reads it again before deciding the row is not its to
+    replace, and the conversion reads it a third time under the lock -- which
+    it must, because the delta it converts has to be the one the lock holds.
+    Anything above three is the spam this message must not become."""
     await _store(session, {"version_check": {"project": "operinko-labs"}})
 
     with caplog.at_level(logging.WARNING):
         await load_effective_config(EXAMPLE, session)
 
     warnings = _strip_warnings(caplog)
-    assert len(warnings) == 2
+    assert len(warnings) == 3
     assert len(set(warnings)) == 1
     assert "dropping stale version_check from stored overrides" in warnings[0]
     assert "takes no configuration now" in warnings[0]

@@ -513,9 +513,7 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
 MIGRATE_REASON = "migrate"
 
 
-async def migrate_delta_to_document(
-    session: AsyncSession, base: dict | None, delta: dict
-) -> dict:
+async def migrate_delta_to_document(session: AsyncSession, base: dict | None) -> dict:
     """Turn a delta-era store into a document, once, and answer what it holds.
 
     The merge is exactly what the effective configuration was computed to be
@@ -523,6 +521,14 @@ async def migrate_delta_to_document(
     delta over it. Nothing is recomputed and nothing is dropped, so this
     deployment runs the configuration it ran yesterday across the boot that
     converts it.
+
+    The delta is read HERE, from the locked row, rather than taken from the
+    caller that noticed the row was one. The caller's read is not under the
+    lock, so a save committed between the two -- the pod this one is replacing
+    is still serving the editor -- would otherwise be converted away: the
+    merge would carry the delta the caller saw, and the save would be gone
+    from the store with no trace but its own snapshot. What the lock holds is
+    what is converted.
 
     The SNAPSHOT comes first and carries format 1, which is what makes the
     conversion undoable: restoring it re-runs the merge the delta described,
@@ -533,14 +539,12 @@ async def migrate_delta_to_document(
     section it held has left the schema -- snapshots nothing, there being no
     earlier state to restore to, and converts to the file's own document.
 
-    The row is taken under its LOCK before anything is written, and one that
-    says format 2 by then is returned as it stands rather than converted. This
-    is a read-modify-write over the row every save also writes: without the
-    lock, a write that lands in the window -- another process converting, or a
-    save still being served by the pod this one is replacing -- would be
-    replaced wholesale by a merge of a delta that is no longer there, its
-    restart list with it, and no snapshot of what was lost. ``seed_store``
-    closes the same window on the same row the same way.
+    The row is taken under its LOCK before anything is read for the merge or
+    written, and one that says format 2 by then is returned as it stands
+    rather than converted: somebody else has already done this, and their
+    document is the store. This is a read-modify-write over the row every save
+    also writes, and ``seed_store`` closes the same window on the same row the
+    same way.
 
     The merged document is validated BEFORE it is written rather than by the
     caller afterwards. This is the last load that reads the file, so a
@@ -567,18 +571,14 @@ async def migrate_delta_to_document(
             "became the document, and the configuration file it was a delta "
             "of cannot be read; restore the file and start again"
         )
-    merged = merge_overrides(base, delta)
-    _validated(merged)
-    # Locked before the snapshot, so what is captured and what is replaced are
-    # the same row, and read for its METADATA first: the document is read again
-    # only where the answer depends on it, or the strip of sections that left
-    # the schema would say its piece a third time for one boot.
     row = await store_row(session, for_update=True)
     meta = row.meta if row is not None and isinstance(row.meta, dict) else {}
     if meta.get("format") == STORE_FORMAT:
-        # Somebody else got here while this was merging. What they wrote is
-        # the store, and this is holding a delta that no longer exists.
+        # Somebody else got here first. What they wrote is the store.
         return _row_document(row)
+    delta = _row_document(row)
+    merged = merge_overrides(base, delta)
+    _validated(merged)
     await capture_snapshot(session, delta, MIGRATE_REASON, format=1)
     # What the row already said is carried through rather than replaced. Only
     # the format is this write's to set; the restart list is not its to throw
@@ -649,7 +649,7 @@ async def load_effective_config(path: Path | None, session: AsyncSession) -> Con
         return _validated(document)
     base = _read_file_document(path)
     if document:
-        return _validated(await migrate_delta_to_document(session, base, document))
+        return _validated(await migrate_delta_to_document(session, base))
     if base is None:
         raise ValueError(
             "the configuration store is empty and no configuration file was "
@@ -662,7 +662,7 @@ async def load_effective_config(path: Path | None, session: AsyncSession) -> Con
         # delta with nothing left in it, so it keeps its metadata and takes
         # the path every other delta takes -- which merges nothing over the
         # file and leaves the file's document standing.
-        return _validated(await migrate_delta_to_document(session, base, {}))
+        return _validated(await migrate_delta_to_document(session, base))
     # Validated before the commit, deliberately: the seed is the last time this
     # file is read, so a store seeded with a document the schema refuses could
     # never be repaired -- the application would not start, and the editor that
