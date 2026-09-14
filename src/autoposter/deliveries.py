@@ -153,10 +153,18 @@ async def _upsert_outcome(
             if value is None:
                 updatable.pop(column)
     if counted:
-        # The EXISTING row's value plus one: naming the column in `set_`
-        # renders `attempts = <table>.attempts + 1`, which is what makes the
-        # increment atomic against a concurrent pass.
-        updatable["attempts"] = model.attempts + 1
+        if not reset_attempts:
+            # The EXISTING row's value plus one: naming the column in `set_`
+            # renders `attempts = <table>.attempts + 1`, which is what makes
+            # the increment atomic against a concurrent pass.
+            updatable["attempts"] = model.attempts + 1
+        # And with BOTH flags, `values`' own 1 stands: reset, then count.
+        # The two used to be mutually exclusive in effect -- `reset_attempts`
+        # was silently ignored whenever `count_attempt` was true -- which left
+        # a caller whose event is both a fresh start AND a real attempt with
+        # no way to say so. `pipeline._write`'s write failure against a row
+        # that was already `failed` is that caller: the full pass re-arms an
+        # exhausted row, and this failure is its first new attempt.
     elif status in ("pending", "failed") and not reset_attempts:
         updatable.pop("attempts")
     stmt = stmt.on_conflict_do_update(
@@ -202,6 +210,11 @@ async def record(
     it; Phase C's catch-up re-arm must pass it too. The WAIT sites
     (``ItemNotFound``, an identity server that cannot be sampled) do not:
     they are the same streak of trouble continuing, not a fresh start.
+
+    ``reset_attempts`` composes with ``count_attempt``: both together leave
+    ``attempts`` at 1 -- reset, then count -- which is what a caller whose
+    event is a fresh start AND a real attempt says (``pipeline._write``'s
+    write failure against a row that was already ``failed``).
 
     ``fingerprint`` is the badge fingerprint actually delivered. Stored on
     ``uploaded`` only, and -- exactly like ``uploaded_at`` -- never erased by

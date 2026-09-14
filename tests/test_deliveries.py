@@ -573,6 +573,26 @@ async def test_an_uncounted_pending_leaves_the_budget_alone(session):
     ) == 1
 
 
+async def test_a_re_arm_that_is_also_an_attempt_lands_at_one(session):
+    """Review M9: `reset_attempts` used to be silently ignored whenever
+    `count_attempt` was true, so a caller whose event is both a fresh start
+    and a real attempt had no way to say so. Reset, then count -- 1."""
+    render = await _render(session)
+    assert await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=60) == 1
+    assert await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=60) == 2
+    assert await deliveries.record(
+        session, render.id, "jellyfin", "failed", detail="error: X",
+    ) == 3
+    assert await deliveries.record(
+        session, render.id, "jellyfin", "pending", retry_in=60, reset_attempts=True,
+    ) == 1
+    # And without the counting half it is still a plain reset to zero.
+    assert await deliveries.record(
+        session, render.id, "jellyfin", "pending", retry_in=60,
+        count_attempt=False, reset_attempts=True,
+    ) == 0
+
+
 async def test_the_delivered_fingerprint_is_kept_and_never_erased(session):
     render = await _render(session)
     await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
