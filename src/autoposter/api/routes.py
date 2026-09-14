@@ -28,7 +28,7 @@ from autoposter.api.dashboard_stream import router as dashboard_stream_router
 from autoposter.api.facts_backfill import router as facts_backfill_router
 from autoposter.api.files import router as files_router
 from autoposter.api.item_overrides import router as item_overrides_router
-from autoposter.api.jobs import _number, _text
+from autoposter.api.jobs import payload_number, payload_text
 from autoposter.api.jobs import router as jobs_router
 from autoposter.api.logs import router as logs_router
 from autoposter.api.manual import router as manual_router
@@ -815,10 +815,10 @@ async def parked_jobs(
                 # else -- api/jobs.py's precedent for the Jobs page. The
                 # payload is never echoed wholesale: it can carry provider
                 # ids and, for other kinds, source URLs.
-                "title": _text(payload, "title"),
-                "item_kind": _text(payload, "kind"),
-                "season_number": _number(payload, "season_number"),
-                "episode_number": _number(payload, "episode_number"),
+                "title": payload_text(payload, "title"),
+                "item_kind": payload_text(payload, "kind"),
+                "season_number": payload_number(payload, "season_number"),
+                "episode_number": payload_number(payload, "episode_number"),
             }
         )
     return {"jobs": jobs}

@@ -39,7 +39,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.actions import flags
 from autoposter.api.auth import require_session
-from autoposter.api.jobs import _number, _text
+from autoposter.api.jobs import payload_number, payload_text
 from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
 from autoposter.db.models import Session as SessionModel
 from autoposter.db.refs import native_ids, refs_for_items
@@ -1286,7 +1286,7 @@ async def job_warnings(
     to lie about what it reads.
 
     The payload is never echoed wholesale -- the same four naming fields
-    ``/api/jobs/parked`` lifts out (``_text``/``_number``, imported from
+    ``/api/jobs/parked`` lifts out (``payload_text``/``payload_number``, imported from
     that module rather than redefined here), for the same reason.
     """
     capped_limit = min(max(limit, 1), MAX_ACTIONS_LIMIT)
@@ -1327,10 +1327,10 @@ async def job_warnings(
                 "attempts": row.attempts,
                 "reason": row.last_error,
                 "updated_at": row.updated_at,
-                "title": _text(payload, "title"),
-                "item_kind": _text(payload, "kind"),
-                "season_number": _number(payload, "season_number"),
-                "episode_number": _number(payload, "episode_number"),
+                "title": payload_text(payload, "title"),
+                "item_kind": payload_text(payload, "kind"),
+                "season_number": payload_number(payload, "season_number"),
+                "episode_number": payload_number(payload, "episode_number"),
             }
         )
     return {"jobs": jobs, "total": total}
