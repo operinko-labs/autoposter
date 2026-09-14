@@ -22,12 +22,14 @@ import json
 
 import pytest_asyncio
 import yaml
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from autoposter.api import secret_rotation, setup_arr
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
+from autoposter.config import secret_store
 from autoposter.config import state as state_module
 from autoposter.config.loader import build_config
 from autoposter.config.schema import (
@@ -35,6 +37,7 @@ from autoposter.config.schema import (
     STATE_FILE_NAMES_ENV,
     STORED_SECRET_NAMES_ENV,
     Secrets,
+    resolve_secret_values,
 )
 from autoposter.db.models import EventLog
 
@@ -258,17 +261,20 @@ async def test_a_leftover_state_file_the_boot_never_read_is_refused(
     assert state_module.secrets_file_path().read_bytes() == before
 
 
-async def test_a_wizard_configured_deployment_is_allowed_after_the_boot_export(
+async def test_a_partially_migrated_deployment_is_allowed_after_the_boot_export(
     session_factory, monkeypatch
 ):
-    """The deployment this route exists for, in the environment it really has.
+    """A deployment whose FILE answers this name, in the environment it really
+    has -- the shape an operator part way through the ExternalSecrets
+    migration is running, and the shape the wizard produced before it wrote a
+    store.
 
-    A wizard-configured process carries every hard name in `os.environ` --
-    `boot._export` put the FILE's values there -- so a guard that decided from
-    `os.environ` would refuse every one of them, and would start allowing them
-    again the moment any one unrelated secret was stored. That inconsistency is
-    worse than either end of it, which is why the source is decided from the
-    boot markers and the table rather than from the environment.
+    Such a process carries every hard name in `os.environ` -- `boot._export`
+    put the FILE's values there -- so a guard that decided from `os.environ`
+    would refuse every one of them, and would start allowing them again the
+    moment any one unrelated secret was stored. That inconsistency is worse
+    than either end of it, which is why the source is decided from the boot
+    markers and the table rather than from the environment.
     """
     _seed_state_file()
     # The values boot exported, and the marker it published saying where they
@@ -282,6 +288,78 @@ async def test_a_wizard_configured_deployment_is_allowed_after_the_boot_export(
         response = await _rotate(client, {"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert held[WEBHOOK_ENV] == response.json()["webhook_secret"]
+
+
+async def test_a_store_held_webhook_secret_is_rotated_in_the_store(
+    session_factory, monkeypatch
+):
+    """The deployment the wizard configures today: every staged name but the
+    database URL goes into the store, so the STORE is what answers this name
+    and the store is what the rotation has to write.
+
+    Written to `secrets.env` instead, the rotation is undone at the next boot
+    -- the stored row outranks the file -- while both *arrs have already been
+    re-registered with the new value. Every inbound webhook then fails
+    verification silently, and the value cannot be recovered: it was served
+    once. So the claim is not "a row changed" but that a SIMULATED NEXT BOOT
+    resolves the value this request served."""
+    async with session_factory() as session:
+        await secret_store.store_secret(session, WEBHOOK_ENV, OLD_SECRET)
+        await session.commit()
+    _as_boot_left_it(monkeypatch, stored=WEBHOOK_ENV, **{WEBHOOK_ENV: OLD_SECRET})
+    application = _build(session_factory, _document(), _secrets())
+    monkeypatch.setattr(setup_arr, "register", _accepting([]))
+    transport = ASGITransport(app=application)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.post("/api/login", json={"password": PASSWORD})).json()["token"]
+        response = await _rotate(client, {"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    minted = response.json()["webhook_secret"]
+    assert minted != OLD_SECRET
+    async with session_factory() as session:
+        stored = await secret_store.load_stored_secrets(session)
+    assert stored[WEBHOOK_ENV] == minted
+    assert resolve_secret_values(stored)[WEBHOOK_ENV] == minted
+    # And not into the layer the next boot would ignore.
+    held = state_module.read_secrets_file(state_module.secrets_file_path())
+    assert WEBHOOK_ENV not in held
+
+
+async def test_a_row_this_key_cannot_open_is_refused_like_the_listing_labels_it(
+    session_factory, monkeypatch
+):
+    """The lost or swapped volume: the rows are all still there and none of
+    them answers. The resolver skips them, so the environment is what this
+    deployment is running on, and the Settings page says so.
+
+    The guard has to agree with that page. Asked for the row names that merely
+    EXIST it would read `stored`, allow the rotation, and write a `secrets.env`
+    that now outranks the deployment's own manifest -- the one write this
+    refusal exists to stop, on the exact failure the store was built to
+    survive. So the claim is that the two answers are the same string."""
+    async with session_factory() as session:
+        await secret_store.store_secret(session, WEBHOOK_ENV, OLD_SECRET)
+        await session.commit()
+    secret_store.secret_key_path().write_bytes(Fernet.generate_key() + b"\n")
+    _as_boot_left_it(monkeypatch, **{WEBHOOK_ENV: ENV_SECRET})
+    application = _build(session_factory, _document(), _secrets())
+    monkeypatch.setattr(setup_arr, "register", _accepting([]))
+    transport = ASGITransport(app=application)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        auth = {
+            "Authorization": "Bearer "
+            + (await client.post("/api/login", json={"password": PASSWORD})).json()["token"]
+        }
+        listed = await client.get("/api/secrets", headers=auth)
+        response = await _rotate(client, auth)
+
+    labelled = {row["name"]: row["source"] for row in listed.json()["secrets"]}
+    assert labelled[WEBHOOK_ENV] == "environment"
+    assert response.status_code == 400
+    assert response.json()["detail"] == secret_rotation.ENV_CONFIGURED_REFUSAL
 
 
 def test_the_refusal_names_the_variable_and_nothing_else():
