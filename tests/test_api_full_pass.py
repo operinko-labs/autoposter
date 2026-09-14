@@ -529,3 +529,42 @@ async def test_a_full_pass_never_rebuilds_the_jellyfin_item_index(
         "artwork": {"absent": 0, "rearmed": 0},
     }
     assert called == ["/Library/VirtualFolders"], f"the pass listed items: {called}"
+
+
+async def test_a_reappearing_library_is_re_armed_through_the_endpoint(
+    client, auth_headers, session
+):
+    """Task 5's deferred minor: "flipped back to `pending` when the library
+    reappears" is one of the branch's binding constraints and was proven only
+    at the `apply_presence` unit level. Two posts through the real endpoint,
+    with the double's libraries changing in between."""
+    from autoposter.render import pipeline
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    photo = await seed_media_item(session, "rk-r1", library="Photos", title="P")
+    render = await pipeline._get_or_create_render(session, photo, "poster", "/a/p.jpg")
+    render.status = "rendered"
+    await session.commit()
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS, libraries={"Movies"})
+    client._transport.app.state.servers = Servers({"jellyfin": jf})
+
+    first = (await client.post("/api/full-pass", headers=auth_headers)).json()
+    assert first["presence"]["jellyfin"]["artwork"] == {"absent": 1, "rearmed": 0}
+
+    # The library map corrected, or the library mounted at last.
+    jf.libraries = {"Movies", "Photos"}
+    second = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert second["presence"]["jellyfin"] == {
+        "metadata": {"absent": 0, "rearmed": 1},
+        "artwork": {"absent": 0, "rearmed": 1},
+    }
+    delivery = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.detail, RenderDelivery.next_attempt_at)
+    )).one()
+    assert delivery.status == "pending" and delivery.detail is None
+    assert delivery.next_attempt_at is not None, "a re-armed row is due for the ordinary retry"
+    metadata = (await session.execute(select(MetadataWrite.status))).scalar_one()
+    assert metadata == "pending"
