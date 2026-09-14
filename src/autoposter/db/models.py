@@ -242,7 +242,13 @@ class RenderDelivery(Base):
     stays as the roll-up; this is the per-server truth and the retry queue."""
 
     __tablename__ = "render_deliveries"
-    __table_args__ = (UniqueConstraint("render_id", "server", name="uq_delivery_render_server"),)
+    __table_args__ = (
+        UniqueConstraint("render_id", "server", name="uq_delivery_render_server"),
+        # PARTIAL, like the metadata table's due index: `run_id` is NULL for
+        # every row the ordinary pipeline arms, and the only query that reads
+        # the column asks `run_id = <id>`.
+        Index("ix_render_deliveries_run_id", "run_id", postgresql_where=text("run_id IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     render_id: Mapped[int] = mapped_column(
@@ -269,10 +275,10 @@ class RenderDelivery(Base):
     # ordinary pipeline armed. ON DELETE SET NULL, not CASCADE: the run
     # history is trimmed at 500 rows per name, and an outcome row must outlive
     # the run that queued it.
+    # No `index=True`: the index is the partial one in `__table_args__` above.
     run_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("runs.id", ondelete="SET NULL", name="fk_render_deliveries_run_id"),
-        index=True,
     )
     # What this row said before that run marked it `pending`, so cancelling
     # the run puts it back (spec §3). NULL means the run CREATED the row, and
@@ -308,6 +314,8 @@ class MetadataWrite(Base):
             "next_attempt_at",
             postgresql_where=text("status = 'pending'"),
         ),
+        # PARTIAL for the same reason as its `render_deliveries` twin.
+        Index("ix_metadata_writes_run_id", "run_id", postgresql_where=text("run_id IS NOT NULL")),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -331,10 +339,10 @@ class MetadataWrite(Base):
     # ordinary pipeline armed. ON DELETE SET NULL, not CASCADE: the run
     # history is trimmed at 500 rows per name, and an outcome row must outlive
     # the run that queued it.
+    # No `index=True`: the index is the partial one in `__table_args__` above.
     run_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("runs.id", ondelete="SET NULL", name="fk_metadata_writes_run_id"),
-        index=True,
     )
     # What this row said before that run marked it `pending`, so cancelling
     # the run puts it back (spec §3). NULL means the run CREATED the row, and

@@ -22,7 +22,15 @@ def upgrade() -> None:
     for table in ('render_deliveries', 'metadata_writes'):
         op.add_column(table, sa.Column('run_id', sa.BigInteger(), nullable=True))
         op.add_column(table, sa.Column('previous_status', sa.String(length=24), nullable=True))
-        op.create_index(f'ix_{table}_run_id', table, ['run_id'])
+        # PARTIAL, the same argument this migration makes four lines below
+        # for ix_metadata_writes_next_attempt_at: `run_id` is NULL for every
+        # row the ordinary pipeline arms (~32k+ per index on the target
+        # deployment), maintained on every write, and the only query that
+        # reads it asks `run_id = <id>`.
+        op.create_index(
+            f'ix_{table}_run_id', table, ['run_id'],
+            postgresql_where=sa.text('run_id IS NOT NULL'),
+        )
         op.create_foreign_key(
             f'fk_{table}_run_id', table, 'runs', ['run_id'], ['id'], ondelete='SET NULL',
         )
