@@ -80,6 +80,7 @@ from autoposter.db.models import (
     ManagedCollection,
     ManagedPlaylist,
     MediaItem,
+    MetadataWrite,
     Render,
     RenderDelivery,
     ScheduledRun,
@@ -573,6 +574,51 @@ async def item_detail(
                     )
                 ).scalar_one_or_none()
 
+        # Spec §5: the item page carries both tables' rows per server. One
+        # query each, not one per server -- the page shows every server at
+        # once and there are at most two.
+        metadata_rows = (
+            await session.execute(
+                select(MetadataWrite)
+                .where(MetadataWrite.item_id == item_id)
+                .order_by(MetadataWrite.server)
+            )
+        ).scalars().all()
+        art_kind_by_render = {render.id: render.art_kind for render in renders}
+        by_server: dict[str, dict] = {}
+        for row in metadata_rows:
+            by_server.setdefault(row.server, {"metadata": None, "artwork": []})["metadata"] = {
+                "status": row.status,
+                "detail": row.detail,
+                "attempts": row.attempts,
+                "attempted_at": row.attempted_at,
+                "written_at": row.written_at,
+                "next_attempt_at": row.next_attempt_at,
+            }
+        for render_id, rows in deliveries_by_render.items():
+            for delivery in rows:
+                by_server.setdefault(
+                    delivery.server, {"metadata": None, "artwork": []}
+                )["artwork"].append({
+                    "art_kind": art_kind_by_render[render_id],
+                    "status": delivery.status,
+                    "detail": delivery.detail,
+                    "attempts": delivery.attempts,
+                    "attempted_at": delivery.attempted_at,
+                    "uploaded_at": delivery.uploaded_at,
+                    "next_attempt_at": delivery.next_attempt_at,
+                })
+        servers_block = [
+            {
+                "server": name,
+                "metadata": entry["metadata"],
+                # Sorted by art kind so the table does not reorder between
+                # page loads -- the same rule the delivery chips already keep.
+                "artwork": sorted(entry["artwork"], key=lambda row: row["art_kind"]),
+            }
+            for name, entry in sorted(by_server.items())
+        ]
+
         refs = await refs_for_items(session, [item.id])
 
     return {
@@ -598,6 +644,7 @@ async def item_detail(
             "studio": facts.studio,
             "originally_available": facts.originally_available,
         },
+        "servers": servers_block,
         "renders": [
             {
                 "art_kind": render.art_kind,
