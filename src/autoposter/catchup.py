@@ -46,7 +46,7 @@ CATCH_UP_KIND = "catch_up"
 MIN_CADENCE_SECONDS = 60
 
 # How many CONSECUTIVE batches may move nothing before the drain stops the
-# run (`runs.idle_drains`, review N1). Two rather than one: a media server
+# run, counted in `runs.idle_drains`. Two rather than one: a media server
 # that is briefly unreachable turns every row of a batch into a resolution
 # miss, which by design changes neither status nor attempts, so one idle
 # batch is an outage and not a verdict. Two rather than more: every batch
@@ -64,8 +64,8 @@ class CatchUpRefused(Exception):
     exception's own message.
 
     ``transient`` says whether the reason can pass on its own, which is what
-    an AUTOMATIC request needs to know (review I1): a server that is down, or
-    that could not answer when asked for its libraries, will be up again --
+    an AUTOMATIC request needs to know: a server that is down, or that
+    could not answer when asked for its libraries, will be up again --
     and spec §3's post-restart trigger fires exactly ONCE, on the first poll
     after boot, which is precisely when a co-restarting Jellyfin is still
     starting up. Such a request is re-queued. "Not configured" and "already in
@@ -97,10 +97,11 @@ async def start_catch_up(
     """Open a catch-up run for ``name`` and mark its backlog. Returns the run id.
 
     Refuses -- with the sentence the button shows -- when the server is not
-    configured, when a catch-up for it is already in flight, when its health
-    poller says it is down, or when it cannot list its libraries. The last of
-    those is a refusal rather than a silent empty presence on purpose: a
-    server that cannot answer must never be told it carries nothing.
+    configured, when the scheduler is off, when a catch-up for it is already
+    in flight, when its health poller says it is down, or when it cannot list
+    its libraries. The last of those is a refusal rather than a silent empty
+    presence on purpose: a server that cannot answer must never be told it
+    carries nothing.
 
     ``health`` is ``app.state.server_health`` -- the poller map, not the
     registry, which deliberately does not carry health (``servers/registry.py``).
@@ -114,6 +115,16 @@ async def start_catch_up(
     server = servers.get(name)
     if server is None:
         raise CatchUpRefused(f"no media server named {name!r} is configured")
+
+    # The drain job is registered inside `app.py`'s `if config.scheduler.enabled`
+    # gate, so with the scheduler off nothing would ever take a batch: the
+    # backlog this would mark is invisible to the unscoped retry pass (it
+    # takes `run_id IS NULL` rows only) and to the pipeline's re-arm doors,
+    # and the run would never close -- which makes the in-flight check refuse
+    # every later catch-up for that server forever. Not transient: waiting
+    # never switches the scheduler on.
+    if not config.scheduler.enabled:
+        raise CatchUpRefused("the scheduler is off; a catch-up needs it to drain")
 
     poller = (health or {}).get(name)
     if poller is not None and not poller.healthy:
@@ -264,9 +275,9 @@ async def start_catch_up(
                 # what a cancel has to put back.
                 #
                 # A row that is ALREADY armed keeps what the run that armed it
-                # recorded, verbatim (controller ruling 2): its current
-                # `pending` was put there by a catch-up, not by the world, and
-                # copying it here would have a later cancel restore a
+                # recorded, verbatim: its current `pending` was put there
+                # by a catch-up, not by the world, and copying it here would
+                # have a later cancel restore a
                 # delivered row to `pending` -- a due row nothing will ever
                 # settle, with the truth of what the server holds lost. NULL
                 # is carried on for the same reason under its own meaning: not
@@ -392,7 +403,7 @@ async def start_catch_up(
 
 
 # What "done" means in each table, so progress can count EVERY row a run
-# owns and not only the ones carrying the obvious word (review I1).
+# owns and not only the ones carrying the obvious word.
 #
 # `skipped` is the mainline case rather than an exotic one: the retry pass
 # records it for a per-library toggle switched off mid-drain or an exemption
@@ -434,6 +445,23 @@ async def run_tallies(session: AsyncSession, run_id: int) -> dict:
     return {**counts, "total": counts["due"] + counts["done"] + counts["failed"]}
 
 
+async def _attempts_spent(session: AsyncSession, run_id: int) -> int:
+    """The budget one run has spent: the sum of ``attempts`` over its rows.
+
+    Private, and read only by the drain: it is the other half of "this batch
+    moved something". Deliberately NOT a key in ``run_tallies`` -- that dict
+    is splatted straight into the served progress response, so a term added
+    there becomes an undocumented API field.
+    """
+    total = 0
+    for table in (RenderDelivery, MetadataWrite):
+        total += int((await session.execute(
+            select(func.coalesce(func.sum(table.attempts), 0))
+            .where(table.run_id == run_id)
+        )).scalar_one())
+    return total
+
+
 async def finish_catch_up(
     session: AsyncSession, run_id: int, *, status: str, detail: str,
     tallies: dict | None = None,
@@ -463,11 +491,22 @@ async def finish_catch_up(
     Does not commit.
     """
     tallies = tallies if tallies is not None else await run_tallies(session, run_id)
-    await session.execute(
-        update(Run).where(Run.id == run_id).values(
+    # Only a run that is still OPEN may be stamped and closed, and this is
+    # the one place every catch-up closer goes through, so the clause lives
+    # here rather than in `close_run` (shared with the scheduler and the full
+    # pass, neither of which wants it). Without it a cancel that commits
+    # while a drain is mid-batch is overwritten by that drain's own finish:
+    # the drain sees nothing left carrying the run id, reads it as a run that
+    # marked nothing, and rewrites the cancelled run's status, detail and
+    # three counts with zeros. The loser of the race returns what it counted
+    # and releases nothing further -- the winner's own release has run.
+    stamped = (await session.execute(
+        update(Run).where(Run.id == run_id, Run.finished_at.is_(None)).values(
             processed=tallies["total"], failed=tallies["failed"], deferred=tallies["due"],
         )
-    )
+    )).rowcount
+    if not stamped:
+        return tallies
     await close_run(session, run_id, status=status, detail=detail)
     # The release, AFTER the tallies above are stamped: a run that is over
     # owns nothing, or a later progress query goes on counting rows for it and
@@ -552,8 +591,8 @@ async def drain_catch_ups(
     they were counted from are released.
 
     A run whose last ``MAX_IDLE_DRAINS`` batches moved NOTHING closes too,
-    with the same `ok` and a detail naming what it left (review I2). A
-    resolution miss is a wait, not a failure -- it spends no attempt budget --
+    with the same `ok` and a detail naming what it left. A resolution miss
+    is a wait, not a failure -- it spends no attempt budget --
     so a row for a file the server will never scan stays `pending` for ever,
     and without this the run would drain empty batches for ever while
     ``start_catch_up``'s in-flight check refused every later catch-up for that
@@ -561,19 +600,22 @@ async def drain_catch_ups(
     hands those rows back as ORDINARY pending waits, which the unscoped
     pending-deliveries pass keeps retrying on its own cadence.
 
-    Whether a batch moved anything is this run's OWN tallies either side of
-    it, and the count of consecutive idle batches lives in ``runs.idle_drains``
-    -- a column, for ``last_drained_at``'s reason (two replicas share the
-    database and nothing else) and because a snapshot of the counts cannot
-    tell one idle batch from two in a row (review N1).
+    Whether a batch moved anything is this run's OWN tallies AND the budget
+    its rows have spent, either side of it: a batch that really attempted
+    every row and failed leaves the statuses identical but the attempts
+    higher, and a batch that spends budget is not an idle one. The count of
+    consecutive idle batches lives in ``runs.idle_drains`` -- a column, for
+    ``last_drained_at``'s reason (two replicas share the database and nothing
+    else) and because a snapshot of the counts cannot tell one idle batch
+    from two in a row.
 
     Each run's batch is contained AND committed on its own: a failure outside
     a row (the retry pass contains those itself, behind savepoints) would
     otherwise abort the whole pass -- and since the runs are walked in a
     stable order, the same run would be first in line on the next poll and the
-    ones behind it would never get a batch (review M2). The per-run commit is
-    what keeps the containment's rollback from reaching back into an earlier
-    run's finish, which the returned sentence has already claimed (review N2).
+    ones behind it would never get a batch. The per-run commit is what keeps
+    the containment's rollback from reaching back into an earlier run's
+    finish, which the returned sentence has already claimed.
 
     Commits, like every scheduled pass's body.
     """
@@ -596,7 +638,7 @@ async def drain_catch_ups(
         # `start_catch_up` already floored it, so the fallback is for a row
         # that somehow carries NULL -- and an explicit `0` there is the
         # fastest drain an operator can ask for, exactly as the write site
-        # says (review M4).
+        # says.
         cadence = (
             MIN_CADENCE_SECONDS if run.cadence_seconds is None else run.cadence_seconds
         )
@@ -609,8 +651,14 @@ async def drain_catch_ups(
         try:
             # Taken BEFORE the batch and compared with the same numbers after
             # it: that is what "this batch moved something" means, and it is
-            # read from this run's rows alone.
+            # read from this run's rows alone. The spent budget is half of
+            # it, because a batch in which every row was really attempted and
+            # failed-but-not-exhausted leaves each row `pending` with one more
+            # attempt against it -- a status histogram identical either side,
+            # so on a server refusing every write two such batches would close
+            # the run as idle after ~1000 of fifteen thousand rows.
             before = await run_tallies(session, run_id)
+            before_spent = await _attempts_spent(session, run_id)
             # The retry pass commits per row, so nothing below may rely on an
             # ORM object loaded before it -- which is why the run's fields are
             # read into locals above rather than kept as a `Run` instance.
@@ -619,7 +667,11 @@ async def drain_catch_ups(
                 server=server_name, run_id=run_id,
             )
             tallies = await run_tallies(session, run_id)
-            idle = 0 if tallies != before else run.idle_drains + 1
+            spent = await _attempts_spent(session, run_id)
+            idle = (
+                0 if (tallies, spent) != (before, before_spent)
+                else run.idle_drains + 1
+            )
             await session.execute(
                 update(Run).where(Run.id == run_id)
                 .values(last_drained_at=now, idle_drains=idle)
@@ -629,7 +681,7 @@ async def drain_catch_ups(
                 await finish_catch_up(
                     session, run_id, status="ok", detail=detail, tallies=tallies,
                 )
-                clauses.append(
+                clause = (
                     f"{server_name} finished, {tallies['done']} done, "
                     f"{tallies['failed']} failed"
                 )
@@ -641,20 +693,23 @@ async def drain_catch_ups(
                 await finish_catch_up(
                     session, run_id, status="ok", detail=detail, tallies=tallies,
                 )
-                clauses.append(
+                clause = (
                     f"{server_name} stopped with {tallies['due']} still due, "
                     f"{tallies['done']} done, {tallies['failed']} failed"
                 )
             else:
-                clauses.append(
+                clause = (
                     f"{server_name} {tallies['due']} still due, "
                     f"{tallies['done']} done, {tallies['failed']} failed"
                 )
-            # This run's own boundary (review N2): the clause above is already
-            # in the sentence this pass will return and store, so what it
-            # claims has to be durable before the next run gets a chance to
-            # roll the transaction back.
+            # This run's own boundary: the clause is held in a local until the
+            # commit returns, so a commit that raises produces only the
+            # `failed (...)` clause below rather than that one AND a claim the
+            # rollback has just discarded. Committing per run is what keeps
+            # the containment's rollback from reaching back into an earlier
+            # run's finish, which the returned sentence has already claimed.
             await session.commit()
+            clauses.append(clause)
         except Exception as exc:
             # Row 213: the class name, never the message -- this can be a
             # transport error carrying a server's address.
@@ -686,6 +741,16 @@ async def cancel_catch_up(
     on counting for a run that is over, and the ordinary pipeline's own
     release (``leave_run``) would be the only thing ever clearing them, one
     row at a time, if it happened to touch them at all.
+
+    A cancel does not stop the batch already in flight. ``retry_pending_deliveries``
+    detaches up to 500 rows before it starts writing, so a batch that was
+    running when this committed goes on attempting those rows and recording
+    their outcomes afterwards, over what was just restored. Nothing already
+    written is undone by that -- an upload that happened is recorded
+    truthfully -- but the ``restored``/``removed`` counts returned here can be
+    stale by up to one batch, and a row the drain re-records lands as an
+    ordinary unscoped one, because this has already cleared its two scope
+    columns.
 
     Does not commit.
     """
@@ -744,8 +809,8 @@ async def cancel_catch_up(
             .values(previous_status=None, run_id=None)
         )
 
-    # Review I2. `start_catch_up` rolled every render whose row it armed up to
-    # `pending`; the statements above put those rows back to `failed` or
+    # `start_catch_up` rolled every render whose row it armed up to
+    # `pending`, and the statements above put those rows back to `failed` or
     # `uploaded`, or deleted them outright, and nothing else recomputes
     # `renders.upload_status` -- the column `/api/library`'s filter, the
     # dashboard tiles and the action centre read. By id rather than by
@@ -774,8 +839,8 @@ async def retry_failed(
     again on its first attempt.
 
     EVERY ``failed`` row for that server, inside a run or outside one, and as
-    an ORDINARY row -- both scope columns back to NULL (controller ruling 1).
-    The unscoped retry pass takes ``run_id IS NULL`` rows only, so a row left
+    an ORDINARY row -- both scope columns back to NULL. The unscoped retry
+    pass takes ``run_id IS NULL`` rows only, so a row left
     in the run that armed it would be re-armed here and then drained by
     nothing until that run's own cadence came round; and a run whose rows this
     took back is no longer the owner of them.
@@ -807,12 +872,12 @@ async def retry_failed(
 # honest for a server block that has no such field.
 _LIBRARY_SHAPE_FIELDS = ("library_map", "excluded_libraries")
 
-# The per-server delivery toggles, by server (controller ruling carried from
-# task 10's review). Flipping one of these ON does not change which items a
-# server is expected to carry, but it does change which of them it was
-# allowed to receive: every row the pipeline skipped while the toggle was off
-# is now owed to that server, and nothing else heals them before the next
-# full pass. An OFF flip owes nothing, so only `False -> True` is reported.
+# The per-server delivery toggles, by server. Flipping one of these ON does
+# not change which items a server is expected to carry, but it does change
+# which of them it was allowed to receive: every row the pipeline skipped
+# while the toggle was off is now owed to that server, and nothing else heals
+# them before the next full pass. An OFF flip owes nothing, so only
+# `False -> True` is reported.
 _DELIVERY_TOGGLES = {
     "plex": (("operations", "write_to_plex"), ("badges", "upload_to_plex")),
     "jellyfin": (("operations", "write_to_jellyfin"), ("badges", "upload_to_jellyfin")),
@@ -849,7 +914,7 @@ def _toggle_states(config, section: str, field: str) -> dict[str, bool | None]:
 def _toggle_turned_on(old_config, new_config, section: str, field: str) -> bool:
     """Whether this toggle went ``False -> True`` in any scope.
 
-    The UNION of both configs' scopes, not the new config's alone (review M2).
+    The UNION of both configs' scopes, not the new config's alone.
     A library block can appear or disappear between generations as easily as
     a field inside it can change, and a scope missing on one side falls back
     to THAT side's global value -- which is exactly what the library was
@@ -885,8 +950,8 @@ def _toggle_ever_on(config, section: str, field: str) -> bool:
 def servers_with_delivery_enabled(config, names) -> list[str]:
     """Of ``names``, those this config actually delivers something to.
 
-    The boot trigger's filter (review M1). ``start_catch_up`` writes an
-    outcome row only for a half it is configured to deliver, so a server with
+    The boot trigger's filter. ``start_catch_up`` writes an outcome row
+    only for a half it is configured to deliver, so a server with
     every toggle off is never recorded, ``servers_never_seen`` would keep
     reporting it, and every restart would open and immediately close a no-op
     run for it forever. A server this deployment writes nothing to has
@@ -925,7 +990,9 @@ def servers_with_changed_libraries(old_config, new_config) -> list[str]:
     well would queue the same catch-up twice for one change.
     """
     changed = []
-    for name in ("plex", "jellyfin"):
+    # The toggle map's own keys, not a second list of the same two names: a
+    # name in the tuple that the dict lacked would `KeyError` below.
+    for name in _DELIVERY_TOGGLES:
         old_block = getattr(old_config, name, None)
         new_block = getattr(new_config, name, None)
         if old_block is None or new_block is None:
@@ -957,7 +1024,14 @@ async def servers_never_seen(session: AsyncSession, names) -> list[str]:
     every toggle is off, and such a server would be reported here on every
     boot forever. It is ``servers_with_delivery_enabled`` that keeps it out
     of ``names`` -- the pair of predicates is what makes the trigger fire
-    once, not this one alone (review M1).
+    once, not this one alone.
+
+    One hole the pair does not close: a server whose only enabled half has
+    nothing to deliver yet -- ``upload_to_<server>`` on with no non-background
+    render `rendered` -- passes that filter, gets no row written, and is
+    therefore queued again on the next boot, opening a run that finds nothing
+    and closes on the drain job's first look. A no-op per restart, which
+    stops the moment the first render is delivered.
 
     Silent on an empty database: a fresh deployment's first full pass covers
     every server anyway, and a catch-up with nothing to catch up on is noise.

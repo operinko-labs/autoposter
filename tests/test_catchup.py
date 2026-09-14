@@ -27,7 +27,7 @@ NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
 def catch_up_config(config_with_badges):
     """The example config with Jellyfin's two switches ON.
 
-    Both are load-bearing since review I3: a catch-up arms artwork only when
+    Both are load-bearing: a catch-up arms artwork only when
     `badges.enabled and badges.upload_to_<name>` and metadata only when
     `operations.enabled and operations.write_to_<name>`, and
     `upload_to_jellyfin` defaults to OFF.
@@ -50,7 +50,7 @@ async def _item_with_render(
     item = await seed_media_item(session, native, library=library, title=native)
     if facts:
         # A catch-up arms a metadata row only for an item this service has
-        # something to write for (controller ruling 1), and `item_facts` is
+        # something to write for, and `item_facts` is
         # where that something lives.
         session.add(ItemFacts(item_id=item.id))
     render = await pipeline._get_or_create_render(session, item, art_kind, f"/a/{native}.jpg")
@@ -124,7 +124,7 @@ async def test_a_marked_row_gets_its_whole_budget_and_a_horizon_of_now(
 
 
 async def test_a_catch_up_rolls_up_the_renders_it_stamped(session, catch_up_config):
-    """Review I1: `renders.upload_status` is what `/api/library`'s filter, the
+    """`renders.upload_status` is what `/api/library`'s filter, the
     dashboard tiles and the action centre read, and nothing else recomputes
     what a set-shaped write to `render_deliveries` touched. A `failed` row a
     catch-up re-arms must leave the render reading `pending`, not `failed` for
@@ -182,7 +182,7 @@ async def test_a_catch_up_arms_no_row_for_a_background_or_an_unrendered_render(
 async def test_a_catch_up_arms_no_metadata_row_for_an_item_it_has_nothing_to_write_for(
     session, catch_up_config
 ):
-    """Controller ruling 1: no `item_facts` row and no override means there is
+    """No `item_facts` row and no override means there is
     nothing to write, so the row is left exactly as it is -- not created, and
     not moved off whatever it already says."""
     bare = await seed_media_item(session, "e1", library="Movies", title="E1")
@@ -208,7 +208,7 @@ async def test_a_catch_up_arms_no_metadata_row_for_an_item_it_has_nothing_to_wri
 
 
 async def test_a_configured_field_verb_makes_every_item_writable(session, catch_up_config):
-    """Review I2: the predicate mirrors `apply_metadata`'s gate term for term,
+    """The predicate mirrors `apply_metadata`'s gate term for term,
     and two of its terms are CONFIG-level. A verb IS its field's source and
     fires even when no provider has anything to say, so with one configured an
     item `persist_facts` wrote no row for -- most commonly a season -- is armed
@@ -227,7 +227,7 @@ async def test_a_configured_field_verb_makes_every_item_writable(session, catch_
 
 
 async def test_a_catch_up_leaves_a_skipped_metadata_row_alone(session, catch_up_config):
-    """Review M4: a `skipped` row is an exemption (row 35) or a switched-off
+    """A `skipped` row is an exemption (row 35) or a switched-off
     write, and re-arming it costs a resolve, a label read and a plan per exempt
     item to record the same word again -- while blanking the stored reason the
     item page shows. The full pass is what learns that an exemption was
@@ -251,7 +251,7 @@ async def test_a_catch_up_leaves_a_skipped_metadata_row_alone(session, catch_up_
 async def test_a_second_run_keeps_the_marker_that_a_run_created_the_row(
     session, catch_up_config
 ):
-    """Review M2: `previous_status` NULL means "a run CREATED this row", and a
+    """`previous_status` NULL means "a run CREATED this row", and a
     cancel deletes such a row rather than inventing a status for it. A second
     run marking a row the first one created must not write `pending` over that
     NULL."""
@@ -280,7 +280,7 @@ async def test_a_second_run_keeps_the_marker_that_a_run_created_the_row(
 async def test_a_second_run_keeps_the_previous_status_the_first_one_recorded(
     session, catch_up_config
 ):
-    """Controller ruling 2: a second catch-up over an ALREADY-armed row does
+    """A second catch-up over an ALREADY-armed row does
     not move it off the word it carries, and does not write over the
     `previous_status` the first run recorded. Recording the row's own
     `pending` there would have a later cancel restore a delivered row to
@@ -310,7 +310,7 @@ async def test_a_second_run_keeps_the_previous_status_the_first_one_recorded(
 
 
 async def test_an_upload_disabled_server_gets_no_artwork_rows(session, catch_up_config):
-    """Review I3, and `deliver`'s own rule: "an upload-disabled server must
+    """`deliver`'s own rule: "an upload-disabled server must
     never get a `pending` catch-up row, only for the very next retry pass to
     immediately overwrite it with `skipped`". `upload_to_jellyfin` defaults to
     off and spec §3 starts a catch-up automatically after a restart that
@@ -383,7 +383,7 @@ async def test_a_catch_up_is_refused_while_one_is_in_flight(session, catch_up_co
     with pytest.raises(catchup.CatchUpRefused) as excinfo:
         await catchup.start_catch_up(session, servers, catch_up_config, "jellyfin", now=NOW)
     assert str(excinfo.value) == "a catch-up for jellyfin is already in flight"
-    # Review I1: not transient -- the work is already happening, so an
+    # Not transient -- the work is already happening, so an
     # automatic request for it is dropped rather than re-queued.
     assert excinfo.value.transient is False
 
@@ -391,7 +391,7 @@ async def test_a_catch_up_is_refused_while_one_is_in_flight(session, catch_up_co
 async def test_two_concurrent_starts_open_exactly_one_run(
     session, session_factory, catch_up_config
 ):
-    """Review I4: the in-flight SELECT and the `open_run` INSERT are one READ
+    """The in-flight SELECT and the `open_run` INSERT are one READ
     COMMITTED transaction and nothing in the schema forbids two open runs per
     server, so a double-clicked button -- or the button racing spec §3's
     automatic post-save start -- used to open a run each, and the second
@@ -442,7 +442,7 @@ async def test_a_catch_up_is_refused_while_the_server_is_down(session, catch_up_
     assert str(excinfo.value) == (
         "jellyfin is not reachable right now; try again once it is back"
     )
-    # Review I1: transient -- a down server comes back, and spec §3's
+    # Transient -- a down server comes back, and spec §3's
     # post-restart trigger fires only once, so its request is re-queued.
     assert excinfo.value.transient is True
 
@@ -453,8 +453,32 @@ async def test_a_catch_up_is_refused_for_a_server_this_deployment_does_not_have(
     with pytest.raises(catchup.CatchUpRefused) as excinfo:
         await catchup.start_catch_up(session, Servers({}), catch_up_config, "emby", now=NOW)
     assert str(excinfo.value) == "no media server named 'emby' is configured"
-    # Review I1: not transient -- waiting never makes a server configured.
+    # Not transient -- waiting never makes a server configured.
     assert excinfo.value.transient is False
+
+
+async def test_a_catch_up_is_refused_while_the_scheduler_is_off(session, catch_up_config):
+    """The drain job is registered inside the scheduler's own gate, so with the
+    scheduler off a catch-up would mark the whole library and then be drained
+    by nothing: the unscoped retry pass takes `run_id IS NULL` rows only and
+    the pipeline's re-arm doors skip a live run's rows. The run would never
+    close and the in-flight check would refuse every later catch-up for that
+    server, automatic ones included."""
+    catch_up_config.scheduler.enabled = False
+    jf = _jellyfin()
+
+    with pytest.raises(catchup.CatchUpRefused) as excinfo:
+        await catchup.start_catch_up(
+            session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin", now=NOW,
+        )
+
+    assert str(excinfo.value) == "the scheduler is off; a catch-up needs it to drain"
+    # Not transient -- waiting never switches the scheduler on, so an
+    # automatic request carrying this reason is dropped rather than re-queued.
+    assert excinfo.value.transient is False
+    # Refused before anything was opened or marked.
+    assert (await session.execute(select(Run))).first() is None
+    assert (await session.execute(select(RenderDelivery))).first() is None
 
 
 async def test_a_catch_up_refusal_never_carries_the_servers_address(
@@ -474,7 +498,7 @@ async def test_a_catch_up_refusal_never_carries_the_servers_address(
         )
     assert str(excinfo.value) == "jellyfin could not list its libraries (ConnectError)"
     assert "jellyfin.internal" not in str(excinfo.value)
-    # Review I1: transient -- a live network round trip against a server that
+    # Transient -- a live network round trip against a server that
     # may still be starting up is the boot trigger's own failure mode.
     assert excinfo.value.transient is True
 
@@ -502,7 +526,7 @@ async def test_the_run_defaults_to_the_schedulers_cadence(session, catch_up_conf
 
 @pytest.mark.parametrize("asked", [5, 0])
 async def test_a_sub_minute_cadence_is_held_to_the_floor(session, catch_up_config, asked):
-    """`0` included (review M6): an explicit zero is an operator asking for the
+    """`0` included: an explicit zero is an operator asking for the
     fastest drain there is, and `or` would have read it as "unset" and given
     him the scheduler's quarter of an hour instead."""
     catch_up_config.scheduler.pending_deliveries_minutes = 15
@@ -517,7 +541,7 @@ async def test_a_sub_minute_cadence_is_held_to_the_floor(session, catch_up_confi
 
 # --- the pipeline's re-arm doors, against a row a catch-up owns -------------
 #
-# Controller ruling 2, through `process_item` -- the real entry point. A row
+# Through `process_item` -- the real entry point. A row
 # an OPEN run armed is already pending under that run, so the ordinary
 # pipeline leaves it alone, `run_id` and `previous_status` included, or the
 # run's progress and its cancel would both act on rows it no longer owns. A
@@ -682,7 +706,7 @@ async def test_a_full_pass_re_arms_a_finished_runs_metadata_row(
 async def test_a_full_pass_leaves_an_open_runs_horizon_where_the_run_put_it(
     session, catch_up_config, monkeypatch
 ):
-    """Ruling 5: the run's own drain owns the timing of the rows it armed. A
+    """The run's own drain owns the timing of the rows it armed. A
     full pass whose write fails would otherwise push the row six hours out and
     stall a drain the run is still counting on."""
     _, row = await _metadata_row_after_a_full_pass(
@@ -835,7 +859,7 @@ async def test_retry_failed_re_arms_both_tables_for_one_server(session):
 async def test_retry_failed_takes_a_failed_row_out_of_the_run_that_armed_it(
     session, catch_up_config
 ):
-    """Controller ruling 1: EVERY `failed` row for that server is re-armed,
+    """EVERY `failed` row for that server is re-armed,
     inside a run or outside one, and as an ORDINARY row -- the unscoped retry
     pass takes `run_id IS NULL` rows only, so a row left in its run would be
     re-armed here and then drained by nothing until that run's own cadence
@@ -862,7 +886,7 @@ async def test_retry_failed_takes_a_failed_row_out_of_the_run_that_armed_it(
 
 
 async def test_retry_failed_rolls_up_the_renders_it_re_armed(session):
-    """Review I1's finding, for this writer: nothing else recomputes what a
+    """For this writer too: nothing else recomputes what a
     set-shaped write to `render_deliveries` touched, so a `failed` row this
     re-arms would leave the render reading `failed` -- flagged in the action
     centre and served stale on the item page -- until the drain reached it."""
@@ -878,7 +902,7 @@ async def test_retry_failed_rolls_up_the_renders_it_re_armed(session):
 
 
 async def test_progress_counts_a_skipped_row_inside_the_run(session, catch_up_config):
-    """Review I1: `skipped` is the retry pass's own word for a per-library
+    """`skipped` is the retry pass's own word for a per-library
     toggle switched off mid-drain or an exemption found during the write, and
     none of those calls pass `leave_run` -- so the row keeps its `run_id` and
     must be counted. Counted nowhere, it left a `total` smaller than the
@@ -932,7 +956,7 @@ async def test_progress_after_a_cancel_reports_the_tallies_it_had(
 
 
 async def test_cancelling_rolls_up_the_renders_it_restores(session, catch_up_config):
-    """Review I2: `start_catch_up` rolled this render up to `pending` when it
+    """`start_catch_up` rolled this render up to `pending` when it
     armed the row, and the restore puts the row back to `failed` without
     anything recomputing `renders.upload_status` -- the column
     `/api/library`'s filter, the dashboard tiles and the action centre read."""
@@ -954,7 +978,7 @@ async def test_cancelling_rolls_up_the_renders_it_restores(session, catch_up_con
 
 
 async def test_retry_failed_stamps_when_it_last_looked_at_the_server(session):
-    """Review M2: every other writer to these two tables stamps
+    """Every other writer to these two tables stamps
     `attempted_at`, the "we last looked at this server" timestamp."""
     item, render = await _item_with_render(session, "r4")
     await deliveries.record(session, render.id, "jellyfin", "failed", detail="error: X")
@@ -969,7 +993,7 @@ async def test_retry_failed_stamps_when_it_last_looked_at_the_server(session):
 async def test_the_re_arm_doors_read_the_open_runs_once_per_item(
     session, catch_up_config, monkeypatch
 ):
-    """Controller ruling: the open-run check used to cost one primary-key
+    """The open-run check used to cost one primary-key
     SELECT per re-arm door hit, and nothing ever clears `run_id` off a
     terminal outcome -- so every row a catch-up has ever touched paid that
     query on every later pass. The set of open catch-ups is read ONCE per
@@ -1166,7 +1190,7 @@ async def test_the_drain_takes_only_the_rows_of_the_run_it_is_draining(
 async def test_a_run_that_moves_nothing_twice_stops_and_frees_the_server(
     session, catch_up_config
 ):
-    """Review I2: a resolution miss is a wait, not a failure -- it spends no
+    """A resolution miss is a wait, not a failure -- it spends no
     attempt budget -- so a row for a file the server will never scan is `due`
     for ever, and the in-flight check would refuse every later catch-up for
     that server, automatic ones included. A run whose batch moves nothing
@@ -1295,7 +1319,7 @@ async def test_the_drain_commits_its_own_bookkeeping(session, session_factory, c
 async def test_one_runs_failure_does_not_skip_the_runs_behind_it(
     session, catch_up_config, monkeypatch
 ):
-    """Review M2: the runs are walked in a stable `runs.id` order, so a raise
+    """The runs are walked in a stable `runs.id` order, so a raise
     outside a row -- the retry pass contains the per-row ones itself -- used to
     abort the whole pass and leave the same run first in line on the next
     poll, with the runs behind it never getting a batch. Contained per run,
@@ -1365,7 +1389,7 @@ async def _run_with_staggered_horizons(session, config, jf, monkeypatch, horizon
 async def test_a_run_that_moves_rows_again_after_an_idle_batch_stays_open(
     session, catch_up_config, monkeypatch
 ):
-    """Review N1, and the case that tells the two predicates apart: the rule
+    """The case that tells the two predicates apart: the rule
     is TWO CONSECUTIVE idle batches, not "this batch left the counts where the
     last one did". A run that moves rows, then moves nothing, then moves rows
     again is working -- and a brief outage mid-drain, which turns every row of
@@ -1427,7 +1451,7 @@ async def test_two_idle_batches_after_a_productive_one_stop_the_run(
 async def test_a_failing_run_does_not_roll_back_an_earlier_runs_finish(
     session, session_factory, catch_up_config, monkeypatch
 ):
-    """Review N2: the sentence this pass returns is stored on the scheduled
+    """The sentence this pass returns is stored on the scheduled
     run, so a clause claiming a finish has to be durable before a later run
     can roll the transaction back."""
     catch_up_config.operations.enabled = False
@@ -1460,3 +1484,109 @@ async def test_a_failing_run_does_not_roll_back_an_earlier_runs_finish(
     async with session_factory() as other:
         run = (await other.execute(select(Run).where(Run.id == finished))).scalar_one()
     assert run.finished_at is not None and run.status == "ok"
+
+
+async def test_a_cancel_mid_drain_survives_the_drains_own_finish(
+    session, session_factory, catch_up_config, monkeypatch
+):
+    """The operator's DELETE commits while a batch is in flight, so by the time
+    the drain counts again nothing carries the run id and it reads the run as
+    one that marked nothing. Its finish must find the run already closed and
+    leave it -- status, detail and the three counts -- exactly as the cancel
+    wrote them."""
+    catch_up_config.operations.enabled = False
+    await _item_with_render(session, "x1")
+    jf = _jellyfin()
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": jf}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+
+    async def cancel_instead_of_draining(inner, servers, config, **kwargs):
+        # The route's own session, committed: READ COMMITTED, so every
+        # statement the drain makes after this sees the cancelled run.
+        async with session_factory() as other:
+            await catchup.cancel_catch_up(other, "jellyfin", now=NOW)
+            await other.commit()
+
+    monkeypatch.setattr(catchup, "retry_pending_deliveries", cancel_instead_of_draining)
+
+    await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": jf}), catch_up_config, now=NOW,
+    )
+
+    async with session_factory() as other:
+        run = (await other.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.status == "cancelled"
+    assert run.detail == (
+        "cancelled: 1 marked, 0 done, 0 failed; 0 restored, 1 removed"
+    )
+    # The cancel's tallies, not the drain's zeros.
+    assert (run.processed, run.deferred, run.failed) == (1, 1, 0)
+
+
+async def test_a_batch_that_spends_budget_is_not_an_idle_one(
+    session, session_factory, catch_up_config
+):
+    """Every row attempted and failed-but-not-exhausted leaves the run's status
+    histogram byte-identical -- each row is still `pending` -- so counting
+    statuses alone reads a real attempt as an idle batch, and two of them
+    close a run on a server that is merely refusing writes. The budget the
+    batch spent is the other half of "this batch moved something"."""
+    catch_up_config.operations.enabled = False
+    await _item_with_render(session, "x2")
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+    refusing = _jellyfin()
+    refusing.raise_on_resolve = RuntimeError("https://jellyfin.internal/Items")
+
+    summary = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": refusing}), catch_up_config, now=NOW,
+    )
+
+    assert summary == "catch-up: jellyfin 1 still due, 0 done, 0 failed"
+    async with session_factory() as other:
+        run = (await other.execute(select(Run).where(Run.id == run_id))).scalar_one()
+        row = (await other.execute(select(RenderDelivery))).scalar_one()
+    # The row is where it was, and one attempt poorer: not idle.
+    assert (row.status, row.attempts) == ("pending", 1)
+    assert run.idle_drains == 0 and run.finished_at is None
+
+
+async def test_a_finish_whose_commit_fails_claims_only_the_failure(
+    session, session_factory, catch_up_config, monkeypatch
+):
+    """The per-run clause is held back until the commit returns. A commit that
+    raises is rolled back -- the finish is gone -- so the stored sentence must
+    carry the failure alone and not a finish it has just discarded."""
+    catch_up_config.operations.enabled = False
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+
+    async def drained_nothing(inner, servers, config, **kwargs):
+        """No rows, and no commits of its own: the next commit is the drain's."""
+
+    monkeypatch.setattr(catchup, "retry_pending_deliveries", drained_nothing)
+    real_commit, calls = session.commit, []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        await real_commit()
+
+    monkeypatch.setattr(session, "commit", flaky)
+
+    summary = await catchup.drain_catch_ups(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, now=NOW,
+    )
+
+    assert summary == "catch-up: jellyfin failed (RuntimeError)"
+    # And the finish the rollback discarded is not there either.
+    async with session_factory() as other:
+        run = (await other.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.finished_at is None and run.status == "running"

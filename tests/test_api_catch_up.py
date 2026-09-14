@@ -22,8 +22,7 @@ EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
 
 
-@pytest_asyncio.fixture
-async def client(session_factory):
+def _app(session_factory, *, scheduler_enabled: bool = True):
     secrets = Secrets(
         database_url="postgresql+asyncpg://unused",
         plex_token="x", tmdb_token="x", tvdb_apikey="x",
@@ -33,10 +32,11 @@ async def client(session_factory):
     config = load_config(EXAMPLE)
     # `upload_to_jellyfin` defaults to OFF (tests/test_catchup.py's own
     # `catch_up_config` fixture carries the same override, for the same
-    # review-I3 reason): without it `start_catch_up`'s artwork gate returns
+    # reason): without it `start_catch_up`'s artwork gate returns
     # before a single RenderDelivery row is ever created, and the tests below
     # that assert one exists would find none.
     config.badges.upload_to_jellyfin = True
+    config.scheduler.enabled = scheduler_enabled
     app = create_app(config, session_factory, secrets)
     app.state.servers = Servers({
         "jellyfin": FakeMediaServer(
@@ -44,7 +44,21 @@ async def client(session_factory):
         )
     })
     app.state.server_health = {}
-    transport = ASGITransport(app=app)
+    return app
+
+
+@pytest_asyncio.fixture
+async def client(session_factory):
+    transport = ASGITransport(app=_app(session_factory))
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest_asyncio.fixture
+async def scheduler_off_client(session_factory):
+    """The same app with `scheduler.enabled` false -- a supported deployment,
+    and the one with no drain job registered."""
+    transport = ASGITransport(app=_app(session_factory, scheduler_enabled=False))
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
@@ -58,7 +72,7 @@ async def auth_headers(client):
 async def _rendered_item(session, native="x1"):
     item = await seed_media_item(session, native, library="Movies", title=native)
     # A catch-up arms a metadata row only for an item this service has
-    # something to write for (controller ruling 1, tests/test_catchup.py's
+    # something to write for (tests/test_catchup.py's
     # own `_item_with_render` precedent) -- without this row every test below
     # that expects a MetadataWrite finds none.
     session.add(ItemFacts(item_id=item.id))
@@ -164,3 +178,26 @@ async def test_an_unknown_server_is_409_not_500(client, auth_headers):
     response = await client.post("/api/servers/emby/catch-up", headers=auth_headers, json={})
     assert response.status_code == 409
     assert response.json()["detail"] == "no media server named 'emby' is configured"
+
+
+async def test_a_catch_up_with_the_scheduler_off_is_409_and_marks_nothing(
+    scheduler_off_client, session
+):
+    """With the scheduler off the drain job is never registered, so a catch-up
+    started here would mark the whole library and be drained by nothing --
+    and the run it left open would refuse every later catch-up for that
+    server. The button says so instead."""
+    await _rendered_item(session)
+    token = (await scheduler_off_client.post(
+        "/api/login", json={"password": PASSWORD}
+    )).json()["token"]
+
+    response = await scheduler_off_client.post(
+        "/api/servers/jellyfin/catch-up",
+        headers={"Authorization": f"Bearer {token}"}, json={},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "the scheduler is off; a catch-up needs it to drain"
+    assert (await session.execute(select(Run))).first() is None
+    assert (await session.execute(select(RenderDelivery))).first() is None
