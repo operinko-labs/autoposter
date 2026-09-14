@@ -300,6 +300,18 @@ returned 200.
 |---|---|---|
 | `secrets.env` | 0600 | `AUTOPOSTER_*=value` lines, exactly the names "Secrets" below lists |
 | `autoposter.yaml` | 0600 | the config document, read only when `AUTOPOSTER_CONFIG` does not resolve one |
+| `secret.key` | 0600 | the key the `secrets` table's values are encrypted with, generated on the first secret stored from the Settings page |
+
+**Back `secret.key` up with the volume, and understand what it is not.** The
+key never enters the database: a database dump holds every stored secret as
+ciphertext this file is the only thing that can open. Lose the file — a
+recreated PVC, a volume restored without it, a container filesystem where a
+volume failed to mount — and every secret stored from the Settings page must
+be **re-entered**, not recovered. The service still starts: each unreadable row
+is skipped with a warning naming the variable, and the name reports as
+whatever the next source down supplies. Copying the file to a second place is
+copying the credentials themselves, so treat it exactly as you treat
+`secrets.env`.
 
 The directory is 0700 and must not be one of the NFS shares Kometa and
 Posterizarr also mount (see "Volumes" below) — these are credentials, and
