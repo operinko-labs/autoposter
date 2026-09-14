@@ -146,7 +146,7 @@ async def apply_presence(
         )).rowcount
 
     if artwork["absent"] or artwork["rearmed"]:
-        await _rollup_stamped_renders(session, server_name, now)
+        await rollup_stamped_renders(session, server_name, now)
 
     if server_name == IDENTITY_SERVER and (metadata["absent"] or artwork["absent"]):
         # Library NAMES, which are the operator's own words for his own
@@ -164,9 +164,16 @@ async def apply_presence(
     return {"metadata": metadata, "artwork": artwork}
 
 
-async def _rollup_stamped_renders(session: AsyncSession, server_name: str, now: datetime) -> int:
+async def rollup_stamped_renders(session: AsyncSession, server_name: str, now: datetime) -> int:
     """``deliveries.rollup``'s precedence ladder, set-shaped, over the renders
     this call just restamped.
+
+    PUBLIC, and named rather than private, because ``apply_presence`` is not
+    its only caller: ``catchup.start_catch_up`` writes ``render_deliveries``
+    set-shaped too, with the same ``next_attempt_at = now`` stamp, and owes
+    the roll-up for exactly the same reason. The selector below is what makes
+    one function serve both -- it names the rows by the timestamp, not by who
+    wrote them.
 
     ``apply_presence`` writes ``render_deliveries`` directly and nothing else
     recomputes what it touched, so a render rolled up ``pending`` because of a
