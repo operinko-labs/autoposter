@@ -527,9 +527,20 @@ async def migrate_delta_to_document(
     The SNAPSHOT comes first and carries format 1, which is what makes the
     conversion undoable: restoring it re-runs the merge the delta described,
     so an operator who dislikes the result is one restore from the delta they
-    had. A delta with nothing left in it -- ``{}``, because every section it
-    held has since left the schema -- snapshots nothing, there being no
+    had -- as the store reads it, which is to say stripped of any section that
+    has left the schema, those being unrestorable into a document that
+    validates. A delta with nothing left in it -- ``{}``, because every
+    section it held has left the schema -- snapshots nothing, there being no
     earlier state to restore to, and converts to the file's own document.
+
+    The row is taken under its LOCK before anything is written, and one that
+    says format 2 by then is returned as it stands rather than converted. This
+    is a read-modify-write over the row every save also writes: without the
+    lock, a write that lands in the window -- another process converting, or a
+    save still being served by the pod this one is replacing -- would be
+    replaced wholesale by a merge of a delta that is no longer there, its
+    restart list with it, and no snapshot of what was lost. ``seed_store``
+    closes the same window on the same row the same way.
 
     The merged document is validated BEFORE it is written rather than by the
     caller afterwards. This is the last load that reads the file, so a
@@ -558,12 +569,17 @@ async def migrate_delta_to_document(
         )
     merged = merge_overrides(base, delta)
     _validated(merged)
-    await capture_snapshot(session, delta, MIGRATE_REASON, format=1)
-    # The row's metadata, and deliberately not its document: reading the
-    # document again here would repeat the strip of sections that left the
-    # schema, and the operator would get its warning a third time for one boot.
-    row = await store_row(session, for_update=False)
+    # Locked before the snapshot, so what is captured and what is replaced are
+    # the same row, and read for its METADATA first: the document is read again
+    # only where the answer depends on it, or the strip of sections that left
+    # the schema would say its piece a third time for one boot.
+    row = await store_row(session, for_update=True)
     meta = row.meta if row is not None and isinstance(row.meta, dict) else {}
+    if meta.get("format") == STORE_FORMAT:
+        # Somebody else got here while this was merging. What they wrote is
+        # the store, and this is holding a delta that no longer exists.
+        return _row_document(row)
+    await capture_snapshot(session, delta, MIGRATE_REASON, format=1)
     # What the row already said is carried through rather than replaced. Only
     # the format is this write's to set; the restart list is not its to throw
     # away.

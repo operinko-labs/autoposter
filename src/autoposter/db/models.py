@@ -1027,9 +1027,12 @@ class ConfigOverrideSnapshot(Base):
     format: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default=text("1")
     )
-    # save | apply | restore | import -- what the write that displaced this
-    # document was doing. Not nullable: every writer knows its own reason, and
-    # a nullable column would only ever record that somebody forgot.
+    # save | apply | restore | import | migrate -- what the write that
+    # displaced this document was doing. The last of those is the one-time
+    # conversion of a delta into a document, and is the only one that displaces
+    # something of a different format than it writes. Not nullable: every
+    # writer knows its own reason, and a nullable column would only ever record
+    # that somebody forgot.
     reason: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True

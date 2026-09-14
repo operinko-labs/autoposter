@@ -265,16 +265,18 @@ async def test_dropping_a_stored_version_check_section_says_so(session, caplog):
 async def test_an_ordinary_stored_document_warns_about_nothing(session, caplog):
     """The cost every other deployment pays for the strip: none, and no noise.
 
-    The conversion line this load also writes is not the strip's: it is said
-    once in the life of a deployment, by the boot that turns its delta into a
-    document."""
+    The one line this load does write is not the strip's: it is the
+    conversion, said once in the life of a deployment by the boot that turns
+    this delta into a document. Pinned to exactly that one line, so neither
+    message can grow a second copy unnoticed."""
     await _store(session, {"workers": 2})
 
     with caplog.at_level(logging.WARNING):
         config = await load_effective_config(EXAMPLE, session)
 
     assert config.workers == 2
-    assert _strip_warnings(caplog) == []
+    [warning] = _overrides_warnings(caplog)
+    assert "has been merged into a whole document" in warning
 
 
 async def test_the_stored_document_reader_drops_it_too(session):

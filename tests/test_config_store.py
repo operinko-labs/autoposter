@@ -20,10 +20,12 @@ from autoposter.config.overrides import (
     STORE_FORMAT,
     load_effective_config,
     load_store,
+    migrate_delta_to_document,
     seed_store,
     store_meta,
     write_store,
 )
+from autoposter.config.snapshots import capture_snapshot
 from autoposter.db.models import ConfigOverride, ConfigOverrideSnapshot
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -228,11 +230,22 @@ async def test_the_delta_is_snapshotted_before_it_is_replaced(
 
 
 @pytest.mark.asyncio
-async def test_the_conversion_runs_once(session_factory, config_file):
+async def test_the_conversion_runs_once_and_then_the_file_is_not_read(
+    session_factory, config_file
+):
+    """A converted row is a seeded store like any other: the file is gone
+    after the conversion, and the loads that follow neither miss it nor
+    convert anything a second time."""
     await _write_delta(session_factory, {"workers": 9})
-    for _ in range(3):
+    async with session_factory() as session:
+        await load_effective_config(config_file, session)
+
+    config_file.unlink()
+    for _ in range(2):
         async with session_factory() as session:
-            await load_effective_config(config_file, session)
+            config = await load_effective_config(config_file, session)
+    assert config.workers == 9
+
     async with session_factory() as session:
         count = len(
             (await session.execute(select(ConfigOverrideSnapshot))).scalars().all()
@@ -280,3 +293,51 @@ async def test_a_merge_the_schema_refuses_leaves_the_delta_standing(
     assert row.document == {"workers": "eleven"}, "the refusal rewrote the delta"
     assert row.meta == {}, "a refused conversion stamped the row as converted"
     assert snapshots == [], "a refused conversion left a snapshot orphan"
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_lands_while_a_delta_converts_is_not_overwritten(
+    session_factory, config_file
+):
+    """The window the row lock closes. A converter reads a delta, and before
+    it writes, somebody else's write lands on the row -- another process
+    converting, or a save the outgoing pod is still serving. The conversion
+    has to find that under the lock and leave it alone: replacing a document
+    nobody has seen, and the restart list beside it, with a merge of a delta
+    that is no longer there would be a lost update with no 409 and no snapshot
+    of what it took."""
+    await _write_delta(session_factory, {"workers": 9})
+    async with session_factory() as converting:
+        stale, _ = await load_store(converting)
+
+        async with session_factory() as other:
+            await load_effective_config(config_file, other)
+            saved = {**_document(), "workers": 4}
+            await write_store(other, saved, store_meta(restart_paths=["plex"]))
+            await other.commit()
+
+        held = await migrate_delta_to_document(converting, _document(), stale)
+
+    assert held["workers"] == 4, "the conversion ran on a delta that was already gone"
+    async with session_factory() as session:
+        row = (await session.execute(select(ConfigOverride))).scalar_one()
+        snapshots = (
+            await session.execute(select(ConfigOverrideSnapshot))
+        ).scalars().all()
+    assert row.document == saved
+    assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}
+    assert len(snapshots) == 1, "the late conversion snapshotted and wrote again"
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_is_stored_with_the_format_it_is_given(session_factory):
+    """The keyword reaches the row rather than being left to the column's
+    default. Seven is deliberately neither of the two real formats: asserting
+    1 here would pass just as well with the argument dropped from the
+    conversion's call, the model's default being 1."""
+    async with session_factory() as session:
+        await capture_snapshot(session, {"workers": 9}, "save", format=7)
+        await session.commit()
+    async with session_factory() as session:
+        row = (await session.execute(select(ConfigOverrideSnapshot))).scalar_one()
+    assert row.format == 7
