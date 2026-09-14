@@ -652,10 +652,14 @@ def create_app(
     # ever say "the file or not the file" -- one layer of three, decided once
     # at construction. `config/schema.secret_sources` answers the whole
     # question instead, from `boot`'s two markers and, where a caller has a
-    # session, the live table; `api/secret_rotation.py` is the reader. An
-    # application that never went through `boot` has neither marker and so has
-    # nothing stored and nothing from the file, which is still the refusal --
-    # the path a test gets for free.
+    # session, the live table; `api/secret_rotation.py` is the reader.
+    #
+    # An application that never went through `boot` -- every test app, and an
+    # operator running `python -m autoposter.main` -- has neither marker, and
+    # so has nothing stored and reads the state directory for itself. With no
+    # file there that is the refusal, which is the path a test gets for free;
+    # with a file there it is what that file says, which is the only record
+    # such a process has.
     #
     # http=None here -- create_app has no http client yet, only the lifespan
     # builds one -- so this placeholder never actually polls; GET /api/version

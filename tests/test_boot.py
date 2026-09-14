@@ -35,6 +35,7 @@ from autoposter.config.schema import (
     Secrets,
     missing_hard_secret_names,
     resolve_secret_values,
+    secret_sources,
 )
 from autoposter.db import base as db_base
 
@@ -806,6 +807,27 @@ def test_an_env_configured_boot_publishes_an_empty_marker(monkeypatch):
         monkeypatch.setenv(name, "from-env")
 
     assert _booted(monkeypatch) == ""
+
+
+def test_a_leftover_state_file_an_env_complete_boot_never_read_is_not_a_source(monkeypatch):
+    """The finished ExternalSecrets migration, end to end through the real
+    boot: `deploy/README.md` used to tell operators they needed to delete
+    nothing under `/state`, so the file is still there and still holds the
+    wizard's webhook secret.
+
+    Boot resolves entirely from the environment, never opens that file, and
+    publishes an empty marker -- and the source map must agree with it. Reading
+    the file itself here would label the name `state file`, allow the Settings
+    page's rotation, write a file the next boot will not read, and leave both
+    *arrs signing with a value the environment shadows."""
+    for name in HARD:
+        monkeypatch.setenv(name, "from-env")
+    _write_state_secrets({"AUTOPOSTER_WEBHOOK_SECRET": "left-behind-by-the-wizard"})
+
+    assert _booted(monkeypatch) == ""
+    assert state_module.secrets_file_path().is_file(), "the leftover is still there"
+    assert resolve_secret_values()["AUTOPOSTER_WEBHOOK_SECRET"] == "from-env"
+    assert secret_sources()["AUTOPOSTER_WEBHOOK_SECRET"] == "environment"
 
 
 def test_a_name_the_environment_also_carries_is_on_the_marker_now(monkeypatch):

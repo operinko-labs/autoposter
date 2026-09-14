@@ -165,19 +165,34 @@ def _marker_names(variable: str) -> set[str]:
 def _state_file_names() -> set[str]:
     """The names the STATE FILE answers, as this process can best tell.
 
-    The file itself when it can be read, and ``boot``'s marker when it cannot.
-    A state volume that went away after boot, or a file this process may not
-    open, does not change where a running value CAME FROM -- the marker is
-    what the boot that read the file published, and it is the honest answer
-    once the file is gone. ``read_secrets_file`` raises rather than swallowing
-    an unreadable file on purpose; that is right for the boot path and wrong
-    for a page render, so it is caught here and nowhere else.
+    ``boot``'s marker whenever there is one, and the file itself only when
+    there is not. That order is the whole point and it is not the intuitive
+    one: the file is what happens to be on the volume, the marker is what WON.
+    An env-complete deployment with a leftover ``secrets.env`` never opens that
+    file at boot -- ``resolve_secret_values`` short-circuits -- so not one of
+    the names in it answers anything, and a label read off the file would tell
+    that operator the opposite of what their deployment is running on. It would
+    also let the webhook rotation write a file the next boot will not read,
+    leaving both *arrs signing with a value this service has already forgotten.
+
+    PRESENCE, not truthiness: both markers are set unconditionally, so
+    ``STATE_FILE_NAMES_ENV in os.environ`` is what separates "this process
+    booted and nothing came from the file" from "this process never booted at
+    all". The second is the wizard before its first boot, the CLIs and the
+    suite -- none of which has a marker, and all of which are right to read the
+    file, because for them it is the only record there is.
+
+    ``read_secrets_file`` raises rather than swallowing a file that exists and
+    cannot be read, which is right for the boot path and wrong for a label
+    lookup: a page render must not 500 over it. A file that is not UTF-8 is the
+    same fault one decoding step later and is caught with it.
     """
+    if STATE_FILE_NAMES_ENV in os.environ:
+        return _marker_names(STATE_FILE_NAMES_ENV)
     try:
-        from_file = {name for name, value in read_secrets_file(secrets_file_path()).items() if value}
-    except OSError:
-        from_file = set()
-    return from_file or _marker_names(STATE_FILE_NAMES_ENV)
+        return {name for name, value in read_secrets_file(secrets_file_path()).items() if value}
+    except (OSError, UnicodeDecodeError):
+        return set()
 
 
 def secret_sources(stored_names: Collection[str] | None = None) -> dict[str, str]:
@@ -203,7 +218,9 @@ def secret_sources(stored_names: Collection[str] | None = None) -> dict[str, str
     stops being labelled ``stored`` immediately. ``None`` -- a caller with no
     session -- falls back to the marker ``boot`` published, which is that
     boot's own answer. An empty collection is not ``None``: it means the table
-    was read and holds nothing.
+    was read and holds nothing. The state-file set follows the same rule one
+    layer down, in ``_state_file_names``: what ``boot`` published, and the
+    file only where no boot has published anything.
 
     The branches are in ``resolve_secret_values``' resolution order and must
     stay in it. A source label that disagreed with the value that function

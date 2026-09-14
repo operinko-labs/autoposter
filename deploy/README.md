@@ -353,20 +353,25 @@ have somewhere to paste it before pressing the button. Afterwards each *arr's
 own **Test** button succeeds, which is a confirmation the wizard could not give.
 
 On a deployment where `AUTOPOSTER_WEBHOOK_SECRET` is answered by the
-environment — every shape this section's ExternalSecrets migration produces
-once `secrets.env` is gone, and every `envFrom: secretRef` Kubernetes
-deployment — **that action refuses**, naming the variable. The refusal is a
-policy rather than a mechanical necessity: a write to `secrets.env` would now
-win at the next restart, which is exactly the problem. Your manifest is what
-sets that variable, and a button on a web page that could quietly overrule it
-from a file the manifest does not mention would stop the manifest being the
-truth about this deployment without anyone having edited it. Set the new value
-where it is set and roll the deployment, exactly as for every other credential.
+environment — every `envFrom: secretRef` Kubernetes deployment, and every
+finished ExternalSecrets migration whether or not `secrets.env` is still on the
+volume — **that action refuses**, naming the variable. Set the new value where
+it is set and roll the deployment, exactly as for every other credential.
 
-A name held by BOTH `secrets.env` and the environment is answered by the file,
-so the Settings page **does** rotate it — that is the reversal above applied to
-this one action, and it is deliberate. If you want your manifest to be the
-source of that credential, delete the file's copy.
+Once every hard name resolves from the environment, a leftover `secrets.env` is
+not read at all, so it answers nothing and the refusal stands even though the
+file still holds a copy of the secret. The refusal is also a policy and not
+only a mechanism: your manifest is what sets that variable, and a button on a
+web page that could quietly overrule it from a file the manifest does not
+mention would stop the manifest being the truth about this deployment without
+anyone having edited it.
+
+**Mid-migration is the one case where the page does rotate it.** While the
+environment does not yet carry every hard name, `secrets.env` is still read and
+still outranks the environment for the names it holds — so a webhook secret in
+both is answered by the file, and the Settings page rotates it there. That is
+the reversal above applied to this one action, and it is deliberate. Finish the
+migration and delete the file, and the refusal takes over.
 
 ### Kubernetes
 

@@ -418,11 +418,13 @@ EXPORTED_HARD = (
 )
 
 
-def _as_boot_left_it(monkeypatch, *names: str) -> None:
-    """`os.environ` the way `_export` leaves it: every winning value present,
-    whichever layer supplied it."""
+def _as_boot_left_it(monkeypatch, *names: str, from_file: str = "", stored: str = "") -> None:
+    """`os.environ` the way `boot.main` leaves it: both markers set -- possibly
+    empty -- and every winning value present, whichever layer supplied it."""
     for name in (*EXPORTED_HARD, *names):
         monkeypatch.setenv(name, "published-by-the-export")
+    monkeypatch.setenv(STATE_FILE_NAMES_ENV, from_file)
+    monkeypatch.setenv(STORED_SECRET_NAMES_ENV, stored)
 
 
 def test_a_file_supplied_name_is_still_the_state_file_after_the_export(state, monkeypatch):
@@ -432,12 +434,44 @@ def test_a_file_supplied_name_is_still_the_state_file_after_the_export(state, mo
     `environment` -- sending its operator to change a variable nothing reads,
     and refusing the one rotation the Settings page offers."""
     merge_secrets_file({"AUTOPOSTER_WEBHOOK_SECRET": "from-file"})
-    _as_boot_left_it(monkeypatch, "AUTOPOSTER_API_KEY")
+    _as_boot_left_it(
+        monkeypatch, "AUTOPOSTER_API_KEY", from_file="AUTOPOSTER_WEBHOOK_SECRET"
+    )
 
     sources = secret_sources([])
 
     assert sources["AUTOPOSTER_WEBHOOK_SECRET"] == "state file"
     assert sources["AUTOPOSTER_API_KEY"] == "environment"
+
+
+def test_a_leftover_state_file_the_boot_never_read_is_not_a_source(state, monkeypatch):
+    """The ExternalSecrets-migration shape, and the one the file itself gets
+    wrong. Every hard name is in the environment, so `resolve_secret_values`
+    short-circuits and the leftover `secrets.env` is never opened -- boot's
+    marker is empty, and nothing in that file answers anything.
+
+    A label read off the FILE would say `state file` here, and the rotation
+    would then be allowed to write a file the next boot will not read: both
+    *arrs would sign with a value this deployment had already forgotten, which
+    is the exact outcome the refusal exists to prevent. The marker is the
+    record of what won; the file is only what is on the volume.
+    """
+    merge_secrets_file({"AUTOPOSTER_WEBHOOK_SECRET": "left-behind-by-the-wizard"})
+    _as_boot_left_it(monkeypatch, from_file="")
+
+    assert secret_sources([])["AUTOPOSTER_WEBHOOK_SECRET"] == "environment"
+
+
+def test_a_process_that_never_booted_reads_the_file_itself(state, monkeypatch):
+    """The other side of the same rule. The wizard before its first boot, the
+    CLIs and this suite have no marker at all, and for them the file is the
+    only record there is -- so `STATE_FILE_NAMES_ENV in os.environ` is the
+    test, not whether the marker is empty."""
+    merge_secrets_file({"AUTOPOSTER_WEBHOOK_SECRET": "from-file"})
+    for name in EXPORTED_HARD:
+        monkeypatch.setenv(name, "published-by-the-export")
+
+    assert secret_sources([])["AUTOPOSTER_WEBHOOK_SECRET"] == "state file"
 
 
 def test_a_stored_name_is_still_stored_after_the_export(state, monkeypatch):
@@ -477,17 +511,27 @@ def test_a_live_empty_store_overrides_the_stored_marker(state, monkeypatch):
     assert secret_sources([])["AUTOPOSTER_TMDB_TOKEN"] == "environment"
 
 
-def test_an_unreadable_state_file_falls_back_to_its_marker(state, monkeypatch):
-    """`read_secrets_file` raises on a file that exists and cannot be read --
-    right for the boot path, wrong for a page render. The marker carries the
-    same answer boot reached from the same file."""
+@pytest.mark.parametrize(
+    "fault",
+    [
+        PermissionError(13, "Permission denied"),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    ],
+    ids=["unreadable", "not-utf-8"],
+)
+def test_a_state_file_that_cannot_be_read_is_not_an_error_here(state, monkeypatch, fault):
+    """`read_secrets_file` raises on a file that exists and cannot be read, and
+    on one that is not UTF-8 -- right for the boot path, where a broken file
+    must be loud, and wrong for a label lookup, which would 500 a page render
+    over it. Only a process with no marker gets this far, and for it the file
+    is the only record there is: unreadable means it has none."""
     merge_secrets_file({"AUTOPOSTER_WEBHOOK_SECRET": "from-file"})
-    _as_boot_left_it(monkeypatch)
-    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "AUTOPOSTER_WEBHOOK_SECRET")
+    for name in EXPORTED_HARD:
+        monkeypatch.setenv(name, "published-by-the-export")
 
     def refused(path):
-        raise PermissionError(13, "Permission denied")
+        raise fault
 
     monkeypatch.setattr("autoposter.config.schema.read_secrets_file", refused)
 
-    assert secret_sources([])["AUTOPOSTER_WEBHOOK_SECRET"] == "state file"
+    assert secret_sources([])["AUTOPOSTER_WEBHOOK_SECRET"] == "environment"
