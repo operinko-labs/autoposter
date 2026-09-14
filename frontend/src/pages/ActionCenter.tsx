@@ -37,7 +37,7 @@ import type {
   QualityBackfillTrigger,
   RebuildResponse,
 } from "../api/types";
-import { formatTime } from "../format";
+import { formatTime, seasonEpisode } from "../format";
 // The pill and the row-error paragraph are dashboard.css's, exactly as
 // Modes.tsx and Library.tsx borrow them. Imported explicitly so this file
 // names the stylesheets it depends on, rather than leaning on another
@@ -114,11 +114,15 @@ export function ActionCenter() {
 
   /** Jobs that finished with warnings, or null until the endpoint answers.
    *
-   * Its own state and its own effect rather than a field on `load()`: this
-   * reads a stored job outcome, not a flag recomputed over `renders`, so no
-   * filter above changes it and re-reading it on every chip click would be a
-   * query per click for a number that cannot have moved. */
+   * Its own state and its own read rather than a field on the queue's
+   * response -- this is a stored job outcome, not a flag recomputed over
+   * `renders` -- but refreshed alongside it, so a later pass that settles the
+   * servers clears the panel without the operator reloading the page. */
   const [warnings, setWarnings] = useState<JobWarningsResponse | null>(null);
+  /** Held apart from `error` for `filtersError`'s reason: this panel failing
+   * is not the queue's failure, and writing into the page-wide state also
+   * suppressed the queue's own "Loading…" and left it rendering empty. */
+  const [warningsError, setWarningsError] = useState<string | null>(null);
 
   const [coverage, setCoverage] = useState<QualityBackfillStatus | null>(null);
   const [coverageDetail, setCoverageDetail] = useState<string | null>(null);
@@ -158,19 +162,18 @@ export function ActionCenter() {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    // The panel shows one screen of the newest rows; `total` carries the rest.
-    apiFetch<JobWarningsResponse>("/api/actions/job-warnings?limit=25")
-      .then((response) => {
-        if (!cancelled) setWarnings(response);
-      })
-      .catch((caught: Error) => {
-        if (!cancelled) setError(caught.message);
-      });
-    return () => {
-      cancelled = true;
-    };
+  const loadWarnings = useCallback(async () => {
+    try {
+      // The panel shows one screen of the newest rows; `total` carries the rest.
+      const response = await apiFetch<JobWarningsResponse>(
+        "/api/actions/job-warnings?limit=25",
+      );
+      if (!live.current) return;
+      setWarnings(response);
+      setWarningsError(null);
+    } catch (caught) {
+      if (live.current) setWarningsError((caught as Error).message);
+    }
   }, []);
 
   /** The scope both requests share: everything except the chip and the page. */
@@ -207,7 +210,12 @@ export function ActionCenter() {
       if (!live.current || mine !== generation.current) return;
       setError(refusalMessage(caught));
     }
-  }, [scopeQuery, offset, flag]);
+    // Outside the try, and awaiting its own errors: the panel refreshes with
+    // every pass over the queue -- including the `load()` an action runs --
+    // but a queue request that failed must not cost the panel its refresh,
+    // and a panel that failed must not be read as the queue failing.
+    await loadWarnings();
+  }, [scopeQuery, offset, flag, loadWarnings]);
 
   useEffect(() => {
     void load();
@@ -695,39 +703,54 @@ export function ActionCenter() {
 
       {/* Nothing at all when nothing finished with warnings, rather than an
           empty table under a heading: a healthy deployment should not have to
-          read past a panel to learn there is nothing in it. */}
-      {warnings !== null && warnings.total > 0 && (
+          read past a panel to learn there is nothing in it. The one thing
+          that does open it empty is this read failing, which belongs here
+          under its own heading rather than at page level. */}
+      {(warningsError !== null || (warnings !== null && warnings.total > 0)) && (
         <div className="panel action-warnings">
           <div className="row-actions">
             <h2>Finished with warnings</h2>
-            <span className="muted">
-              {warnings.total} job{warnings.total === 1 ? "" : "s"}
-            </span>
+            {warnings !== null && (
+              <span className="muted">
+                {warnings.total} job{warnings.total === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th>Reason</th>
-                  <th>Finished</th>
-                </tr>
-              </thead>
-              <tbody>
-                {warnings.jobs.map((job) => (
-                  <tr key={job.id}>
-                    <td>{job.title ?? <span className="muted">—</span>}</td>
-                    {/* Wrapped for Failures.tsx's reason: the string names
-                        every server still owed and the provider error behind
-                        each, and unwrapped it widens the table past the
-                        viewport. */}
-                    <td className="mono cell-wrap">{job.reason ?? "—"}</td>
-                    <td className="muted cell-time">{formatTime(job.updated_at)}</td>
+          {warningsError !== null && (
+            <p className="page-error">Warnings are unavailable: {warningsError}</p>
+          )}
+          {warnings !== null && warnings.total > 0 && (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Reason</th>
+                    <th>Finished</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {warnings.jobs.map((job) => {
+                    const suffix = seasonEpisode(job);
+                    return (
+                      <tr key={job.id}>
+                        <td>
+                          {job.title ?? <span className="muted">—</span>}
+                          {suffix !== null && <span className="muted mono"> {suffix}</span>}
+                        </td>
+                        {/* Wrapped for Failures.tsx's reason: the string names
+                            every server still owed and the provider error behind
+                            each, and unwrapped it widens the table past the
+                            viewport. */}
+                        <td className="mono cell-wrap">{job.reason ?? "—"}</td>
+                        <td className="muted cell-time">{formatTime(job.updated_at)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
