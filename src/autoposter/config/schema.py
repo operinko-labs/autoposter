@@ -3995,6 +3995,18 @@ class SchedulerConfig(BaseModel):
             "server could not take yet."
         ),
     )
+    delivery_attempts: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "How many times the pending-deliveries pass retries one row -- an "
+            "artwork delivery or a metadata write -- before giving up on it. A "
+            "row that runs out is marked failed and stays visible until the "
+            "next full pass or catch-up re-arms it; nothing retries forever. A "
+            "resolution miss does not count against this: a server that has "
+            "not scanned the file yet is a wait, not a failure."
+        ),
+    )
 
 
 class RadarrConfig(BaseModel):

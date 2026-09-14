@@ -19,7 +19,9 @@ from autoposter.scheduler.jobs import make_pending_deliveries_job
 
 
 def _config(minutes: int) -> SimpleNamespace:
-    return SimpleNamespace(scheduler=SimpleNamespace(pending_deliveries_minutes=minutes))
+    return SimpleNamespace(scheduler=SimpleNamespace(
+        pending_deliveries_minutes=minutes, delivery_attempts=8,
+    ))
 
 
 async def test_the_job_is_named_and_reads_its_cadence_live(session):
