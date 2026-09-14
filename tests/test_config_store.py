@@ -22,7 +22,9 @@ from autoposter.config.overrides import (
     load_store,
     migrate_delta_to_document,
     seed_store,
+    store_contents,
     store_meta,
+    store_row,
     write_store,
 )
 from autoposter.config.snapshots import capture_snapshot
@@ -178,6 +180,38 @@ async def test_a_store_of_only_migrated_sections_is_not_an_empty_store(
     assert row.document == _document(), "the conversion did not write the file's document"
     assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}
     assert snapshots == [], "a delta with nothing left in it has nothing to snapshot"
+
+
+@pytest.mark.asyncio
+async def test_a_row_whose_document_is_empty_keeps_its_metadata_through_a_seed(
+    session_factory, config_file
+):
+    """The one row shape the raw-row rule does not otherwise cover: a document
+    of literally ``{}``.
+
+    There is no document there to keep, so the seed is right to fill it in --
+    but the restart list lives in the metadata column beside it and is a
+    different fact about the row. A reader that answered "no metadata" for
+    such a row, and a seed that wrote a fresh metadata column over it, would
+    between them lose the list without anything having asked for that.
+    """
+    kept = {"format": STORE_FORMAT, "restart_paths": ["plex"]}
+    async with session_factory() as session:
+        await write_store(session, {}, kept)
+        await session.commit()
+
+    async with session_factory() as session:
+        row = await store_row(session, for_update=False)
+        assert store_contents(row) == ({}, kept), "the row's metadata is still its own"
+
+        held = await seed_store(session, _document())
+        await session.commit()
+    assert held == _document(), "an empty document is not a store worth keeping"
+
+    async with session_factory() as session:
+        document, meta = await load_store(session)
+    assert document == _document()
+    assert meta == kept
 
 
 # --- the one-time conversion of a delta-era row ---

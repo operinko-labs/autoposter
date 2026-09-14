@@ -431,8 +431,14 @@ def store_contents(row: ConfigOverride | None) -> tuple[dict, dict]:
     Taken apart from the read so that a caller holding the row -- because it
     has to know whether there is one -- does not have to read it twice to
     learn what it says.
+
+    An existing row keeps its metadata even when its document is empty. The
+    two are not the same fact: the restart list lives in the metadata and
+    outlives whatever the document happens to hold, so answering ``{}`` for it
+    would invite a caller that found no document to throw the list away too.
+    ``_row_document`` already answers ``{}`` for an empty document.
     """
-    if row is None or not row.document:
+    if row is None:
         return {}, {}
     meta = row.meta if isinstance(row.meta, dict) else {}
     return _row_document(row), meta
@@ -497,6 +503,11 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
     this function's to replace. Such a row is returned as the ``{}`` it strips
     to, and the caller routes it the way it routes any other stored document.
 
+    A row can exist and still hold nothing -- a document of literally ``{}``.
+    The seed is right to fill that document in, and the format it writes is
+    the one this seed validates against, but the restart list beside it is
+    still not this function's to throw away.
+
     This is the one write in this module that takes no snapshot, because there
     is nothing to snapshot: the store was empty. That is also why it needs no
     reason string -- a snapshot records what a write displaced, and this one
@@ -505,7 +516,10 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
     row = await store_row(session, for_update=True)
     if row is not None and row.document:
         return _row_document(row)
-    await write_store(session, document, store_meta())
+    _empty, meta = store_contents(row)
+    await write_store(
+        session, document, store_meta(restart_paths=meta.get("restart_paths"))
+    )
     return document
 
 
