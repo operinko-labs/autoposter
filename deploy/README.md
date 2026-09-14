@@ -904,9 +904,9 @@ since no retry fixes a mount mismatch. Once the item has resolved, the two
 tables part ways: a compose or upload that throws is `failed` at once, because
 the item was found and the failure is a real one against it rather than a
 wait, while a metadata write that throws spends one of the row's attempts and
-is `failed` once `scheduler.delivery_attempts` is spent. Every failure records its reason as a
-category and an exception class name, never a URL. One row's own failure never
-takes the rest of the pass down with it.
+is `failed` once `scheduler.delivery_attempts` is spent. Every failure records
+its reason as a category and an exception class name, never a URL. One row's
+own failure never takes the rest of the pass down with it.
 
 The per-server rows roll up into the render's `upload_status`, so every
 existing query and dashboard that reads it keeps working. The precedence is
@@ -929,7 +929,7 @@ metadata in `metadata_writes`, one row per item and server. A row reads
 `uploaded` or `written` when the server took it, `skipped` with the reason
 when an exemption or a `write_to_<server>` / `upload_to_<server>` switch
 stopped it, and `pending` when the server has not scanned the file yet or
-refused a metadata write. `failed` has two roads into it: an upload that
+refused a metadata write. `failed` is reached two ways: an upload that
 throws, in a full pass or in the retry pass, a compose that throws inside the
 retry pass, and an item whose file path maps into none of that server's
 library roots, are `failed` at once — none is a wait, and no retry fixes a
