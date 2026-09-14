@@ -287,7 +287,7 @@ def create_app(
             # Filtered first: a server this config delivers nothing to gets
             # no outcome rows from a catch-up either, so it would be
             # reported as never-seen on every single boot and open a no-op
-            # run each time (review M1).
+            # run each time.
             app.state.catch_up_requests.extend(
                 await servers_never_seen(
                     session,

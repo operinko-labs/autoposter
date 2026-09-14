@@ -1262,7 +1262,7 @@ class Run(Base):
     # from "two in a row moved nothing", so a run that moves rows on
     # alternating batches was stopped at its first idle one -- and one brief
     # outage mid-drain, which turns every row of a batch into a resolution
-    # miss, is enough to cause that (review N1).
+    # miss, is enough to cause that.
     idle_drains: Mapped[int] = mapped_column(
         Integer, default=0, server_default=text("0"), nullable=False
     )

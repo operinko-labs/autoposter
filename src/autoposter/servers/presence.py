@@ -60,7 +60,7 @@ async def apply_presence(
     ITEMS, ``artwork`` counts RENDERS. Does not commit -- the caller (a full
     pass's opening, a catch-up's step 1) owns the transaction.
 
-    Applied to the IDENTITY SERVER too, by decision (review I5). "Not carried"
+    Applied to the IDENTITY SERVER too, by decision. "Not carried"
     is a fact about a server, and Plex is a server: a section renamed after
     ingest, one added to ``excluded_libraries`` later, or one since retyped
     genuinely no longer holds the item under the name the row records, and

@@ -69,7 +69,7 @@ def test_a_server_that_only_appears_in_one_config_is_left_to_the_boot_trigger():
 
 
 def test_switching_a_delivery_toggle_on_names_that_server():
-    """Controller ruling (task 10's review): the rows the pipeline skipped
+    """The rows the pipeline skipped
     while the toggle was off are owed to that server the moment it is on, and
     nothing but the next full pass would otherwise heal them."""
     assert catchup.servers_with_changed_libraries(
@@ -149,7 +149,7 @@ def test_a_new_only_library_scope_that_switches_the_toggle_off_names_nobody():
 
 
 def test_dropping_a_library_block_that_held_the_toggle_off_names_that_server():
-    """The scope disappears rather than its field being nulled (review M2). The
+    """The scope disappears rather than its field being nulled. The
     library falls back to the new global, which is True, so its effective value
     went False -> True and it is owed every row skipped while the block stood.
     A predicate that walked only the new config's scopes would never look."""
@@ -163,7 +163,7 @@ def test_dropping_a_library_block_that_held_the_toggle_off_names_that_server():
 
 
 def test_a_server_with_every_delivery_toggle_off_is_not_delivery_enabled():
-    """The boot trigger's filter (review M1). A catch-up for such a server
+    """The boot trigger's filter. A catch-up for such a server
     writes no outcome row, so `servers_never_seen` would report it again on
     the next boot, and the next, forever."""
     off = _config(

@@ -1574,7 +1574,7 @@ async def open_catch_up_runs(session: AsyncSession) -> set[int]:
     row is an ordinary row again and the doors treat it as one.
 
     Read ONCE per item and handed down, the shape ``absent_servers_for``
-    above already takes, and for the same reason (controller ruling): this
+    above already takes, and for the same reason: this
     used to be a primary-key SELECT per door hit, and the doors sit inside
     ``apply_metadata``'s per-server loop and ``deliver``'s -- so an item on
     two servers, each with a row a live catch-up had touched, paid one lookup
@@ -1808,7 +1808,7 @@ async def apply_metadata(
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:
         # One query per ITEM, not one per server per item: every `_write`
         # call below shares this same set rather than each asking its own
-        # SELECT (review M1). `process_item` reads the same set BEFORE it
+        # SELECT. `process_item` reads the same set BEFORE it
         # resolves -- it skips those servers outright -- and passes it in, so
         # the query below is the direct caller's, not a second copy of it.
         if absent_servers is None:
@@ -2651,7 +2651,7 @@ async def process_item(
         absent_servers = await absent_servers_for(session, media_item.id)
 
     # Spec §3's three re-arm doors, read ONCE per item and handed down the
-    # way `absent_servers` is (controller ruling): the doors live inside
+    # way `absent_servers` is: the doors live inside
     # `apply_metadata`'s per-server loop and `deliver`'s, so asking per row
     # cost a SELECT per row a catch-up had ever touched.
     open_runs = await open_catch_up_runs(session)

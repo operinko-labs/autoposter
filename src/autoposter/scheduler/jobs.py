@@ -1126,7 +1126,7 @@ def make_catch_up_drain_job(
     session that can turn a name into a run. Starting them here also means a
     queued request and the drain it needs share one transaction boundary.
 
-    A refusal is re-queued only when it is TRANSIENT (review I1). "Not
+    A refusal is re-queued only when it is TRANSIENT. "Not
     configured" and "already in flight" are dropped: the first never becomes
     true by waiting and the second means the work is already happening, so
     re-queueing either would turn one name into a list nothing ever clears.

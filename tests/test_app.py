@@ -1165,7 +1165,7 @@ async def test_the_lifespan_queues_nothing_for_a_server_that_has_been_seen(
 async def test_the_lifespan_does_not_queue_a_server_it_delivers_nothing_to(
     session, session_factory, secrets, stubbed_background_services
 ):
-    """Review M1. The same boot as the test above, with `plex` switched off on
+    """The same boot as the test above, with `plex` switched off on
     both halves: a catch-up for such a server writes no outcome row, so an
     unfiltered boot trigger would queue it again on the next restart, and the
     next, opening a no-op run each time. The example config's

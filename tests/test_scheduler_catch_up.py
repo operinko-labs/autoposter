@@ -90,7 +90,7 @@ async def test_a_refused_request_is_dropped_rather_than_retried_forever(
 
 
 async def test_a_transient_refusal_is_put_back_for_the_next_look(session, config_factory):
-    """Review I1: spec §3's post-restart trigger fires ONCE, on the first poll
+    """Spec §3's post-restart trigger fires ONCE, on the first poll
     after boot -- exactly when a co-restarting Jellyfin is still starting up.
     A refusal that can pass on its own goes back on the queue rather than
     being lost, and goes back AFTER the loop, or this pass would spin on it."""
