@@ -864,3 +864,92 @@ async def test_retry_failed_rolls_up_the_renders_it_re_armed(session):
     await session.commit()
 
     assert (await session.execute(select(Render.upload_status))).scalar_one() == "pending"
+
+
+async def test_progress_counts_a_skipped_row_inside_the_run(session, catch_up_config):
+    """Review I1: `skipped` is the retry pass's own word for a per-library
+    toggle switched off mid-drain or an exemption found during the write, and
+    none of those calls pass `leave_run` -- so the row keeps its `run_id` and
+    must be counted. Counted nowhere, it left a `total` smaller than the
+    backlog the run marked, with no bucket accounting for the difference."""
+    item, render = await _item_with_render(session, "p3")
+    await catchup.start_catch_up(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+    await deliveries.record_metadata(
+        session, item.id, "jellyfin", "skipped", detail="label: no-overlay",
+    )
+    await session.commit()
+
+    progress = await catchup.catch_up_progress(session, "jellyfin")
+
+    # The artwork row is still due; the metadata row has settled.
+    assert (progress["due"], progress["done"], progress["failed"]) == (1, 1, 0)
+    assert progress["total"] == 2
+
+
+async def test_progress_after_a_cancel_reports_the_tallies_it_had(
+    session, catch_up_config
+):
+    """Concern 3, ruled a fix: a cancel releases every row the run owned, so
+    counting them afterwards answers zero for a run that marked four. The
+    tallies are taken before the release and stamped on the run row, and that
+    is what a finished run serves."""
+    item_a, render_a = await _item_with_render(session, "p4")
+    item_b, render_b = await _item_with_render(session, "p5")
+    run_id = await catchup.start_catch_up(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+    await deliveries.record(session, render_a.id, "jellyfin", "uploaded", fingerprint="fp1")
+    await deliveries.record_metadata(session, item_b.id, "jellyfin", "failed", detail="error: X")
+    await session.commit()
+
+    await catchup.cancel_catch_up(session, "jellyfin", now=NOW)
+    await session.commit()
+
+    # Nothing carries the run id any more...
+    assert (await session.execute(select(func.count()).select_from(RenderDelivery).where(
+        RenderDelivery.run_id == run_id
+    ))).scalar_one() == 0
+    # ...and the progress line still reports what the run had done.
+    progress = await catchup.catch_up_progress(session, "jellyfin")
+    assert progress["run_id"] == run_id and progress["status"] == "cancelled"
+    assert (progress["due"], progress["done"], progress["failed"]) == (2, 1, 1)
+    assert progress["total"] == 4
+
+
+async def test_cancelling_rolls_up_the_renders_it_restores(session, catch_up_config):
+    """Review I2: `start_catch_up` rolled this render up to `pending` when it
+    armed the row, and the restore puts the row back to `failed` without
+    anything recomputing `renders.upload_status` -- the column
+    `/api/library`'s filter, the dashboard tiles and the action centre read."""
+    item, render = await _item_with_render(session, "c5")
+    await deliveries.record(session, render.id, "jellyfin", "failed", detail="error: X")
+    render.upload_status = "failed"
+    await session.commit()
+
+    await catchup.start_catch_up(
+        session, Servers({"jellyfin": _jellyfin()}), catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+    assert (await session.execute(select(Render.upload_status))).scalar_one() == "pending"
+
+    await catchup.cancel_catch_up(session, "jellyfin", now=NOW)
+    await session.commit()
+
+    assert (await session.execute(select(Render.upload_status))).scalar_one() == "failed"
+
+
+async def test_retry_failed_stamps_when_it_last_looked_at_the_server(session):
+    """Review M2: every other writer to these two tables stamps
+    `attempted_at`, the "we last looked at this server" timestamp."""
+    item, render = await _item_with_render(session, "r4")
+    await deliveries.record(session, render.id, "jellyfin", "failed", detail="error: X")
+    await session.commit()
+
+    await catchup.retry_failed(session, "jellyfin", now=NOW)
+    await session.commit()
+
+    assert (await session.execute(select(RenderDelivery.attempted_at))).scalar_one() == NOW

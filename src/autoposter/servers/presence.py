@@ -164,7 +164,10 @@ async def apply_presence(
     return {"metadata": metadata, "artwork": artwork}
 
 
-async def rollup_stamped_renders(session: AsyncSession, server_name: str, now: datetime) -> int:
+async def rollup_stamped_renders(
+    session: AsyncSession, server_name: str | None = None, now: datetime | None = None,
+    *, render_ids: list[int] | None = None,
+) -> int:
     """``deliveries.rollup``'s precedence ladder, set-shaped, over the renders
     this call just restamped.
 
@@ -174,6 +177,18 @@ async def rollup_stamped_renders(session: AsyncSession, server_name: str, now: d
     the roll-up for exactly the same reason. The selector below is what makes
     one function serve both -- it names the rows by the timestamp, not by who
     wrote them.
+
+    ``render_ids`` is the OTHER entry, for a caller whose rows carry no such
+    stamp: ``catchup.cancel_catch_up`` puts each restored row back on the
+    horizon it had before the catch-up and DELETES the rows its run created,
+    so nothing is left to name them by except the render ids it collected
+    before it wrote. The ladder and the write below are the same either way
+    -- only the choice of rows differs, which is what makes this one function
+    rather than two copies of a precedence ladder. A render in that set whose
+    delivery rows were all deleted has nothing left to aggregate and keeps
+    the status it carries: no rows at all is exactly the state it was in
+    before the catch-up created one, so recomputing it would be the change
+    rather than the correction.
 
     ``apply_presence`` writes ``render_deliveries`` directly and nothing else
     recomputes what it touched, so a render rolled up ``pending`` because of a
@@ -202,16 +217,29 @@ async def rollup_stamped_renders(session: AsyncSession, server_name: str, now: d
         (func.bool_or(RenderDelivery.status == "uploaded"), "uploaded"),
         else_="skipped",
     )
-    stamped = select(RenderDelivery.render_id).where(
-        RenderDelivery.server == server_name,
-        or_(
-            and_(RenderDelivery.status == "absent", RenderDelivery.attempted_at == now),
-            and_(RenderDelivery.status == "pending", RenderDelivery.next_attempt_at == now),
-        ),
-    )
+    if render_ids is not None:
+        if not render_ids:
+            return 0
+        chosen = RenderDelivery.render_id.in_(render_ids)
+    else:
+        chosen = RenderDelivery.render_id.in_(
+            select(RenderDelivery.render_id).where(
+                RenderDelivery.server == server_name,
+                or_(
+                    and_(
+                        RenderDelivery.status == "absent",
+                        RenderDelivery.attempted_at == now,
+                    ),
+                    and_(
+                        RenderDelivery.status == "pending",
+                        RenderDelivery.next_attempt_at == now,
+                    ),
+                ),
+            )
+        )
     recomputed = (
         select(RenderDelivery.render_id.label("render_id"), ladder.label("status"))
-        .where(RenderDelivery.render_id.in_(stamped))
+        .where(chosen)
         .group_by(RenderDelivery.render_id)
         .subquery()
     )

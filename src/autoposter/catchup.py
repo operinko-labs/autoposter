@@ -363,18 +363,102 @@ async def start_catch_up(
     return run_id
 
 
-# What "done" means in each table, so progress can count them together.
-_DONE_STATUS = {RenderDelivery: "uploaded", MetadataWrite: "written"}
+# What "done" means in each table, so progress can count EVERY row a run
+# owns and not only the ones carrying the obvious word (review I1).
+#
+# `skipped` is the mainline case rather than an exotic one: the retry pass
+# records it for a per-library toggle switched off mid-drain or an exemption
+# found during the write, and none of those calls pass `leave_run`, so the
+# row keeps its `run_id`. `absent` cannot reach a run-owned row through
+# `_upsert_outcome` -- its conflict clause refuses to write over one -- but
+# `apply_presence`'s plain UPDATE can, so it is counted here rather than left
+# to fall between the buckets. A row counted in no bucket is a `total`
+# smaller than the backlog the run actually marked, with nothing accounting
+# for the difference, which is worse than a number an operator disagrees
+# with: it is one he cannot check.
+_DONE_STATUSES = {
+    RenderDelivery: frozenset({"uploaded", "skipped", "absent"}),
+    MetadataWrite: frozenset({"written", "skipped", "absent"}),
+}
+
+
+async def run_tallies(session: AsyncSession, run_id: int) -> dict:
+    """``due``/``done``/``failed``/``total`` for one run, counted live from the
+    two outcome tables.
+
+    Public because a catch-up's FINISH owes the same three numbers its cancel
+    does, and both have to stamp them through ``finish_catch_up`` below.
+    """
+    counts = {"due": 0, "done": 0, "failed": 0}
+    for table, done in _DONE_STATUSES.items():
+        rows = (await session.execute(
+            select(table.status, func.count())
+            .where(table.run_id == run_id)
+            .group_by(table.status)
+        )).all()
+        for status, total in rows:
+            if status == "pending":
+                counts["due"] += int(total)
+            elif status in done:
+                counts["done"] += int(total)
+            elif status == "failed":
+                counts["failed"] += int(total)
+    return {**counts, "total": counts["due"] + counts["done"] + counts["failed"]}
+
+
+async def finish_catch_up(
+    session: AsyncSession, run_id: int, *, status: str, detail: str,
+    tallies: dict | None = None,
+) -> dict:
+    """Stamp a catch-up's final tallies on its run row, then close it.
+
+    The tallies have to outlive the rows: closing a catch-up RELEASES
+    everything it owned (``cancel_catch_up`` below, and the finish Task 12
+    owes), so counting them from the two tables afterwards answers zero for a
+    run that marked thousands, and the operator's progress line would go
+    blank at the exact moment it became history.
+
+    Stored in the run's own three generic count columns rather than in new
+    ones: ``db/models.py`` keeps them NULL for a scheduled job because "a
+    scheduled job's window overlaps whatever the pool happened to be doing",
+    and a catch-up is the other run whose window IS its own work -- its rows
+    are the ones it marked and nothing else's. ``processed`` is the backlog
+    it marked, ``failed`` what ran out of budget, ``deferred`` what was still
+    due when it ended (a wait, which is what that column means). ``done`` is
+    the remainder, which is why it needs no column of its own.
+
+    ``tallies`` is for a caller that must count BEFORE it writes:
+    ``cancel_catch_up`` restores and releases its rows first, and by the time
+    this runs there is nothing left to count. Everything else lets it count
+    here.
+
+    Does not commit.
+    """
+    tallies = tallies if tallies is not None else await run_tallies(session, run_id)
+    await session.execute(
+        update(Run).where(Run.id == run_id).values(
+            processed=tallies["total"], failed=tallies["failed"], deferred=tallies["due"],
+        )
+    )
+    await close_run(session, run_id, status=status, detail=detail)
+    return tallies
 
 
 async def catch_up_progress(session: AsyncSession, name: str) -> dict | None:
     """The current or last catch-up for ``name``, with its progress.
 
-    Counted from the outcome rows themselves rather than stored on the run:
-    stored counters would be a third thing that can disagree with the two
-    tables, and the two tables are what the operator is actually asking
-    about. ``due`` is what is still pending, ``done`` what settled, ``failed``
-    what ran out of budget.
+    An OPEN run is counted from the outcome rows themselves rather than from
+    anything stored: stored counters would be a third thing that can disagree
+    with the two tables, and the two tables are what the operator is actually
+    asking about. ``due`` is what is still pending, ``done`` what settled --
+    delivered, written, skipped or absent -- and ``failed`` what ran out of
+    budget.
+
+    A FINISHED run no longer owns its rows, because closing it released them,
+    so it serves the tallies its close stamped (``finish_catch_up``). The
+    fallback is the live count, which is the honest answer for a run closed
+    by something that did not stamp them -- zeros, but zeros that match what
+    the tables now say rather than a number invented for the gap.
     """
     run = (await session.execute(
         select(Run)
@@ -385,20 +469,14 @@ async def catch_up_progress(session: AsyncSession, name: str) -> dict | None:
     if run is None:
         return None
 
-    counts = {"due": 0, "done": 0, "failed": 0}
-    for table, done_status in _DONE_STATUS.items():
-        rows = (await session.execute(
-            select(table.status, func.count())
-            .where(table.run_id == run.id)
-            .group_by(table.status)
-        )).all()
-        for status, total in rows:
-            if status == "pending":
-                counts["due"] += int(total)
-            elif status == done_status:
-                counts["done"] += int(total)
-            elif status == "failed":
-                counts["failed"] += int(total)
+    if run.finished_at is not None and run.processed is not None:
+        due, failed = run.deferred or 0, run.failed or 0
+        counts = {
+            "due": due, "failed": failed,
+            "done": run.processed - due - failed, "total": run.processed,
+        }
+    else:
+        counts = await run_tallies(session, run.id)
 
     return {
         "run_id": run.id,
@@ -408,7 +486,6 @@ async def catch_up_progress(session: AsyncSession, name: str) -> dict | None:
         "finished_at": run.finished_at,
         "cadence_seconds": run.cadence_seconds,
         "detail": run.detail,
-        "total": counts["due"] + counts["done"] + counts["failed"],
         **counts,
     }
 
@@ -441,6 +518,15 @@ async def cancel_catch_up(
     )).scalars().first()
     if run is None:
         raise CatchUpRefused(f"no catch-up for {name} is in flight")
+
+    # Both reads come BEFORE anything is written, and for the same reason:
+    # `run_id` is the only handle on what this run marked, and every
+    # statement below clears it. A tally taken afterwards counts nothing, and
+    # a render id list taken afterwards is empty.
+    tallies = await run_tallies(session, run.id)
+    render_ids = list((await session.execute(
+        select(RenderDelivery.render_id).where(RenderDelivery.run_id == run.id)
+    )).scalars())
 
     restored = removed = 0
     for table in (RenderDelivery, MetadataWrite):
@@ -479,8 +565,22 @@ async def cancel_catch_up(
             .values(previous_status=None, run_id=None)
         )
 
-    detail = f"cancelled: {restored} restored, {removed} removed"
-    await close_run(session, run.id, status="cancelled", detail=detail)
+    # Review I2. `start_catch_up` rolled every render whose row it armed up to
+    # `pending`; the statements above put those rows back to `failed` or
+    # `uploaded`, or deleted them outright, and nothing else recomputes
+    # `renders.upload_status` -- the column `/api/library`'s filter, the
+    # dashboard tiles and the action centre read. By id rather than by
+    # timestamp: a restored row carries the horizon it had before the
+    # catch-up, so the stamp the other entry names rows by is gone.
+    await rollup_stamped_renders(session, render_ids=render_ids)
+
+    detail = (
+        f"cancelled: {tallies['total']} marked, {tallies['done']} done, "
+        f"{tallies['failed']} failed; {restored} restored, {removed} removed"
+    )
+    await finish_catch_up(
+        session, run.id, status="cancelled", detail=detail, tallies=tallies,
+    )
     return {"run_id": run.id, "restored": restored, "removed": removed, "detail": detail}
 
 
@@ -510,8 +610,8 @@ async def retry_failed(
             update(table)
             .where(table.server == name, table.status == "failed")
             .values(
-                status="pending", detail=None, next_attempt_at=now, attempts=0,
-                previous_status=None, run_id=None,
+                status="pending", detail=None, attempted_at=now, next_attempt_at=now,
+                attempts=0, previous_status=None, run_id=None,
             )
         )).rowcount
     # The roll-up `start_catch_up` owes for the same reason and by the same
