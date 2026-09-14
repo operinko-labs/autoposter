@@ -277,6 +277,38 @@ async def test_a_second_run_keeps_the_marker_that_a_run_created_the_row(
     assert row.run_id == second and row.previous_status is None
 
 
+async def test_a_second_run_keeps_the_previous_status_the_first_one_recorded(
+    session, catch_up_config
+):
+    """Controller ruling 2: a second catch-up over an ALREADY-armed row does
+    not move it off the word it carries, and does not write over the
+    `previous_status` the first run recorded. Recording the row's own
+    `pending` there would have a later cancel restore a delivered row to
+    `pending` -- a due row nothing will ever settle, with what the server
+    actually holds lost."""
+    item, render = await _item_with_render(session, "l2")
+    await deliveries.record(session, render.id, "jellyfin", "uploaded", fingerprint="old")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "written")
+    await session.commit()
+    servers = Servers({"jellyfin": _jellyfin()})
+
+    first = await catchup.start_catch_up(
+        session, servers, catch_up_config, "jellyfin", now=NOW,
+    )
+    await close_run(session, first, status="ok", detail="drained")
+    await session.commit()
+
+    second = await catchup.start_catch_up(
+        session, servers, catch_up_config, "jellyfin", now=NOW,
+    )
+    await session.commit()
+
+    art = (await session.execute(select(RenderDelivery))).scalar_one()
+    assert (art.status, art.previous_status, art.run_id) == ("pending", "uploaded", second)
+    write = (await session.execute(select(MetadataWrite))).scalar_one()
+    assert (write.status, write.previous_status, write.run_id) == ("pending", "written", second)
+
+
 async def test_an_upload_disabled_server_gets_no_artwork_rows(session, catch_up_config):
     """Review I3, and `deliver`'s own rule: "an upload-disabled server must
     never get a `pending` catch-up row, only for the very next retry pass to

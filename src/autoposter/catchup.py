@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, case, literal, null, or_, select, text, true, update
+from sqlalchemy import and_, case, literal, or_, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -229,19 +229,30 @@ async def start_catch_up(
             .values(
                 status="pending",
                 # PostgreSQL evaluates every SET expression against the row as
-                # it was, so this is the OLD status -- which is exactly what a
-                # cancel has to put back. NULL is not "no previous status" but
-                # "a run CREATED this row" (`db/models.py`), and a cancel
-                # deletes such a row rather than inventing a word for it, so a
-                # second run marking a row the first one created must keep the
-                # NULL rather than write `pending` over it.
+                # it was, so the `else_` is the OLD status -- which is exactly
+                # what a cancel has to put back.
+                #
+                # A row that is ALREADY armed keeps what the run that armed it
+                # recorded, verbatim (controller ruling 2): its current
+                # `pending` was put there by a catch-up, not by the world, and
+                # copying it here would have a later cancel restore a
+                # delivered row to `pending` -- a due row nothing will ever
+                # settle, with the truth of what the server holds lost. NULL
+                # is carried on for the same reason under its own meaning: not
+                # "no previous status" but "a run CREATED this row"
+                # (`db/models.py`), which is what tells a cancel to delete it
+                # rather than invent a word for it.
+                #
+                # A row that has SETTLED inside a run is not already armed --
+                # `uploaded`/`written`/`failed` is a word the world put there
+                # since -- so it records that word like any ordinary row.
                 previous_status=case(
                     (
                         and_(
                             MetadataWrite.run_id.isnot(None),
-                            MetadataWrite.previous_status.is_(None),
+                            MetadataWrite.status == "pending",
                         ),
-                        null(),
+                        MetadataWrite.previous_status,
                     ),
                     else_=MetadataWrite.status,
                 ),
@@ -306,14 +317,14 @@ async def start_catch_up(
         .where(RenderDelivery.id.in_(behind))
         .values(
             status="pending",
-            # The metadata UPDATE's `case` and its reason, for this table.
+            # The metadata UPDATE's `case` and its reasons, for this table.
             previous_status=case(
                 (
                     and_(
                         RenderDelivery.run_id.isnot(None),
-                        RenderDelivery.previous_status.is_(None),
+                        RenderDelivery.status == "pending",
                     ),
-                    null(),
+                    RenderDelivery.previous_status,
                 ),
                 else_=RenderDelivery.status,
             ),
