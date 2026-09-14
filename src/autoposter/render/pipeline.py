@@ -24,6 +24,7 @@ from autoposter.badges.values import (
     plex_native_ratings,
     video_format_text,
 )
+from autoposter.catchup import CATCH_UP_KIND
 from autoposter.config.loader import config_for_library, render_version_for
 from autoposter.config.schema import Config, TextStyle
 from autoposter import deliveries
@@ -1560,8 +1561,8 @@ async def absent_servers_for(session: AsyncSession, item_id: int) -> set[str]:
     )).scalars())
 
 
-async def _run_is_open(session: AsyncSession, run_id: int | None) -> bool:
-    """Whether ``run_id`` names a run that has not finished yet (spec §3).
+async def open_catch_up_runs(session: AsyncSession) -> set[int]:
+    """The id of every catch-up run that has not finished yet.
 
     The gate on all three of this module's re-arm doors. A row an IN-FLIGHT
     catch-up armed is already `pending` under that run, so re-arming it is at
@@ -1572,14 +1573,22 @@ async def _run_is_open(session: AsyncSession, run_id: int | None) -> bool:
     Once the run is FINISHED (or cancelled -- both stamp `finished_at`) the
     row is an ordinary row again and the doors treat it as one.
 
-    ``None`` is not a run: a row no catch-up armed answers False, and its
-    door re-arms it exactly as it always has.
+    Read ONCE per item and handed down, the shape ``absent_servers_for``
+    above already takes, and for a sharper version of the same reason
+    (controller ruling): this used to be a primary-key SELECT per door hit,
+    and nothing ever clears `run_id` off a terminal outcome -- so every row a
+    catch-up had touched went on paying that lookup on every later pass, for
+    ever. There are at most as many open catch-ups as there are servers, so
+    the whole set costs no more than one of those lookups did.
     """
-    if run_id is None:
-        return False
-    return (await session.execute(
-        select(Run.id).where(Run.id == run_id, Run.finished_at.is_(None))
-    )).scalar_one_or_none() is not None
+    # The run's id alone, not a `(server, run_id)` pair: `run_id` is already
+    # unique, the row that carries it was armed by that run's own server, and
+    # `runs.server` is NULLABLE -- so pairing would silently turn the gate off
+    # for a catch-up row whose run row has no server, which is a behaviour
+    # change and not the cost fix this is.
+    return set((await session.execute(
+        select(Run.id).where(Run.kind == CATCH_UP_KIND, Run.finished_at.is_(None))
+    )).scalars())
 
 
 async def apply_metadata(
@@ -1596,6 +1605,7 @@ async def apply_metadata(
     servers=None,
     resolved_on: dict[str, ResolvedItem] | None = None,
     absent_servers: set[str] | None = None,
+    open_runs: set[int] | None = None,
 ) -> GatheredFacts:
     """Gather this item's facts, store them, and write the changed ones to
     every configured server that wants them.
@@ -1686,7 +1696,10 @@ async def apply_metadata(
     has_parental = parental_categories is not None
     has_overrides = bool(overrides)
 
-    async def _write(name: str, target_server, ref_item: ResolvedItem, absent_servers: set[str]) -> None:
+    async def _write(
+        name: str, target_server, ref_item: ResolvedItem, absent_servers: set[str],
+        open_runs: set[int],
+    ) -> None:
         # Row 35. Checked here, at the facts/write seam, and not earlier: the
         # facts above are still gathered and persisted for an exempt item,
         # because the badge stage reads the persisted row rather than this
@@ -1777,7 +1790,7 @@ async def apply_metadata(
                 )
             )).one_or_none()
             in_open_run = (
-                existing is not None and await _run_is_open(session, existing.run_id)
+                existing is not None and existing.run_id in open_runs
             )
             re_armed = (
                 existing is not None and existing.status == "failed" and not in_open_run
@@ -1797,12 +1810,19 @@ async def apply_metadata(
         # the query below is the direct caller's, not a second copy of it.
         if absent_servers is None:
             absent_servers = await absent_servers_for(session, media_item_id)
-        await _write(item.server, server, item, absent_servers)
+        # The failure door below reads this set, and it is read here for the
+        # same reason and on the same terms: once per ITEM, by the direct
+        # caller when there is one, never once per server per item.
+        if open_runs is None:
+            open_runs = await open_catch_up_runs(session)
+        await _write(item.server, server, item, absent_servers, open_runs)
         if servers is not None and resolved_on is not None:
             for name, resolved_item in resolved_on.items():
                 if name == item.server:
                     continue  # already written just above, via `server`
-                await _write(name, servers.get(name), resolved_item, absent_servers)
+                await _write(
+                    name, servers.get(name), resolved_item, absent_servers, open_runs,
+                )
 
     # Row 269. A released sort position is acted on ONCE: the clear above
     # was sent -- or the item is exempt, row 99's own ruling for its DELETE
@@ -2206,6 +2226,7 @@ async def deliver(
     *,
     misses: dict[str, Exception] | None = None,
     absent_servers: set[str] | None = None,
+    open_runs: set[int] | None = None,
 ) -> None:
     """Fan ``data`` -- ``compose_badged_bytes``'s own output -- out to every
     configured server, and record what happened to each (spec §5.2/§5.3).
@@ -2274,6 +2295,12 @@ async def deliver(
         return
     misses = misses or {}
     absent = absent_servers or set()
+    # Both re-arm doors below read this. Read here, after the three cheap
+    # gates above, when the caller has none to hand down: once per RENDER at
+    # worst, never once per row -- `process_item` reads it once per item and
+    # passes it in, which is the path every production call takes.
+    if open_runs is None:
+        open_runs = await open_catch_up_runs(session)
     # Whether this call wrote a single delivery row. The
     # rollup and the commit below hang off it.
     recorded = False
@@ -2350,7 +2377,7 @@ async def deliver(
                 ).one_or_none()
                 existing_status = existing.status if existing is not None else None
                 if existing_status in (None, "pending", "failed"):
-                    if existing is not None and await _run_is_open(session, existing.run_id):
+                    if existing is not None and existing.run_id in open_runs:
                         # A row an in-flight catch-up armed is already pending
                         # under that run (spec §3). Left alone entirely:
                         # re-arming it would take it out of a run that is still
@@ -2359,9 +2386,8 @@ async def deliver(
                         # INSIDE this branch, not above it: nothing clears
                         # `run_id` on a terminal outcome, so an `uploaded` row
                         # a catch-up once touched carries its run id for ever
-                        # -- and asking about that run on every full pass, for
-                        # a row that could not be re-armed anyway, would be one
-                        # extra SELECT per settled row per pass, for ever.
+                        # -- and a row that could not be re-armed anyway has
+                        # no business consulting the run that armed it.
                         continue
                     # A re-arm, not an attempt: this pass composed no new
                     # bytes for this server, so nothing was actually tried
@@ -2443,7 +2469,7 @@ async def deliver(
             ).one_or_none()
             if existing is not None and existing.status == "pending" and existing.next_attempt_at is not None:
                 continue
-            if existing is not None and await _run_is_open(session, existing.run_id):
+            if existing is not None and existing.run_id in open_runs:
                 # The same rule the `data is None` door above states: a row an
                 # in-flight catch-up owns is left to that run, `run_id` and
                 # `previous_status` intact, whatever status it has reached.
@@ -2622,6 +2648,12 @@ async def process_item(
         # `apply_metadata` used to make on its own.
         absent_servers = await absent_servers_for(session, media_item.id)
 
+    # Spec §3's three re-arm doors, read ONCE per item and handed down the
+    # way `absent_servers` is (controller ruling): the doors live inside
+    # `apply_metadata`'s per-server loop and `deliver`'s, so asking per row
+    # cost a SELECT per row a catch-up had ever touched.
+    open_runs = await open_catch_up_runs(session)
+
     # Roadmap row 92. A separately-named object, and NOT a rebinding of
     # `config`: `render_artifact` below must keep the global one. Today that
     # is a distinction without a difference -- `config_for_library` carries
@@ -2640,7 +2672,7 @@ async def process_item(
             await apply_metadata(
                 session, config, media_item.id, item, servers.get(item.server), tmdb_facts, mdblist, tvdb,
                 imdb_parental, servers=servers, resolved_on=resolved_on,
-                absent_servers=absent_servers,
+                absent_servers=absent_servers, open_runs=open_runs,
             )
         except AttributeError:
             # A server missing a required method (item_labels/apply_facts) is
@@ -2797,7 +2829,7 @@ async def process_item(
                 )
                 await deliver(
                     session, config, render, media_item, servers, refs, data,
-                    misses=misses, absent_servers=absent_servers,
+                    misses=misses, absent_servers=absent_servers, open_runs=open_runs,
                 )
         except AttributeError:
             # A server missing a required method (fetch_item/upload_artwork)

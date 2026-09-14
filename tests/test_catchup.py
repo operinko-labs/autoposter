@@ -953,3 +953,34 @@ async def test_retry_failed_stamps_when_it_last_looked_at_the_server(session):
     await session.commit()
 
     assert (await session.execute(select(RenderDelivery.attempted_at))).scalar_one() == NOW
+
+
+async def test_the_re_arm_doors_read_the_open_runs_once_per_item(
+    session, catch_up_config, monkeypatch
+):
+    """Controller ruling: the open-run check used to cost one primary-key
+    SELECT per re-arm door hit, and nothing ever clears `run_id` off a
+    terminal outcome -- so every row a catch-up has ever touched paid that
+    query on every later pass. The set of open catch-ups is read ONCE per
+    `process_item` and handed down to the doors exactly as `absent_servers`
+    is."""
+    reads = 0
+    real = pipeline.open_catch_up_runs
+
+    async def counting(session):
+        nonlocal reads
+        reads += 1
+        return await real(session)
+
+    monkeypatch.setattr(pipeline, "open_catch_up_runs", counting)
+
+    run_id, row = await _artwork_row_after_a_full_pass(
+        session, catch_up_config, monkeypatch, finish_the_run=False,
+    )
+
+    # Two `process_item` calls, each over several renders: one read each, and
+    # not one from a door.
+    assert reads == 2
+    # And the door still did its job off the set it was handed.
+    assert row.status == "pending" and row.run_id == run_id
+
