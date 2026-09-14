@@ -44,6 +44,7 @@ from sqlalchemy import case, func, select
 from fastapi import APIRouter, Depends, Query, Request
 
 from autoposter.api.auth import ApiKeyPrincipal, api_key_or_session
+from autoposter.catchup import CATCH_UP_KIND
 from autoposter.db.models import MediaItem, Render, Run
 from autoposter.db.models import Session as SessionModel
 
@@ -158,8 +159,16 @@ def _rendered(row) -> dict | None:
     All four keys together or none of them: a partially-filled mapping would
     let a chart read a zero that means "not measured" as one that means
     "nothing was composited", which are different claims about a pass.
+
+    A closed catch-up (``kind == CATCH_UP_KIND``) also answers None despite
+    carrying a non-null ``processed``: that column holds its own tallies --
+    backlog marked, budget-exhausted, still-due -- not the four render
+    columns this dict reports, which a catch-up never touches (it delivers
+    and writes what already exists; nothing is rendered). Serving zeros here
+    would claim it composited nothing, which is a different and false claim
+    from "this run does not render at all".
     """
-    if row.processed is None:
+    if row.processed is None or row.kind == CATCH_UP_KIND:
         return None
     return {
         "poster": row.rendered_poster or 0,
@@ -208,6 +217,12 @@ async def runs_snapshot(session, limit: int = _DEFAULT_RUNS) -> dict:
                 "finished_at": row.finished_at,
                 "status": row.status,
                 "duration_seconds": duration,
+                # The catch-up's server (spec §5), NULL for every other kind,
+                # so the runs list can group by it.
+                "server": row.server,
+                # Already row-213 narrowed by whichever closer wrote it -- a
+                # counts sentence, never a job's last_error.
+                "detail": row.detail,
                 "rendered": _rendered(row),
                 # int() rather than the raw column so a chart never receives a
                 # value it cannot plot; None stays None, which is the whole
@@ -263,10 +278,10 @@ async def run_stats(
 
     An out-of-range ``limit`` is clamped; a non-integer is refused with a 422
     (see ``runs_snapshot``). Row 213: the body carries counts, timestamps,
-    job names, art-kind tokens and the
-    already-narrowed ``detail`` copy -- and ``detail`` is deliberately NOT
-    among the served fields, because the chart has no use for it and a served
-    string is a served string.
+    job names, art-kind tokens, the catch-up's ``server`` (spec §5) and the
+    already-narrowed ``detail`` copy -- narrowed by whichever closer wrote it,
+    never a job's ``last_error`` or anything else this module has not already
+    cut down to a fixed-width counts sentence.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
