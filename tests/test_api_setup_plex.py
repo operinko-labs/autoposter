@@ -55,6 +55,7 @@ from test_api_setup import (  # noqa: F401
     isolated_state,
 )
 
+
 @pytest.fixture
 def database_url():
     """The database this pytest process owns.
@@ -813,6 +814,10 @@ async def test_the_manual_path_reaches_the_document_and_then_finish(
     ways to arrive at it.
     """
     _install(monkeypatch, authorised=True)
+    # The suite's database is built from the models rather than by the
+    # migrations, so the upgrade the finish step runs for itself is stubbed;
+    # `tests/test_api_setup.py` is where the migration itself is pinned.
+    monkeypatch.setattr(setup_api, "_migrate_for_the_store", lambda database: True)
     monkeypatch.setattr(setup_api, "database_answers", _answering(True))
     monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
     token = await _authenticate(setup_client)

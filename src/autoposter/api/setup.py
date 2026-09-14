@@ -44,6 +44,7 @@ import copy
 import logging
 import os
 import secrets as secrets_module
+import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -226,6 +227,13 @@ STATE_DIR_NOT_WRITABLE = "the state directory could not be written"
 # own text carries the DSN. Nothing is exec'd after it: the wizard stays on
 # the port with what the operator typed still staged in memory.
 CREDENTIALS_NOT_STORED = "the credentials could not be written to the database"
+# The other half of the same write, and a different volume's fault: the key
+# the rows are encrypted with lives in the state directory, so a directory
+# that refuses the create -- or a ``secret.key`` that is not a key -- is the
+# same 503 the writes above answer, worded for the file an operator can act
+# on. Without it that fault would be reported as the DATABASE refusing the
+# credentials and send them to look at the wrong volume.
+KEY_FILE_NOT_USABLE = "the stored-secret encryption key could not be read or created"
 
 # The check endpoint's vocabulary. A system key is caller text -- exactly like
 # a provider NAME at step 3 -- so the refusal names the surface and never the
@@ -1465,11 +1473,13 @@ async def set_provider_keys(body: ProvidersRequest, request: Request) -> dict:
     it. One staging route for both steps, because ``staged`` has one writer.
 
     Every name this step stages is written by the finish step into the SECRETS
-    TABLE, encrypted, and not into the state file: the file goes on holding
-    exactly one credential, ``AUTOPOSTER_DATABASE_URL``, because reading the
-    table needs it. The next boot resolves the stored row ahead of both lower
-    layers, so what an operator typed here cannot be shadowed by a variable
-    they never set.
+    TABLE, encrypted, rather than into the state file: the file is left holding
+    one credential, ``AUTOPOSTER_DATABASE_URL``, because reading the table
+    needs it. The next boot resolves the stored row ahead of both lower layers,
+    so what an operator typed here cannot be shadowed by a variable they never
+    set. The exception is a deployment whose table the finish step could not
+    reach or create, which falls back to writing all of them to the state file
+    -- where they resolve as they always did.
     """
     if set(body.values) - set(_STAGEABLE_ENV):
         # A fixed sentence: the submitted keys are caller-chosen strings.
@@ -1759,6 +1769,50 @@ def _unmet_step(
     return None
 
 
+# The bound on the migration below. Generous next to the five seconds a probe
+# gets, because this one is doing work: an empty database applies every
+# revision this project has, and a human is watching the step it belongs to.
+# Bounded at all for the reason every other call out of this module is -- a
+# host that accepts and then stops answering would otherwise hold the request
+# open for as long as the client will wait.
+MIGRATION_TIMEOUT_SECONDS = 120
+
+
+def _migrate_for_the_store(database_url: str) -> bool:
+    """``alembic upgrade head`` against the database this wizard was given.
+
+    A deployment being set up for the first time has never migrated: the
+    entrypoint runs the upgrade only once it has decided the deployment is
+    configured, which by definition it was not when this process was served.
+    So the table the credentials belong in does not exist yet, and the step
+    that is about to write them is the first moment this deployment has both a
+    database URL and something to put in it.
+
+    Not the entrypoint's own migrate, for two reasons that both bite here: it
+    takes no URL and ``alembic/env.py`` reads ``AUTOPOSTER_DATABASE_URL`` out
+    of the environment, which a first-start wizard has not got; and it raises
+    ``SystemExit``, a ``BaseException``, which this module's handlers would not
+    catch and which would escape into the server mid-request. The URL goes to
+    the CHILD's environment rather than into this process's, so nothing here
+    has to reason about what an exec would inherit.
+
+    Answers whether it worked. A migration that did not is not a refusal --
+    the write that follows falls back to the state file, and the next boot
+    runs the upgrade again and reports the failure where migration failures
+    have always been reported.
+
+    Idempotent by alembic's own design, so the boot this step execs runs it
+    again for nothing but an interpreter start.
+    """
+    result = subprocess.run(
+        ["alembic", "upgrade", "head"],
+        check=False,
+        env={**os.environ, "AUTOPOSTER_DATABASE_URL": database_url},
+        timeout=MIGRATION_TIMEOUT_SECONDS,
+    )
+    return result.returncode == 0
+
+
 # PostgreSQL's SQLSTATE for "relation does not exist", and the one database
 # failure the write below treats as ordinary rather than as a refusal.
 # ``boot`` runs ``alembic upgrade head`` only on the CONFIGURED side of its
@@ -1801,6 +1855,7 @@ async def _persist_staged_secrets(state: SetupState, database_url: str) -> list[
     Answers the names it STORED, so a caller can tell the table's write from
     the fallback inside it -- which answers none.
     """
+    from autoposter.config.secret_store import load_or_create_key, secret_key_path
     from autoposter.config.secret_store import store_secret
     from autoposter.db.base import make_engine, make_session_factory
 
@@ -1811,6 +1866,25 @@ async def _persist_staged_secrets(state: SetupState, database_url: str) -> list[
     }
     if not to_store:
         return []
+    # The key on its own and before the rows, the Settings page's order at the
+    # same write: everything the store can raise about the VOLUME -- a state
+    # directory that refuses the create, a file that is there and is not a key
+    # -- is raised here, where the sentence can name that file. Asking it
+    # inside the write instead would report a refused connection, which is an
+    # OSError too, as a corrupt key and send the operator to the wrong volume.
+    # It does mean a key is created even when the write below falls back to the
+    # file; the next write reuses it, and a key that has encrypted nothing
+    # opens nothing.
+    try:
+        load_or_create_key()
+    except (ValueError, OSError) as exc:
+        # The step, in the log; the FILE and the exception's class, in the
+        # sentence. Never the key, and never a credential.
+        logger.error("first-start setup: the stored-secret encryption key is unusable")
+        raise HTTPException(
+            status_code=503,
+            detail=f"{KEY_FILE_NOT_USABLE}: {secret_key_path()} ({type(exc).__name__})",
+        ) from None
     engine = make_engine(database_url)
     try:
         factory = make_session_factory(engine)
@@ -1924,8 +1998,39 @@ async def finish(request: Request) -> JSONResponse:
                 if name == "AUTOPOSTER_DATABASE_URL"
             },
         )
+        # The migration this deployment has never run: the entrypoint runs it
+        # only once it has decided the deployment is configured, and this
+        # process was served because it was not. Without it the table the
+        # credentials belong in does not exist on the one deployment shape
+        # this wizard exists for, and every first start would take the
+        # fallback below. Inside the lock, so two finishes cannot race two
+        # upgrades against one database, and in a THREAD, because
+        # ``subprocess.run`` would otherwise block this server for the whole
+        # upgrade.
         try:
-            await _persist_staged_secrets(state, url)
+            migrated = await asyncio.to_thread(_migrate_for_the_store, url)
+        except Exception as exc:
+            # Including the timeout. The CLASS NAME only: the URL carries a
+            # password and the child's own output is alembic's to print.
+            logger.warning(
+                "first-start setup: the migration could not be run (%s); the "
+                "credentials go to the state file instead",
+                type(exc).__name__,
+            )
+            migrated = False
+        if not migrated:
+            # Not a refusal. A deployment whose alembic is broken still
+            # finishes the wizard, with its credentials on the volume, and the
+            # boot this step execs runs the upgrade again and fails loudly
+            # there -- which is where a migration failure has always been
+            # reported.
+            logger.warning(
+                "first-start setup: this deployment could not be migrated, so "
+                "the credentials go to the state file instead of the secrets "
+                "table"
+            )
+        try:
+            written = await _persist_staged_secrets(state, url)
         except HTTPException:
             # ``_persist``'s own 503 out of the fallback write, already worded
             # for the volume it is about.
@@ -1950,6 +2055,14 @@ async def finish(request: Request) -> JSONResponse:
     # not be reported to the resolver as "the table was read and holds
     # nothing", which is what an empty MAPPING means there.
     stored = await asyncio.to_thread(boot.stored_secrets_for_boot, url)
+    if written and not stored:
+        # The table took these rows in THIS request, so a read that then
+        # answered nothing is the read failing rather than the table being
+        # empty -- and that function answers `{}` for every failure there is,
+        # including a five-second timeout and a connection dropped in between.
+        # Without this, a deployment whose every credential is committed would
+        # be told to go back and type them again.
+        stored = {name: state.staged[name] for name in written}
     persisted = resolve_secret_values(stored or None)
     if not boot.is_configured(persisted):
         raise HTTPException(

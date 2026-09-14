@@ -21,7 +21,6 @@ import pytest_asyncio
 from autoposter import boot
 from autoposter.api import setup as setup_api
 from autoposter.api import setup_checks, setup_jellyfin
-from autoposter.config import secret_store
 from autoposter.config import state as state_module
 
 # The neighbouring suite's env isolation and token helpers, imported rather
@@ -37,8 +36,10 @@ from test_api_setup import (  # noqa: F401
     _answering,
     _authenticate,
     _headers,
+    _stored,
     isolated_state,
 )
+
 
 @pytest.fixture
 def database_url():
@@ -50,12 +51,6 @@ def database_url():
     answers, where before a well-formed unreachable one was enough.
     """
     return os.environ["AUTOPOSTER_TEST_DATABASE_URL"]
-
-
-async def _stored(session_factory) -> dict:
-    """Every secret the store holds, by name."""
-    async with session_factory() as session:
-        return await secret_store.load_stored_secrets(session)
 
 
 JELLYFIN_URL = "https://jf.example"
@@ -542,6 +537,11 @@ async def test_progress_carries_servers_and_the_wizard_finishes_jellyfin_only(
     """
     token = await _authenticate(setup_client)
     headers = _headers(token)
+    # The suite's database is built from the models rather than by the
+    # migrations, so the upgrade the finish step runs for itself is stubbed:
+    # this walk is about what the wizard writes, and
+    # `tests/test_api_setup.py` is where the migration itself is pinned.
+    monkeypatch.setattr(setup_api, "_migrate_for_the_store", lambda database: True)
     monkeypatch.setattr(setup_api, "database_answers", _answering(True))
     assert (
         await setup_client.post(
@@ -645,6 +645,7 @@ async def test_both_servers_reach_the_written_document_and_the_written_secrets(
     """
     token = await _authenticate(setup_client)
     headers = _headers(token)
+    monkeypatch.setattr(setup_api, "_migrate_for_the_store", lambda database: True)
     monkeypatch.setattr(setup_api, "database_answers", _answering(True))
     await setup_client.post(
         "/api/setup/database", json={"url": database_url}, headers=headers
