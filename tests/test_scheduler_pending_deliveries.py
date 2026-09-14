@@ -74,3 +74,35 @@ async def test_the_job_records_a_scheduled_run_through_the_real_scheduler(sessio
     assert row.name == "pending_deliveries"
     assert row.last_status == "ok"
     assert row.last_detail.startswith("pending deliveries: 0 due")
+
+
+async def test_the_pass_summary_carries_the_per_server_sentence(session, config_factory):
+    """spec §2: the run history keeps the sentence so the dashboard can show
+    it. The two tests above only check the ``"pending deliveries: 0 due"``
+    prefix, so this pins the per-server clause too -- ``scheduler/core.py``
+    already stores whatever ``retry_pending_deliveries`` returns, and a
+    future refactor could silently trim the sentence off without reddening
+    either of them."""
+    from datetime import datetime, timezone
+
+    from autoposter import deliveries
+    from autoposter.render import pipeline
+    from autoposter.servers.registry import Servers
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    config = config_factory()
+    config.badges.upload_to_jellyfin = True
+    item = await pipeline._upsert_media_item(
+        session, resolved("jellyfin", "j1", file_path="/m.mkv")
+    )
+    render = await pipeline._get_or_create_render(session, item, "poster", "/a/p.jpg")
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+
+    summary = await deliveries.retry_pending_deliveries(
+        session,
+        Servers({"jellyfin": FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)}),
+        config, now=datetime.now(timezone.utc),
+    )
+
+    assert summary.endswith("jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed")

@@ -1015,3 +1015,27 @@ async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_b
     )).one()
     assert row.status == "pending" and row.attempts == 1
     assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed" in summary
+
+
+def test_the_budget_is_a_scheduler_setting_defaulting_to_eight():
+    from autoposter.config.schema import SchedulerConfig
+
+    assert SchedulerConfig().delivery_attempts == 8
+
+
+async def test_an_exhausted_row_is_not_retried_again(session, config_with_badges):
+    """A `failed` row is never `due` (spec §2) -- the retry pass selects on
+    `status == "pending"` alone, so an exhausted row does not come back
+    around on its own; only a full pass or a catch-up re-arms it."""
+    from autoposter.servers.registry import Servers
+
+    config_with_badges.scheduler.delivery_attempts = 1
+    render = await _render(session)
+    await deliveries.record(session, render.id, "jellyfin", "failed", detail="error: X")
+    await session.commit()
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert summary == "pending deliveries: 0 due, 0 done, 0 still pending"
