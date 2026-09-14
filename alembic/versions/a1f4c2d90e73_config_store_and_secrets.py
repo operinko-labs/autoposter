@@ -22,9 +22,10 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Upgrade schema."""
     # The empty object is what "format 1" means: a row written before this
-    # revision is a DELTA, and Task 3's one-time migration keys on exactly
-    # this. A backfilled `{"format": 2}` would claim every existing delta was
-    # already a whole document and skip the migration that makes it one.
+    # revision is a DELTA, and `config.overrides.migrate_delta_to_document`
+    # keys on exactly this. A backfilled `{"format": 2}` would claim every
+    # existing delta was already a whole document and skip the one-time
+    # conversion that makes it one.
     op.add_column(
         'config_overrides',
         sa.Column(

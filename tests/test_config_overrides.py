@@ -282,9 +282,9 @@ async def test_an_ordinary_stored_document_warns_about_nothing(session, caplog):
 
 
 async def test_the_stored_document_reader_drops_it_too(session):
-    """Stripped at the read, not at the merge, so ``GET /api/config``'s
-    ``overridden_paths`` cannot mark as overridden a setting the editor no
-    longer renders at all."""
+    """Stripped at the read, not at the merge, so ``GET /api/config`` cannot
+    serve -- and the page cannot then send back, as part of the whole document
+    it round-trips -- a setting the schema no longer has a field for."""
     await _store(session, {"version_check": {"project": "x"}, "workers": 2})
 
     assert await load_overrides_document(session) == {"workers": 2}

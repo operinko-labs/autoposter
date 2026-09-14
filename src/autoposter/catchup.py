@@ -469,8 +469,8 @@ async def finish_catch_up(
     """Stamp a catch-up's final tallies on its run row, then close it.
 
     The tallies have to outlive the rows: closing a catch-up RELEASES
-    everything it owned (``cancel_catch_up`` below, and the finish Task 12
-    owes), so counting them from the two tables afterwards answers zero for a
+    everything it owned (``cancel_catch_up`` below, and the finish this
+    function owes), so counting them from the two tables afterwards answers zero for a
     run that marked thousands, and the operator's progress line would go
     blank at the exact moment it became history.
 

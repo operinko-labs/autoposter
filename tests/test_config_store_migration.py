@@ -77,7 +77,8 @@ async def test_the_store_migration_goes_up_down_and_up_again():
 @pytest.mark.asyncio
 async def test_an_existing_row_is_backfilled_as_a_delta():
     """A store written before this lands is format 1 and must SAY so, because
-    Task 3 turns exactly those rows into documents."""
+    `config.overrides.migrate_delta_to_document` turns exactly those rows into
+    documents."""
     name, url = await _scratch()
     try:
         _alembic(["upgrade", "b3d91f7c05ea"], url)

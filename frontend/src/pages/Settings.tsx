@@ -124,7 +124,15 @@ export interface Editor {
   /** The document as the server last served it. The pending one holds the
    * whole configuration, so "is this row carried by the document" no longer
    * distinguishes anything -- every row is. What a row still needs to know is
-   * whether IT was changed, which is these two disagreeing at its path. */
+   * whether IT was changed, which is these two disagreeing at its path.
+   *
+   * That per-path comparison is `!==`, so for a list- or object-valued row it
+   * is reference equality, and it is only correct because of an invariant
+   * `adopt` holds: it seeds this and the pending document from the SAME
+   * object, and `withPath` rebuilds only the spine down to the path it
+   * changes, leaving every sibling reference shared. An `adopt` that built
+   * the two documents separately -- two parses of the same response, say --
+   * would make every non-scalar row read as edited at mount. */
   saved: OverridesDocument;
   frozen: Record<string, string>;
   /** Paths this service derives rather than the operator setting, and paths a

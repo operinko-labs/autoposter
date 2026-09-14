@@ -400,7 +400,7 @@ export function CatalogPanel() {
     }
     // Re-read rather than assume: the catalog's `active` states are the
     // config's answer to what was just stored, and the document has to be
-    // re-seeded from the paths the server now says are overridden. Outside the
+    // re-seeded from the configuration the server now serves. Outside the
     // save's own try on purpose -- the store already succeeded, so a failure
     // here means the panel is showing stale state, not that nothing was saved.
     if (saved || stale) {

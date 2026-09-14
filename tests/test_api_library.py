@@ -437,9 +437,8 @@ async def test_item_detail_serves_both_outcome_tables_per_server(client, auth_he
 async def test_item_detail_names_a_server_known_only_from_its_artwork_row(
     client, auth_headers, session
 ):
-    """Task 6's deferred minor: the artwork loop's own `setdefault` never
-    created an entry in the test above, because every server there already had
-    a `metadata_writes` row. A server that has only ever been delivered
+    """The artwork loop's own `setdefault` never created an entry in the test
+    above, because every server there already had a `metadata_writes` row. A server that has only ever been delivered
     artwork -- `operations.write_to_<server>` off, or nothing to write yet --
     still belongs on the page, with `metadata: None` rather than missing."""
     item = await _item(session, "rk-art-only", "Movie")

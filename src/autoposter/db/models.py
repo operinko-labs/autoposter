@@ -264,11 +264,11 @@ class RenderDelivery(Base):
     # How many times this row has been ATTEMPTED and not succeeded. Reset to 0
     # by any terminal-for-now outcome (`uploaded`, `skipped`, `absent`), so the
     # budget is about the current streak of trouble and not about the row's
-    # whole history. `scheduler.delivery_attempts` (Task 8) is the cap.
+    # whole history. `scheduler.delivery_attempts` is the cap.
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     # The badge fingerprint the last successful upload actually delivered.
     # NULL means "never uploaded, or uploaded before this column existed" --
-    # which the catch-up (Task 11) treats as behind, costing one redundant
+    # which the catch-up treats as behind, costing one redundant
     # upload per pre-existing row on the first catch-up and nothing after.
     fingerprint: Mapped[str | None] = mapped_column(String(64))
     # The catch-up run that marked this row due (spec §3). NULL for a row the
