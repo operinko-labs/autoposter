@@ -344,6 +344,32 @@ async def test_a_row_this_key_cannot_open_is_not_reported_as_stored(
     assert rows[TMDB]["source"] == "unset"
 
 
+async def test_a_secrets_file_that_cannot_be_read_still_clears_the_row(
+    client, auth_headers, app, state, caplog
+):
+    """One request may not answer one fault two ways. The label one line
+    earlier already swallows an unreadable `secrets.env` so a page render
+    cannot 500 over it; the value lookup beside it used to raise, turning the
+    only way to remove a row into a 500 over a file this deployment may not
+    even be using.
+
+    What is lost is the value that takes over, not the clear -- so nothing is
+    republished, and the warning names the FILE and the exception class, never
+    a path and never a value."""
+    await client.put(
+        f"/api/secrets/{MDBLIST}", json={"value": "the-stored-one"}, headers=auth_headers
+    )
+    (state / "secrets.env").write_bytes(b"AUTOPOSTER_MDBLIST_APIKEY=\xff\xfe\n")
+
+    response = await client.delete(f"/api/secrets/{MDBLIST}", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.json()["name"] == MDBLIST
+    assert app.state.secrets.mdblist_apikey == ""
+    assert "secrets.env" in caplog.text
+    assert "the-stored-one" not in caplog.text
+
+
 async def test_an_unknown_name_is_a_404(client, auth_headers):
     response = await client.put(
         "/api/secrets/AUTOPOSTER_NOT_A_THING", json={"value": "x"}, headers=auth_headers

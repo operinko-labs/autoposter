@@ -418,7 +418,7 @@ async def test_boot_clamps_httpx_before_this_flow_can_make_a_request(monkeypatch
     """The second line of defence, pinned because nothing pinned it before.
 
     `setup_plex`'s own filter is the first, and the test above proves it. This
-    is `boot.main`'s process-wide clamp (boot.py:151), which covers every other
+    is `boot.main`'s process-wide clamp (boot.py:441), which covers every other
     httpx caller in the process -- and which no test asserted until this row
     put a PIN id in a url: deleting the line would have left every suite green.
     """

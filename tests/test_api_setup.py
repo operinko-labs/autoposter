@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import stat
+import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -1962,9 +1963,10 @@ async def test_finish_migrates_the_database_it_was_given_and_then_stores(
 async def test_finish_execs_when_the_store_cannot_be_read_back_after_writing(
     setup_client, monkeypatch, session_factory, database_url
 ):
-    """The read back answers `{}` for every failure there is -- a five-second
-    timeout, a connection dropped between the write and the read, a key file
-    that became unreadable in between -- and that is its contract, not a bug.
+    """The read back answers no values for every failure there is -- a
+    five-second timeout, a connection dropped between the write and the read,
+    a key file that became unreadable in between -- and that is its contract,
+    not a bug.
 
     What must not follow is a refusal: the rows are committed, the next boot
     resolves them, and a wizard that answered "the provider keys step has not
@@ -1974,7 +1976,11 @@ async def test_finish_execs_when_the_store_cannot_be_read_back_after_writing(
     await _complete_every_step(
         setup_client, token, monkeypatch, database_url=database_url
     )
-    monkeypatch.setattr(boot, "stored_secrets_for_boot", lambda database: {})
+    monkeypatch.setattr(
+        boot,
+        "stored_secrets_for_boot",
+        lambda database: boot.StoredSecrets({}, "TimeoutError"),
+    )
     calls: list[list[str]] = []
     monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: calls.append(argv))
 
@@ -2046,8 +2052,8 @@ async def test_the_next_boot_is_configured_by_the_store_the_wizard_just_wrote(
     monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
     await setup_client.post("/api/setup/finish", headers=_headers(token))
 
-    secrets = await asyncio.to_thread(boot.stored_secrets_for_boot, database_url)
-    stored = await asyncio.to_thread(boot.stored_config_document, database_url)
+    secrets = (await asyncio.to_thread(boot.stored_secrets_for_boot, database_url)).values
+    stored = (await asyncio.to_thread(boot.stored_config_document, database_url)).document
     assert stored is not None and stored["plex"]["url"] == PLEX_URL
     assert boot.is_configured(resolve_secret_values(secrets), stored) is True
 
@@ -2354,6 +2360,34 @@ async def test_the_progress_map_reports_steps_and_names_but_never_values(
     assert set(body["providers"].values()) <= {setup_api.REDACTED, None}
     assert FAKE_PLEX_TOKEN not in response.text
     assert FAKE_DB_URL not in response.text
+
+
+def test_the_migration_child_gets_the_url_and_none_of_the_other_credentials(
+    monkeypatch,
+):
+    """`alembic/env.py` reads one environment variable. This process holds
+    every credential the boot export published, so the child is given the URL
+    it needs and the handful of names an interpreter cannot start without --
+    not a copy of everything this process happens to be holding.
+    """
+    monkeypatch.setenv("AUTOPOSTER_PLEX_TOKEN", FAKE_PLEX_TOKEN)
+    monkeypatch.setenv("PATH", os.environ.get("PATH", "/usr/bin"))
+    seen: dict[str, str] = {}
+
+    def _run(argv, **kwargs):
+        seen.update(kwargs["env"])
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(setup_api.subprocess, "run", _run)
+
+    assert setup_api._migrate_for_the_store(FAKE_DB_URL) is True
+    assert seen["AUTOPOSTER_DATABASE_URL"] == FAKE_DB_URL
+    assert seen["PATH"], "without it the child cannot find alembic at all"
+    assert set(seen) <= {
+        *setup_api._MIGRATION_CHILD_ENVIRONMENT,
+        "AUTOPOSTER_DATABASE_URL",
+    }
+    assert FAKE_PLEX_TOKEN not in seen.values()
 
 
 def _never_exec(*args, **kwargs):

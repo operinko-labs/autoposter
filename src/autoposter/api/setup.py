@@ -655,9 +655,9 @@ def _presence_map(resolved: dict[str, str]) -> dict[str, str | None]:
 def _effective(request: Request) -> dict[str, str]:
     """What this deployment WOULD hold if the wizard finished now.
 
-    The persisted names (environment first, state file second) with the staged
-    ones on top, in that order, because a name typed into the wizard is the
-    operator correcting what the deployment already had. Every reporting and
+    The persisted names (the state file first, the environment second) with
+    the staged ones on top, in that order, because a name typed into the
+    wizard is the operator correcting what the deployment already had. Every reporting and
     completeness check in this module asks this rather than
     ``resolve_secret_values`` alone, so "the page says the step is done" and
     "the finish step agrees" read the same map.
@@ -1829,6 +1829,18 @@ def _unmet_step(
 # open for as long as the client will wait.
 MIGRATION_TIMEOUT_SECONDS = 120
 
+# What the migration child keeps of this process's environment, and it is a
+# list rather than `{**os.environ}` because this process holds every
+# credential `boot._export` published while `alembic/env.py` reads exactly one
+# name -- which is passed explicitly below. PATH is how the child finds the
+# `alembic` executable at all; HOME and the two locale names are read by the
+# interpreter and its libraries before any of this project's code runs;
+# PYTHONPATH is how an installation that is not on the default path is found,
+# since `alembic/env.py` imports `autoposter.db`. The child inherits this
+# process's working directory, which is what `alembic.ini` and its
+# `prepend_sys_path = src` are relative to, and a directory is not a secret.
+_MIGRATION_CHILD_ENVIRONMENT = ("PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH")
+
 
 def _migrate_for_the_store(database_url: str) -> bool:
     """``alembic upgrade head`` against the database this wizard was given.
@@ -1848,6 +1860,12 @@ def _migrate_for_the_store(database_url: str) -> bool:
     the CHILD's environment rather than into this process's, so nothing here
     has to reason about what an exec would inherit.
 
+    And it goes there ALONE, beside the handful of names
+    ``_MIGRATION_CHILD_ENVIRONMENT`` lists: this process holds every
+    credential the boot export published, the child reads one of them, and a
+    subprocess that carries the rest is one more place a crash dump or a
+    misbehaving plugin could read them from for no gain.
+
     Answers whether it worked. A migration that did not is not a refusal --
     the write that follows falls back to the state file, and the next boot
     runs the upgrade again and reports the failure where migration failures
@@ -1856,10 +1874,16 @@ def _migrate_for_the_store(database_url: str) -> bool:
     Idempotent by alembic's own design, so the boot this step execs runs it
     again for nothing but an interpreter start.
     """
+    environment = {
+        name: os.environ[name]
+        for name in _MIGRATION_CHILD_ENVIRONMENT
+        if name in os.environ
+    }
+    environment["AUTOPOSTER_DATABASE_URL"] = database_url
     result = subprocess.run(
         ["alembic", "upgrade", "head"],
         check=False,
-        env={**os.environ, "AUTOPOSTER_DATABASE_URL": database_url},
+        env=environment,
         timeout=MIGRATION_TIMEOUT_SECONDS,
     )
     return result.returncode == 0
@@ -2187,20 +2211,20 @@ async def finish(request: Request) -> JSONResponse:
     # The same read the next boot will make, in a THREAD: this frame has a
     # running event loop and ``stored_secrets_for_boot`` owns an
     # ``asyncio.run``, which raises inside one -- into that function's own
-    # catch-all, which would answer an empty store indistinguishably from a
-    # table that holds nothing and refuse a wizard that had just written
-    # everything correctly. ``or None`` is ``boot.main``'s own guard at the
-    # same call: an empty map from a table this process could not open must
-    # not be reported to the resolver as "the table was read and holds
-    # nothing", which is what an empty MAPPING means there.
-    stored = await asyncio.to_thread(boot.stored_secrets_for_boot, url)
+    # catch-all, which would report an outage that never happened and refuse a
+    # wizard that had just written everything correctly. ``or None`` is
+    # ``boot.main``'s own guard at the same call: an empty map from a table
+    # this process could not open must not be reported to the resolver as "the
+    # table was read and holds nothing", which is what an empty MAPPING means
+    # there.
+    stored = (await asyncio.to_thread(boot.stored_secrets_for_boot, url)).values
     if written and not stored:
         # The table took these rows in THIS request, so a read that then
         # answered nothing is the read failing rather than the table being
-        # empty -- and that function answers `{}` for every failure there is,
-        # including a five-second timeout and a connection dropped in between.
-        # Without this, a deployment whose every credential is committed would
-        # be told to go back and type them again.
+        # empty -- and that function answers no values for every failure there
+        # is, including a five-second timeout and a connection dropped in
+        # between. Without this, a deployment whose every credential is
+        # committed would be told to go back and type them again.
         stored = {name: state.staged[name] for name in written}
     persisted = resolve_secret_values(stored or None)
     # The stored document goes with it, because the next boot asks the store

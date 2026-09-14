@@ -5,8 +5,9 @@ One table, one row per environment-variable NAME, one key. The key lives at
 that needs it, and never enters the database, a response or a log line.
 
 Reading never creates. ``load_key`` is the whole read path and it answers
-``None`` for a volume that has no key; only ``store_secret``, through
-``encrypt_secret``, calls ``load_or_create_key``. That split is what keeps a
+``None`` for a volume that has no key; only the encryption step, which nothing
+but ``store_secret`` and ``encrypt_secret`` reach, calls
+``load_or_create_key``. That split is what keeps a
 boot whose state volume failed to mount from writing a brand-new key into a
 container filesystem, skipping every row against it, and taking the real key's
 place the moment the volume comes back.
@@ -35,6 +36,7 @@ from autoposter.config.state import (
     MAXIMUM_SECRET_LENGTH,
     SECRET_KEY_FILE_NAME,
     is_storable,
+    prepare_state_directory,
     state_dir,
     write_state_file,
 )
@@ -148,7 +150,11 @@ def load_or_create_key() -> bytes:
     existing = load_key()
     if existing is not None:
         return existing
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Through ``config/state.py`` rather than a bare ``mkdir``: the claim below
+    # creates its own file, so without this the 0700 on a fresh volume would
+    # wait for the first ``write_state_file`` and the key would be claimed in a
+    # directory whose mode came from the umask.
+    prepare_state_directory(path.parent)
     landed = _claim_and_fill(path)
     if landed is not None:
         return landed
@@ -202,6 +208,17 @@ def encrypt_secret(value: str) -> str:
     reason = _unstorable_reason(value)
     if reason is not None:
         raise ValueError(reason)
+    return _encrypt(value)
+
+
+def _encrypt(value: str) -> str:
+    """The encryption itself, for a value a caller has already checked.
+
+    Split out of ``encrypt_secret`` above so that ``store_secret``, which asks
+    ``_unstorable_reason`` for itself -- it has a NAME to put in the refusal
+    and has to tell a bad value from a bad key file -- does not make the same
+    call twice over.
+    """
     return Fernet(load_or_create_key()).encrypt(value.encode("utf-8")).decode("ascii")
 
 
@@ -305,7 +322,7 @@ async def store_secret(session: AsyncSession, name: str, value: str) -> None:
         # The same sentence ``render_secrets_file`` uses, and like it the
         # value is never quoted back.
         raise ValueError(f"{name} cannot be stored as it stands")
-    ciphertext = encrypt_secret(value)
+    ciphertext = _encrypt(value)
     statement = insert(StoredSecret).values(name=name, ciphertext=ciphertext)
     # ``updated_at`` is set explicitly. The column's ``onupdate`` is applied to
     # a Core UPDATE, and the SET clause of an upsert is not one -- without this

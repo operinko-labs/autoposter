@@ -56,7 +56,7 @@ from autoposter.config.schema import (
     resolve_secret_values,
     secret_sources,
 )
-from autoposter.config.state import is_storable
+from autoposter.config.state import is_storable, secrets_file_path
 from autoposter.db.models import Session as SessionModel
 
 logger = logging.getLogger(__name__)
@@ -243,7 +243,27 @@ async def clear_stored_secret(
         # that a name `boot` exported from a row the table no longer holds
         # resolves to nothing rather than to the copy of the value being
         # cleared.
-        value = resolve_secret_values(remaining).get(name, "")
+        #
+        # A `secrets.env` that exists and cannot be read is SWALLOWED here,
+        # the way `_state_file_names` swallows it one line above for the
+        # label: one request may not answer the same fault two ways, and a
+        # clear that 500s leaves the operator with a row they cannot remove
+        # over a file they may not even be using. What is lost is only the
+        # value that takes over -- so none is republished and the response
+        # says a restart is required, which is the honest answer when this
+        # process cannot see what the next layer holds. The FILE NAME and the
+        # exception class, never the path and never a value.
+        try:
+            value = resolve_secret_values(remaining).get(name, "")
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.warning(
+                "%s could not be read while clearing %s (%s); the value that "
+                "takes over is not known to this process",
+                secrets_file_path().name,
+                name,
+                type(exc).__name__,
+            )
+            value = ""
         if source == "unset" and name in HARD_SECRET_NAMES:
             raise HTTPException(status_code=409, detail=HARD_SECRET_WOULD_BE_UNSET)
         await secret_store.clear_secret(session, name)
