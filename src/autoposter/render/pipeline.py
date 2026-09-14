@@ -1538,6 +1538,28 @@ async def _fetch_parental_categories(imdb_parental, item) -> list[tuple[str, str
         return None
 
 
+async def absent_servers_for(session: AsyncSession, item_id: int) -> set[str]:
+    """Every server whose row for this item says ``absent``, in EITHER table.
+
+    Spec §1: an item whose library a server does not carry "is never resolved
+    there, and is never retried". Both tables, because presence stamps both
+    and either one saying so is the same fact about the same library.
+
+    One query per ITEM. ``process_item`` reads it once, before it resolves
+    anything, and hands the set to ``apply_metadata`` and ``deliver`` rather
+    than letting each ask again.
+    """
+    return set((await session.execute(
+        select(MetadataWrite.server)
+        .where(MetadataWrite.item_id == item_id, MetadataWrite.status == "absent")
+        .union(
+            select(RenderDelivery.server)
+            .join(Render, Render.id == RenderDelivery.render_id)
+            .where(Render.item_id == item_id, RenderDelivery.status == "absent")
+        )
+    )).scalars())
+
+
 async def apply_metadata(
     session: AsyncSession,
     config: Config,
@@ -1551,6 +1573,7 @@ async def apply_metadata(
     *,
     servers=None,
     resolved_on: dict[str, ResolvedItem] | None = None,
+    absent_servers: set[str] | None = None,
 ) -> GatheredFacts:
     """Gather this item's facts, store them, and write the changed ones to
     every configured server that wants them.
@@ -1712,12 +1735,11 @@ async def apply_metadata(
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:
         # One query per ITEM, not one per server per item: every `_write`
         # call below shares this same set rather than each asking its own
-        # SELECT (review M1).
-        absent_servers = set((await session.execute(
-            select(MetadataWrite.server).where(
-                MetadataWrite.item_id == media_item_id, MetadataWrite.status == "absent",
-            )
-        )).scalars())
+        # SELECT (review M1). `process_item` reads the same set BEFORE it
+        # resolves -- it skips those servers outright -- and passes it in, so
+        # the query below is the direct caller's, not a second copy of it.
+        if absent_servers is None:
+            absent_servers = await absent_servers_for(session, media_item_id)
         await _write(item.server, server, item, absent_servers)
         if servers is not None and resolved_on is not None:
             for name, resolved_item in resolved_on.items():
@@ -2125,6 +2147,7 @@ async def deliver(
     data: bytes | None,
     *,
     misses: dict[str, Exception] | None = None,
+    absent_servers: set[str] | None = None,
 ) -> None:
     """Fan ``data`` -- ``compose_badged_bytes``'s own output -- out to every
     configured server, and record what happened to each (spec §5.2/§5.3).
@@ -2192,10 +2215,20 @@ async def deliver(
     ):
         return
     misses = misses or {}
+    absent = absent_servers or set()
     # Whether this call wrote a single delivery row. The
     # rollup and the commit below hang off it.
     recorded = False
     for name, server in servers.items():
+        if name in absent:
+            # Spec §1: a server that does not carry this item's library is
+            # owed nothing -- no row, no roll-up, no commit. `deliveries.record`
+            # already refuses to write over an `absent` row, so this is not
+            # what keeps the row right; it is what stops a pass spending a
+            # SELECT and a rewritten roll-up per item per pass on a server
+            # that has nothing to do with it. `process_item` resolves none of
+            # these either, so `refs` never carries one.
+            continue
         ref = refs.get(name)
         # The per-library toggle is evaluated BEFORE the
         # catch-up below -- an upload-disabled server must never get a
@@ -2414,9 +2447,30 @@ async def process_item(
     # delivery, never a held job. Only when NO server resolves does the old
     # ItemNotFound/PathMismatch ladder fire, so the worker defers or parks
     # exactly as before.
+    # Spec §1, read ONCE and before any resolve: a server whose row for this
+    # item is `absent` does not carry its library, so it is asked nothing --
+    # not resolved, not delivered to, not written to. The guards in
+    # `apply_metadata` and `deliver` keep those ROWS right, but the pass still
+    # spent one resolve request per absent server per item, every pass.
+    #
+    # Keyed off the refs the intent already carries, because the item's own
+    # row cannot be found before it resolves: the full pass, reprocess and
+    # discovery all build their intents from a `media_items` row (see
+    # `RenderIntent.refs`), and those are the passes whose cost this is. A
+    # webhook intent carries none; its item's set is read below, once the
+    # identity is established, exactly as before.
+    known_item_id = None
+    for name, native_id in intent.refs.items():
+        known_item_id = await item_id_for(session, name, native_id)
+        if known_item_id is not None:
+            break
+    absent_servers = await absent_servers_for(session, known_item_id) if known_item_id else set()
+
     resolved_on: dict[str, ResolvedItem] = {}
     misses: dict[str, Exception] = {}
     for name, server in servers.items():
+        if name in absent_servers:
+            continue
         try:
             resolved_on[name] = await server.resolve(intent)
         except ItemNotFound as exc:      # PathMismatch included
@@ -2444,6 +2498,11 @@ async def process_item(
         # simply has not seen the file yet, that is the honest reason to
         # report, even when another server failed for a different reason.
         if not misses:
+            if absent_servers:
+                # Every configured server says it does not carry this item's
+                # library, so none was asked -- which is a different fact from
+                # "nothing is configured" and must not be reported as one.
+                raise ItemNotFound("no configured server carries this item's library")
             raise ItemNotFound("no media server is configured")
         not_found = next(
             (exc for exc in misses.values() if isinstance(exc, ItemNotFound)), None,
@@ -2451,6 +2510,12 @@ async def process_item(
         raise not_found or next(iter(misses.values()))
     item = resolved_on.get("plex") or next(iter(resolved_on.values()))
     media_item = await _persist_identity(session, item, resolved_on)
+    if media_item.id != known_item_id:
+        # The intent named no ref this database knows, so the set above was
+        # read for nothing (or for another row). Now that the identity is
+        # established, it is read for the item itself -- the same one query
+        # `apply_metadata` used to make on its own.
+        absent_servers = await absent_servers_for(session, media_item.id)
 
     # Roadmap row 92. A separately-named object, and NOT a rebinding of
     # `config`: `render_artifact` below must keep the global one. Today that
@@ -2470,6 +2535,7 @@ async def process_item(
             await apply_metadata(
                 session, config, media_item.id, item, servers.get(item.server), tmdb_facts, mdblist, tvdb,
                 imdb_parental, servers=servers, resolved_on=resolved_on,
+                absent_servers=absent_servers,
             )
         except AttributeError:
             # A server missing a required method (item_labels/apply_facts) is
@@ -2624,7 +2690,10 @@ async def process_item(
                     ref=plex_item.ref if plex_item is not None else None,
                     solo_delivery=solo_delivery,
                 )
-                await deliver(session, config, render, media_item, servers, refs, data, misses=misses)
+                await deliver(
+                    session, config, render, media_item, servers, refs, data,
+                    misses=misses, absent_servers=absent_servers,
+                )
         except AttributeError:
             # A server missing a required method (fetch_item/upload_artwork)
             # is a wiring bug, not the runtime failure below is for -- it must

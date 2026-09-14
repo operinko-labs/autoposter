@@ -2064,7 +2064,10 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
         session, servers, config_with_badges, now=datetime.now(timezone.utc),
     )
 
-    assert summary == "pending deliveries: 1 due, 1 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 1 done, 0 still pending; "
+        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+    )
     assert [u[0].native_id for u in jf.uploads] == ["j1"]
     assert len(plex.uploads) == 1, "the retry pass owes nothing to the server that has the bytes"
     assert {
@@ -2186,7 +2189,10 @@ async def test_a_retry_composes_from_the_identity_server_and_leaves_the_fingerpr
         session, servers, config_with_badges, now=datetime.now(timezone.utc),
     )
 
-    assert summary == "pending deliveries: 1 due, 1 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 1 done, 0 still pending; "
+        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+    )
     assert len(jf.uploads) == 1
     sampled_server, sampled_ref = sampled[calls_before]
     assert sampled_server is plex, "the retry must sample the identity server, not nothing"
@@ -2232,7 +2238,10 @@ async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
         session, servers, config_with_badges, now=datetime.now(timezone.utc),
     )
 
-    assert summary == "pending deliveries: 1 due, 0 uploaded, 1 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 1 still pending; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed"
+    )
     assert jf.uploads == [], "overlay-less bytes must never be delivered"
     row = (
         await session.execute(
@@ -2482,6 +2491,51 @@ async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
     )
 
     assert jf.facts_written == [], "an absent row must never be written to, even through the real pass"
+    row = (
+        await session.execute(
+            select(MetadataWrite).where(
+                MetadataWrite.item_id == media_item.id, MetadataWrite.server == "jellyfin",
+            )
+        )
+    ).scalar_one()
+    assert row.status == "absent" and row.detail == ABSENT_DETAIL
+
+
+async def test_an_absent_server_is_never_asked_to_resolve(session, monkeypatch):
+    """Phase A review ruling 2: the guards in `apply_metadata` and `deliver`
+    keep an `absent` ROW right, but the pass still spent a resolve request on
+    that server for every item, every pass -- on a library the server does not
+    carry at all. The absent set is read once, before the fan-out, off the
+    refs the intent already carries (a full pass builds every intent from a
+    `media_items` row), and the servers in it are asked nothing."""
+    from autoposter import deliveries
+    from autoposter.db.models import MetadataWrite
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config = load_config(EXAMPLE)
+    config.operations.write_to_jellyfin = True
+    config.badges.enabled = False
+    servers, plex, jf = _two_servers()
+    plex_item = plex.items[INTENT.dedupe_key]
+
+    media_item = await pipeline_module._upsert_media_item(session, plex_item)
+    await deliveries.record_metadata(
+        session, media_item.id, "jellyfin", "absent", detail=ABSENT_DETAIL
+    )
+    await session.commit()
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    await pipeline_module.process_item(
+        session, config, None, servers, [], RenderIntent(
+            kind="movie", title="Title", tmdb_id=1, year=2020,
+            refs={"plex": plex_item.native_id},
+        ),
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    assert jf.resolve_calls == 0, "a server that does not carry the library is asked nothing"
+    assert plex.resolve_calls == 1, "every other server is resolved exactly as before"
+    assert jf.facts_written == []
     row = (
         await session.execute(
             select(MetadataWrite).where(
