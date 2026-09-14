@@ -102,6 +102,23 @@ async def test_the_drift_report_names_the_file_it_read(client, auth_headers, con
 
 
 @pytest.mark.asyncio
+async def test_a_file_that_no_longer_builds_is_drift_with_no_paths(
+    client, auth_headers, config_file
+):
+    """A file the schema refuses cannot be walked against anything, but "the
+    file and the store agree" would be a false sentence and the operator wants
+    to know. Reported as a difference with an empty path list."""
+    document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    document["workers"] = "lots"
+    config_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    body = (await client.get("/api/config/drift", headers=auth_headers)).json()
+    assert body["file_present"] is True
+    assert body["differs"] is True
+    assert body["paths"] == []
+
+
+@pytest.mark.asyncio
 async def test_no_file_is_not_drift(client, auth_headers, config_file):
     """A deployment whose store is seeded needs no file. Reporting a removed
     ConfigMap as drift would turn the intended end state into a permanent
@@ -186,6 +203,67 @@ def _document_from_config(served: dict) -> dict:
     return document
 
 
+async def _save_as_the_page_would(client, auth_headers) -> dict:
+    """Read the config back and PUT it the way the settings page does.
+
+    The whole served configuration minus the keys that are not settings, with
+    the keep sentinel where the response redacted a value. Answers the document
+    it sent.
+    """
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _document_from_config(served)
+    # The page's own rule for the one redacted path, as a precondition: a
+    # caller would pass vacuously if the sentinel never got written.
+    assert _read(document, "notifications.url") == served["keep_sentinel"]
+
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": document, "expected_revision": served["overrides_revision"]},
+    )
+    assert response.status_code == 200, response.text
+    return document
+
+
+@pytest.mark.asyncio
+async def test_a_store_the_page_has_saved_still_agrees_with_its_own_file(
+    client, auth_headers
+):
+    """The notice must not light itself on the first save.
+
+    What the page stores is a whole model dump; what seeded the store is the
+    file's sparse YAML, which states what its author cared about and lets the
+    schema default the rest. Those are the same configuration written two ways,
+    and a drift report that walked the raw documents would report a difference
+    at every setting the file does not mention -- plus `version`, which neither
+    of them owns -- on every deployment, forever, with Import offered as the
+    remedy for a difference the operator never made.
+    """
+    await _save_as_the_page_would(client, auth_headers)
+
+    body = (await client.get("/api/config/drift", headers=auth_headers)).json()
+    assert body["file_present"] is True
+    assert body["differs"] is False, body["paths"]
+    assert body["paths"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_saved_store_still_reports_a_real_edit_of_the_file(
+    client, auth_headers, config_file
+):
+    """The other half of the one above: the normalisation must not flatten a
+    difference that is really there."""
+    await _save_as_the_page_would(client, auth_headers)
+
+    document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    document["workers"] = document["workers"] + 1
+    config_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    body = (await client.get("/api/config/drift", headers=auth_headers)).json()
+    assert body["differs"] is True
+    assert body["paths"] == ["workers"]
+
+
 @pytest.mark.asyncio
 async def test_the_page_round_trips_the_whole_store_without_truncating_it(
     client, auth_headers, config_file, session_factory
@@ -206,18 +284,7 @@ async def test_the_page_round_trips_the_whole_store_without_truncating_it(
     """
     seeded = yaml.safe_load(config_file.read_text(encoding="utf-8"))
 
-    served = (await client.get("/api/config", headers=auth_headers)).json()
-    document = _document_from_config(served)
-    # The page's own rule for the one redacted path, as a precondition: the
-    # test would pass vacuously if the sentinel never got written.
-    assert _read(document, "notifications.url") == served["keep_sentinel"]
-
-    response = await client.put(
-        "/api/config/overrides",
-        headers=auth_headers,
-        json={"document": document, "expected_revision": served["overrides_revision"]},
-    )
-    assert response.status_code == 200, response.text
+    await _save_as_the_page_would(client, auth_headers)
 
     async with session_factory() as session:
         stored, meta = await load_store(session)

@@ -31,6 +31,7 @@ from autoposter.api.routes import KEEP_SENTINEL, _render_affecting
 from autoposter.app import create_app
 from autoposter.config.loader import build_config, read_config_document, render_version_for
 from autoposter.config.overrides import (
+    DELTA_WITHOUT_FILE,
     EMPTY_DOCUMENT_REVISION,
     OVERRIDES_INSERT_LOCK_KEY,
     STORE_FORMAT,
@@ -468,7 +469,10 @@ async def test_a_rejected_document_changes_nothing(client, auth_headers, session
     assert app.state.config.version == before, "the running generation was swapped"
     assert app.state.config_holder.current.version == before
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["workers"] == app.state.config.workers, "the refused value is served"
+    # The example config's value, not the -1 the refused document asked for.
+    # Read off the response rather than off `app.state.config`, which is what
+    # the response was dumped from and so cannot disagree with it.
+    assert body["workers"] == 5
 
 
 async def test_an_unknown_key_is_a_422_at_full_depth(client, auth_headers, session):
@@ -2250,6 +2254,56 @@ async def test_the_stored_format_says_how_the_document_was_validated(
     session.expire_all()
     row = (await session.execute(select(ConfigOverride))).scalar_one()
     assert row.meta.get("format", 1) < STORE_FORMAT
+
+
+async def test_a_first_save_with_no_mounted_file_stores_a_whole_document(
+    client, auth_headers, session, app, file_document, tmp_path
+):
+    """The deployment this store exists to make possible: no mounted file.
+
+    An empty store with nothing underneath it has no document for a save to be
+    a statement ABOUT, so what arrives can only be the configuration itself. It
+    is validated as one and the row is labelled as one, which is what makes the
+    next boot able to load it -- a row labelled a delta would send that boot
+    looking for the file this deployment does not have, and it would refuse to
+    start.
+    """
+    app.state.config_path = tmp_path / "there-is-no-config-here.yaml"
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": file_document}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.meta["format"] == STORE_FORMAT
+
+    rebuilt = await load_effective_config(app.state.config_path, session)
+    assert rebuilt.model_dump(mode="json") == app.state.config.model_dump(mode="json")
+
+
+async def test_a_delta_store_with_no_mounted_file_is_refused_not_crashed(
+    client, auth_headers, session, app, tmp_path
+):
+    """A delta is a statement about a file. Without that file it cannot be
+    merged and it cannot be promoted either -- promoting it would silently
+    default every key the file used to carry. The save says so in the same
+    words the boot loader uses, rather than surfacing a read error as a 500.
+    """
+    app.state.config_path = tmp_path / "there-is-no-config-here.yaml"
+    await session.execute(
+        insert(ConfigOverride).values(id=1, document={"workers": 9}, meta={"format": 1})
+    )
+    await session.commit()
+
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": {"workers": 8}},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"][0]["message"] == DELTA_WITHOUT_FILE
 
 
 async def test_a_save_keeps_the_metadata_it_did_not_write(

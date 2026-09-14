@@ -1527,7 +1527,6 @@ describe("Settings stale-save recovery", () => {
       ...EDITOR_CONFIG,
       workers: 5,
       badges: { enabled: false },
-      overridden_paths: ["badges.enabled"],
       overrides_revision: "rev-9",
     };
     let served: unknown = SEEDED;

@@ -60,8 +60,13 @@ from autoposter.config.live import (
     is_inert,
     swap_config,
 )
-from autoposter.config.loader import build_config, moved_kinds, read_config_document
+from autoposter.config.loader import (
+    COMPUTED_PATHS,
+    build_config,
+    moved_kinds,
+)
 from autoposter.config.overrides import (
+    DELTA_WITHOUT_FILE,
     STORE_FORMAT,
     _read_file_document,
     _reject_secrets,
@@ -1504,15 +1509,6 @@ def _host_only(url: str) -> str:
 _REDACTORS: dict[str, Callable[[str], str]] = {"notifications.url": _host_only}
 REDACTED_PATHS: tuple[str, ...] = tuple(_REDACTORS)
 
-# Paths the service computes rather than the operator setting. ``version`` is
-# the render-settings hash (config/loader.py's render_version), stored on each
-# Render row so a settings change is detectable as staleness -- writing one by
-# hand overrides it with a value the next load recomputes away. Served so the
-# editor can render it read-only instead of offering an edit that does nothing
-# (roadmap row 112). Not a refusal: an override on it is still accepted and
-# still inert, exactly as before.
-COMPUTED_PATHS: tuple[str, ...] = ("version",)
-
 # What an editor sends at a ``REDACTED_PATHS`` path to mean "leave the stored
 # override exactly as it is".
 #
@@ -1796,7 +1792,7 @@ def _dotted(loc: tuple) -> str:
 def _changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
     """``config.overrides.changed_paths``.
 
-    Kept as a name because three call sites and two tests spell it this way.
+    Kept as a name because three call sites in this module spell it this way.
     The walk itself lives beside the store, so the drift report and the
     stale-save 409 cannot count different things.
     """
@@ -1916,8 +1912,13 @@ async def _definitions_guard(request: Request, base: dict, document: dict) -> No
 
 async def _validated_generation(
     request: Request, document: dict, *, check_empty_leaves: bool = True
-) -> tuple[dict, Config]:
-    """The document to store and the generation it describes, or a 422.
+) -> tuple[dict, Config, bool]:
+    """The document to store, the generation it describes, and whether that
+    document was validated as a whole configuration -- or a 422.
+
+    The third value is what ``_persist_and_swap`` stamps the row's format from,
+    and it is returned rather than recomputed there so the label on the row and
+    the way the document was actually built cannot come apart.
 
     Returns the *resolved* document, not the one that arrived: keep sentinels
     are substituted here (``_resolve_keep_sentinels``) and every caller
@@ -1986,14 +1987,55 @@ async def _validated_generation(
         )
 
     # Which shape the store holds, and therefore which of the two arms below
-    # this document belongs to. Read here rather than taken from the locked
-    # read in `_persist_and_swap`, which runs after this and which a preview
-    # never reaches at all: the format only ever moves 1 -> 2, and only at
-    # boot, so a read that raced one would at worst merge a document that no
-    # longer needed merging and be refused by the same validator either way.
+    # this document belongs to.
+    #
+    # Read here, unlocked, rather than taken from the locked read in
+    # `_persist_and_swap` -- which runs after this, and which a preview never
+    # reaches at all. Two writers can move the format under this read, and both
+    # are self-healing:
+    #
+    #   1 -> 2, the one-time boot conversion. This read would then merge a
+    #   document that no longer needed merging; the merge of a whole document
+    #   over the file it was built from gives that document back, so the
+    #   generation is the same one either way.
+    #
+    #   2 -> 1, a restore of a delta-era snapshot, which writes a delta row.
+    #   This read would then validate a delta on its own arm and fail on the
+    #   first required setting it does not carry -- a 422, not a bad write.
+    #
+    # A restore moves the revision, so a page that sent `expected_revision`
+    # gets the 409 instead, which is the better answer. `expected_revision` is
+    # optional, so a scripted client that omits it can still land in the
+    # window; what it gets there is a refusal it can retry, and nothing is
+    # written on the way.
     async with request.app.state.session_factory() as session:
-        _stored, meta = await load_store(session)
+        stored, meta = await load_store(session)
     whole_document = meta.get("format") == STORE_FORMAT
+
+    base: dict | None = None
+    if not whole_document:
+        # `_read_file_document` rather than `read_config_document`, because a
+        # missing file is one of the answers here rather than an error: the
+        # deployment this store exists to make possible has none.
+        base = await asyncio.to_thread(
+            _read_file_document, request.app.state.config_path
+        )
+        if base is None:
+            if stored:
+                # A delta with nothing to be a delta OF. Promoting it would
+                # silently default every key the file used to carry, so it is
+                # refused here in the same words the boot loader refuses it in
+                # -- a save that 500s where its own arm promises a validation
+                # outcome is the worse half of the same bug.
+                raise HTTPException(
+                    status_code=422, detail=[_error("document", DELTA_WITHOUT_FILE)]
+                )
+            # An empty store and no file: there is nothing underneath this
+            # document, so it is not a statement about anything and can only be
+            # the configuration itself. `_persist_and_swap` stamps the row
+            # accordingly, so the next boot builds it the same way this save
+            # just did.
+            whole_document = True
 
     empty = (
         empty_leaf_paths(document)
@@ -2034,15 +2076,15 @@ async def _validated_generation(
             ) from exc
         candidate = document
     else:
-        # A row still holding a delta, and an empty store -- the pre-seed
-        # state, whose unstated values all still come from the file. Both are
-        # statements ABOUT the mounted document, so both merge over it.
+        # A row still holding a delta, and an empty store with a file under it
+        # -- the pre-seed state, whose unstated values all still come from that
+        # file. Both are statements ABOUT the mounted document, so both merge
+        # over it.
         #
         # The definitions guard belongs to this arm alone for the same reason:
         # what it refuses is an overrides list shadowing the file's list
         # wholesale, and a whole-document store has no file layer under it to
         # shadow.
-        base = await asyncio.to_thread(read_config_document, request.app.state.config_path)
         await _definitions_guard(request, base, document)
         try:
             candidate = merge_overrides(base, document)
@@ -2051,7 +2093,7 @@ async def _validated_generation(
                 status_code=422, detail=[_error("secrets", str(exc))]
             ) from exc
     try:
-        return document, build_config(candidate)
+        return document, build_config(candidate), whole_document
     except ValidationError as exc:
         raise HTTPException(
             status_code=422,
@@ -2090,6 +2132,7 @@ async def _persist_and_swap(
     document: dict,
     after: Config,
     *,
+    whole_document: bool,
     expected_revision: str | None = None,
     confirm: bool = False,
     reason: str = "save",
@@ -2170,23 +2213,24 @@ async def _persist_and_swap(
         # write that commits without its snapshot, is worse than neither.
         await capture_snapshot(session, stored, reason, format=meta.get("format", 1))
 
-        # The row's metadata is written through verbatim, and the format in it
-        # is not touched by a save. It says how the document beneath it was
-        # VALIDATED, and `_validated_generation` reads it to decide that: a row
-        # that says the store holds a whole configuration gets a document
-        # validated as one, and a row that says it holds a delta gets one
-        # merged over the mounted file. Raising it here would say "whole" about
-        # a document that was validated as a fragment, and the next boot would
-        # try to build a configuration out of it and fail on the first required
-        # setting it does not carry.
+        # The row's format says how the document beneath it was VALIDATED, and
+        # nothing else. `_validated_generation` hands that fact down rather
+        # than having it guessed here, so the label and the build cannot come
+        # apart: a document built by `build_config` on its own is stamped
+        # whole, and one merged over the mounted file keeps whatever the row
+        # already said, which is what a delta is.
         #
-        # Where there is no row at all, the insert takes the column default --
-        # which is what "delta" is spelled as -- because that is how the
-        # document about to be stored was validated. An empty store is the
-        # pre-seed state and is unreachable from a booted deployment: boot
-        # seeds the store from the file or serves the setup wizard, so by the
-        # time this endpoint can be called at all there is a row and it says
-        # the store holds the whole configuration.
+        # Getting this backwards either way is a store the next boot cannot
+        # load. Stamping "whole" onto a fragment makes it fail on the first
+        # required setting the fragment does not carry; leaving "delta" on a
+        # whole document sends the next boot looking for a file to merge it
+        # over, which is the one thing the file-less deployment does not have.
+        #
+        # The rest of the metadata is written through verbatim. A save is about
+        # the document; the restart list that shares this column is not its to
+        # throw away.
+        if whole_document:
+            meta = {**meta, "format": STORE_FORMAT}
         await write_store(session, document, meta)
         session.add(
             EventLog(
@@ -2242,11 +2286,12 @@ async def put_config_overrides(
     paths, and needs ``confirm: true``. A body that is not the ``{"document":
     ...}`` envelope is refused by the model before this runs.
     """
-    document, after = await _validated_generation(request, body.document)
+    document, after, whole = await _validated_generation(request, body.document)
     return await _persist_and_swap(
         request,
         document,
         after,
+        whole_document=whole,
         expected_revision=body.expected_revision,
         confirm=body.confirm,
     )
@@ -2280,7 +2325,9 @@ async def preview_config_overrides(
     exists to accept.
     """
     before = request.app.state.config
-    _, after = await _validated_generation(request, without_migrated_sections(body.document))
+    _, after, _whole = await _validated_generation(
+        request, without_migrated_sections(body.document)
+    )
     impact = None
     collection_posters = 0
     render_affecting = _render_affecting(before, after)
@@ -2326,12 +2373,13 @@ async def apply_config_overrides(
     is. A body that is not the ``{"document": ...}`` envelope is refused by the
     model before this runs.
     """
-    document, after = await _validated_generation(request, body.document)
+    document, after, whole = await _validated_generation(request, body.document)
     before = request.app.state.config
     saved = await _persist_and_swap(
         request,
         document,
         after,
+        whole_document=whole,
         expected_revision=body.expected_revision,
         confirm=body.confirm,
         reason="apply",
@@ -2480,13 +2528,14 @@ async def restore_config_snapshot(
                 status_code=422, detail=[_error("secrets", str(exc))]
             ) from exc
 
-    document, after = await _validated_generation(
+    document, after, whole = await _validated_generation(
         request, candidate, check_empty_leaves=not is_delta
     )
     return await _persist_and_swap(
         request,
         document,
         after,
+        whole_document=whole,
         expected_revision=body.expected_revision,
         confirm=body.confirm,
         reason="restore",
@@ -2626,13 +2675,14 @@ async def import_config_overrides(
             ],
         )
 
-    document, after = await _validated_generation(
+    document, after, whole = await _validated_generation(
         request, without_migrated_sections(body.document)
     )
     return await _persist_and_swap(
         request,
         document,
         after,
+        whole_document=whole,
         expected_revision=body.expected_revision,
         confirm=body.confirm,
         reason="import",

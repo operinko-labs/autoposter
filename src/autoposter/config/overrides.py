@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.config.loader import build_config, read_config_document
+from autoposter.config.loader import COMPUTED_PATHS, build_config, read_config_document
 from autoposter.config.schema import Config
 from autoposter.db.models import ConfigOverride
 
@@ -512,6 +512,17 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
 #: The ``ConfigOverrideSnapshot.reason`` the one-time delta conversion writes.
 MIGRATE_REASON = "migrate"
 
+#: What a delta-era store with no readable file is told, in one place.
+#:
+#: Two callers refuse that state -- this module at boot and the config write
+#: path -- and an operator who meets one and then the other must not be given
+#: two different accounts of the same unrecoverable store.
+DELTA_WITHOUT_FILE = (
+    "the configuration store holds a delta from before the store became the "
+    "document, and the configuration file it was a delta of cannot be read; "
+    "restore the file and start again"
+)
+
 
 async def migrate_delta_to_document(session: AsyncSession, base: dict | None) -> dict:
     """Turn a delta-era store into a document, once, and answer what it holds.
@@ -566,11 +577,7 @@ async def migrate_delta_to_document(session: AsyncSession, base: dict | None) ->
     from autoposter.config.snapshots import capture_snapshot
 
     if base is None:
-        raise ValueError(
-            "the configuration store holds a delta from before the store "
-            "became the document, and the configuration file it was a delta "
-            "of cannot be read; restore the file and start again"
-        )
+        raise ValueError(DELTA_WITHOUT_FILE)
     row = await store_row(session, for_update=True)
     meta = row.meta if row is not None and isinstance(row.meta, dict) else {}
     if meta.get("format") == STORE_FORMAT:
@@ -617,22 +624,80 @@ def changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
     return changed
 
 
+def _comparable(document: dict) -> dict | None:
+    """The configuration a document DESCRIBES, or ``None`` if it describes none.
+
+    Two documents that mean the same thing are rarely spelled the same way. The
+    mounted YAML is sparse -- it states what its author cared about and lets the
+    schema default the rest -- while what the editor stores is a whole model
+    dump, every key present. Comparing those two raw would report a difference
+    at every setting the file simply does not mention, which is most of them.
+
+    So both sides are built and dumped, and the comparison is between the two
+    effective configurations. Then two kinds of key come back out:
+
+    - ``COMPUTED_PATHS``: derived by this service from the rest of the document
+      (``version``). Neither side owns it, so it cannot be a difference
+      between them -- and a stored document carries it while the file never
+      spells it, which would make it the one permanent difference.
+    - ``secrets``: not a ``Config`` field, so a dump cannot carry one and this
+      pop is belt and braces. It stays because this walk's output is a list of
+      paths served to a page, and the day something named ``secrets`` does
+      become a field is not the day to discover that.
+    """
+    try:
+        dumped = build_config(document).model_dump(mode="json")
+    except ValueError:
+        # pydantic's ValidationError is a ValueError, and so is every refusal
+        # `Config`'s own validators raise.
+        return None
+    dumped.pop("secrets", None)
+    for path in COMPUTED_PATHS:
+        parts = path.split(".")
+        target = dumped
+        for part in parts[:-1]:
+            target = target.get(part) if isinstance(target, dict) else None
+        if isinstance(target, dict):
+            target.pop(parts[-1], None)
+    return dumped
+
+
 def drift_report(file_document: dict | None, stored: dict) -> dict:
-    """Whether the file on disk still says what the store says.
+    """Whether the file on disk still describes what the store describes.
 
     This is the mounted file's whole remaining job. It is not a source of
     truth any more -- it seeds an empty store once, and a delta-era row is a
     statement about it -- so the one thing it can still tell an operator is
     "the configuration in git is not the configuration that is running".
 
+    Configurations, not documents: see ``_comparable``. A store the page has
+    saved holds a whole model dump of the same configuration the sparse file
+    seeded it with, and reporting that as drift would light the notice on every
+    deployment forever after its first save.
+
     No file is NOT drift. Removing the ConfigMap once the store is seeded is
     the end state this design is working towards, and reporting it as a
     difference would leave a permanent notice on the System tab for having
     done the right thing.
+
+    An empty store is not drift either, for the same shape of reason running
+    the other way: it is what the file is about to seed, so there is nothing
+    yet for it to disagree with.
+
+    A file that no longer describes a configuration this service can build IS
+    drift, and is reported with no paths. There is no second document to walk,
+    so naming paths is not available -- but "the file and the store agree"
+    would be a false sentence, and the operator wants to know.
     """
     if file_document is None:
         return {"file_present": False, "differs": False, "paths": []}
-    paths = sorted(changed_paths(file_document, stored))
+    if not stored:
+        return {"file_present": True, "differs": False, "paths": []}
+    file_config = _comparable(file_document)
+    stored_config = _comparable(stored)
+    if file_config is None or stored_config is None:
+        return {"file_present": True, "differs": True, "paths": []}
+    paths = sorted(changed_paths(file_config, stored_config))
     return {"file_present": True, "differs": bool(paths), "paths": paths}
 
 
