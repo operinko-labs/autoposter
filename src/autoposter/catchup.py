@@ -799,3 +799,122 @@ async def retry_failed(
     # `renders.upload_status` behind it.
     await rollup_stamped_renders(session, name, now)
     return {"server": name, **counts}
+
+
+# The two per-server settings that change which items a server is expected to
+# carry, and therefore the two a save must trigger a catch-up on (spec §3).
+# `library_map` is Jellyfin-only today; reading it with getattr keeps this
+# honest for a server block that has no such field.
+_LIBRARY_SHAPE_FIELDS = ("library_map", "excluded_libraries")
+
+# The per-server delivery toggles, by server (controller ruling carried from
+# task 10's review). Flipping one of these ON does not change which items a
+# server is expected to carry, but it does change which of them it was
+# allowed to receive: every row the pipeline skipped while the toggle was off
+# is now owed to that server, and nothing else heals them before the next
+# full pass. An OFF flip owes nothing, so only `False -> True` is reported.
+_DELIVERY_TOGGLES = {
+    "plex": (("operations", "write_to_plex"), ("badges", "upload_to_plex")),
+    "jellyfin": (("operations", "write_to_jellyfin"), ("badges", "upload_to_jellyfin")),
+}
+
+
+def _toggle_states(config, section: str, field: str) -> dict[str, bool | None]:
+    """One toggle's EFFECTIVE value per scope: globally, and per library.
+
+    Keyed by library name, with ``""`` for the global setting. A library's
+    per-library override of the same field is nullable and ``None`` there
+    means "the global one" (see ``config.schema.LibraryOverride``), so the
+    global value is substituted rather than carried as None -- otherwise a
+    library that inherits a `False -> True` flip would read as unchanged.
+
+    ``getattr`` throughout, and never a raise: this runs against whatever two
+    config objects the swap was handed, including a generation that predates
+    a section existing at all. A section that is not there is ``None``, and
+    ``None`` is neither False nor True, so it reports no flip.
+    """
+    block = getattr(config, section, None)
+    global_value = getattr(block, field, None) if block is not None else None
+    states = {"": global_value}
+    for library, override in (getattr(config, "libraries", None) or {}).items():
+        section_override = getattr(override, section, None)
+        value = (
+            getattr(section_override, field, None)
+            if section_override is not None else None
+        )
+        states[library] = global_value if value is None else value
+    return states
+
+
+def _toggle_turned_on(old_config, new_config, section: str, field: str) -> bool:
+    """Whether this toggle went ``False -> True`` in any scope.
+
+    A library present only in the new config is compared against the old
+    GLOBAL value, which is exactly what that library was effectively running
+    on before its block existed.
+    """
+    old = _toggle_states(old_config, section, field)
+    new = _toggle_states(new_config, section, field)
+    return any(
+        value is True and old.get(scope, old[""]) is False
+        for scope, value in new.items()
+    )
+
+
+def servers_with_changed_libraries(old_config, new_config) -> list[str]:
+    """The configured servers whose delivery scope changed between two configs.
+
+    Pure, and deliberately so: the caller is ``swap_config``, a synchronous
+    function with no session, so this decides WHO and the drain job decides
+    when.
+
+    Two kinds of change count. The library SHAPE -- the map and the
+    exclusions -- changes which items the server is expected to carry. The
+    delivery TOGGLES change which of them it was allowed to receive, and a
+    toggle that has just been switched on leaves behind every row skipped
+    while it was off.
+
+    A server present in only one of the two configs is not reported. A server
+    that has just been added has no outcome rows at all, which is what
+    ``servers_never_seen`` answers on the next boot; reporting it here as
+    well would queue the same catch-up twice for one change.
+    """
+    changed = []
+    for name in ("plex", "jellyfin"):
+        old_block = getattr(old_config, name, None)
+        new_block = getattr(new_config, name, None)
+        if old_block is None or new_block is None:
+            continue
+        shape_changed = any(
+            getattr(old_block, field, None) != getattr(new_block, field, None)
+            for field in _LIBRARY_SHAPE_FIELDS
+        )
+        if shape_changed or any(
+            _toggle_turned_on(old_config, new_config, section, field)
+            for section, field in _DELIVERY_TOGGLES[name]
+        ):
+            changed.append(name)
+    return changed
+
+
+async def servers_never_seen(session: AsyncSession, names) -> list[str]:
+    """Of ``names``, the servers this database has never recorded an outcome for.
+
+    Spec §3's "a restart that introduced X", read against the only durable
+    evidence there is: a server with no ``render_deliveries`` and no
+    ``metadata_writes`` row, on a database that already holds items, is a
+    server this deployment has just gained. No extra state is needed, and it
+    cannot fire twice -- the catch-up's own marking writes those rows.
+
+    Silent on an empty database: a fresh deployment's first full pass covers
+    every server anyway, and a catch-up with nothing to catch up on is noise.
+    """
+    has_items = (await session.execute(select(MediaItem.id).limit(1))).scalars().first()
+    if has_items is None:
+        return []
+    seen = set(
+        (await session.execute(select(RenderDelivery.server).distinct())).scalars()
+    ) | set(
+        (await session.execute(select(MetadataWrite.server).distinct())).scalars()
+    )
+    return [name for name in names if name not in seen]

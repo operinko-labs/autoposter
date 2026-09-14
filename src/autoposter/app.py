@@ -22,6 +22,7 @@ from autoposter.api.errors import validation_error_without_input
 from autoposter.api.logs import LogBuffer
 from autoposter.api.routes import router as api_router
 from autoposter.api.version import ReleasePoller, _running_version
+from autoposter.catchup import servers_never_seen
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
@@ -275,6 +276,17 @@ def create_app(
 
         async with session_factory() as session:
             reclaimed = await reclaim_stale(session)
+            # Spec §3: a restart that INTRODUCED a server triggers its
+            # catch-up. Compared against the outcome tables rather than
+            # against a stored copy of the previous boot's registry: the rows
+            # are the durable record of which servers this deployment has
+            # actually dealt with, and they are written by the catch-up
+            # itself, so this cannot fire a second time for the same server.
+            # Here rather than earlier because `app.state.servers` is built
+            # above and this is the first session the lifespan opens.
+            app.state.catch_up_requests.extend(
+                await servers_never_seen(session, app.state.servers.names)
+            )
         if reclaimed:
             logger.info("reclaimed %d stale job(s)", reclaimed)
 

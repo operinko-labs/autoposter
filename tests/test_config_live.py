@@ -270,3 +270,52 @@ def test_the_actionable_digest_knob_is_not_frozen():
         "precondition: the notifications prefix IS frozen, which is why this "
         "knob is not in it"
     )
+
+
+def test_a_swap_that_changes_the_library_map_queues_a_catch_up():
+    """Spec §3's save trigger, on the swap rather than on a route: the
+    Settings save path does not exist yet, and the swap is what it will go
+    through."""
+    from types import SimpleNamespace
+
+    old = SimpleNamespace(
+        plex=None,
+        jellyfin=SimpleNamespace(library_map={"Movies": "Films"}, excluded_libraries=[]),
+    )
+    new = SimpleNamespace(
+        plex=None,
+        jellyfin=SimpleNamespace(library_map={"Movies": "Movies"}, excluded_libraries=[]),
+    )
+    app = SimpleNamespace(state=SimpleNamespace(
+        config=old,
+        config_holder=SimpleNamespace(swap=lambda c: None),
+        scheduler_jobs=[],
+        scheduler_intervals={},
+        catch_up_requests=[],
+    ))
+
+    swap_config(app, new)
+    # Rewound deliberately, so the second swap sees the same change rather
+    # than a no-op: this is what makes the assertion below about the
+    # de-duplication and not merely about the predicate answering twice.
+    app.state.config = old
+    swap_config(app, new)
+
+    assert app.state.catch_up_requests == ["jellyfin"]
+
+
+def test_an_unrelated_swap_queues_nothing():
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(plex=None, jellyfin=None)
+    app = SimpleNamespace(state=SimpleNamespace(
+        config=config,
+        config_holder=SimpleNamespace(swap=lambda c: None),
+        scheduler_jobs=[],
+        scheduler_intervals={},
+        catch_up_requests=[],
+    ))
+
+    swap_config(app, config)
+
+    assert app.state.catch_up_requests == []
