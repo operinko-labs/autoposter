@@ -6,7 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from autoposter import deliveries
-from autoposter.db.models import MediaItem, MetadataWrite, Render, RenderDelivery
+from autoposter.db.models import ItemFacts, MediaItem, MetadataWrite, Render, RenderDelivery
 from autoposter.render import pipeline
 from media_server_doubles import resolved
 
@@ -711,8 +711,22 @@ async def test_the_retry_records_the_fingerprint_it_actually_delivered(
 
 
 async def _item_with_facts(session, native="j9"):
+    """The item AND the ``item_facts`` row the name promises (review M8).
+
+    Seeding none is why C1 was invisible to every metadata test in this file:
+    the retry took the `or GatheredFacts()` fallback and never constructed the
+    object the production path always has. ``persist_facts`` writes this row
+    in the same ``apply_metadata`` call that records the ``pending``, so every
+    due metadata row has one -- the hit rate is 100%.
+    """
     from conftest import seed_media_item
-    return await seed_media_item(session, native, server="jellyfin", title="A", library="Movies")
+    item = await seed_media_item(session, native, server="jellyfin", title="A", library="Movies")
+    session.add(ItemFacts(
+        item_id=item.id, critic_rating=8.5, genres=["Drama"], tmdb_origin_country=[],
+        sources={"critic_rating": "tmdb"},
+    ))
+    await session.flush()
+    return item
 
 
 async def test_a_due_metadata_row_is_written_and_recorded(session, config_with_badges):
@@ -736,6 +750,74 @@ async def test_a_due_metadata_row_is_written_and_recorded(session, config_with_b
     assert row.status == "written" and row.attempts == 0
     assert summary.startswith("pending deliveries: 1 due, 1 done, 0 still pending")
     assert "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed" in summary
+
+
+async def test_the_stored_facts_row_reaches_the_real_writer_and_a_write_lands(
+    session, config_with_badges
+):
+    """Review C1: the retry handed `plan_edits` the raw `ItemFacts` ORM row,
+    which has none of the four `GatheredFacts` fields with no column
+    (`user_rating`, `original_title`, `added_at`, `sort_title`). `plan_edits`
+    dereferences `facts.user_rating` for every kind of item -- it is in all
+    four `WRITABLE_BY_KIND` sets -- so every due metadata row raised
+    `AttributeError`, wrote nothing and stayed due forever.
+
+    Driven through the REAL writer (`plex.writer.apply_facts`/`plan_edits`,
+    which `jellyfin/writer.py` imports unmodified) over a fake plexapi item,
+    not the recording double: the double records its arguments without
+    touching a field, which is the other half of why this was invisible.
+    """
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from test_plex_writer import FakeItem
+    from autoposter.plex import writer as plex_writer
+    from autoposter.servers.registry import Servers
+
+    item = await _item_with_facts(session, native="j-c1")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+
+    # The transport, faked; the writer, real.
+    plex_item = FakeItem(kind="movie")
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j-c1", file_path="/m.mkv")
+
+    async def real_apply_facts(ref, facts, operations=None, parental_categories=None, overrides=None):
+        return await plex_writer.apply_facts(
+            plex_item, facts, operations, parental_categories, overrides
+        )
+
+    jf.apply_facts = real_apply_facts
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    # A write LANDED -- the seeded critic rating, planned against what the
+    # item holds and sent in one batched edit.
+    assert plex_item.saved is True
+    assert plex_item.edits["rating.value"] == 8.5
+    row = (await session.execute(select(MetadataWrite.status, MetadataWrite.attempts))).one()
+    assert row.status == "written" and row.attempts == 0
+    assert "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed" in summary
+
+
+def test_the_unpersisted_facts_fields_come_back_at_their_defaults():
+    """The other half of C1: a `GatheredFacts` field with no `item_facts`
+    column must reach the writer at its default rather than as a missing
+    attribute -- which is what the next such field would otherwise be."""
+    from autoposter.facts.models import GatheredFacts
+
+    row = ItemFacts(item_id=1, critic_rating=8.5, genres=["Drama"], sources={})
+    facts = deliveries.facts_from_row(row)
+
+    assert isinstance(facts, GatheredFacts)
+    assert facts.critic_rating == 8.5 and facts.genres == ["Drama"]
+    for unpersisted in ("user_rating", "original_title", "added_at", "sort_title"):
+        assert not hasattr(ItemFacts, unpersisted), f"{unpersisted} gained a column"
+        assert getattr(facts, unpersisted) is None
+    assert deliveries.facts_from_row(None) == GatheredFacts()
 
 
 async def test_a_metadata_resolution_miss_stays_pending_without_spending_budget(

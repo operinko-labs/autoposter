@@ -7,6 +7,7 @@ that reads it keeps working unchanged.
 from __future__ import annotations
 
 import logging
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -58,6 +59,36 @@ def failure_detail(exc: Exception) -> str:
     if isinstance(exc, httpx.TransportError):
         return f"connect: {type(exc).__name__}"
     return f"error: {type(exc).__name__}"
+
+
+# Every ``GatheredFacts`` field ``item_facts`` actually stores. DERIVED, not
+# listed: rows 32/33a/99/227 added four ``GatheredFacts`` fields with no
+# column (``user_rating``, ``original_title``, ``added_at``, ``sort_title``)
+# and the next such field must not be able to break the retry the way those
+# four did -- see ``facts_from_row``.
+_STORED_FACT_FIELDS = tuple(
+    f.name for f in fields(GatheredFacts) if hasattr(ItemFacts, f.name)
+)
+
+
+def facts_from_row(row: ItemFacts | None) -> GatheredFacts:
+    """The stored ``item_facts`` row as the ``GatheredFacts`` the writer reads.
+
+    The ORM row is NOT duck-compatible with ``GatheredFacts``, which is what
+    an earlier version of this module assumed: ``plex.writer.plan_edits`` --
+    which both writers use -- dereferences ``facts.user_rating`` for every
+    kind of item, guarded only by ``WRITABLE_BY_KIND`` membership, and
+    ``ItemFacts`` has no such attribute. Handing it the row raised
+    ``AttributeError`` out of the savepoint on every due metadata row, so the
+    retry could not complete a single write.
+
+    The unpersisted four are left at their defaults, which is honest: a retry
+    writes what the database holds, and it holds none of them. ``plan_edits``
+    then sees ``user_rating=None`` and skips the field, exactly as intended.
+    """
+    if row is None:
+        return GatheredFacts()
+    return GatheredFacts(**{name: getattr(row, name) for name in _STORED_FACT_FIELDS})
 
 
 async def _upsert_outcome(
@@ -625,12 +656,13 @@ async def retry_pending_deliveries(
                 # gather: a retry exists to get what this service already
                 # decided onto a server that refused it, and re-gathering
                 # would make this a second metadata pipeline with its own
-                # provider budget. The `ItemFacts` row is read the way
-                # `compose_badged_bytes` reads it -- duck-compatible with
-                # `GatheredFacts` at every field the writer touches.
-                facts = (await session.execute(
+                # provider budget. The `ItemFacts` row is COPIED into a
+                # `GatheredFacts` rather than handed over as itself: the two
+                # are not duck-compatible, and `facts_from_row` above says
+                # why.
+                facts = facts_from_row((await session.execute(
                     select(ItemFacts).where(ItemFacts.item_id == item_id)
-                )).scalar_one_or_none() or GatheredFacts()
+                )).scalar_one_or_none())
                 overrides: dict[str, object] = {}
                 if row_config.operations.item_overrides_enabled:
                     overrides = await load_overrides(session, item_id)
