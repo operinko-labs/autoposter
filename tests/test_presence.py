@@ -197,3 +197,46 @@ async def test_an_absent_only_render_rolls_up_as_skipped(session):
     render = await _rendered(session, item)
     await deliveries.record(session, render.id, "jellyfin", "absent", detail=presence.ABSENT_DETAIL)
     assert await deliveries.rollup(session, render.id) == "skipped"
+
+
+async def test_the_identity_server_stamping_absent_is_warned_about_by_name(session, caplog):
+    """Review I5: presence applies to Plex too -- a section renamed after
+    ingest, or added to excluded_libraries later, genuinely no longer holds
+    the item. That is the one place "Plex-only deployments see no behaviour
+    change beyond recorded rows" could stop being true, so it is announced
+    with the counts and the section names rather than going silent."""
+    item = await seed_media_item(session, "rk12", library="Retired Section", title="P")
+    await _rendered(session, item)
+
+    with caplog.at_level("WARNING", logger="autoposter.servers.presence"):
+        outcome = await presence.apply_presence(session, "plex", {"Movies"})
+    await session.commit()
+
+    assert outcome == {
+        "metadata": {"absent": 1, "rearmed": 0},
+        "artwork": {"absent": 1, "rearmed": 0},
+    }
+    messages = [
+        r.getMessage() for r in caplog.records if r.name == "autoposter.servers.presence"
+    ]
+    assert len(messages) == 1, "once per pass per server, not once per row"
+    assert "plex is the identity server" in messages[0]
+    assert "1 item(s) and 1 render(s)" in messages[0]
+    assert "Retired Section" in messages[0]
+    assert "http" not in messages[0]
+
+
+async def test_a_matching_plex_stamps_nothing_and_says_nothing(session, caplog):
+    """The steady state on the identity server: every section still carried,
+    so no stamp and no warning."""
+    await seed_media_item(session, "rk13", library="Movies", title="M")
+
+    with caplog.at_level("WARNING", logger="autoposter.servers.presence"):
+        outcome = await presence.apply_presence(session, "plex", {"Movies", "TV Shows"})
+    await session.commit()
+
+    assert outcome == {
+        "metadata": {"absent": 0, "rearmed": 0},
+        "artwork": {"absent": 0, "rearmed": 0},
+    }
+    assert [r for r in caplog.records if r.name == "autoposter.servers.presence"] == []

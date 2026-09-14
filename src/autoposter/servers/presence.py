@@ -35,6 +35,11 @@ ABSENT_DETAIL = "library: not carried by this server"
 _KEEP_METADATA = ("written", "absent")
 _KEEP_ARTWORK = ("uploaded", "absent")
 
+# The identity server: the one items were ingested from, and whose library
+# names every other server's are mapped into. Spelled the same way
+# `deliveries.retry_pending_deliveries` spells it.
+IDENTITY_SERVER = "plex"
+
 
 async def present_libraries(server) -> set[str]:
     """The libraries ``server`` carries, in the configuration's name space."""
@@ -54,6 +59,16 @@ async def apply_presence(
     sentence built on it (spec §5) said nothing true. ``metadata`` counts
     ITEMS, ``artwork`` counts RENDERS. Does not commit -- the caller (a full
     pass's opening, a catch-up's step 1) owns the transaction.
+
+    Applied to the IDENTITY SERVER too, by decision (review I5). "Not carried"
+    is a fact about a server, and Plex is a server: a section renamed after
+    ingest, one added to ``excluded_libraries`` later, or one since retyped
+    genuinely no longer holds the item under the name the row records, and
+    spec §1's rule is what should then apply. It is still the one case where
+    "Plex-only deployments see no behaviour change beyond recorded rows" could
+    stop being true, so it is logged at WARNING with the counts and the
+    library names -- once per pass, since this function runs once per server
+    per pass -- rather than only showing up as a silent stop.
     """
     now = now or datetime.now(timezone.utc)
     carried = sorted(present)
@@ -132,6 +147,19 @@ async def apply_presence(
 
     if artwork["absent"] or artwork["rearmed"]:
         await _rollup_stamped_renders(session, server_name, now)
+
+    if server_name == IDENTITY_SERVER and (metadata["absent"] or artwork["absent"]):
+        # Library NAMES, which are the operator's own words for his own
+        # sections -- never an address (spec §1's "never a URL" holds for what
+        # is logged as much as for what is stored).
+        uncarried = sorted((await session.execute(
+            select(MediaItem.library).where(not_carried).distinct()
+        )).scalars())
+        logger.warning(
+            "%s is the identity server and now reports %d item(s) and %d render(s) "
+            "absent, in: %s -- nothing is written to or delivered on those",
+            server_name, metadata["absent"], artwork["absent"], ", ".join(uncarried),
+        )
 
     return {"metadata": metadata, "artwork": artwork}
 

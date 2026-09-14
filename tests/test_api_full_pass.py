@@ -420,3 +420,66 @@ async def test_a_full_pass_survives_a_server_that_cannot_list_its_libraries(
     assert response.status_code == 200
     assert response.json()["presence"] == {}
     assert response.json()["queued"] == 1
+
+
+async def test_a_plex_only_pass_whose_sections_all_match_changes_nothing(
+    client, auth_headers, session
+):
+    """Review I5/T5: the binding constraint "Plex-only deployments see no
+    behaviour change beyond recorded rows". Every existing presence test here
+    runs with an empty registry and asserts `presence == {}`, which exercises
+    neither Plex's own `library_names()` nor the absent path on the identity
+    server -- so a Plex-only deployment's actual first pass was untested."""
+    from autoposter.render import pipeline
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    movie = await seed_media_item(session, "rk-p1", library="Movies", title="M")
+    render = await pipeline._get_or_create_render(session, movie, "poster", "/a/p.jpg")
+    render.status = "rendered"
+    await seed_media_item(session, "rk-p2", library="TV Shows", kind="show", title="S")
+    await session.commit()
+
+    client._transport.app.state.servers = Servers({
+        "plex": FakeMediaServer(
+            name="plex", capabilities=PLEX_CAPS, libraries={"Movies", "TV Shows"},
+        ),
+    })
+
+    body = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert body["presence"] == {"plex": {
+        "metadata": {"absent": 0, "rearmed": 0},
+        "artwork": {"absent": 0, "rearmed": 0},
+    }}
+    assert body["queued"] == 2
+    # Not one row in either table, and the render's roll-up untouched: the
+    # pass recorded nothing it did not have to.
+    assert (await session.execute(select(MetadataWrite))).scalars().all() == []
+    assert (await session.execute(select(RenderDelivery))).scalars().all() == []
+
+
+async def test_an_excluded_plex_section_becomes_absent_on_plex_itself(
+    client, auth_headers, session
+):
+    """The other half of the same decision: a section the operator excluded
+    after ingest no longer carries the item under the name the row records, so
+    spec §1's rule applies to the identity server like any other."""
+    from autoposter.servers.registry import Servers
+    from conftest import seed_media_item
+
+    retired = await seed_media_item(session, "rk-p3", library="Home Videos", title="H")
+    await seed_media_item(session, "rk-p4", library="Movies", title="M")
+    await session.commit()
+
+    client._transport.app.state.servers = Servers({
+        "plex": FakeMediaServer(name="plex", capabilities=PLEX_CAPS, libraries={"Movies"}),
+    })
+
+    body = (await client.post("/api/full-pass", headers=auth_headers)).json()
+
+    assert body["presence"]["plex"]["metadata"] == {"absent": 1, "rearmed": 0}
+    rows = (await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status, MetadataWrite.item_id)
+    )).all()
+    assert rows == [("plex", "absent", retired.id)]
