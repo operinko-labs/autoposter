@@ -1201,6 +1201,57 @@ async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_b
     assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed" in summary
 
 
+async def test_a_failed_commit_costs_only_its_own_row(session, config_with_badges, monkeypatch):
+    """Review I3: the pass held ONE transaction over as many as 1,000 rows and
+    committed once at the end, so a single failure there discarded every
+    outcome row while the uploads and writes had already landed on real
+    servers -- and the summary still claimed them. Each row now commits its
+    own outcome, and a row whose commit fails is counted `still pending`,
+    which is what it is in the database."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    items = [await _item_with_facts(session, native=f"j-i3-{n}") for n in range(3)]
+    for item in items:
+        await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j-i3", file_path="/m.mkv")
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+
+    real_commit = session.commit
+    commits = {"n": 0}
+
+    async def flaky_commit():
+        commits["n"] += 1
+        if commits["n"] == 2:
+            raise RuntimeError("the connection went away")
+        return await real_commit()
+
+    monkeypatch.setattr(session, "commit", flaky_commit)
+
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    # All three writes reached the server; only the second row's OUTCOME was
+    # lost, and the sentence says two rather than claiming three.
+    assert len(jf.facts_written) == 3
+    assert summary.startswith("pending deliveries: 3 due, 2 done, 1 still pending")
+    assert "jellyfin: 3 due, 0 uploaded, 2 written, 1 pending, 0 failed" in summary
+
+    # Durable: what survives a rollback of whatever is still open is what the
+    # database actually holds.
+    monkeypatch.setattr(session, "commit", real_commit)
+    await session.rollback()
+    statuses = sorted(
+        status for (status,) in
+        (await session.execute(select(MetadataWrite.status))).all()
+    )
+    assert statuses == ["pending", "written", "written"]
+
+
 def test_the_budget_is_a_scheduler_setting_defaulting_to_eight():
     from autoposter.config.schema import SchedulerConfig
 

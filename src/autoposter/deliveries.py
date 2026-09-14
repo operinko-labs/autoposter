@@ -371,6 +371,20 @@ async def retry_pending_deliveries(
         MetadataWrite,
     ))).all()
 
+    # The due rows are DETACHED before either loop runs. `_commit_row`'s
+    # rollback on a failed commit expires every object the session holds, and
+    # both loops read theirs across rows -- so the row after the failed one
+    # would die reading its own id, the same way the pre-savepoint
+    # `session.rollback()` used to kill the rest of the pass. Nothing below
+    # writes through these objects: every write in this module is a Core
+    # statement keyed on an id, and the one function that does mutate a
+    # `Render` (`compose_badged_bytes`, on `render.badge_fingerprint`) leaves
+    # it alone under `force=True`, which is the only way this pass calls it.
+    # `if obj in session`, because one item can appear in both queries.
+    for obj in (o for row in (*due, *metadata_due) for o in row):
+        if obj in session:
+            session.expunge(obj)
+
     uploaded = written = still_pending = 0
     per_server: dict[str, dict[str, int]] = {}
 
@@ -386,6 +400,47 @@ async def retry_pending_deliveries(
             name, {"due": 0, "uploaded": 0, "written": 0, "pending": 0, "failed": 0}
         )
         counts[outcome] += 1
+
+    def _counters() -> tuple:
+        """This row's starting point, so a failed commit can put the pass's
+        own counters back where they were before it."""
+        return uploaded, written, still_pending, {n: dict(c) for n, c in per_server.items()}
+
+    async def _commit_row(name: str, before: tuple) -> None:
+        """The ROW's commit: an outcome is durable the moment its side effect
+        has happened (spec §2).
+
+        The pass used to hold one transaction over as many as 1,000 rows and
+        ~3,000 round trips and commit once at the end, so a single failure at
+        that commit discarded every outcome row while up to 500 images and
+        500 metadata payloads had already landed on real servers -- and the
+        summary still claimed them. Committing per row bounds the loss to the
+        row that failed, and bounds the idle-in-transaction window to one
+        row's work rather than the whole pass's.
+
+        Safe for the loops above it because the session factory is
+        ``expire_on_commit=False`` (db/base.py): the objects the due queries
+        returned stay usable across a commit.
+
+        A commit that fails is the one outcome this pass may not claim: the
+        counters go back to what they were before the row, and the row is
+        counted ``pending`` -- which is what it still is in the database.
+        """
+        nonlocal uploaded, written, still_pending
+        try:
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            logger.warning(
+                "pending deliveries: the commit for a %s row failed (%s)",
+                name, failure_detail(exc),
+            )
+            uploaded, written, still_pending, restored = before
+            per_server.clear()
+            per_server.update(restored)
+            _tally(name, "due")
+            still_pending += 1
+            _tally(name, "pending")
 
     for delivery, render, item in due:
         # One row's own failure -- a bug, a bad refs_for lookup, anything not
@@ -406,6 +461,7 @@ async def retry_pending_deliveries(
         # savepoint back is automatic on the way out of this block, and
         # leaves every other row's work, and every object, untouched.
         render_id, server_name = render.id, delivery.server
+        before = _counters()
         _tally(server_name, "due")
         try:
             async with session.begin_nested():
@@ -598,9 +654,15 @@ async def retry_pending_deliveries(
             )
             still_pending += 1
             _tally(server_name, "pending")
+        finally:
+            # `finally`, not a line after the `try`: every branch above leaves
+            # this block with a `continue`, which would step straight over
+            # anything written there.
+            await _commit_row(server_name, before)
 
     for write_row, item in metadata_due:
         item_id, server_name = item.id, write_row.server
+        before = _counters()
         _tally(server_name, "due")
         # The same SAVEPOINT-per-row isolation the artwork loop documents
         # above: one row's database failure must not abort the pass.
@@ -752,6 +814,8 @@ async def retry_pending_deliveries(
             )
             still_pending += 1
             _tally(server_name, "pending")
+        finally:
+            await _commit_row(server_name, before)
 
     summary = (
         f"pending deliveries: {len(due) + len(metadata_due)} due, "
@@ -765,14 +829,8 @@ async def retry_pending_deliveries(
             f"{c['pending']} pending, {c['failed']} failed"
             for name, c in sorted(per_server.items())
         )
-    try:
-        await session.commit()
-    except Exception as exc:
-        # The commit is the last thing that can fail, and a
-        # scheduled pass that raises out of its body loses the summary the
-        # operator reads. Reported in the sentence instead, rolled back so
-        # the session is usable again.
-        await session.rollback()
-        logger.warning("pending deliveries: the closing commit failed (%s)", failure_detail(exc))
-        return f"{summary}; the closing commit failed ({failure_detail(exc)})"
+    # No closing commit: every row committed its own outcome as soon as its
+    # side effect had happened (`_commit_row`), so there is nothing left here
+    # to lose. A pass with no due rows leaves only the two SELECTs' read
+    # transaction, which the caller's `async with session_factory()` closes.
     return summary
