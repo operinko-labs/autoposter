@@ -896,13 +896,17 @@ different one, to sample the media info the badge needs — composing without it
 would put visibly different artwork on the retried server until the next full
 pass. A row whose item the server still does not know stays `pending` and is
 deferred six hours at no cost to its budget: a server that has not scanned the
-file yet is a wait, not a failure. A resolve that fails on the wire is deferred
-the same six hours but does spend an attempt. A path the server cannot map to
-its own library is marked `failed` at once, since no retry fixes a mount
-mismatch. A compose, upload or write that throws spends one of the row's
-attempts and records the reason — a category and an exception class name, never
-a URL — and the row is marked `failed` once `scheduler.delivery_attempts` is
-spent. One row's own failure never takes the rest of the pass down with it.
+file yet is a wait, not a failure. A resolve against the server the row is owed
+to that fails on the wire is deferred the same six hours but does spend an
+attempt; the identity-server sample read is uncounted whatever goes wrong. A
+path the server cannot map to its own library is marked `failed` at once,
+since no retry fixes a mount mismatch. Once the item has resolved, the two
+tables part ways: a compose or upload that throws is `failed` at once, because
+the server has the file and the failure is ours, while a metadata write that
+throws spends one of the row's attempts and is `failed` once
+`scheduler.delivery_attempts` is spent. Every failure records its reason as a
+category and an exception class name, never a URL. One row's own failure never
+takes the rest of the pass down with it.
 
 The per-server rows roll up into the render's `upload_status`, so every
 existing query and dashboard that reads it keeps working. The precedence is
@@ -925,11 +929,11 @@ metadata in `metadata_writes`, one row per item and server. A row reads
 `uploaded` or `written` when the server took it, `skipped` with the reason
 when an exemption or a `write_to_<server>` / `upload_to_<server>` switch
 stopped it, and `pending` when the server has not scanned the file yet or
-refused a metadata write. `failed` has two roads into it: an upload that
-throws during a full pass, and an item whose file path maps into none of that
-server's library roots, are `failed` at once — neither is a wait, and no retry
-fixes a mount mismatch — while a `pending` row becomes `failed` when its
-retry budget runs out.
+refused a metadata write. `failed` has two roads into it: a compose or upload
+that throws, in a full pass or in the retry pass, and an item whose file path
+maps into none of that server's library roots, are `failed` at once — neither
+is a wait, and no retry fixes a mount mismatch — while a `pending` row becomes
+`failed` when its retry budget runs out.
 
 `absent` is the fifth status, and it is decided once per library and server
 rather than once per item attempt: a library a server does not carry will
@@ -1501,12 +1505,11 @@ Four rules govern what these numbers mean:
   `cancelled`.** A full pass has no end of its own — the button returns as
   soon as the work is queued and the queue drains for hours afterwards — so
   the scheduler closes the row when no `process_item` job created at or after
-  the run's start is
-  still pending or running. Deferred jobs are counted and do **not** hold the
-  run open (a deferred job waits six hours by design), and a pass still
-  holding a job after **24 hours** is closed as `timed_out`. `interrupted` is
-  a scheduled run whose successor found it still open after a restart, and
-  `cancelled` is a catch-up an operator stopped.
+  the run's start is still pending or running. Deferred jobs are counted and
+  do **not** hold the run open (a deferred job waits six hours by design), and
+  a pass still holding a job after **24 hours** is closed as `timed_out`.
+  `interrupted` is a scheduled run whose successor found it still open after a
+  restart, and `cancelled` is a catch-up an operator stopped.
 
 **Retention.** The orphaned-asset cleanup pass (`cleanup_days`, default 7)
 trims this table to the newest **500 rows per** job name on every run, while
