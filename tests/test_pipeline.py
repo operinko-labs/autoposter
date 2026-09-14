@@ -2091,8 +2091,8 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     )
 
     assert summary == (
-        "pending deliveries: 1 due, 1 done, 0 still pending; "
-        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+        "pending deliveries: 1 due, 1 done, 0 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed, 0 skipped"
     )
     assert [u[0].native_id for u in jf.uploads] == ["j1"]
     assert len(plex.uploads) == 1, "the retry pass owes nothing to the server that has the bytes"
@@ -2216,8 +2216,8 @@ async def test_a_retry_composes_from_the_identity_server_and_leaves_the_fingerpr
     )
 
     assert summary == (
-        "pending deliveries: 1 due, 1 done, 0 still pending; "
-        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+        "pending deliveries: 1 due, 1 done, 0 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed, 0 skipped"
     )
     assert len(jf.uploads) == 1
     sampled_server, sampled_ref = sampled[calls_before]
@@ -2265,8 +2265,8 @@ async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
     )
 
     assert summary == (
-        "pending deliveries: 1 due, 0 done, 1 still pending; "
-        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed"
+        "pending deliveries: 1 due, 0 done, 1 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped"
     )
     assert jf.uploads == [], "overlay-less bytes must never be delivered"
     row = (

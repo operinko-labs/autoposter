@@ -105,4 +105,4 @@ async def test_the_pass_summary_carries_the_per_server_sentence(session, config_
         config, now=datetime.now(timezone.utc),
     )
 
-    assert summary.endswith("jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed")
+    assert summary.endswith("jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped")

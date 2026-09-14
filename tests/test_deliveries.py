@@ -77,8 +77,8 @@ async def test_pending_rows_become_due_and_are_re_delivered(session, config_with
     )
     assert jf.uploads and jf.uploads[0][0].native_id == "j1"
     assert summary == (
-        "pending deliveries: 1 due, 1 done, 0 still pending; "
-        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+        "pending deliveries: 1 due, 1 done, 0 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed, 0 skipped"
     )
     assert await deliveries.rollup(session, render.id) == "uploaded"
 
@@ -92,8 +92,8 @@ async def test_server_removed_from_config_fails_the_delivery(session, config_wit
         session, Servers({}), config_with_badges, now=datetime.now(timezone.utc)
     )
     assert summary == (
-        "pending deliveries: 1 due, 0 done, 0 still pending; "
-        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed"
+        "pending deliveries: 1 due, 0 done, 0 still pending, 1 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed, 0 skipped"
     )
     # Column-only, not a full-entity select: retry_pending_deliveries' own
     # `due` query already loaded this row's RenderDelivery instance into the
@@ -125,8 +125,8 @@ async def test_transport_error_during_resolve_stays_pending(session, config_with
         session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
     )
     assert summary == (
-        "pending deliveries: 1 due, 0 done, 1 still pending; "
-        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed"
+        "pending deliveries: 1 due, 0 done, 1 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped"
     )
     # Column-only select -- see the note in test_server_removed_from_config_
     # fails_the_delivery on why a full-entity select would read stale.
@@ -214,7 +214,7 @@ async def test_an_unreachable_server_exhausts_a_metadata_rows_budget(
     )).one()
     assert row.status == "failed" and row.detail == "connect: ConnectError"
     assert row.next_attempt_at is None
-    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed" in second
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed, 0 skipped" in second
 
 
 async def test_identity_resolution_wait_leaves_the_budget_alone(session, config_with_badges):
@@ -242,8 +242,8 @@ async def test_identity_resolution_wait_leaves_the_budget_alone(session, config_
     )
 
     assert summary == (
-        "pending deliveries: 1 due, 0 done, 1 still pending; "
-        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed"
+        "pending deliveries: 1 due, 0 done, 1 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped"
     )
     row = (await session.execute(select(RenderDelivery.status, RenderDelivery.attempts))).one()
     assert row.status == "pending"
@@ -273,8 +273,8 @@ async def test_upload_exception_records_failed_not_pending(session, config_with_
         session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc)
     )
     assert summary == (
-        "pending deliveries: 1 due, 0 done, 0 still pending; "
-        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed"
+        "pending deliveries: 1 due, 0 done, 0 still pending, 1 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed, 0 skipped"
     )
     # Column-only select -- see the note in test_server_removed_from_config_
     # fails_the_delivery on why a full-entity select would read stale.
@@ -333,8 +333,8 @@ async def test_library_override_gates_the_retry_per_row(session, monkeypatch):
     assert await deliveries.rollup(session, open_render.id) == "uploaded"
     assert len(jf.uploads) == 1 and jf.uploads[0][0].native_id == "j2"
     assert summary == (
-        "pending deliveries: 2 due, 1 done, 0 still pending; "
-        "jellyfin: 2 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+        "pending deliveries: 2 due, 1 done, 0 still pending, 0 failed, 1 skipped; "
+        "jellyfin: 2 due, 1 uploaded, 0 written, 0 pending, 0 failed, 1 skipped"
     )
 
 
@@ -424,8 +424,8 @@ async def test_a_database_error_on_one_row_does_not_abort_the_pass(
     )
 
     assert summary == (
-        "pending deliveries: 2 due, 1 done, 1 still pending; "
-        "jellyfin: 2 due, 1 uploaded, 0 written, 1 pending, 0 failed"
+        "pending deliveries: 2 due, 1 done, 1 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 2 due, 1 uploaded, 0 written, 1 pending, 0 failed, 0 skipped"
     )
     assert [u[0].native_id for u in jf.uploads] == ["j1", "j2"], "the second row was never attempted"
     # A separate session, because the point of the assertion is that the
@@ -468,8 +468,8 @@ async def test_nothing_left_to_compose_records_skipped_not_a_failed_upload(
     )
 
     assert summary == (
-        "pending deliveries: 1 due, 0 done, 0 still pending; "
-        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 0 failed"
+        "pending deliveries: 1 due, 0 done, 0 still pending, 0 failed, 1 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 0 failed, 1 skipped"
     )
     assert jf.uploads == [], "there was nothing to upload"
     # Column-only select -- see the note in test_server_removed_from_config_
@@ -498,7 +498,7 @@ async def test_a_migration_backfilled_row_is_never_due(session, config_with_badg
         session, Servers({}), config_with_badges, now=datetime.now(timezone.utc)
     )
 
-    assert summary == "pending deliveries: 0 due, 0 done, 0 still pending"
+    assert summary == "pending deliveries: 0 due, 0 done, 0 still pending, 0 failed, 0 skipped"
     row = (
         await session.execute(
             select(RenderDelivery.status, RenderDelivery.attempted_at)
@@ -564,8 +564,8 @@ async def test_a_rolled_back_row_keeps_every_other_rows_work(
     )
 
     assert summary == (
-        "pending deliveries: 3 due, 2 done, 1 still pending; "
-        "jellyfin: 3 due, 2 uploaded, 0 written, 1 pending, 0 failed"
+        "pending deliveries: 3 due, 2 done, 1 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 3 due, 2 uploaded, 0 written, 1 pending, 0 failed, 0 skipped"
     )
     assert [u[0].native_id for u in jf.uploads] == ["j1", "j2", "j3"], (
         "every row must still be attempted"
@@ -610,8 +610,8 @@ async def test_a_path_mismatch_on_the_identity_server_fails_rather_than_waiting_
     )
 
     assert summary == (
-        "pending deliveries: 1 due, 0 done, 0 still pending; "
-        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed"
+        "pending deliveries: 1 due, 0 done, 0 still pending, 1 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed, 0 skipped"
     )
     assert jf.uploads == [], "nothing may be delivered when the identity cannot be sampled"
     # Column-only select -- see the note in test_server_removed_from_config_
@@ -882,7 +882,7 @@ async def test_a_due_metadata_row_is_written_and_recorded(session, config_with_b
     row = (await session.execute(select(MetadataWrite.status, MetadataWrite.attempts))).one()
     assert row.status == "written" and row.attempts == 0
     assert summary.startswith("pending deliveries: 1 due, 1 done, 0 still pending")
-    assert "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed" in summary
+    assert "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed, 0 skipped" in summary
 
 
 async def test_the_stored_facts_row_reaches_the_real_writer_and_a_write_lands(
@@ -933,7 +933,7 @@ async def test_the_stored_facts_row_reaches_the_real_writer_and_a_write_lands(
     assert plex_item.edits["rating.value"] == 8.5
     row = (await session.execute(select(MetadataWrite.status, MetadataWrite.attempts))).one()
     assert row.status == "written" and row.attempts == 0
-    assert "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed" in summary
+    assert "jellyfin: 1 due, 0 uploaded, 1 written, 0 pending, 0 failed, 0 skipped" in summary
 
 
 def test_the_unpersisted_facts_fields_come_back_at_their_defaults():
@@ -1161,7 +1161,7 @@ async def test_the_budget_turns_a_persistently_failing_delivery_failed(
         select(RenderDelivery.status, RenderDelivery.attempts, RenderDelivery.detail)
     )).one()
     assert row.status == "pending" and row.attempts == 1
-    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed" in first
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped" in first
 
     second = await deliveries.retry_pending_deliveries(
         session, servers, config_with_badges,
@@ -1172,7 +1172,7 @@ async def test_the_budget_turns_a_persistently_failing_delivery_failed(
     )).one()
     assert row.status == "failed" and row.detail == "connect: ConnectError"
     assert row.next_attempt_at is None, "a failed row is not due again on its own"
-    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed" in second
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed, 0 skipped" in second
 
 
 async def test_the_budget_turns_a_persistently_failing_metadata_write_failed(
@@ -1210,7 +1210,7 @@ async def test_the_budget_turns_a_persistently_failing_metadata_write_failed(
     )).one()
     assert row.status == "pending" and row.attempts == 1
     assert row.detail == "connect: ConnectError"
-    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed" in first
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped" in first
 
     second = await deliveries.retry_pending_deliveries(
         session, servers, config_with_badges,
@@ -1221,7 +1221,7 @@ async def test_the_budget_turns_a_persistently_failing_metadata_write_failed(
     )).one()
     assert row.status == "failed" and row.detail == "connect: ConnectError"
     assert row.next_attempt_at is None
-    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed" in second
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed, 0 skipped" in second
 
 
 async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_badges):
@@ -1276,7 +1276,7 @@ async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_b
         select(RenderDelivery.status, RenderDelivery.attempts)
     )).one()
     assert row.status == "pending" and row.attempts == 1
-    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed" in summary
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped" in summary
 
 
 async def test_a_failed_commit_costs_only_its_own_row(session, config_with_badges, monkeypatch):
@@ -1317,7 +1317,7 @@ async def test_a_failed_commit_costs_only_its_own_row(session, config_with_badge
     # lost, and the sentence says two rather than claiming three.
     assert len(jf.facts_written) == 3
     assert summary.startswith("pending deliveries: 3 due, 2 done, 1 still pending")
-    assert "jellyfin: 3 due, 0 uploaded, 2 written, 1 pending, 0 failed" in summary
+    assert "jellyfin: 3 due, 0 uploaded, 2 written, 1 pending, 0 failed, 0 skipped" in summary
 
     # Durable: what survives a rollback of whatever is still open is what the
     # database actually holds.
@@ -1351,4 +1351,4 @@ async def test_an_exhausted_row_is_not_retried_again(session, config_with_badges
         session, Servers({}), config_with_badges, now=datetime.now(timezone.utc),
     )
 
-    assert summary == "pending deliveries: 0 due, 0 done, 0 still pending"
+    assert summary == "pending deliveries: 0 due, 0 done, 0 still pending, 0 failed, 0 skipped"

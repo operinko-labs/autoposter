@@ -415,13 +415,15 @@ async def retry_pending_deliveries(
     def _tally(name: str, outcome: str) -> None:
         """One clause of spec §2's sentence, per server.
 
-        ``due`` counts every row this pass looked at; the other four count
-        what it DID. They deliberately need not add up: a row skipped because
-        the server's toggle is off was due and produced nothing, and a
-        sentence that hid that would read as work the pass never did.
+        ``due`` counts every row this pass looked at and the other five count
+        what it DID, so the five add up to it: every row reaches exactly one
+        outcome. ``skipped`` is the counter that makes that true -- without
+        it a server whose toggle is off read `N due, 0 uploaded, 0 written,
+        0 pending, 0 failed`, with nothing in the sentence saying why.
         """
         counts = per_server.setdefault(
-            name, {"due": 0, "uploaded": 0, "written": 0, "pending": 0, "failed": 0}
+            name,
+            {"due": 0, "uploaded": 0, "written": 0, "pending": 0, "failed": 0, "skipped": 0},
         )
         counts[outcome] += 1
 
@@ -515,6 +517,7 @@ async def retry_pending_deliveries(
                         session, render.id, delivery.server, "skipped",
                         detail=f"config: badges.upload_to_{delivery.server} is off",
                     )
+                    _tally(delivery.server, "skipped")
                     await rollup(session, render.id)
                     continue
 
@@ -646,6 +649,7 @@ async def retry_pending_deliveries(
                         # is the honest outcome, the same one `deliver` records
                         # for a server there is nothing to send to.
                         await record(session, render.id, delivery.server, "skipped")
+                        _tally(delivery.server, "skipped")
                         await rollup(session, render.id)
                         continue
                     await target.upload_artwork(
@@ -710,12 +714,14 @@ async def retry_pending_deliveries(
                         session, item_id, server_name, "skipped",
                         detail="config: operations.enabled is off",
                     )
+                    _tally(server_name, "skipped")
                     continue
                 if not getattr(row_config.operations, f"write_to_{server_name}", False):
                     await record_metadata(
                         session, item_id, server_name, "skipped",
                         detail=f"config: operations.write_to_{server_name} is off",
                     )
+                    _tally(server_name, "skipped")
                     continue
                 refs = await refs_for(session, item_id)
                 try:
@@ -790,6 +796,7 @@ async def retry_pending_deliveries(
                         await record_metadata(
                             session, item_id, server_name, "skipped", detail=exempt,
                         )
+                        _tally(server_name, "skipped")
                         continue
                     # `parental_categories=None`: row 85's categories are
                     # fetched by the full pass, which holds the IMDb client.
@@ -841,16 +848,24 @@ async def retry_pending_deliveries(
         finally:
             await _commit_row(server_name, before)
 
+    # Summed from the per-server counts rather than carried as two more
+    # running totals: the head used to name three numbers that could not
+    # reconcile -- a row that went `failed` was in neither `done` nor `still
+    # pending`, so a pass that failed both its rows read `2 due, 0 done, 0
+    # still pending` -- and the head is the half the dashboard shows first.
+    failed = sum(c["failed"] for c in per_server.values())
+    skipped = sum(c["skipped"] for c in per_server.values())
     summary = (
         f"pending deliveries: {len(due) + len(metadata_due)} due, "
-        f"{uploaded + written} done, {still_pending} still pending"
+        f"{uploaded + written} done, {still_pending} still pending, "
+        f"{failed} failed, {skipped} skipped"
     )
     if per_server:
         # Spec §2's sentence, one clause per server, sorted so the run
         # history's detail reads the same way twice for the same work.
         summary += "; " + "; ".join(
             f"{name}: {c['due']} due, {c['uploaded']} uploaded, {c['written']} written, "
-            f"{c['pending']} pending, {c['failed']} failed"
+            f"{c['pending']} pending, {c['failed']} failed, {c['skipped']} skipped"
             for name, c in sorted(per_server.items())
         )
     # No closing commit: every row committed its own outcome as soon as its
