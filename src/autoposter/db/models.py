@@ -242,7 +242,13 @@ class RenderDelivery(Base):
     stays as the roll-up; this is the per-server truth and the retry queue."""
 
     __tablename__ = "render_deliveries"
-    __table_args__ = (UniqueConstraint("render_id", "server", name="uq_delivery_render_server"),)
+    __table_args__ = (
+        UniqueConstraint("render_id", "server", name="uq_delivery_render_server"),
+        # PARTIAL, like the metadata table's due index: `run_id` is NULL for
+        # every row the ordinary pipeline arms, and the only query that reads
+        # the column asks `run_id = <id>`.
+        Index("ix_render_deliveries_run_id", "run_id", postgresql_where=text("run_id IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     render_id: Mapped[int] = mapped_column(
@@ -265,6 +271,19 @@ class RenderDelivery(Base):
     # which the catch-up (Task 11) treats as behind, costing one redundant
     # upload per pre-existing row on the first catch-up and nothing after.
     fingerprint: Mapped[str | None] = mapped_column(String(64))
+    # The catch-up run that marked this row due (spec §3). NULL for a row the
+    # ordinary pipeline armed. ON DELETE SET NULL, not CASCADE: the run
+    # history is trimmed at 500 rows per name, and an outcome row must outlive
+    # the run that queued it.
+    # No `index=True`: the index is the partial one in `__table_args__` above.
+    run_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("runs.id", ondelete="SET NULL", name="fk_render_deliveries_run_id"),
+    )
+    # What this row said before that run marked it `pending`, so cancelling
+    # the run puts it back (spec §3). NULL means the run CREATED the row, and
+    # a cancel deletes it rather than inventing a status for it.
+    previous_status: Mapped[str | None] = mapped_column(String(24))
 
 
 class MetadataWrite(Base):
@@ -283,7 +302,21 @@ class MetadataWrite(Base):
     """
 
     __tablename__ = "metadata_writes"
-    __table_args__ = (UniqueConstraint("item_id", "server", name="uq_metadata_write_item_server"),)
+    __table_args__ = (
+        UniqueConstraint("item_id", "server", name="uq_metadata_write_item_server"),
+        # PARTIAL: the retry pass is the only reader of this column and it
+        # asks one question -- which `pending` rows are due (deliveries.py's
+        # `metadata_due`). Every other status leaves `next_attempt_at` NULL,
+        # so a full index over ~32k rows would be mostly NULLs maintained on
+        # every write for a query that can never want them.
+        Index(
+            "ix_metadata_writes_next_attempt_at",
+            "next_attempt_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+        # PARTIAL for the same reason as its `render_deliveries` twin.
+        Index("ix_metadata_writes_run_id", "run_id", postgresql_where=text("run_id IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     # No `index=True`: uq_metadata_write_item_server above already indexes
@@ -300,7 +333,21 @@ class MetadataWrite(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     written_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # No `index=True`: the index is the partial one in `__table_args__` above.
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The catch-up run that marked this row due (spec §3). NULL for a row the
+    # ordinary pipeline armed. ON DELETE SET NULL, not CASCADE: the run
+    # history is trimmed at 500 rows per name, and an outcome row must outlive
+    # the run that queued it.
+    # No `index=True`: the index is the partial one in `__table_args__` above.
+    run_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("runs.id", ondelete="SET NULL", name="fk_metadata_writes_run_id"),
+    )
+    # What this row said before that run marked it `pending`, so cancelling
+    # the run puts it back (spec §3). NULL means the run CREATED the row, and
+    # a cancel deletes it rather than inventing a status for it.
+    previous_status: Mapped[str | None] = mapped_column(String(24))
 
 
 class Job(Base):

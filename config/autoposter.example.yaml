@@ -724,6 +724,7 @@ scheduler:
   prune_days: 7 # media_items prune cadence
   merge_days: 7 # media_items twin merge cadence
   pending_deliveries_minutes: 15 # pending-deliveries retry cadence; inside `enabled` above; not gated on Plex, like the drift, cleanup and asset-stats passes
+  delivery_attempts: 8 # how many times the pending-deliveries pass retries one row before marking it failed
   # cleanup_apply is not a setting here -- see cleanup.apply above, which
   # already governs whether the cleanup pass writes (dry run by default)
 

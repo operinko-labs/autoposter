@@ -2367,6 +2367,10 @@ SELECT name, last_started_at, last_finished_at, last_status, last_detail
   waits on is a library scan, not a week's drift. Not gated on Plex, like the
   drift, cleanup and asset-stats passes above it. See "The pending-deliveries
   pass" under "Media servers" above for what a run does.
+  `delivery_attempts` (default 8) bounds one row's retries. A row that runs out
+  is marked failed and stays visible until the next full pass or a catch-up
+  re-arms it. A server that has simply not scanned the file yet does not spend
+  that budget — that is a wait, and it has no cap.
 
 ### Orphaned-asset cleanup: what it can and cannot find
 

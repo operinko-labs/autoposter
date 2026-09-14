@@ -7,6 +7,7 @@ that reads it keeps working unchanged.
 from __future__ import annotations
 
 import logging
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -15,9 +16,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.loader import config_for_library
-from autoposter.db.models import MediaItem, MetadataWrite, Render, RenderDelivery
+from autoposter.db.models import ItemFacts, MediaItem, MetadataWrite, Render, RenderDelivery
 from autoposter.db.refs import refs_for
+from autoposter.facts.models import GatheredFacts
 from autoposter.intake.arr import RenderIntent
+from autoposter.plex.item_overrides import load_overrides
+from autoposter.plex.writer import exemption_reason
 from autoposter.servers.base import CAP_LOCK_ARTWORK, ItemNotFound, PathMismatch
 
 logger = logging.getLogger(__name__)
@@ -57,10 +61,41 @@ def failure_detail(exc: Exception) -> str:
     return f"error: {type(exc).__name__}"
 
 
+# Every ``GatheredFacts`` field ``item_facts`` actually stores. DERIVED, not
+# listed: rows 32/33a/99/227 added four ``GatheredFacts`` fields with no
+# column (``user_rating``, ``original_title``, ``added_at``, ``sort_title``)
+# and the next such field must not be able to break the retry the way those
+# four did -- see ``facts_from_row``.
+_STORED_FACT_FIELDS = tuple(
+    f.name for f in fields(GatheredFacts) if hasattr(ItemFacts, f.name)
+)
+
+
+def facts_from_row(row: ItemFacts | None) -> GatheredFacts:
+    """The stored ``item_facts`` row as the ``GatheredFacts`` the writer reads.
+
+    The ORM row is NOT duck-compatible with ``GatheredFacts``, which is what
+    an earlier version of this module assumed: ``plex.writer.plan_edits`` --
+    which both writers use -- dereferences ``facts.user_rating`` for every
+    kind of item, guarded only by ``WRITABLE_BY_KIND`` membership, and
+    ``ItemFacts`` has no such attribute. Handing it the row raised
+    ``AttributeError`` out of the savepoint on every due metadata row, so the
+    retry could not complete a single write.
+
+    The unpersisted four are left at their defaults, which is honest: a retry
+    writes what the database holds, and it holds none of them. ``plan_edits``
+    then sees ``user_rating=None`` and skips the field, exactly as intended.
+    """
+    if row is None:
+        return GatheredFacts()
+    return GatheredFacts(**{name: getattr(row, name) for name in _STORED_FACT_FIELDS})
+
+
 async def _upsert_outcome(
     session: AsyncSession, model, constraint: str, key: dict[str, object], status: str, *,
     detail: str | None, retry_in: float | None, count_attempt: bool,
     terminal_status: str, terminal_at: str, extra_terminal: dict[str, object] | None = None,
+    reset_attempts: bool = False, leave_run: bool = False,
 ) -> int:
     """Shared upsert body for ``record`` and ``record_metadata`` (spec §1/§2).
 
@@ -81,6 +116,15 @@ async def _upsert_outcome(
     pass's presence stamp. ``presence.apply_presence``'s re-arm is a plain
     ``UPDATE`` and is unaffected -- it is the one thing entitled to move a
     row off ``absent``.
+
+    ``run_id``/``previous_status`` are otherwise never named here, so a row
+    keeps its scope across every retry inside the run that armed it -- which
+    is what Phase C's run-scoped progress counts, by run and status, and what
+    its cancel restores. ``leave_run`` is the one exception: a row the
+    ORDINARY pipeline re-arms has left that run, and carrying the run id on
+    would have a later cancel or progress query act on rows the run no longer
+    owns. A terminal outcome inside a run keeps both columns; clearing them
+    when the run closes is the run's own business.
     """
     if status not in STATUSES and status != terminal_status:
         raise ValueError(f"{status!r} is not an outcome status")
@@ -93,6 +137,9 @@ async def _upsert_outcome(
         next_attempt_at=(now + timedelta(seconds=retry_in)) if status == "pending" else None,
         attempts=1 if counted else 0,
     )
+    if leave_run:
+        values["run_id"] = None
+        values["previous_status"] = None
     values[terminal_at] = now if is_terminal else None
     for column, value in (extra_terminal or {}).items():
         values[column] = value if is_terminal else None
@@ -118,11 +165,19 @@ async def _upsert_outcome(
             if value is None:
                 updatable.pop(column)
     if counted:
-        # The EXISTING row's value plus one: naming the column in `set_`
-        # renders `attempts = <table>.attempts + 1`, which is what makes the
-        # increment atomic against a concurrent pass.
-        updatable["attempts"] = model.attempts + 1
-    elif status in ("pending", "failed"):
+        if not reset_attempts:
+            # The EXISTING row's value plus one: naming the column in `set_`
+            # renders `attempts = <table>.attempts + 1`, which is what makes
+            # the increment atomic against a concurrent pass.
+            updatable["attempts"] = model.attempts + 1
+        # And with BOTH flags, `values`' own 1 stands: reset, then count.
+        # The two used to be mutually exclusive in effect -- `reset_attempts`
+        # was silently ignored whenever `count_attempt` was true -- which left
+        # a caller whose event is both a fresh start AND a real attempt with
+        # no way to say so. `pipeline._write`'s write failure against a row
+        # that was already `failed` is that caller: the full pass re-arms an
+        # exhausted row, and this failure is its first new attempt.
+    elif status in ("pending", "failed") and not reset_attempts:
         updatable.pop("attempts")
     stmt = stmt.on_conflict_do_update(
         constraint=constraint,
@@ -141,6 +196,7 @@ async def record(
     session: AsyncSession, render_id: int, server: str, status: str, *,
     detail: str | None = None, retry_in: float | None = None,
     fingerprint: str | None = None, count_attempt: bool = True,
+    reset_attempts: bool = False, leave_run: bool = False,
 ) -> int:
     """Upsert this render's delivery row for ``server``; return its ``attempts``.
 
@@ -156,6 +212,26 @@ async def record(
     on it would turn "the server has not scanned this file" into a
     permanent ``failed``.
 
+    ``reset_attempts`` is the RE-ARM: an uncounted ``pending`` that means
+    "start this row over" rather than "keep waiting" puts the counter back to
+    zero. Without it, ``failed`` -- itself a counted attempt -- left the row
+    permanently above the budget, so a re-armed row was exhausted again by
+    its very first failure and spec 2's "stays visible as `failed` until the
+    next full pass or catch-up re-arms it" gave it one retry rather than the
+    whole budget. ``deliver``'s re-arm of a missing/pending/failed row passes
+    it; Phase C's catch-up re-arm must pass it too. The WAIT sites
+    (``ItemNotFound``, an identity server that cannot be sampled) do not:
+    they are the same streak of trouble continuing, not a fresh start.
+
+    ``reset_attempts`` composes with ``count_attempt``: both together leave
+    ``attempts`` at 1 -- reset, then count -- which is what a caller whose
+    event is a fresh start AND a real attempt says (``pipeline._write``'s
+    write failure against a row that was already ``failed``).
+
+    ``leave_run`` is the re-arm's other half: a row the ordinary pipeline
+    re-arms has left the catch-up that armed it, so both scope columns go
+    back to NULL. The same two sites pass it that pass ``reset_attempts``.
+
     ``fingerprint`` is the badge fingerprint actually delivered. Stored on
     ``uploaded`` only, and -- exactly like ``uploaded_at`` -- never erased by
     a later non-``uploaded`` outcome, because the catch-up's "is this row
@@ -167,25 +243,29 @@ async def record(
         detail=detail, retry_in=retry_in, count_attempt=count_attempt,
         terminal_status="uploaded", terminal_at="uploaded_at",
         extra_terminal={"fingerprint": fingerprint},
+        reset_attempts=reset_attempts, leave_run=leave_run,
     )
 
 
 async def record_metadata(
     session: AsyncSession, item_id: int, server: str, status: str, *,
     detail: str | None = None, retry_in: float | None = None,
-    count_attempt: bool = True,
+    count_attempt: bool = True, reset_attempts: bool = False, leave_run: bool = False,
 ) -> int:
     """Upsert this item's metadata-write row for ``server``; return ``attempts``.
 
     The sibling of ``record`` (spec §1), field for field, with ``written``
     where artwork says ``uploaded`` and ``written_at`` where it says
     ``uploaded_at``. Keyed on the ITEM: a metadata write has no art kind.
+    ``reset_attempts`` and ``leave_run`` mean what they mean there -- the
+    re-arm, which Phase C's catch-up is the other writer of for this table.
     """
     return await _upsert_outcome(
         session, MetadataWrite, "uq_metadata_write_item_server",
         {"item_id": item_id, "server": server}, status,
         detail=detail, retry_in=retry_in, count_attempt=count_attempt,
         terminal_status="written", terminal_at="written_at",
+        reset_attempts=reset_attempts, leave_run=leave_run,
     )
 
 
@@ -253,16 +333,26 @@ def _intent_for(item: MediaItem, refs: dict[str, str]) -> RenderIntent:
 
 
 async def retry_pending_deliveries(
-    session: AsyncSession, servers, config, *, http=None, mdblist=None, now: datetime | None = None,
+    session: AsyncSession, servers, config, *, http=None, mdblist=None,
+    now: datetime | None = None, server: str | None = None, run_id: int | None = None,
 ) -> str:
-    """The pending-delivery retry pass (spec §5.3): due rows only, each
+    """The retry pass for BOTH outcome tables (spec §2): due rows only, each
     re-resolved on the ONE server it is still owed to.
 
     Only that server, never every server for the item: the other servers
-    already have their own delivery row (uploaded, skipped or independently
-    pending), and re-running them here would be a second, uncoordinated
-    delivery pass racing the one the next webhook or full-pass item triggers.
-    A pending row is that server's unfinished business alone.
+    already have their own row (uploaded/written, skipped, or independently
+    pending), and re-running them here would be a second, uncoordinated pass
+    racing the one the next webhook or full-pass item triggers.
+
+    ``server`` narrows the pass to one server's rows and ``run_id`` to one
+    catch-up's (spec §3); both filters apply to both tables, because a
+    catch-up marks both. NO ``run_id`` means the ORDINARY rows -- those no
+    catch-up armed -- and not "every row": a catch-up stamps its backlog
+    `next_attempt_at = now` while ordinary rows sit six hours out, so an
+    unscoped pass that took them would hand a catch-up's thousands of rows the
+    whole `LIMIT 500` budget of every scheduled pass until they drained --
+    days, on a 16k-row catch-up -- while ordinary due rows waited, and would
+    advance the catch-up's own run-scoped progress from outside it.
 
     ``pipeline.compose_badged_bytes`` is imported lazily, inside the
     function: a top-level import in that direction risks a cycle, since
@@ -272,16 +362,116 @@ async def retry_pending_deliveries(
     from autoposter.render.pipeline import upsert_server_ref
 
     now = now or datetime.now(timezone.utc)
-    due = (await session.execute(
+    # Read once per pass, not per row: a config swap mid-pass would otherwise
+    # let one pass apply two budgets, and the rows it bounded first would be
+    # judged by a number the operator has already replaced.
+    max_attempts = config.scheduler.delivery_attempts
+
+    def _scoped(stmt, table):
+        if server is not None:
+            stmt = stmt.where(table.server == server)
+        # Always a clause on the scope, never "no clause": see the docstring
+        # on why an unscoped pass must not drain a catch-up's rows.
+        stmt = stmt.where(
+            table.run_id.is_(None) if run_id is None else table.run_id == run_id
+        )
+        return stmt
+
+    due = (await session.execute(_scoped(
         select(RenderDelivery, Render, MediaItem)
         .join(Render, Render.id == RenderDelivery.render_id)
         .join(MediaItem, MediaItem.id == Render.item_id)
         .where(RenderDelivery.status == "pending", RenderDelivery.next_attempt_at <= now)
-        .order_by(RenderDelivery.next_attempt_at)
-        .limit(500)
-    )).all()
+        # `, id`: a catch-up stamps thousands of rows with ONE timestamp, and
+        # without a tiebreak which 500 of them a pass takes is arbitrary --
+        # which makes a catch-up's drain unobservable and unrepeatable, and
+        # Phase C's progress reporting reads exactly that drain.
+        .order_by(RenderDelivery.next_attempt_at, RenderDelivery.id)
+        .limit(500),
+        RenderDelivery,
+    ))).all()
+    metadata_due = (await session.execute(_scoped(
+        select(MetadataWrite, MediaItem)
+        .join(MediaItem, MediaItem.id == MetadataWrite.item_id)
+        .where(MetadataWrite.status == "pending", MetadataWrite.next_attempt_at <= now)
+        .order_by(MetadataWrite.next_attempt_at, MetadataWrite.id)
+        .limit(500),
+        MetadataWrite,
+    ))).all()
 
-    uploaded = still_pending = 0
+    # The due rows are DETACHED before either loop runs. `_commit_row`'s
+    # rollback on a failed commit expires every object the session holds, and
+    # both loops read theirs across rows -- so the row after the failed one
+    # would die reading its own id, the same way the pre-savepoint
+    # `session.rollback()` used to kill the rest of the pass. Nothing below
+    # writes through these objects: every write in this module is a Core
+    # statement keyed on an id, and the one function that does mutate a
+    # `Render` (`compose_badged_bytes`, on `render.badge_fingerprint`) leaves
+    # it alone under `force=True`, which is the only way this pass calls it.
+    # `if obj in session`, because one item can appear in both queries.
+    for obj in (o for row in (*due, *metadata_due) for o in row):
+        if obj in session:
+            session.expunge(obj)
+
+    uploaded = written = still_pending = 0
+    per_server: dict[str, dict[str, int]] = {}
+
+    def _tally(name: str, outcome: str) -> None:
+        """One clause of spec §2's sentence, per server.
+
+        ``due`` counts every row this pass looked at and the other five count
+        what it DID, so the five add up to it: every row reaches exactly one
+        outcome. ``skipped`` is the counter that makes that true -- without
+        it a server whose toggle is off read `N due, 0 uploaded, 0 written,
+        0 pending, 0 failed`, with nothing in the sentence saying why.
+        """
+        counts = per_server.setdefault(
+            name,
+            {"due": 0, "uploaded": 0, "written": 0, "pending": 0, "failed": 0, "skipped": 0},
+        )
+        counts[outcome] += 1
+
+    def _counters() -> tuple:
+        """This row's starting point, so a failed commit can put the pass's
+        own counters back where they were before it."""
+        return uploaded, written, still_pending, {n: dict(c) for n, c in per_server.items()}
+
+    async def _commit_row(name: str, before: tuple) -> None:
+        """The ROW's commit: an outcome is durable the moment its side effect
+        has happened (spec §2).
+
+        The pass used to hold one transaction over as many as 1,000 rows and
+        ~3,000 round trips and commit once at the end, so a single failure at
+        that commit discarded every outcome row while up to 500 images and
+        500 metadata payloads had already landed on real servers -- and the
+        summary still claimed them. Committing per row bounds the loss to the
+        row that failed, and bounds the idle-in-transaction window to one
+        row's work rather than the whole pass's.
+
+        Safe for the loops above it because the session factory is
+        ``expire_on_commit=False`` (db/base.py): the objects the due queries
+        returned stay usable across a commit.
+
+        A commit that fails is the one outcome this pass may not claim: the
+        counters go back to what they were before the row, and the row is
+        counted ``pending`` -- which is what it still is in the database.
+        """
+        nonlocal uploaded, written, still_pending
+        try:
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            logger.warning(
+                "pending deliveries: the commit for a %s row failed (%s)",
+                name, failure_detail(exc),
+            )
+            uploaded, written, still_pending, restored = before
+            per_server.clear()
+            per_server.update(restored)
+            _tally(name, "due")
+            still_pending += 1
+            _tally(name, "pending")
+
     for delivery, render, item in due:
         # One row's own failure -- a bug, a bad refs_for lookup, anything not
         # already turned into a delivery outcome below -- must not take the
@@ -301,14 +491,22 @@ async def retry_pending_deliveries(
         # savepoint back is automatic on the way out of this block, and
         # leaves every other row's work, and every object, untouched.
         render_id, server_name = render.id, delivery.server
+        before = _counters()
+        _tally(server_name, "due")
         try:
             async with session.begin_nested():
-                server = servers.get(delivery.server)
-                if server is None:
+                # `target`, not `server`: the keyword-only `server` filter
+                # above is what `_scoped` closes over, and rebinding it here
+                # would leave a MediaServer object in it for the rest of the
+                # pass -- silent today, a wrong due query for the next scoped
+                # read added to this function.
+                target = servers.get(delivery.server)
+                if target is None:
                     # The config that named this server is gone (an operator
                     # removed the block); no amount of retrying resolves that,
                     # unlike an ItemNotFound or a transport hiccup.
                     await record(session, render.id, delivery.server, "failed", detail="config: server removed")
+                    _tally(delivery.server, "failed")
                     await rollup(session, render.id)
                     continue
 
@@ -319,38 +517,56 @@ async def retry_pending_deliveries(
                 row_config = config_for_library(config, item.library)
 
                 if not getattr(row_config.badges, f"upload_to_{delivery.server}", False):
-                    await record(session, render.id, delivery.server, "skipped")
+                    await record(
+                        session, render.id, delivery.server, "skipped",
+                        detail=f"config: badges.upload_to_{delivery.server} is off",
+                    )
+                    _tally(delivery.server, "skipped")
                     await rollup(session, render.id)
                     continue
 
                 refs = await refs_for(session, item.id)
                 try:
-                    resolved_item = await server.resolve(_intent_for(item, refs))
+                    resolved_item = await target.resolve(_intent_for(item, refs))
                 except PathMismatch as exc:
                     # A path-mapping mismatch that no retry fixes (spec §6.2).
                     # The detail goes through `failure_detail`
                     # like every other one -- category plus class name, never the
                     # exception's own message, which carries an operator path.
                     await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                    _tally(delivery.server, "failed")
                     await rollup(session, render.id)
                     continue
                 except ItemNotFound:
-                    # Not on this server yet -- keep waiting, no cap (spec §5.3).
+                    # Not on this server yet -- a wait, not an attempt at the
+                    # delivery, so it spends no budget (spec §2, §5.3).
                     await record(
                         session, render.id, delivery.server, "pending",
                         retry_in=RETRY_SECONDS, count_attempt=False,
                     )
                     still_pending += 1
+                    _tally(delivery.server, "pending")
                     await rollup(session, render.id)
                     continue
                 except Exception as exc:
                     # A transport error: the server may simply be down right now.
                     logger.warning("delivery to %s failed to resolve (%s)", delivery.server, failure_detail(exc))
-                    await record(
+                    attempts = await record(
                         session, render.id, delivery.server, "pending",
                         detail=failure_detail(exc), retry_in=RETRY_SECONDS,
                     )
-                    still_pending += 1
+                    if attempts >= max_attempts:
+                        # Spec §2: nothing retries forever. The row stays
+                        # visible as `failed` until the next full pass or
+                        # catch-up re-arms it.
+                        await record(
+                            session, render.id, delivery.server, "failed",
+                            detail=failure_detail(exc),
+                        )
+                        _tally(delivery.server, "failed")
+                    else:
+                        still_pending += 1
+                        _tally(delivery.server, "pending")
                     await rollup(session, render.id)
                     continue
 
@@ -380,6 +596,7 @@ async def retry_pending_deliveries(
                         # §6.2) -- the same `failed` the delivery server's own
                         # resolve records two blocks above.
                         await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                        _tally(delivery.server, "failed")
                         await rollup(session, render.id)
                         continue
                     except Exception as exc:
@@ -397,6 +614,7 @@ async def retry_pending_deliveries(
                             retry_in=RETRY_SECONDS, count_attempt=False,
                         )
                         still_pending += 1
+                        _tally(delivery.server, "pending")
                         await rollup(session, render.id)
                         continue
 
@@ -435,11 +653,12 @@ async def retry_pending_deliveries(
                         # is the honest outcome, the same one `deliver` records
                         # for a server there is nothing to send to.
                         await record(session, render.id, delivery.server, "skipped")
+                        _tally(delivery.server, "skipped")
                         await rollup(session, render.id)
                         continue
-                    await server.upload_artwork(
+                    await target.upload_artwork(
                         resolved_item.ref, data, render.art_kind,
-                        row_config.badges.lock_artwork and CAP_LOCK_ARTWORK in server.capabilities,
+                        row_config.badges.lock_artwork and CAP_LOCK_ARTWORK in target.capabilities,
                     )
                 except Exception as exc:
                     # The item DID resolve; compositing or the upload itself is
@@ -449,6 +668,7 @@ async def retry_pending_deliveries(
                     # `failed`, not another `pending`).
                     logger.warning("delivery to %s failed (%s)", delivery.server, failure_detail(exc))
                     await record(session, render.id, delivery.server, "failed", detail=failure_detail(exc))
+                    _tally(delivery.server, "failed")
                     await rollup(session, render.id)
                     continue
 
@@ -457,6 +677,7 @@ async def retry_pending_deliveries(
                     fingerprint=composed.get("fingerprint"),
                 )
                 uploaded += 1
+                _tally(delivery.server, "uploaded")
                 await rollup(session, render.id)
         except Exception as exc:
             logger.warning(
@@ -464,16 +685,195 @@ async def retry_pending_deliveries(
                 render_id, server_name, type(exc).__name__,
             )
             still_pending += 1
+            _tally(server_name, "pending")
+        finally:
+            # `finally`, not a line after the `try`: every branch above leaves
+            # this block with a `continue`, which would step straight over
+            # anything written there.
+            await _commit_row(server_name, before)
 
-    summary = f"pending deliveries: {len(due)} due, {uploaded} uploaded, {still_pending} still pending"
-    try:
-        await session.commit()
-    except Exception as exc:
-        # The commit is the last thing that can fail, and a
-        # scheduled pass that raises out of its body loses the summary the
-        # operator reads. Reported in the sentence instead, rolled back so
-        # the session is usable again.
-        await session.rollback()
-        logger.warning("pending deliveries: the closing commit failed (%s)", failure_detail(exc))
-        return f"{summary}; the closing commit failed ({failure_detail(exc)})"
+    for write_row, item in metadata_due:
+        item_id, server_name = item.id, write_row.server
+        before = _counters()
+        _tally(server_name, "due")
+        # The same SAVEPOINT-per-row isolation the artwork loop documents
+        # above: one row's database failure must not abort the pass.
+        try:
+            async with session.begin_nested():
+                target = servers.get(server_name)
+                if target is None:
+                    await record_metadata(
+                        session, item_id, server_name, "failed",
+                        detail="config: server removed",
+                    )
+                    _tally(server_name, "failed")
+                    continue
+                row_config = config_for_library(config, item.library)
+                if not row_config.operations.enabled:
+                    # `apply_metadata` returns before it writes a row at all
+                    # when operations are off, so this pass would otherwise be
+                    # the one code path still writing to a server the operator
+                    # has switched off entirely. The row says which switch.
+                    await record_metadata(
+                        session, item_id, server_name, "skipped",
+                        detail="config: operations.enabled is off",
+                    )
+                    _tally(server_name, "skipped")
+                    continue
+                if not getattr(row_config.operations, f"write_to_{server_name}", False):
+                    await record_metadata(
+                        session, item_id, server_name, "skipped",
+                        detail=f"config: operations.write_to_{server_name} is off",
+                    )
+                    _tally(server_name, "skipped")
+                    continue
+                refs = await refs_for(session, item_id)
+                try:
+                    resolved_item = await target.resolve(_intent_for(item, refs))
+                except PathMismatch as exc:
+                    # No retry fixes a mount mismatch (spec §6.2) -- the same
+                    # ruling the artwork half makes above.
+                    await record_metadata(
+                        session, item_id, server_name, "failed", detail=failure_detail(exc),
+                    )
+                    _tally(server_name, "failed")
+                    continue
+                except ItemNotFound:
+                    # The ONE wait: the item is simply not on this server
+                    # yet, which is not an attempt at the write (spec §2's
+                    # "a resolution miss").
+                    await record_metadata(
+                        session, item_id, server_name, "pending",
+                        retry_in=RETRY_SECONDS, count_attempt=False,
+                    )
+                    still_pending += 1
+                    _tally(server_name, "pending")
+                    continue
+                except Exception as exc:
+                    # A transport error is NOT a resolution miss: the server
+                    # is down, and spec §2's "nothing retries forever" has to
+                    # hold for the production failure mode it was written
+                    # for. Counted and exhaustible, exactly like the artwork
+                    # twin above -- the same event must not spend budget on
+                    # one table and not the other, or a Jellyfin that is down
+                    # reads `0 failed` on the metadata half forever.
+                    logger.warning(
+                        "metadata retry on %s failed to resolve (%s)",
+                        server_name, failure_detail(exc),
+                    )
+                    attempts = await record_metadata(
+                        session, item_id, server_name, "pending",
+                        detail=failure_detail(exc), retry_in=RETRY_SECONDS,
+                    )
+                    if attempts >= max_attempts:
+                        await record_metadata(
+                            session, item_id, server_name, "failed",
+                            detail=failure_detail(exc),
+                        )
+                        _tally(server_name, "failed")
+                    else:
+                        still_pending += 1
+                        _tally(server_name, "pending")
+                    continue
+
+                await upsert_server_ref(session, item_id, resolved_item)
+                # The facts the DATABASE holds, never a fresh provider
+                # gather: a retry exists to get what this service already
+                # decided onto a server that refused it, and re-gathering
+                # would make this a second metadata pipeline with its own
+                # provider budget. The `ItemFacts` row is COPIED into a
+                # `GatheredFacts` rather than handed over as itself: the two
+                # are not duck-compatible, and `facts_from_row` above says
+                # why.
+                facts = facts_from_row((await session.execute(
+                    select(ItemFacts).where(ItemFacts.item_id == item_id)
+                )).scalar_one_or_none())
+                overrides: dict[str, object] = {}
+                if row_config.operations.item_overrides_enabled:
+                    overrides = await load_overrides(session, item_id)
+                try:
+                    exempt = exemption_reason(
+                        row_config.operations, resolved_item.native_id, resolved_item.imdb_id,
+                        await target.item_labels(resolved_item.ref),
+                    )
+                    if exempt is not None:
+                        await record_metadata(
+                            session, item_id, server_name, "skipped", detail=exempt,
+                        )
+                        _tally(server_name, "skipped")
+                        continue
+                    # `parental_categories=None`: row 85's categories are
+                    # fetched by the full pass, which holds the IMDb client.
+                    # Passing None means this retry writes the facts and
+                    # leaves those labels to the pass that owns them.
+                    await target.apply_facts(
+                        resolved_item.ref, facts, row_config.operations, None, overrides,
+                    )
+                except AttributeError:
+                    # `apply_metadata._write`'s own convention: a server
+                    # missing `item_labels` or `apply_facts` is a wiring bug
+                    # -- a programming error, not the runtime server failure
+                    # this handler is for -- and must not become a row that
+                    # spends the budget and then sticks at `failed`.
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "metadata retry on %s failed (%s)", server_name, failure_detail(exc),
+                    )
+                    attempts = await record_metadata(
+                        session, item_id, server_name, "pending",
+                        detail=failure_detail(exc), retry_in=RETRY_SECONDS,
+                    )
+                    if attempts >= max_attempts:
+                        await record_metadata(
+                            session, item_id, server_name, "failed",
+                            detail=failure_detail(exc),
+                        )
+                        _tally(server_name, "failed")
+                    else:
+                        still_pending += 1
+                        _tally(server_name, "pending")
+                    continue
+                # Row 269's sort-position tombstone is deliberately NOT
+                # deleted here, unlike in `apply_metadata`: the clear this
+                # write sent is idempotent, so the next full pass re-sends it
+                # and deletes the row then -- and a delete here would need a
+                # commit of its own, which the savepoint above owns.
+                await record_metadata(session, item_id, server_name, "written")
+                written += 1
+                _tally(server_name, "written")
+        except Exception as exc:
+            logger.warning(
+                "metadata retry for item %s/%s failed unexpectedly (%s)",
+                item_id, server_name, type(exc).__name__,
+            )
+            still_pending += 1
+            _tally(server_name, "pending")
+        finally:
+            await _commit_row(server_name, before)
+
+    # Summed from the per-server counts rather than carried as two more
+    # running totals: the head used to name three numbers that could not
+    # reconcile -- a row that went `failed` was in neither `done` nor `still
+    # pending`, so a pass that failed both its rows read `2 due, 0 done, 0
+    # still pending` -- and the head is the half the dashboard shows first.
+    failed = sum(c["failed"] for c in per_server.values())
+    skipped = sum(c["skipped"] for c in per_server.values())
+    summary = (
+        f"pending deliveries: {len(due) + len(metadata_due)} due, "
+        f"{uploaded + written} done, {still_pending} still pending, "
+        f"{failed} failed, {skipped} skipped"
+    )
+    if per_server:
+        # Spec §2's sentence, one clause per server, sorted so the run
+        # history's detail reads the same way twice for the same work.
+        summary += "; " + "; ".join(
+            f"{name}: {c['due']} due, {c['uploaded']} uploaded, {c['written']} written, "
+            f"{c['pending']} pending, {c['failed']} failed, {c['skipped']} skipped"
+            for name, c in sorted(per_server.items())
+        )
+    # No closing commit: every row committed its own outcome as soon as its
+    # side effect had happened (`_commit_row`), so there is nothing left here
+    # to lose. A pass with no due rows leaves only the two SELECTs' read
+    # transaction, which the caller's `async with session_factory()` closes.
     return summary

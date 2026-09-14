@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 from conftest import decodable_png
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from autoposter.config.loader import load_config, render_version_for
 from autoposter.db.models import MediaItem, MediaItemServerRef, Render, RenderDelivery
@@ -1976,6 +1976,29 @@ async def test_one_permanently_pending_server_does_not_recompose_every_pass(
     # retry pass never saw the population it was written for.
     assert await _jellyfin_horizon() == horizon, "a miss must not defer the row again"
 
+    # Task 8 fix: the row falls through to the same code whether it was
+    # never resolved or previously ran its budget out and was marked
+    # `failed` -- so this re-arm needs `reset_attempts=True` too, or a row
+    # that reached `failed` from a real delivery attempt stays over budget
+    # forever, exhausted again by its very next failure.
+    await session.execute(
+        update(RenderDelivery)
+        .where(RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin")
+        .values(status="failed", attempts=99)
+    )
+    await session.commit()
+
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    row = (
+        await session.execute(
+            select(RenderDelivery.status, RenderDelivery.attempts).where(
+                RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin",
+            )
+        )
+    ).one()
+    assert row.status == "pending" and row.attempts == 0
+
 
 async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     session, config_with_badges, monkeypatch,
@@ -2055,16 +2078,22 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     # under it). That the stamp is DUE is proved behaviourally instead, by
     # the retry pass below reporting the row as `1 due`.
     assert row.status == "pending" and row.next_attempt_at is not None
-    # A re-arm is not an attempt: nothing was actually tried against
-    # jellyfin this pass (no compose, no upload), so the budget this row's
-    # `failed` outcome spent must not move again here.
-    assert row.attempts == first_pass_attempts
+    # A re-arm is not an attempt -- nothing was actually tried against
+    # jellyfin this pass (no compose, no upload) -- and it is a fresh START:
+    # review I1, the counter goes back to zero rather than staying where the
+    # exhausted row left it, or the first failure after a re-arm would
+    # exhaust the row again (`failed` is itself a counted attempt).
+    assert first_pass_attempts > 0, "the failed delivery did spend budget"
+    assert row.attempts == 0
 
     summary = await deliveries.retry_pending_deliveries(
         session, servers, config_with_badges, now=datetime.now(timezone.utc),
     )
 
-    assert summary == "pending deliveries: 1 due, 1 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 1 done, 0 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed, 0 skipped"
+    )
     assert [u[0].native_id for u in jf.uploads] == ["j1"]
     assert len(plex.uploads) == 1, "the retry pass owes nothing to the server that has the bytes"
     assert {
@@ -2186,7 +2215,10 @@ async def test_a_retry_composes_from_the_identity_server_and_leaves_the_fingerpr
         session, servers, config_with_badges, now=datetime.now(timezone.utc),
     )
 
-    assert summary == "pending deliveries: 1 due, 1 uploaded, 0 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 1 done, 0 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed, 0 skipped"
+    )
     assert len(jf.uploads) == 1
     sampled_server, sampled_ref = sampled[calls_before]
     assert sampled_server is plex, "the retry must sample the identity server, not nothing"
@@ -2232,7 +2264,10 @@ async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
         session, servers, config_with_badges, now=datetime.now(timezone.utc),
     )
 
-    assert summary == "pending deliveries: 1 due, 0 uploaded, 1 still pending"
+    assert summary == (
+        "pending deliveries: 1 due, 0 done, 1 still pending, 0 failed, 0 skipped; "
+        "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped"
+    )
     assert jf.uploads == [], "overlay-less bytes must never be delivered"
     row = (
         await session.execute(
@@ -2288,6 +2323,77 @@ async def test_a_failed_metadata_write_is_recorded_pending_with_its_class_name(
     assert row.detail == "status: HTTPStatusError 400"
     assert row.next_attempt_at is not None and row.attempts == 1
     assert "jf.internal" not in (row.detail or "")
+
+
+async def test_the_full_pass_re_arms_an_exhausted_metadata_row_with_its_whole_budget(
+    session, config_with_badges, monkeypatch
+):
+    """Review I1: `_write`'s own write-failure record is `metadata_writes`'
+    only door out of `failed`, and it did not reset the budget -- so from the
+    first exhaustion onward the row's effective budget was 1, not 8. Spec §2
+    promises a row re-armed by a full pass (or a catch-up) the whole budget.
+
+    The artwork twin is `test_a_re_armed_row_gets_its_whole_budget_again` in
+    test_deliveries.py; this is the table that fix did not reach.
+    """
+    import httpx
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from autoposter import deliveries
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from autoposter.servers.registry import Servers
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.ConnectError("jellyfin is down")
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    assert config_with_badges.scheduler.delivery_attempts == 8
+    item = resolved("jellyfin", "j-rearm", file_path="/m.mkv")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    jf.resolve_any = item
+    # The row runs its budget out: eight counted attempts and the `failed`
+    # the retry pass stamps on top of the eighth.
+    for _ in range(8):
+        await deliveries.record_metadata(session, media_item.id, "jellyfin", "pending", retry_in=0)
+    assert await deliveries.record_metadata(
+        session, media_item.id, "jellyfin", "failed", detail="connect: ConnectError",
+    ) == 9
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    # Columns rather than the entity: the session's identity map hands an
+    # already-loaded `MetadataWrite` back unrefreshed, so a re-read would
+    # assert against the values the first read saw.
+    columns = select(MetadataWrite.status, MetadataWrite.attempts, MetadataWrite.detail)
+    row = (await session.execute(columns)).one()
+    assert row.status == "pending"
+    # One, not ten: the re-arm starts the row over AND this failure is its
+    # first new attempt.
+    assert row.attempts == 1
+
+    # And the budget that follows is the whole one -- seven more passes.
+    base = datetime.now(timezone.utc)
+    for pass_number in range(1, 8):
+        await deliveries.retry_pending_deliveries(
+            session, Servers({"jellyfin": jf}), config_with_badges,
+            now=base + timedelta(hours=12 * pass_number),
+        )
+        row = (await session.execute(columns)).one()
+        if pass_number < 7:
+            assert row.status == "pending", f"exhausted early, on pass {pass_number}"
+            assert row.attempts == pass_number + 1
+        else:
+            assert row.status == "failed" and row.detail == "connect: ConnectError"
 
 
 async def test_a_successful_write_is_recorded_written(session, config_with_badges):
@@ -2450,6 +2556,75 @@ async def test_a_dual_registry_pass_writes_metadata_written_and_pending_per_serv
     assert rows["jellyfin"].detail == "error: RuntimeError"
 
 
+async def test_the_pipeline_re_arming_a_row_takes_it_out_of_its_catch_up_run(
+    session, config_with_badges, monkeypatch,
+):
+    """Review I4: `run_id`/`previous_status` were never named by the outcome
+    writers, so a row armed by catch-up run 5 kept `run_id=5` for the rest of
+    its life -- including after the ordinary pipeline re-armed it weeks later.
+    Phase C's run-scoped progress and its cancel would then act on rows that
+    run no longer owns. A row leaves a run when the pipeline re-arms it;
+    a terminal outcome INSIDE a run keeps its scope."""
+    from sqlalchemy import update
+    from autoposter.db.models import MetadataWrite
+    from autoposter.scheduler.run_history import open_run
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    servers, plex, jf = _two_servers()
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+    poster = next(r for r in renders if r.art_kind == "poster")
+
+    # What a catch-up leaves behind: its own rows, exhausted and scoped to it.
+    run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
+    await session.execute(
+        update(RenderDelivery)
+        .where(RenderDelivery.server == "jellyfin")
+        .values(status="failed", run_id=run_id, previous_status="uploaded")
+    )
+    await session.execute(
+        update(MetadataWrite)
+        .where(MetadataWrite.server == "jellyfin")
+        .values(status="failed", run_id=run_id, previous_status="written")
+    )
+    await session.commit()
+
+    async def nothing_new(session, config, render, media_item, **_kwargs):
+        # An unchanged fingerprint, which is `deliver`'s own re-arm door.
+        return None
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise RuntimeError("jellyfin refused it")
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", nothing_new)
+    monkeypatch.setattr(jf, "apply_facts", boom)
+
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    delivery = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.run_id, RenderDelivery.previous_status)
+        .where(RenderDelivery.server == "jellyfin", RenderDelivery.render_id == poster.id)
+    )).one()
+    assert delivery.status == "pending"
+    assert delivery.run_id is None and delivery.previous_status is None
+    write = (await session.execute(
+        select(MetadataWrite.status, MetadataWrite.run_id, MetadataWrite.previous_status)
+        .where(MetadataWrite.server == "jellyfin")
+    )).one()
+    assert write.status == "pending"
+    assert write.run_id is None and write.previous_status is None
+
+
 async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
     session, monkeypatch,
 ):
@@ -2482,6 +2657,51 @@ async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
     )
 
     assert jf.facts_written == [], "an absent row must never be written to, even through the real pass"
+    row = (
+        await session.execute(
+            select(MetadataWrite).where(
+                MetadataWrite.item_id == media_item.id, MetadataWrite.server == "jellyfin",
+            )
+        )
+    ).scalar_one()
+    assert row.status == "absent" and row.detail == ABSENT_DETAIL
+
+
+async def test_an_absent_server_is_never_asked_to_resolve(session, monkeypatch):
+    """Phase A review ruling 2: the guards in `apply_metadata` and `deliver`
+    keep an `absent` ROW right, but the pass still spent a resolve request on
+    that server for every item, every pass -- on a library the server does not
+    carry at all. The absent set is read once, before the fan-out, off the
+    refs the intent already carries (a full pass builds every intent from a
+    `media_items` row), and the servers in it are asked nothing."""
+    from autoposter import deliveries
+    from autoposter.db.models import MetadataWrite
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config = load_config(EXAMPLE)
+    config.operations.write_to_jellyfin = True
+    config.badges.enabled = False
+    servers, plex, jf = _two_servers()
+    plex_item = plex.items[INTENT.dedupe_key]
+
+    media_item = await pipeline_module._upsert_media_item(session, plex_item)
+    await deliveries.record_metadata(
+        session, media_item.id, "jellyfin", "absent", detail=ABSENT_DETAIL
+    )
+    await session.commit()
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    await pipeline_module.process_item(
+        session, config, None, servers, [], RenderIntent(
+            kind="movie", title="Title", tmdb_id=1, year=2020,
+            refs={"plex": plex_item.native_id},
+        ),
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    assert jf.resolve_calls == 0, "a server that does not carry the library is asked nothing"
+    assert plex.resolve_calls == 1, "every other server is resolved exactly as before"
+    assert jf.facts_written == []
     row = (
         await session.execute(
             select(MetadataWrite).where(
@@ -2545,3 +2765,69 @@ async def test_a_second_pass_leaves_an_absent_jellyfin_artwork_row_untouched(
     assert rows["jellyfin"].next_attempt_at is None, "an absent row must never gain a retry horizon"
     assert jf.uploads == [], "nothing is ever delivered to a server that does not carry the library"
     assert rows["plex"].status == "uploaded", "the other server is unaffected"
+
+
+async def test_an_absent_only_deliver_does_no_rollup_and_no_commit(
+    session, config_with_badges, monkeypatch,
+):
+    """Review test gap 7: `test_an_absent_server_is_never_asked_to_resolve`
+    pins `resolve_calls == 0`; the other half of spec §1's "no row, no
+    roll-up, no commit" rested on `recorded` staying False and was untested.
+    An UPDATE and a COMMIT per render per pass, for a server that has nothing
+    to do with the item, is exactly what that flag exists to avoid."""
+    from autoposter import deliveries
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config_with_badges.badges.upload_to_jellyfin = True
+    jf_item = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
+    media_item = await pipeline_module._upsert_media_item(session, jf_item)
+    render = await pipeline_module._get_or_create_render(session, media_item, "poster", "/a/p.jpg")
+    render.status = "rendered"
+    await deliveries.record(session, render.id, "jellyfin", "absent", detail=ABSENT_DETAIL)
+    # A value the roll-up itself would never write, so "unchanged" is proof
+    # that `rollup` did not run rather than proof that it agreed.
+    await session.execute(
+        update(Render).where(Render.id == render.id).values(upload_status="rendered")
+    )
+    await session.commit()
+
+    commits = 0
+    real_commit = session.commit
+
+    async def counting_commit():
+        nonlocal commits
+        commits += 1
+        return await real_commit()
+
+    monkeypatch.setattr(session, "commit", counting_commit)
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+
+    # `data=None`: the unchanged-fingerprint pass, where nothing was composed
+    # and there is therefore nothing owed to the database either.
+    await pipeline_module.deliver(
+        session, config_with_badges, render, media_item,
+        Servers({"jellyfin": jf}), {"jellyfin": jf_item.ref}, None,
+        absent_servers={"jellyfin"},
+    )
+    assert commits == 0, "an absent-only render must not commit"
+
+    # And with bytes in hand the commit IS owed -- `compose_badged_bytes`
+    # flushed the fingerprint before handing them over -- but the roll-up
+    # still is not, because no delivery row was written either way.
+    await pipeline_module.deliver(
+        session, config_with_badges, render, media_item,
+        Servers({"jellyfin": jf}), {"jellyfin": jf_item.ref}, b"badged",
+        absent_servers={"jellyfin"},
+    )
+    assert commits == 1, "the compose's own commit, and no other"
+
+    assert jf.uploads == []
+    monkeypatch.setattr(session, "commit", real_commit)
+    status = (await session.execute(
+        select(Render.upload_status).where(Render.id == render.id)
+    )).scalar_one()
+    assert status == "rendered", "an absent-only render must not be rolled up"
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.detail)
+    )).one()
+    assert row.status == "absent" and row.detail == ABSENT_DETAIL
