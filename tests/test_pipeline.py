@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 from conftest import decodable_png
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from autoposter.config.loader import load_config, render_version_for
 from autoposter.db.models import MediaItem, MediaItemServerRef, Render, RenderDelivery
@@ -1975,6 +1975,29 @@ async def test_one_permanently_pending_server_does_not_recompose_every_pass(
     # re-stamping it every pass meant the row could never mature and the
     # retry pass never saw the population it was written for.
     assert await _jellyfin_horizon() == horizon, "a miss must not defer the row again"
+
+    # Task 8 fix: the row falls through to the same code whether it was
+    # never resolved or previously ran its budget out and was marked
+    # `failed` -- so this re-arm needs `reset_attempts=True` too, or a row
+    # that reached `failed` from a real delivery attempt stays over budget
+    # forever, exhausted again by its very next failure.
+    await session.execute(
+        update(RenderDelivery)
+        .where(RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin")
+        .values(status="failed", attempts=99)
+    )
+    await session.commit()
+
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    row = (
+        await session.execute(
+            select(RenderDelivery.status, RenderDelivery.attempts).where(
+                RenderDelivery.render_id == poster.id, RenderDelivery.server == "jellyfin",
+            )
+        )
+    ).one()
+    assert row.status == "pending" and row.attempts == 0
 
 
 async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(

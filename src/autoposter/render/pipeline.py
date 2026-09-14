@@ -2356,9 +2356,13 @@ async def deliver(
             ).one_or_none()
             if existing is not None and existing.status == "pending" and existing.next_attempt_at is not None:
                 continue
+            # A `failed` row falls through to here too, and is a re-arm the
+            # same way the `data is None` branch above is: `reset_attempts`,
+            # so a row this pass could not even resolve does not stay stuck
+            # over budget from an earlier, unrelated delivery failure.
             await deliveries.record(
                 session, render.id, name, "pending", retry_in=deliveries.RETRY_SECONDS,
-                count_attempt=False,
+                count_attempt=False, reset_attempts=True,
             )
             recorded = True
     if not recorded:
