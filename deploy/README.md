@@ -910,6 +910,191 @@ a Jellyfin-only deployment needs this pass exactly as much — which puts it wit
 the drift, cleanup and asset-stats passes rather than with the Plex-gated ones
 listed above.
 
+## Per-server outcomes and catch-up
+
+Every artwork delivery and every metadata write is recorded per item and per
+server. Artwork lives in `render_deliveries`, one row per render and server;
+metadata in `metadata_writes`, one row per item and server. A row reads
+`uploaded` or `written` when the server took it, `skipped` with the reason
+when an exemption or a `write_to_<server>` / `upload_to_<server>` switch
+stopped it, `pending` when the server refused it or has not scanned the file
+yet, and `failed` when the retry budget ran out.
+
+`absent` is the fifth status, and it is decided once per library and server
+rather than once per item attempt: a library a server does not carry will
+never hold the item, so an item there is never resolved on that server and
+never retried. Presence is recomputed at the start of every full pass and of
+every catch-up, from the server's own library list — Plex's section titles,
+Jellyfin's virtual folders translated back through `jellyfin.library_map` — so
+a library that appears later flips its items back to `pending` and they flow
+through the ordinary retry. A server that cannot be reached at that moment is
+skipped rather than treated as carrying nothing, and so is one that answers
+cleanly with an empty list: a Jellyfin still starting up, an API key without
+library scope, and an `excluded_libraries` that happens to name every folder
+all look alike from here, and stamping on that answer would mark a whole
+library absent on a server that carries it.
+
+The pending-deliveries pass retries both tables on its own cadence. Each run
+takes at most 500 due artwork rows and at most 500 due metadata rows, and
+every row has a budget of `scheduler.delivery_attempts` (default `8`) after
+which it is `failed` and stays visible until something re-arms it. A server
+that simply has not scanned the file yet does not spend that budget: that is a
+wait rather than a failure, and it has no cap.
+
+### Jobs that finish with warnings
+
+A job whose per-server rows all settled ends `done`. One that ended the pass
+with a server it touched still owed something ends `done_with_warnings`, and
+the sentence naming each server and what it is owed goes in `last_error`:
+
+```
+jellyfin: artwork pending; jellyfin: metadata pending (status: HTTPStatusError 400)
+```
+
+The bracketed part is the stored detail — a category and an exception class
+name, never a URL. An item that never resolved at all on a server whose
+library it should be in is named `jellyfin: not found`, which is the case that
+otherwise leaves no row anywhere to notice it. A server whose row for the item
+is `absent` is never named: nothing is owed there.
+
+`done_with_warnings` is a **finished** state, not a failure. The queue does
+not retry it — the per-server rows carry their own retry, and re-running the
+whole job would re-render artwork that is already on disk — and it counts as
+processed rather than failed wherever job states are counted.
+
+It is visible in three places: its own dashboard tile beside `failed`; a
+"Finished with warnings" panel on the Action Center, listing each job with its
+sentence and when it finished; and the per-server table on an item page, which
+shows every server's artwork and metadata status side by side, with one
+neutral line for a server that does not carry the item's library. The panel
+reads `GET /api/actions/job-warnings?limit=&offset=`, which answers the same
+shape the parked-jobs listing does — `{"jobs": [...], "total": n}`, newest
+first, `limit` 50 by default and 200 at most.
+
+### Catching one server up
+
+A catch-up makes one server match what this service already has. It is one
+pass over the database rather than over the servers: it delivers and writes
+what exists and renders nothing, so items this service has never rendered are
+left to the full pass, which is the only thing that composes new artwork.
+
+It recomputes that server's library presence first, then marks its backlog
+due. Metadata: every item in a carried library this service has something to
+say about — one with gathered facts or a per-item override, or every item at
+all where a field verb or the parental-label fetch is configured, since those
+write every item. Artwork: only the rows that are behind — missing, `failed`,
+or serving a badge fingerprint older than the render's current one. A row
+already uploaded at the current fingerprint is left alone, which is what makes
+a catch-up over a settled library nearly free. A row reading `skipped` is left
+alone in both tables: an exemption that has been lifted is re-armed by the
+full pass, which re-evaluates the labels, and a catch-up is not the thing that
+learns that. An `absent` row is re-armed by the presence step above, and only
+where its library is carried again. Each half is marked only where the deployment
+delivers it at all — the metadata half needs `operations.enabled` and
+`operations.write_to_<server>`, the artwork half `badges.enabled` and
+`badges.upload_to_<server>`, both read globally. A per-library override that
+turns one off is still honoured one pass later, by the retry pass that drains
+the rows.
+
+Four routes drive it, all of them session-authenticated like every other
+`/api` route:
+
+```
+POST   /api/servers/{name}/catch-up      {"cadence_seconds": 90}
+GET    /api/servers/{name}/catch-up
+DELETE /api/servers/{name}/catch-up
+POST   /api/servers/{name}/retry-failed
+```
+
+- `POST .../catch-up` starts one and answers
+  `{"run_id": 12, "server": "jellyfin", "cadence_seconds": 90}`. The body is
+  optional.
+- `GET .../catch-up` answers the current or last run — `run_id`, `server`,
+  `status`, `started_at`, `finished_at`, `cadence_seconds`, `detail`, and the
+  four counts `due`, `done`, `failed`, `total` — or `{"run": null}` before
+  that server has ever had one.
+- `DELETE .../catch-up` cancels the run in flight and answers
+  `{"run_id": 12, "restored": 430, "removed": 12, "detail": "cancelled: …"}`.
+- `POST .../retry-failed` answers `{"server": "jellyfin", "artwork": 9,
+  "metadata": 4}`.
+
+A refusal is a `409` whose `detail` is one sentence, which is also what the
+log line says.
+
+`cadence_seconds` is how often *that run's* backlog is drained; it defaults to
+the pending-deliveries cadence (`scheduler.pending_deliveries_minutes`, 15
+minutes) and is floored at 60 seconds, so an explicit `0` is read as a request
+for the fastest drain there is and becomes that floor. The drain job looks
+every `scheduler.catch_up_poll_seconds` (default `60`, also floored at 60
+seconds)
+and honours each open run's own cadence, which is why the poll setting bounds
+only how finely a cadence can be met. The drain hands each batch to the
+ordinary pending-deliveries pass, scoped to the run, so a catch-up shares the
+per-row containment, the per-library gates and the attempt budget with every
+other delivery.
+
+A catch-up is refused, and nothing is marked, in five cases:
+
+- `no media server named 'jellyfin' is configured`.
+- `the scheduler is off; a catch-up needs it to drain` — the drain job is
+  registered only when `scheduler.enabled` is `true`, so without it the
+  backlog would be marked and never taken.
+- `a catch-up for jellyfin is already in flight`.
+- `jellyfin is not reachable right now; try again once it is back`, on the
+  health poller's answer.
+- `jellyfin could not list its libraries (ConnectError)` — a server that
+  cannot answer is never told it carries nothing.
+
+A run finishes as soon as nothing of its own is still due. It also closes
+after two consecutive drains that moved nothing and spent no attempt — the
+shape a server that has not scanned the files yet produces, since a resolution
+miss changes no status and spends no budget — and its `detail` then names how
+many rows were still waiting. Nothing is lost by that: the rows are released
+and carry on as ordinary waits, retried by the unscoped pending-deliveries
+pass on its own cadence. A run that closes with some of its rows `failed` is
+still `ok`; the failures are counted in the detail.
+
+Cancelling puts each row still `pending` back to the status it carried before
+the run marked it, and removes the rows the run itself created; nothing
+already uploaded or written is undone. A batch already in flight is not
+stopped — it finishes attempting its rows and records their outcomes
+afterwards, so the `restored` and `removed` counts can be stale by up to one
+batch.
+
+`retry-failed` is the narrow version of the same idea: it re-arms every
+`failed` row for that server in both tables, inside a catch-up run or outside
+one, with the attempt budget reset. It is never refused — re-arming nothing is a
+legitimate answer, and the counts say so.
+
+Two kinds of change start a catch-up automatically, both queued by server name
+and turned into a run on the drain's next look:
+
+- **A saved config change** that alters a server's `library_map` or its
+  `excluded_libraries`, or that flips `operations.write_to_<server>` or
+  `badges.upload_to_<server>` from off to on, globally or for one library. The
+  first two change which items the server is expected to carry; the toggles
+  change which of them it was allowed to receive, and everything skipped while
+  one was off is owed to it the moment it is on.
+- **A restart** that finds a configured server this database has never
+  recorded an outcome for, on a database that already holds items, and only
+  where the deployment delivers something to that server. A fresh deployment
+  queues nothing, because its first full pass covers every server anyway.
+
+An automatic request refused for a reason that can pass on its own — the
+server is down, or could not list its libraries — is re-queued and tried again
+on the next look, because a server that restarts alongside this service is
+still starting up when the boot trigger fires. "Not configured" and "already
+in flight" are dropped instead: the first never becomes true by waiting, and
+the second means the work is already happening.
+
+Each run appears in the run history (`GET /api/stats/runs`) as a `catch_up`
+row carrying the server in `server` — `null` for every other kind of run — and
+its counts sentence in `detail`. `processed` is the backlog it marked,
+`failed` what ran out of budget, `deferred` what was still due when it ended,
+and `rendered` is `null`: a catch-up composites nothing, and zeros there would
+claim it had composited nothing this time. A cancelled run carries the status
+`cancelled`.
+
 ## Secrets
 
 Secrets come from an ExternalSecret providing the `AUTOPOSTER_*` environment
