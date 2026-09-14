@@ -833,6 +833,7 @@ describe("ActionCenter", () => {
     const fetchMock = vi.fn(async (path: string) => {
       if (path === "/api/items/filters") return json(FILTERS);
       if (path.startsWith("/api/actions/summary")) return json(SUMMARY);
+      if (path.startsWith("/api/actions/job-warnings")) return json({ jobs: [], total: 0 });
       return json({ detail: "the database is unreachable" }, 503);
     });
     vi.stubGlobal("fetch", fetchMock);
