@@ -13,7 +13,7 @@ snapshot of. See ``api/routes._persist_and_swap``.
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.config.overrides import document_paths
+from autoposter.config.overrides import STORE_FORMAT, document_paths
 from autoposter.db.models import ConfigOverrideSnapshot
 
 #: How many previous documents to keep. A module constant rather than a
@@ -23,12 +23,20 @@ from autoposter.db.models import ConfigOverrideSnapshot
 SNAPSHOT_RETENTION = 20
 
 
-async def capture_snapshot(session: AsyncSession, document: dict, reason: str) -> None:
+async def capture_snapshot(
+    session: AsyncSession, document: dict, reason: str, *, format: int = STORE_FORMAT
+) -> None:
     """Record ``document`` as the state a write is about to replace.
 
     Adds to the caller's session and does not commit: the snapshot and the
     write it protects must land together, or the history says something that
     did not happen.
+
+    ``format`` says what the document IS: 2 is a whole configuration document,
+    1 a delta from before the store became the document
+    (``config/overrides.STORE_FORMAT``). Defaulted rather than required so the
+    four callers that snapshot the current store -- save, apply, restore,
+    import -- keep saying what they always said, which is "this is the store".
 
     An empty outgoing document is skipped. There is nothing to restore to, and
     a fresh deployment would otherwise fill the table with empty rows before
@@ -45,6 +53,7 @@ async def capture_snapshot(session: AsyncSession, document: dict, reason: str) -
             document=document,
             path_count=len(document_paths(document)),
             reason=reason,
+            format=format,
         )
     )
     # So the row about to be inserted is inside the keep set and cannot prune

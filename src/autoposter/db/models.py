@@ -962,8 +962,8 @@ class ConfigOverride(Base):
     the first load that finds one.
 
     ``secrets`` never appears in it: those come from the environment or the
-    secrets table, and ``config/overrides.py`` refuses the key on every path
-    that writes or loads this document.
+    secrets table, and ``config/overrides.py`` refuses the key in every
+    document it loads and in every edit it merges.
     """
 
     __tablename__ = "config_overrides"

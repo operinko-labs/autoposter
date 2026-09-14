@@ -509,27 +509,71 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
     return document
 
 
+#: The ``ConfigOverrideSnapshot.reason`` the one-time delta conversion writes.
+MIGRATE_REASON = "migrate"
+
+
 async def migrate_delta_to_document(
     session: AsyncSession, base: dict | None, delta: dict
 ) -> dict:
-    """The document a delta-era store means: the file with the delta over it.
+    """Turn a delta-era store into a document, once, and answer what it holds.
 
-    Computed exactly as the effective config was computed while the row held a
-    delta, so a store that has not been converted yet runs the configuration it
-    ran yesterday. Writing the result back -- with a snapshot of the delta
-    taken first -- is not wired up yet: this answers the question, it does not
-    yet settle it.
+    The merge is exactly what the effective configuration was computed to be
+    at every load while the row held a delta: the mounted document with the
+    delta over it. Nothing is recomputed and nothing is dropped, so this
+    deployment runs the configuration it ran yesterday across the boot that
+    converts it.
 
-    ``base`` is ``None`` when there is no mounted file. A delta with nothing to
-    merge over is not a configuration, and saying so is better than validating
-    a fragment and silently booting on the schema's defaults.
+    The SNAPSHOT comes first and carries format 1, which is what makes the
+    conversion undoable: restoring it re-runs the merge the delta described,
+    so an operator who dislikes the result is one restore from the delta they
+    had. A delta with nothing left in it -- ``{}``, because every section it
+    held has since left the schema -- snapshots nothing, there being no
+    earlier state to restore to, and converts to the file's own document.
+
+    The merged document is validated BEFORE it is written rather than by the
+    caller afterwards. This is the last load that reads the file, so a
+    converted store the schema refuses could never be repaired -- the
+    application would not start, and the editor that could clear the row sits
+    behind the application. Refusing here leaves the delta and the file both
+    standing, which is a state an operator can act on.
+
+    ``base`` is ``None`` when there is no mounted file, and then the delta is
+    refused rather than promoted. A delta is a statement ABOUT a document;
+    without that document, writing it as the whole configuration would
+    silently default every key the file used to carry -- a service that boots
+    and does the wrong thing, which is worse than one that says why it will
+    not.
     """
+    # Imported here rather than at module scope: config/snapshots.py reads
+    # this module's ``document_paths``, so a top-level import would close a
+    # cycle that neither file can carry.
+    from autoposter.config.snapshots import capture_snapshot
+
     if base is None:
         raise ValueError(
-            "the configuration store holds a partial document and there is no "
-            "configuration file to merge it over"
+            "the configuration store holds a delta from before the store "
+            "became the document, and the configuration file it was a delta "
+            "of cannot be read; restore the file and start again"
         )
-    return merge_overrides(base, delta)
+    merged = merge_overrides(base, delta)
+    _validated(merged)
+    await capture_snapshot(session, delta, MIGRATE_REASON, format=1)
+    # The row's metadata, and deliberately not its document: reading the
+    # document again here would repeat the strip of sections that left the
+    # schema, and the operator would get its warning a third time for one boot.
+    row = await store_row(session, for_update=False)
+    meta = row.meta if row is not None and isinstance(row.meta, dict) else {}
+    # What the row already said is carried through rather than replaced. Only
+    # the format is this write's to set; the restart list is not its to throw
+    # away.
+    await write_store(session, merged, {**meta, **store_meta()})
+    await session.commit()
+    logger.warning(
+        "the stored configuration was a delta and has been merged into a whole "
+        "document; the previous delta is kept as a config snapshot"
+    )
+    return merged
 
 
 def _read_file_document(path: Path | None) -> dict | None:
@@ -563,8 +607,10 @@ async def load_effective_config(path: Path | None, session: AsyncSession) -> Con
     """The stored configuration document, validated.
 
     The mounted file is read ONLY when the store is empty, and then only to
-    seed it. After that the file is a drift report and nothing else, which is
-    what makes it removable: a deployment whose store is seeded needs no file.
+    seed it -- or when the store holds a delta, which is a statement about
+    that file and means nothing without it. After that the file is a drift
+    report and nothing else, which is what makes it removable: a deployment
+    whose store is seeded needs no file.
 
     ``path`` may be ``None`` or point at nothing -- a deployment configured
     from the UI has no mounted file. An empty store AND no file is unreachable
@@ -572,8 +618,10 @@ async def load_effective_config(path: Path | None, session: AsyncSession) -> Con
     wizard instead), so it raises rather than inventing a document.
 
     On the seed path this COMMITS the caller's session, because the seed has
-    to be durable before the configuration it holds is acted on. Every other
-    path reads and writes nothing.
+    to be durable before the configuration it holds is acted on; the one-time
+    conversion of a delta commits for the same reason, and both happen at most
+    once in the life of a deployment. Every other path reads and writes
+    nothing.
 
     Validated whole and versioned through the same ``build_config`` as
     ``load_config``, so a stored artwork setting moves ``config.version``

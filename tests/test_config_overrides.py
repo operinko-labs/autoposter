@@ -209,6 +209,12 @@ def _overrides_warnings(caplog) -> list[str]:
     ]
 
 
+def _strip_warnings(caplog) -> list[str]:
+    """The strip's own warnings, apart from the one-time conversion line every
+    one of these delta-era rows also logs as it becomes a document."""
+    return [line for line in _overrides_warnings(caplog) if "dropping stale" in line]
+
+
 async def test_a_stored_version_check_section_does_not_brick_the_boot(session, caplog):
     """The migration hazard this strip exists for. ``version_check`` was
     live-editable in the settings editor right up to the commit that took its
@@ -246,7 +252,7 @@ async def test_dropping_a_stored_version_check_section_says_so(session, caplog):
     with caplog.at_level(logging.WARNING):
         await load_effective_config(EXAMPLE, session)
 
-    warnings = _overrides_warnings(caplog)
+    warnings = _strip_warnings(caplog)
     assert len(warnings) == 2
     assert len(set(warnings)) == 1
     assert "dropping stale version_check from stored overrides" in warnings[0]
@@ -257,14 +263,18 @@ async def test_dropping_a_stored_version_check_section_says_so(session, caplog):
 
 
 async def test_an_ordinary_stored_document_warns_about_nothing(session, caplog):
-    """The cost every other deployment pays for the strip: none, and no noise."""
+    """The cost every other deployment pays for the strip: none, and no noise.
+
+    The conversion line this load also writes is not the strip's: it is said
+    once in the life of a deployment, by the boot that turns its delta into a
+    document."""
     await _store(session, {"workers": 2})
 
     with caplog.at_level(logging.WARNING):
         config = await load_effective_config(EXAMPLE, session)
 
     assert config.workers == 2
-    assert _overrides_warnings(caplog) == []
+    assert _strip_warnings(caplog) == []
 
 
 async def test_the_stored_document_reader_drops_it_too(session):

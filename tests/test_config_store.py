@@ -3,14 +3,20 @@
 Three rules, each with its own test: the document that runs is the stored one;
 the mounted file is read only when the store is empty, and seeds it once; and a
 deployment whose store is seeded boots with no file at all.
+
+And one event that happens once per deployment: a row written before the store
+held whole documents is converted into one, with the delta it used to be kept
+as a snapshot.
 """
 from pathlib import Path
 
 import pytest
 import yaml
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.config.overrides import (
+    MIGRATE_REASON,
     STORE_FORMAT,
     load_effective_config,
     load_store,
@@ -18,7 +24,7 @@ from autoposter.config.overrides import (
     store_meta,
     write_store,
 )
-from autoposter.db.models import ConfigOverride
+from autoposter.db.models import ConfigOverride, ConfigOverrideSnapshot
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -151,7 +157,8 @@ async def test_a_store_of_only_migrated_sections_is_not_an_empty_store(
     """A row whose every section has left the schema reads as an empty
     document, but it is a store somebody wrote: seeding over it would throw
     away the metadata -- the restart list -- that the row still carries. It
-    takes the delta path instead, which merges nothing over the file."""
+    takes the delta path instead, which merges nothing over the file and so
+    converts to the file's own document, restart list intact."""
     stale = {"version_check": {"project": "operinko-labs"}}
     async with session_factory() as session:
         await write_store(session, stale, {"restart_paths": ["plex"]})
@@ -163,5 +170,113 @@ async def test_a_store_of_only_migrated_sections_is_not_an_empty_store(
 
     async with session_factory() as session:
         row = (await session.execute(select(ConfigOverride))).scalar_one()
-    assert row.document == stale, "the seed replaced a row it does not own"
-    assert row.meta == {"restart_paths": ["plex"]}
+        snapshots = (
+            await session.execute(select(ConfigOverrideSnapshot))
+        ).scalars().all()
+    assert row.document == _document(), "the conversion did not write the file's document"
+    assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex"]}
+    assert snapshots == [], "a delta with nothing left in it has nothing to snapshot"
+
+
+# --- the one-time conversion of a delta-era row ---
+
+
+async def _write_delta(session_factory, delta: dict) -> None:
+    """A store exactly as it was before the row held the whole document: a
+    delta, and no metadata to say so."""
+    async with session_factory() as session:
+        await session.execute(insert(ConfigOverride).values(id=1, document=delta, meta={}))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_delta_store_becomes_a_document_at_the_next_load(
+    session_factory, config_file
+):
+    await _write_delta(session_factory, {"workers": 9})
+    async with session_factory() as session:
+        config = await load_effective_config(config_file, session)
+    assert config.workers == 9
+
+    async with session_factory() as session:
+        document, meta = await load_store(session)
+    assert meta == {"format": STORE_FORMAT}
+    # The whole document, not the delta: every key the file carried is here.
+    assert document["plex"]["url"] == _document()["plex"]["url"]
+    assert document["workers"] == 9
+
+
+@pytest.mark.asyncio
+async def test_the_delta_is_snapshotted_before_it_is_replaced(
+    session_factory, config_file
+):
+    """What makes the conversion undoable: the delta is still on file, as a
+    delta, so a restore re-runs the merge it described."""
+    await _write_delta(session_factory, {"workers": 9})
+    async with session_factory() as session:
+        await load_effective_config(config_file, session)
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(ConfigOverrideSnapshot).order_by(ConfigOverrideSnapshot.id)
+            )
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].reason == MIGRATE_REASON
+    assert rows[0].format == 1
+    assert rows[0].document == {"workers": 9}
+
+
+@pytest.mark.asyncio
+async def test_the_conversion_runs_once(session_factory, config_file):
+    await _write_delta(session_factory, {"workers": 9})
+    for _ in range(3):
+        async with session_factory() as session:
+            await load_effective_config(config_file, session)
+    async with session_factory() as session:
+        count = len(
+            (await session.execute(select(ConfigOverrideSnapshot))).scalars().all()
+        )
+    assert count == 1, "a second load must find format 2 and do nothing"
+
+
+@pytest.mark.asyncio
+async def test_a_delta_with_no_file_left_is_refused_rather_than_guessed(
+    session_factory, tmp_path
+):
+    """A delta is meaningless without the base it was a delta OF. Refusing is
+    the only honest answer -- inventing a document from the delta alone would
+    boot the service with most of its configuration silently defaulted."""
+    await _write_delta(session_factory, {"workers": 9})
+    async with session_factory() as session:
+        with pytest.raises(ValueError, match="delta"):
+            await load_effective_config(tmp_path / "missing.yaml", session)
+    async with session_factory() as session:
+        row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.document == {"workers": 9}, "the refusal rewrote the row it refused"
+
+
+@pytest.mark.asyncio
+async def test_a_merge_the_schema_refuses_leaves_the_delta_standing(
+    session_factory, tmp_path
+):
+    """The conversion is the last load that reads the file, so writing a
+    document the schema refuses would be unrecoverable: the application would
+    not start, and the editor that could repair the row sits behind it. The
+    refusal has to leave both the delta and the file exactly as they were."""
+    path = tmp_path / "autoposter.yaml"
+    path.write_text(yaml.safe_dump(_document()), encoding="utf-8")
+    await _write_delta(session_factory, {"workers": "eleven"})
+
+    async with session_factory() as session:
+        with pytest.raises(ValueError, match="workers"):
+            await load_effective_config(path, session)
+
+    async with session_factory() as session:
+        row = (await session.execute(select(ConfigOverride))).scalar_one()
+        snapshots = (
+            await session.execute(select(ConfigOverrideSnapshot))
+        ).scalars().all()
+    assert row.document == {"workers": "eleven"}, "the refusal rewrote the delta"
+    assert row.meta == {}, "a refused conversion stamped the row as converted"
+    assert snapshots == [], "a refused conversion left a snapshot orphan"
