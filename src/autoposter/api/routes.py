@@ -91,6 +91,7 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue, enqueue_batch
 from autoposter.render.pipeline import ART_KINDS_FOR, manual_override_path
 from autoposter.scheduler.run_history import FULL_PASS_NAME, open_run
+from autoposter.servers.presence import refresh_presence
 from autoposter.servers.registry import require_plex
 
 logger = logging.getLogger(__name__)
@@ -1059,6 +1060,13 @@ async def run_full_pass(
     the same drain. That is the honest consequence of a button that is not
     idempotent (see above); reusing an already-open row instead would mean a
     single row nothing ever closed could suppress every future pass's history.
+
+    Presence first (spec §1). Every configured server is asked which
+    libraries it carries, and the items of a library it does not carry are
+    stamped `absent` in both outcome tables -- once per library, not once per
+    attempt. A server that cannot answer right now is skipped rather than
+    treated as carrying nothing, because "unreachable" and "does not have it"
+    are different facts and only one of them is worth writing down.
     """
     # Spec §4.4 step 6: a Jellyfin index built once and reused between passes
     # (see jellyfin/index.py) would otherwise answer a full pass with
@@ -1075,6 +1083,14 @@ async def run_full_pass(
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
+        # Spec §1: presence is recomputed at the START of every full pass, in
+        # this same transaction as the run row and the enqueue -- so a pass
+        # either opens with its `absent` rows stamped or does not open at
+        # all. A library that has reappeared on a server flips its items back
+        # to `pending` here and they flow through the ordinary retry, which
+        # is what makes a library map change eventually self-correcting even
+        # without the catch-up.
+        presence_outcomes = await refresh_presence(session, request.app.state.servers)
         rows = (
             await session.execute(
                 select(
@@ -1122,7 +1138,7 @@ async def run_full_pass(
             {"total": total, "queued": queued, "skipped": skipped},
         )
     )
-    return {"total": total, "queued": queued, "skipped": skipped}
+    return {"total": total, "queued": queued, "skipped": skipped, "presence": presence_outcomes}
 
 
 class ModeFilterBody(BaseModel):
