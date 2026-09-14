@@ -31,6 +31,7 @@ from autoposter.config import loader as loader_module
 from autoposter.config import state as state_module
 from autoposter.config.schema import (
     STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
     Secrets,
     missing_hard_secret_names,
     resolve_secret_values,
@@ -77,10 +78,17 @@ def clean_secret_environment(monkeypatch, tmp_path):
     records no undo entry for a name that was absent when the test began, so
     a boot test would otherwise leak a credential into every test after it.
     """
-    # The boot marker joins the save/restore list for the reason the docstring
-    # above gives: `boot.main` assigns it into `os.environ` directly, ahead of
-    # `_export`, so a boot test would otherwise leak it into every test after.
-    names = (*HARD, *SOFT, "AUTOPOSTER_CONFIG", STATE_FILE_NAMES_ENV)
+    # Both boot markers join the save/restore list for the reason the
+    # docstring above gives: `boot.main` assigns them into `os.environ`
+    # directly, ahead of `_export`, so a boot test would otherwise leak them
+    # into every test after -- and `secret_sources` reads them.
+    names = (
+        *HARD,
+        *SOFT,
+        "AUTOPOSTER_CONFIG",
+        STATE_FILE_NAMES_ENV,
+        STORED_SECRET_NAMES_ENV,
+    )
     saved = {name: os.environ[name] for name in names if name in os.environ}
     for name in names:
         monkeypatch.delenv(name, raising=False)
@@ -572,11 +580,22 @@ def test_a_configured_boot_execs_the_command_argv_names(monkeypatch):
 
 
 def test_a_configured_boot_with_an_unreachable_database_still_migrates(monkeypatch):
+    """Boot DOES open an engine now -- it reads the stored secrets through one
+    -- and must not be blocked by a database that does not answer. What it
+    still must not do is make the boot DECISION from it: the migration and the
+    exec happen exactly as they did when postgres was never consulted at all.
+    """
     for name in HARD[1:]:
         monkeypatch.setenv(name, "x")
     monkeypatch.setenv("AUTOPOSTER_DATABASE_URL", FAKE_DB_URL)
     _write_state_config()
-    monkeypatch.setattr(db_base, "make_engine", _must_not_run)
+    opened: list[str] = []
+
+    def unreachable(url):
+        opened.append(url)
+        raise OSError(113, "No route to host")
+
+    monkeypatch.setattr(db_base, "make_engine", unreachable)
     monkeypatch.setattr(boot.uvicorn, "run", _must_not_run)
     order: list[str] = []
     monkeypatch.setattr(boot, "_migrate", lambda: order.append("migrate"))
@@ -585,6 +604,7 @@ def test_a_configured_boot_with_an_unreachable_database_still_migrates(monkeypat
     boot.main([])
 
     assert order == ["migrate", "execv"]
+    assert opened == [FAKE_DB_URL], "the store was reached for, and answered nothing"
 
 
 def test_a_migration_that_fails_exits_instead_of_serving_the_wizard(monkeypatch):
@@ -707,9 +727,13 @@ def test_the_state_directory_is_documented_in_both_places_an_operator_looks():
     assert "First start" in readme
     # The one instruction in that section whose omission fails SILENTLY: the
     # wizard mints AUTOPOSTER_WEBHOOK_SECRET, shows it once, and Sonarr and
-    # Radarr sign with it -- a Secret that supplies a fresh one wins over the
-    # state file, and every webhook then fails verification with nothing said.
+    # Radarr sign with it -- so a migration that puts a fresh one in a Secret
+    # and deletes `secrets.env` leaves every webhook failing verification with
+    # nothing said. Carry the existing value over instead.
     assert "never regenerated" in deploy_readme
+    # The other half, and the one this precedence reversal added: a leftover
+    # `secrets.env` now outranks the Secret for every name it still holds.
+    assert "Delete the file." in deploy_readme
 
 
 def test_the_deploy_readme_no_longer_claims_migrations_always_run():
@@ -732,7 +756,7 @@ def test_the_compose_stack_mounts_a_private_state_volume():
     assert "state" in compose["volumes"]
 
 
-# --- the boot marker: which names came from the STATE FILE ------------------
+# --- the boot markers: which names came from the STORE and the STATE FILE ---
 
 
 def _booted(monkeypatch) -> str:
@@ -759,6 +783,19 @@ def test_a_state_file_boot_publishes_the_names_it_read_from_the_file(monkeypatch
 
     assert "AUTOPOSTER_WEBHOOK_SECRET" in marker.split(",")
     assert sorted(marker.split(",")) == sorted(HARD)
+
+
+def test_the_stored_marker_is_published_unconditionally_and_empty_here(monkeypatch):
+    """The second marker, and the case every boot in this file is: no database
+    answers, so nothing is stored. It is set to "" rather than left absent for
+    the reason the first one is -- "no name came from there" is an answer, and
+    a missing marker and an empty one must not be two different states for the
+    reader to tell apart."""
+    _write_state_secrets({name: "from-file" for name in HARD})
+
+    _booted(monkeypatch)
+
+    assert os.environ[STORED_SECRET_NAMES_ENV] == ""
 
 
 def test_an_env_configured_boot_publishes_an_empty_marker(monkeypatch):

@@ -1,6 +1,6 @@
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -120,9 +120,16 @@ def resolve_secret_values(stored: Mapping[str, str] | None = None) -> dict[str, 
     corollary is that on an env-complete deployment the file is unreachable
     for the SOFT names too: a wizard-written ``AUTOPOSTER_API_KEY`` would be
     ignored there. That is harmless because such a deployment never runs the
-    wizard, and it is said here so no later caller assumes otherwise. The swap
-    leaves it untouched: such a deployment has no file to outrank the
-    environment with.
+    wizard, and it is said here so no later caller assumes otherwise.
+
+    The short-circuit is gated on ``not stored``, and the consequence is sharp
+    enough to state outright: the FIRST secret an env-complete deployment
+    stores makes it read its state file again at the next boot, and the file
+    then outranks the environment for every name it still holds. A deployment
+    the wizard configured and an operator later handed to ExternalSecrets has
+    exactly that leftover file. ``deploy/README.md`` carries the instruction
+    that follows -- delete ``secrets.env`` once the environment takes over --
+    because nothing here can tell a stale file from a deliberate one.
     """
     stored = stored or {}
     # A deployment whose environment carries every hard name never opens the
@@ -145,7 +152,35 @@ def resolve_secret_values(stored: Mapping[str, str] | None = None) -> dict[str, 
     return resolved
 
 
-def secret_sources(stored: Mapping[str, str] | None = None) -> dict[str, str]:
+def _marker_names(variable: str) -> set[str]:
+    """One of ``boot``'s comma-joined name markers, as a set.
+
+    ``"".split(",")`` is ``[""]``, so the empty marker an env-configured boot
+    publishes would otherwise become a name. Both markers are set
+    unconditionally, and both may legitimately be empty.
+    """
+    return {name for name in os.environ.get(variable, "").split(",") if name}
+
+
+def _state_file_names() -> set[str]:
+    """The names the STATE FILE answers, as this process can best tell.
+
+    The file itself when it can be read, and ``boot``'s marker when it cannot.
+    A state volume that went away after boot, or a file this process may not
+    open, does not change where a running value CAME FROM -- the marker is
+    what the boot that read the file published, and it is the honest answer
+    once the file is gone. ``read_secrets_file`` raises rather than swallowing
+    an unreadable file on purpose; that is right for the boot path and wrong
+    for a page render, so it is caught here and nowhere else.
+    """
+    try:
+        from_file = {name for name, value in read_secrets_file(secrets_file_path()).items() if value}
+    except OSError:
+        from_file = set()
+    return from_file or _marker_names(STATE_FILE_NAMES_ENV)
+
+
+def secret_sources(stored_names: Collection[str] | None = None) -> dict[str, str]:
     """Where each secret's running value comes from. Names and sources only.
 
     One of ``stored``, ``state file``, ``environment``, ``unset`` (spec
@@ -153,25 +188,36 @@ def secret_sources(stored: Mapping[str, str] | None = None) -> dict[str, str]:
     name, and the reason a cleared stored value can be described honestly: the
     next source down takes over and this map says which.
 
-    The branches are in RESOLUTION order and must stay in it, the env-complete
-    short-circuit included. A source label that disagreed with the value
-    ``resolve_secret_values`` picks would send an operator to change a
-    variable that is not the one in force, which is the single most expensive
-    thing this map can be wrong about -- and on an env-complete deployment the
-    file is not read at all, so a name only the file holds resolves to nothing
-    there and "unset" is what nothing is called.
+    NAMES ONLY, all the way down, and that is the whole design. Every caller
+    of this function runs AFTER ``boot._export`` has published the winning
+    values into ``os.environ``, at which point every name looks like an
+    environment name and no comparison against ``os.environ`` can tell the
+    layers apart. So a name's source is decided by which SET it belongs to --
+    the stored set, then the state-file set -- and the environment is only
+    what is left when neither claims it. Asking ``os.environ`` first, or
+    short-circuiting on it, labels a whole wizard-configured deployment
+    ``environment`` and sends its operator to change a variable nothing reads.
+
+    ``stored_names`` is the LIVE table where a caller has a session
+    (``secret_store.stored_secret_names``), so a secret cleared since boot
+    stops being labelled ``stored`` immediately. ``None`` -- a caller with no
+    session -- falls back to the marker ``boot`` published, which is that
+    boot's own answer. An empty collection is not ``None``: it means the table
+    was read and holds nothing.
+
+    The branches are in ``resolve_secret_values``' resolution order and must
+    stay in it. A source label that disagreed with the value that function
+    picks would send an operator to change a variable that is not the one in
+    force, which is the single most expensive thing this map can be wrong
+    about.
     """
-    stored = stored or {}
-    if not stored and all(os.environ.get(name) for name in _SECRET_ENV.values()):
-        return {
-            name: "environment" if os.environ.get(name) else "unset" for name in SECRET_NAMES
-        }
-    from_file = read_secrets_file(secrets_file_path())
+    stored = _marker_names(STORED_SECRET_NAMES_ENV) if stored_names is None else set(stored_names)
+    from_file = _state_file_names()
     sources: dict[str, str] = {}
     for name in SECRET_NAMES:
-        if stored.get(name):
+        if name in stored:
             sources[name] = "stored"
-        elif from_file.get(name):
+        elif name in from_file:
             sources[name] = "state file"
         elif os.environ.get(name):
             sources[name] = "environment"
@@ -189,15 +235,19 @@ def missing_hard_secret_names(resolved: Mapping[str, str]) -> list[str]:
     return [name for name in _SECRET_ENV.values() if not resolved.get(name)]
 
 
-# The marker `boot` publishes across its `os.execv` so the running application
-# can tell a state-file deployment from an env-configured one. A comma-joined
-# list of environment-variable NAMES and nothing else: no value, ever.
+# The two markers `boot` publishes across its `os.execv` so the running
+# application can still tell which layer answered each name after `_export`
+# has made them all look alike. Comma-joined lists of environment-variable
+# NAMES and nothing else: no value, ever. Both are set unconditionally, and
+# an empty one is a real answer -- "no name came from there" -- rather than a
+# missing one.
 #
-# It lives here, beside `_SECRET_ENV` and `_SOFT_SECRET_ENV`, because this
-# module owns every AUTOPOSTER_* secret name there is; `boot` sets it and
-# `app.create_app` reads it, and neither of them should be the place a third
-# reader has to go looking.
+# They live here, beside `_SECRET_ENV` and `_SOFT_SECRET_ENV`, because this
+# module owns every AUTOPOSTER_* secret name there is; `boot` sets them and
+# `secret_sources` above reads them, and neither of those should be the place
+# a third reader has to go looking.
 STATE_FILE_NAMES_ENV = "AUTOPOSTER_STATE_FILE_SECRET_NAMES"
+STORED_SECRET_NAMES_ENV = "AUTOPOSTER_STORED_SECRET_NAMES"
 
 
 def state_file_secret_names(stored: Mapping[str, str] | None = None) -> list[str]:

@@ -60,12 +60,16 @@ backup behind it, not as something to roll back.
 ## First-start setup
 
 A deployment is CONFIGURED when both of two things are true: every hard
-credential resolves (the process environment first, the state file second;
-an empty environment value counts as absent on both sides) **and** a config
-document is readable (the `AUTOPOSTER_CONFIG` path when it exists, the state
-directory's `autoposter.yaml` otherwise). The database is not part of that
-decision — see "Database" above. **Every GitOps/ExternalSecrets deployment
-resolves both halves and is unaffected by anything in this section.**
+credential resolves (the stored row first, the state file second, the process
+environment third; an empty value counts as absent on every layer) **and** a
+config document is readable (the `AUTOPOSTER_CONFIG` path when it exists, the
+state directory's `autoposter.yaml` otherwise). The database is not part of
+that decision — see "Database" above; it is read once for the stored secrets,
+and a database that does not answer simply leaves that layer empty rather than
+stopping the boot. **Every GitOps/ExternalSecrets deployment resolves both
+halves and is unaffected by anything in this section** — provided nothing is
+left behind under `/state`, which is the one thing that changed and is covered
+under "Precedence" below.
 
 Short of that, there are two outcomes, and only one of them is a wizard:
 
@@ -303,18 +307,29 @@ putting them on a shared mount is a disclosure decision rather than a storage
 one. Writes are atomic (temp file in the same directory, `fsync`,
 `os.replace`), so a reader always sees a whole file, never a partial one.
 
-**Precedence, in one line: the environment wins.** A name set in the
-environment is used even when the file also carries it, so adding an
-ExternalSecret later takes effect at the next restart with no need to edit or
-delete anything under `/state` for the five hard names themselves — with one
-exception among them: `AUTOPOSTER_WEBHOOK_SECRET` must be **carried over from
+**Precedence, in one line: the stored row, then `secrets.env`, then the
+environment.** A name the Settings page has stored wins over both; a name
+`secrets.env` carries wins over the environment.
+
+**This reverses the old rule, and the consequence for an ExternalSecrets
+migration is the one thing to get right: delete `secrets.env` in the same
+change that hands these names to the environment.** A leftover file now
+outranks the Secret for every name it still holds, including
+`AUTOPOSTER_DATABASE_URL` and `AUTOPOSTER_WEBHOOK_SECRET`, and nothing warns
+you — the deployment simply keeps running on the values the wizard wrote while
+the manifest says otherwise. A deployment whose hard names all resolve from the
+environment and which has stored nothing does not open the file at all, so the
+leftover is harmless until the first secret is stored from the Settings page;
+storing one makes the file live again at the next restart. Do not rely on that
+window. Delete the file.
+
+The webhook secret has one more rule of its own: it must be **carried over from
 `secrets.env`, never regenerated**. The wizard mints it, shows it exactly once
 and it is the value Sonarr and Radarr were given; a fresh one in the Secret
-wins over the file, and every webhook then fails verification silently until
-both applications are updated. Copy the existing line out of `secrets.env`
-into the Secret. It is not free for the SOFT names the wizard writes either:
-once all five hard names resolve from the environment, `resolve_secret_values`
-never opens `secrets.env` again, for any name. A deployment the wizard configured, whose
+would leave every webhook failing verification silently until both applications
+are updated. Copy the existing line out of `secrets.env` into the Secret before
+you delete the file. The same carry-over applies to every SOFT name the wizard
+wrote: a deployment the wizard configured, whose
 hard names are later handed to an ExternalSecret, must carry every soft name
 the wizard wrote into the environment (or the Secret) in that same change:
 `AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, the media-server credential the
@@ -337,13 +352,21 @@ hand in two other applications. It shows the new value once and never again, so
 have somewhere to paste it before pressing the button. Afterwards each *arr's
 own **Test** button succeeds, which is a confirmation the wizard could not give.
 
-On a deployment whose environment carries `AUTOPOSTER_WEBHOOK_SECRET` — every
-shape this section's ExternalSecrets migration produces, and every
-`envFrom: secretRef` Kubernetes deployment — **that action refuses**, naming
-the variable. It is not being cautious: the environment is read before the
-state file at every boot, so a write to `secrets.env` there would be undone by
-the next restart while both *arrs held the new value. Set the new value in the
-environment and roll the deployment, exactly as for every other credential.
+On a deployment where `AUTOPOSTER_WEBHOOK_SECRET` is answered by the
+environment — every shape this section's ExternalSecrets migration produces
+once `secrets.env` is gone, and every `envFrom: secretRef` Kubernetes
+deployment — **that action refuses**, naming the variable. The refusal is a
+policy rather than a mechanical necessity: a write to `secrets.env` would now
+win at the next restart, which is exactly the problem. Your manifest is what
+sets that variable, and a button on a web page that could quietly overrule it
+from a file the manifest does not mention would stop the manifest being the
+truth about this deployment without anyone having edited it. Set the new value
+where it is set and roll the deployment, exactly as for every other credential.
+
+A name held by BOTH `secrets.env` and the environment is answered by the file,
+so the Settings page **does** rotate it — that is the reversal above applied to
+this one action, and it is deliberate. If you want your manifest to be the
+source of that credential, delete the file's copy.
 
 ### Kubernetes
 

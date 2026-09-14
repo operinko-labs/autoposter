@@ -24,6 +24,8 @@ from sqlalchemy import select, update
 from autoposter.config import secret_store
 from autoposter.config.schema import (
     SECRET_NAMES,
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
     resolve_secret_values,
     secret_sources,
     state_file_secret_names,
@@ -36,7 +38,16 @@ NAME = "AUTOPOSTER_TMDB_TOKEN"
 
 @pytest.fixture
 def state(tmp_path, monkeypatch):
+    """A state directory nobody else shares, and neither boot marker set.
+
+    The markers are what `secret_sources` falls back to with no session and no
+    readable file, so a marker inherited from the container's environment (or
+    left behind by a boot test in the same process) would decide a source
+    label here instead of this test's own fixture.
+    """
     monkeypatch.setenv(STATE_DIR_ENV, str(tmp_path / "state"))
+    monkeypatch.delenv(STATE_FILE_NAMES_ENV, raising=False)
+    monkeypatch.delenv(STORED_SECRET_NAMES_ENV, raising=False)
     return tmp_path / "state"
 
 
@@ -366,7 +377,7 @@ def test_sources_name_every_secret_and_no_values(state, monkeypatch):
     monkeypatch.delenv("AUTOPOSTER_FANART_APIKEY", raising=False)
     monkeypatch.setenv("AUTOPOSTER_TVDB_APIKEY", "from-env")
     merge_secrets_file({"AUTOPOSTER_FANART_APIKEY": "from-file"})
-    sources = secret_sources({"AUTOPOSTER_TMDB_TOKEN": "from-store"})
+    sources = secret_sources(["AUTOPOSTER_TMDB_TOKEN"])
     assert sources["AUTOPOSTER_TMDB_TOKEN"] == "stored"
     assert sources["AUTOPOSTER_TVDB_APIKEY"] == "environment"
     assert sources["AUTOPOSTER_FANART_APIKEY"] == "state file"
@@ -388,3 +399,95 @@ def test_state_file_secret_names_now_lists_a_name_the_environment_also_carries(
     assert "AUTOPOSTER_TMDB_TOKEN" not in state_file_secret_names(
         {"AUTOPOSTER_TMDB_TOKEN": "from-store"}
     )
+
+
+# --- the sources survive boot's export --------------------------------------
+#
+# Every caller of `secret_sources` runs in a process `boot._export` has
+# already been through, where every winning value is in `os.environ` and every
+# name therefore looks like an environment name. These are the cases that
+# distinguish a map which reports ORIGIN from one that reports where a value
+# happens to sit now.
+
+EXPORTED_HARD = (
+    "AUTOPOSTER_DATABASE_URL",
+    "AUTOPOSTER_TMDB_TOKEN",
+    "AUTOPOSTER_TVDB_APIKEY",
+    "AUTOPOSTER_FANART_APIKEY",
+    "AUTOPOSTER_WEBHOOK_SECRET",
+)
+
+
+def _as_boot_left_it(monkeypatch, *names: str) -> None:
+    """`os.environ` the way `_export` leaves it: every winning value present,
+    whichever layer supplied it."""
+    for name in (*EXPORTED_HARD, *names):
+        monkeypatch.setenv(name, "published-by-the-export")
+
+
+def test_a_file_supplied_name_is_still_the_state_file_after_the_export(state, monkeypatch):
+    """The deployment this route exists for. A wizard-configured process has
+    every hard name in its environment because boot put it there, and a map
+    that asked `os.environ` first would label the whole deployment
+    `environment` -- sending its operator to change a variable nothing reads,
+    and refusing the one rotation the Settings page offers."""
+    merge_secrets_file({"AUTOPOSTER_WEBHOOK_SECRET": "from-file"})
+    _as_boot_left_it(monkeypatch, "AUTOPOSTER_API_KEY")
+
+    sources = secret_sources([])
+
+    assert sources["AUTOPOSTER_WEBHOOK_SECRET"] == "state file"
+    assert sources["AUTOPOSTER_API_KEY"] == "environment"
+
+
+def test_a_stored_name_is_still_stored_after_the_export(state, monkeypatch):
+    _as_boot_left_it(monkeypatch)
+    merge_secrets_file({"AUTOPOSTER_TMDB_TOKEN": "from-file"})
+
+    sources = secret_sources(["AUTOPOSTER_TMDB_TOKEN"])
+
+    assert sources["AUTOPOSTER_TMDB_TOKEN"] == "stored", "the store outranks the file"
+    assert sources["AUTOPOSTER_TVDB_APIKEY"] == "environment"
+
+
+def test_the_boot_markers_answer_a_caller_with_no_session(state, monkeypatch):
+    """No session and no readable state file -- an env-configured deployment
+    whose volume is not mounted, or any caller outside a route. The markers
+    are what the boot that DID read those sources published, and they are the
+    honest answer once neither can be consulted again."""
+    _as_boot_left_it(monkeypatch)
+    monkeypatch.setenv(STORED_SECRET_NAMES_ENV, "AUTOPOSTER_TMDB_TOKEN")
+    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "AUTOPOSTER_WEBHOOK_SECRET")
+
+    sources = secret_sources()
+
+    assert sources["AUTOPOSTER_TMDB_TOKEN"] == "stored"
+    assert sources["AUTOPOSTER_WEBHOOK_SECRET"] == "state file"
+    assert sources["AUTOPOSTER_TVDB_APIKEY"] == "environment"
+
+
+def test_a_live_empty_store_overrides_the_stored_marker(state, monkeypatch):
+    """A secret cleared from the Settings page since boot. An empty collection
+    is not `None`: it means the table was read and holds nothing, and the page
+    must say what is true now rather than what was true at the last restart."""
+    _as_boot_left_it(monkeypatch)
+    monkeypatch.setenv(STORED_SECRET_NAMES_ENV, "AUTOPOSTER_TMDB_TOKEN")
+
+    assert secret_sources()["AUTOPOSTER_TMDB_TOKEN"] == "stored"
+    assert secret_sources([])["AUTOPOSTER_TMDB_TOKEN"] == "environment"
+
+
+def test_an_unreadable_state_file_falls_back_to_its_marker(state, monkeypatch):
+    """`read_secrets_file` raises on a file that exists and cannot be read --
+    right for the boot path, wrong for a page render. The marker carries the
+    same answer boot reached from the same file."""
+    merge_secrets_file({"AUTOPOSTER_WEBHOOK_SECRET": "from-file"})
+    _as_boot_left_it(monkeypatch)
+    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "AUTOPOSTER_WEBHOOK_SECRET")
+
+    def refused(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("autoposter.config.schema.read_secrets_file", refused)
+
+    assert secret_sources([])["AUTOPOSTER_WEBHOOK_SECRET"] == "state file"

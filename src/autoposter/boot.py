@@ -17,7 +17,10 @@ CONFIGURED means all three, in this order:
 
 1. every hard secret resolves -- the stored row, then the state file, then the
    environment (``config/schema.resolve_secret_values``), with an EMPTY value
-   counting as absent on every layer;
+   counting as absent on every layer. ``AUTOPOSTER_DATABASE_URL`` is the one
+   name the stored layer cannot answer, and not by policy: reading the store
+   needs it, so ``main``'s first resolve is the two lower layers and only its
+   second has the store on top of them;
 2. a config document is readable -- the ``AUTOPOSTER_CONFIG`` path when that
    file exists, the state directory's ``autoposter.yaml`` otherwise
    (``config/loader.config_document_path``);
@@ -72,7 +75,9 @@ import uvicorn
 
 from autoposter.config.loader import config_document_path, read_config_document
 from autoposter.config.schema import (
+    SECRET_NAMES,
     STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
     missing_hard_secret_names,
     missing_server_setup,
     resolve_secret_values,
@@ -101,10 +106,29 @@ def stored_secrets_for_boot(database_url: str) -> dict[str, str]:
 
     A private event loop, because this frame has none: ``main`` below is
     synchronous and runs before uvicorn. ``asyncio.run`` owns and closes the
-    loop, so nothing is left behind for the ``os.execv`` that follows.
+    loop, so nothing is left behind for the ``os.execv`` that follows. The
+    corollary is that this function MUST NOT be called from inside a running
+    loop: ``asyncio.run`` raises there, the catch-all below turns that into
+    ``{}``, and an in-loop caller would get a silently empty store rather than
+    an error. There is no such caller -- ``resolve_secret_values`` takes the
+    map as an argument precisely so that there need not be one.
+
+    The whole read is bounded by ``PROBE_TIMEOUT_SECONDS``, the same five
+    seconds ``db/base.database_answers`` chose and for the same reason it
+    wrote down there: only asyncpg has an implicit connect bound (60 s,
+    incidental rather than chosen), no dialect bounds the QUERY, and a host
+    that accepts the connection and then stops answering -- a paused VM, a
+    failing-over pgbouncer, a DROP rule applied after accept -- is precisely
+    the case that would otherwise hang forever. This sits ahead of
+    ``is_configured``, the migration and the exec, so "never blocks a boot"
+    has to be a bound and not an intention.
     """
     if not database_url:
         return {}
+
+    # Imported here rather than at module scope, like the engine below: a boot
+    # with no database URL answers without importing the database layer at all.
+    from autoposter.db.base import PROBE_TIMEOUT_SECONDS
 
     async def read() -> dict[str, str]:
         from autoposter.config.secret_store import load_stored_secrets
@@ -119,10 +143,12 @@ def stored_secrets_for_boot(database_url: str) -> dict[str, str]:
             await engine.dispose()
 
     try:
-        return asyncio.run(read())
+        return asyncio.run(asyncio.wait_for(read(), PROBE_TIMEOUT_SECONDS))
     except Exception as exc:
-        # The CLASS NAME only: the URL carries a password. INFO, not WARNING:
-        # on a first boot this is the ordinary case.
+        # The CLASS NAME only, never the exception's own message: a connection
+        # error's text carries the DSN -- host, user and password. A timeout
+        # arrives here as `TimeoutError`, which is a class name like any other.
+        # INFO, not WARNING: on a first boot this is the ordinary case.
         logger.info(
             "the stored secrets could not be read (%s); the state file and the "
             "environment answer instead",
@@ -235,6 +261,33 @@ def main(argv: list[str] | None = None) -> None:
     stored = stored_secrets_for_boot(resolved.get("AUTOPOSTER_DATABASE_URL", ""))
     if stored:
         resolved = resolve_secret_values(stored)
+
+    # The markers, then the export, and both BEFORE the branch below rather
+    # than only on the configured side of it.
+    #
+    # The markers first, because `_export` is what destroys the answer: it
+    # publishes every winning value into `os.environ`, after which every name
+    # looks like an environment name and nothing downstream can tell the
+    # layers apart. `_export` iterates `resolved` only, so it leaves these two
+    # names alone, and `os.execv` below carries the whole environment into the
+    # new process image. Both are set unconditionally, including to "": an
+    # env-configured boot publishes an explicit empty marker rather than no
+    # marker, and both read as "no name came from there" downstream. Names,
+    # never values.
+    #
+    # The export ahead of the branch, because the WIZARD reads the same
+    # resolver this did and has no database session of its own: the store is
+    # where a deployment's admin password hash may live, and a wizard that
+    # could not see it would treat a deployment that has a password as one
+    # that has never had one and hand a setup token to whoever asked first.
+    # Publishing here is what makes the wizard's view of this deployment the
+    # same as the application's.
+    os.environ[STORED_SECRET_NAMES_ENV] = ",".join(
+        name for name in SECRET_NAMES if stored.get(name)
+    )
+    os.environ[STATE_FILE_NAMES_ENV] = ",".join(state_file_secret_names(stored))
+    _export(resolved)
+
     if not is_configured(resolved):
         if not missing_hard_secret_names(resolved) and config_document_path() is None:
             # Credentials but no document. `is_configured` has already logged
@@ -267,17 +320,6 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
-    # BEFORE `_export`, which is what would destroy the answer: it publishes
-    # the file's values into `os.environ`, after which nothing downstream can
-    # tell the two deployment shapes apart. `_export` iterates `resolved`
-    # only, so it leaves this name alone, and `os.execv` below carries the
-    # whole environment into the new process image.
-    #
-    # Set unconditionally, including to "": an env-configured boot publishes
-    # an explicit empty marker rather than no marker, and both read as "no
-    # name came from the file" downstream. Names, never values.
-    os.environ[STATE_FILE_NAMES_ENV] = ",".join(state_file_secret_names(stored))
-    _export(resolved)
     # The plaintext credentials leave this frame as soon as they are published:
     # any traceback renderer that prints locals (pytest --tb=long, an error
     # reporter added later) would otherwise dump all fourteen of them, and

@@ -30,7 +30,11 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config import state as state_module
 from autoposter.config.loader import build_config
-from autoposter.config.schema import Secrets
+from autoposter.config.schema import (
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
+    Secrets,
+)
 from autoposter.db.models import EventLog
 
 # The wizard suite's autouse environment isolation, imported rather than
@@ -127,6 +131,24 @@ async def _rotate(client, auth):
 
 # --- the refusal --------------------------------------------------------------
 
+# Every deployed process has every hard name in `os.environ`, whichever layer
+# supplied it, because `boot._export` publishes the winning values there before
+# the exec. `isolated_state` delenvs them all, which is the right isolation for
+# the rest of this file and the wrong environment for the guard: the cases
+# below set them back the way boot leaves them.
+EXPORTED_HARD = (
+    "AUTOPOSTER_DATABASE_URL",
+    "AUTOPOSTER_TMDB_TOKEN",
+    "AUTOPOSTER_TVDB_APIKEY",
+    "AUTOPOSTER_FANART_APIKEY",
+    WEBHOOK_ENV,
+)
+
+
+def _as_boot_left_it(monkeypatch, **overrides: str) -> None:
+    for name in EXPORTED_HARD:
+        monkeypatch.setenv(name, overrides.get(name, "published-by-the-export"))
+
 
 async def test_a_deployment_whose_environment_answers_is_refused_by_a_fixed_sentence(
     session_factory, monkeypatch
@@ -134,9 +156,14 @@ async def test_a_deployment_whose_environment_answers_is_refused_by_a_fixed_sent
     """The condition is the WINNING source, not the boot-time marker it used
     to stand in for. Under spec section 3's order the state file outranks the
     environment, so the environment answers this name only when the file --
-    which holds an unrelated soft name here and nothing else -- does not."""
+    which holds an unrelated soft name here and nothing else -- does not.
+
+    The environment is populated the way `boot._export` populates it, every
+    hard name included, because that is the environment every deployed process
+    actually has and a guard that short-circuited on it would answer this
+    whole file wrongly."""
     state_module.merge_secrets_file({"AUTOPOSTER_MDBLIST_APIKEY": UNRELATED})
-    monkeypatch.setenv(WEBHOOK_ENV, ENV_SECRET)
+    _as_boot_left_it(monkeypatch, **{WEBHOOK_ENV: ENV_SECRET})
     before = state_module.secrets_file_path().read_bytes()
     application = _build(session_factory, _document(), _secrets())
     monkeypatch.setattr(setup_arr, "register", _accepting([]))
@@ -160,7 +187,7 @@ async def test_a_deployment_whose_state_file_answers_is_allowed_to_rotate(
     and the file is what answers it, so writing the file is not a write the
     next boot would shadow."""
     _seed_state_file()
-    monkeypatch.setenv(WEBHOOK_ENV, ENV_SECRET)
+    _as_boot_left_it(monkeypatch, **{WEBHOOK_ENV: ENV_SECRET})
     application = _build(session_factory, _document(), _secrets())
     monkeypatch.setattr(setup_arr, "register", _accepting([]))
     transport = ASGITransport(app=application)
@@ -171,6 +198,33 @@ async def test_a_deployment_whose_state_file_answers_is_allowed_to_rotate(
     assert response.status_code == 200
     held = state_module.read_secrets_file(state_module.secrets_file_path())
     assert held[WEBHOOK_ENV] == response.json()["webhook_secret"]
+
+
+async def test_a_wizard_configured_deployment_is_allowed_after_the_boot_export(
+    session_factory, monkeypatch
+):
+    """The deployment this route exists for, in the environment it really has.
+
+    A wizard-configured process carries every hard name in `os.environ` --
+    `boot._export` put the FILE's values there -- so a guard that decided from
+    `os.environ` would refuse every one of them, and would start allowing them
+    again the moment any one unrelated secret was stored. That inconsistency is
+    worse than either end of it, which is why the source is decided from the
+    boot markers and the table rather than from the environment.
+    """
+    _seed_state_file()
+    _as_boot_left_it(monkeypatch)
+    # What `boot` published for this deployment, alongside the exported values.
+    monkeypatch.setenv(STATE_FILE_NAMES_ENV, f"{WEBHOOK_ENV},AUTOPOSTER_MDBLIST_APIKEY")
+    monkeypatch.setenv(STORED_SECRET_NAMES_ENV, "")
+    application = _build(session_factory, _document(), _secrets())
+    monkeypatch.setattr(setup_arr, "register", _accepting([]))
+    transport = ASGITransport(app=application)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        token = (await client.post("/api/login", json={"password": PASSWORD})).json()["token"]
+        response = await _rotate(client, {"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
 
 
 def test_the_refusal_names_the_variable_and_nothing_else():

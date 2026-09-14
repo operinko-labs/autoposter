@@ -1,7 +1,6 @@
 import asyncio
 import functools
 import logging
-import os
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -27,7 +26,7 @@ from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
 from autoposter.config.overrides import load_effective_config
-from autoposter.config.schema import STATE_FILE_NAMES_ENV, Config, Secrets
+from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
@@ -648,24 +647,16 @@ def create_app(
     # to the fixture that made it and must not be disposed here.
     app.state.engine = engine
     app.state.secrets = secrets
-    # WHICH of this deployment's secrets came from the state file, as a
-    # per-name boolean -- read with `.get(name, False)`, so a name the marker
-    # does not carry is "not from the file". `boot` publishes the NAMES across
-    # its exec (see `state_file_secret_names`), and this is the only reader.
+    # Nothing is published here about WHICH layer answered each secret. That
+    # was a per-name boolean over `boot`'s state-file marker, and it could only
+    # ever say "the file or not the file" -- one layer of three, decided once
+    # at construction. `config/schema.secret_sources` answers the whole
+    # question instead, from `boot`'s two markers and, where a caller has a
+    # session, the live table; `api/secret_rotation.py` is the reader. An
+    # application that never went through `boot` has neither marker and so has
+    # nothing stored and nothing from the file, which is still the refusal --
+    # the path a test gets for free.
     #
-    # Read from os.environ directly at this construction path, the way the
-    # version stamp the poller below reads is and for the same reason: it is
-    # not a credential, it is a deployment fact, and routing it through Secrets
-    # would make every test app fake a value for it.
-    #
-    # FAIL CLOSED. An application that never went through `boot` -- every test
-    # app, and an operator running `python -m autoposter.main` -- has no
-    # marker and answers False for every name, which is the refusal. That
-    # is deliberate: the refusal is the path a test gets for free and the
-    # permission is the one a test has to opt into.
-    app.state.secret_from_state_file = {
-        name: True for name in os.environ.get(STATE_FILE_NAMES_ENV, "").split(",") if name
-    }
     # http=None here -- create_app has no http client yet, only the lifespan
     # builds one -- so this placeholder never actually polls; GET /api/version
     # still has something to read from every test app that never runs the

@@ -88,11 +88,19 @@ ARR_SERVICES = ("radarr", "sonarr")
 # The variable NAME is what an operator must act on, and naming a
 # variable is what `missing_hard_secret_names` and `Secrets.load` already
 # establish as both safe and required to say. No value, no path, no host.
+#
+# A POLICY now, and the sentence says so, because the mechanism it used to
+# describe is gone: the state file outranks the environment, so a rotation
+# written here would WIN at the next boot rather than be undone by it. That is
+# precisely why the refusal stays. The deployment's own manifest is what sets
+# that variable, and a page that could quietly overrule it from a file the
+# manifest does not mention would stop the manifest being the truth about this
+# deployment without anyone having edited it.
 ENV_CONFIGURED_REFUSAL = (
     "this deployment's webhook secret comes from AUTOPOSTER_WEBHOOK_SECRET in "
-    "its environment, which is read before the state file at every boot -- "
-    "rotating it here would be undone by the next restart. Set a new value in "
-    "the environment and roll the deployment."
+    "its environment, which is where its deployment sets it -- rotating it "
+    "here would write a value that quietly overrules that one. Set a new "
+    "value where AUTOPOSTER_WEBHOOK_SECRET is set and roll the deployment."
 )
 ROTATION_IN_PROGRESS = "a webhook secret rotation is already in progress."
 ROTATION_RATE_LIMITED = "too many rotation attempts"
@@ -142,18 +150,22 @@ async def rotate_webhook_secret(
     # /state, which does not exist -- so the order here is what keeps the
     # refusal, and not a 503 about a directory, the answer that shape gets.
     #
-    # The question this guard asks is "would the next boot shadow what we are
-    # about to write", and the honest form of it is which source WINS for this
-    # name -- not which layer sits where, now that the state file outranks the
-    # environment. `secret_sources` is the one function that answers it, and it
-    # answers it in the same order `resolve_secret_values` resolves in, so the
-    # guard and the resolver cannot drift apart.
+    # The question this guard asks is which source WINS for this name, and
+    # `secret_sources` is the one function that answers it -- in the same
+    # order `resolve_secret_values` resolves in, so the guard and the resolver
+    # cannot drift apart.
     #
-    # `app.state.secret_from_state_file` is no longer consulted here: it was a
-    # boot-time marker standing in for this question, and it encodes the OLD
-    # order.
+    # The stored NAMES rather than the stored values: this route needs to know
+    # whether the store claims the name, never what it holds, and a read that
+    # decrypted every row to answer that would put fourteen plaintext
+    # credentials in this frame for nothing.
+    #
+    # `secret_sources` is asked with a live session rather than left to read
+    # `boot`'s marker, because a secret cleared from the Settings page since
+    # boot must stop being labelled `stored` the moment it is cleared, not at
+    # the next restart.
     async with app.state.session_factory() as session:
-        stored = await secret_store.load_stored_secrets(session)
+        stored = await secret_store.stored_secret_names(session)
     if secret_sources(stored)[WEBHOOK_SECRET_ENV] == "environment":
         raise HTTPException(status_code=400, detail=ENV_CONFIGURED_REFUSAL)
 

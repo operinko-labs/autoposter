@@ -27,7 +27,11 @@ from autoposter.config.schema import (
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
-SECRET_NAMES = (
+# The UNPREFIXED halves the two cases below build variable names from. Named
+# apart from `config/schema.SECRET_NAMES`, which is the public tuple of full
+# AUTOPOSTER_* names every caller iterates: these are neither the same list nor
+# the same spelling, and one name for both would read as though they were.
+SECRET_SUFFIXES = (
     "DATABASE_URL", "PLEX_TOKEN", "TMDB_TOKEN",
     "TVDB_APIKEY", "FANART_APIKEY", "WEBHOOK_SECRET",
 )
@@ -85,7 +89,7 @@ def test_language_order_rejects_bad_codes(tmp_path):
 
 
 def test_secrets_come_from_env(monkeypatch):
-    for name in SECRET_NAMES:
+    for name in SECRET_SUFFIXES:
         monkeypatch.setenv("AUTOPOSTER_" + name, "value-" + name)
     secrets = Secrets.from_env()
     assert secrets.tmdb_token == "value-TMDB_TOKEN"
@@ -93,7 +97,7 @@ def test_secrets_come_from_env(monkeypatch):
 
 
 def test_missing_secret_names_the_variable(monkeypatch):
-    for name in SECRET_NAMES:
+    for name in SECRET_SUFFIXES:
         monkeypatch.setenv("AUTOPOSTER_" + name, "x")
     monkeypatch.delenv("AUTOPOSTER_TMDB_TOKEN")
     with pytest.raises(RuntimeError, match="AUTOPOSTER_TMDB_TOKEN"):

@@ -17,7 +17,13 @@ from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import build_config, load_config, read_config_document
 from autoposter.config.overrides import OVERRIDES_ROW_ID
-from autoposter.config.schema import STATE_FILE_NAMES_ENV, Secrets
+from autoposter.config import state as state_module
+from autoposter.config.schema import (
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
+    Secrets,
+    secret_sources,
+)
 from autoposter.db.models import ConfigOverride
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.intake.arr import RenderIntent
@@ -1041,34 +1047,39 @@ async def test_the_asset_stats_job_is_registered_by_the_lifespan(
         assert app.state.scheduler_intervals["asset_stats"] == 7 * 24 * 3600
 
 
-def test_an_app_that_never_booted_says_no_secret_came_from_the_state_file(secrets):
-    """Fail closed. Every test application, and any operator running
-    `python -m autoposter.main` directly, has no marker -- and the refusal is
-    the answer they get, which is the right default and the one a test has to
-    opt OUT of rather than into."""
-    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+def test_the_app_publishes_no_per_name_source_flag_of_its_own(secrets, session_factory):
+    """`create_app` used to freeze a per-name "came from the state file"
+    boolean onto `app.state` at construction. It could only ever answer one
+    layer of three, it was decided once and could not follow a secret stored or
+    cleared while the process ran, and after `boot._export` it was the only
+    thing standing between the rotation route and labelling every deployment
+    `environment`.
 
-    assert app.state.secret_from_state_file.get("AUTOPOSTER_WEBHOOK_SECRET", False) is False
+    What the route reads instead is `config/schema.secret_sources`, over
+    `boot`'s two markers and -- through this factory -- the live table. So the
+    two things this application owes it are the absence of the old flag and the
+    session it opens.
+    """
+    app = create_app(load_config(EXAMPLE), session_factory, secrets=secrets)
+
+    assert not hasattr(app.state, "secret_from_state_file")
+    assert app.state.session_factory is session_factory
 
 
-def test_the_boot_marker_becomes_a_per_name_boolean(secrets, monkeypatch):
-    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "AUTOPOSTER_WEBHOOK_SECRET,AUTOPOSTER_RADARR_APIKEY")
+def test_an_app_that_never_booted_still_fails_closed(secrets, session_factory, monkeypatch, tmp_path):
+    """Fail closed, now from the markers rather than from a per-app attribute.
+    Every test application, and any operator running `python -m autoposter.main`
+    directly, has neither marker and no state file -- so nothing is stored,
+    nothing came from the file, and the rotation route's guard (`== "environment"`)
+    refuses. The right default, and the one a test has to opt OUT of."""
+    monkeypatch.setenv(state_module.STATE_DIR_ENV, str(tmp_path / "state"))
+    monkeypatch.delenv(STATE_FILE_NAMES_ENV, raising=False)
+    monkeypatch.delenv(STORED_SECRET_NAMES_ENV, raising=False)
+    monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", "from-env")
 
-    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+    create_app(load_config(EXAMPLE), session_factory, secrets=secrets)
 
-    assert app.state.secret_from_state_file.get("AUTOPOSTER_WEBHOOK_SECRET", False) is True
-    assert app.state.secret_from_state_file.get("AUTOPOSTER_RADARR_APIKEY", False) is True
-    assert app.state.secret_from_state_file.get("AUTOPOSTER_PLEX_TOKEN", False) is False
-
-
-def test_an_empty_marker_is_not_a_name(secrets, monkeypatch):
-    """`"".split(",")` is `[""]`, which would otherwise put an empty-string key
-    in the map -- harmless here and a trap for the next reader."""
-    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "")
-
-    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
-
-    assert app.state.secret_from_state_file == {}
+    assert secret_sources([])["AUTOPOSTER_WEBHOOK_SECRET"] == "environment"
 
 
 async def test_a_plex_less_app_boots_and_serves_status(session_factory):
