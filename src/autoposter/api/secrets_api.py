@@ -11,22 +11,34 @@ typed (the wizard's rule, and rotating it re-registers the *arrs); and
 `AUTOPOSTER_DATABASE_URL` cannot be stored in the database it names -- boot
 needs it to read the store at all.
 
-THE LISTING ASKS FOR NAMES, NEVER VALUES. `secret_sources` is answered from
-`stored_secret_names`, which reads one column and decrypts nothing. Asking it
-with `load_stored_secrets` would produce the same labels while putting every
-stored credential in this frame to compute them, on the one route whose entire
-purpose is that no credential is in play. The clear path below is the single
-place that does decrypt, and it does so for one reason it cannot avoid: the
-rebind needs the VALUE the next source down answers with.
+`stored` MEANS THIS KEY CAN OPEN IT. `secret_sources` is answered with the
+names of the rows that DECRYPT -- `load_stored_secrets`' keys, taken in the
+same expression that drops its values, never serialised and never logged --
+rather than with the names of the rows that merely exist. The two differ on
+the failure the store was built to survive, the lost or swapped volume, and
+there the difference is the whole answer: a row this key cannot open is
+skipped by the resolver, so the running value comes from the layer beneath and
+that is what this page must say. A label that disagrees with the value in force
+sends an operator to change a variable that is not the one being used. It costs
+one decrypt per row, on a page an operator opens by hand.
 
-WHAT A FAILING STORE LOOKS LIKE FROM HERE. `store_secret` refuses a value it
-cannot hold, and `encrypt_secret` beneath it raises for a key file that is
-corrupt or a state directory that cannot be written -- three faults that are
-one class (`ValueError`) once raised, plus the `OSError` a missing volume
-raises on the way. The value refusals are answered BEFORE the call, by the
-store's own `is_storable`, so anything left is the volume's fault and is
-reported as one: 503, naming the key FILE, with the exception's own text
-dropped rather than echoed.
+WHAT A DELETE ANSWERS, and why it is not simply "whatever is left". The
+environment this process runs in is not the one the deployment set:
+`boot._export` assigns every winning value into `os.environ`, so for a name the
+store won that environment holds a copy of the very row being removed, and the
+deployment's own value for it -- if there was one -- is gone. `config/schema`'s
+three markers are what let this route tell those apart, and `restart_required`
+in the response is where the remainder is admitted: True exactly when the
+source that takes over is one this process can no longer read, so the operator
+learns that the clear is complete in the store and takes effect on restart.
+
+WHAT A FAILING STORE LOOKS LIKE FROM HERE. The key file is claimed on its own,
+before the row is written, because it is the only part of this write that can
+fail for the VOLUME's reasons -- corrupt key, unwritable state directory -- and
+the sentence that reports it names that file. The value refusals are answered
+earlier still, by the store's own `is_storable`, so nothing reaching the 503
+is the value's fault, and a database fault stays a database fault rather than
+being reported as a key this deployment does not have.
 """
 import logging
 
@@ -75,6 +87,18 @@ VALUE_IS_NOT_STORABLE = (
 #: bug report, and never the exception's own text -- which for a key file is
 #: one line away from the key.
 KEY_FILE_NOT_USABLE = "the stored-secret encryption key could not be read or created"
+#: A hard name with nothing beneath it: the next boot would serve the wizard
+#: instead of the application, so the clear is refused while it still can be.
+HARD_SECRET_WOULD_BE_UNSET = (
+    "this deployment needs that secret and no other source supplies it, so "
+    "clearing the stored value would leave it unset and the next start would "
+    "have nothing to run on. Set it in the state file or in the environment "
+    "first, then clear the stored one."
+)
+
+#: The names a deployment cannot start without -- `missing_hard_secret_names`'
+#: own set, taken from the same map rather than restated.
+HARD_SECRET_NAMES: frozenset[str] = frozenset(_SECRET_ENV.values())
 
 #: environment NAME -> the `Secrets` FIELD it feeds. Derived from the schema's
 #: own three maps rather than restated, so a secret added there is live here
@@ -108,12 +132,15 @@ def _republish(request: Request, name: str, value: str) -> None:
     A secret captured at startup by a client that was built once (a provider
     client, the Plex client) is NOT reached by this, which is exactly what the
     restart list is for: the page says so.
+
+    Every accepted name has a field: `SECRET_NAMES` is the union of the three
+    maps `_FIELD_FOR_NAME` is built from, and `_known` has already refused
+    everything outside it.
     """
-    field = _FIELD_FOR_NAME.get(name)
-    if field is None:
-        return
     held = request.app.state.secrets
-    request.app.state.secrets = Secrets(**{**held.model_dump(), field: value})
+    request.app.state.secrets = Secrets(
+        **{**held.model_dump(), _FIELD_FOR_NAME[name]: value}
+    )
 
 
 @router.get("/secrets")
@@ -122,8 +149,11 @@ async def list_secrets(
 ) -> dict:
     """Every secret this service reads, with where its value comes from."""
     async with request.app.state.session_factory() as session:
-        stored = await secret_store.stored_secret_names(session)
-    sources = secret_sources(stored)
+        # The keys, in the expression that discards the values: what this
+        # route needs from the store is which names ANSWER, and a name whose
+        # row this key cannot open answers nothing.
+        readable = sorted(await secret_store.load_stored_secrets(session))
+    sources = secret_sources(readable)
     return {
         "secrets": [
             {
@@ -154,22 +184,28 @@ async def set_secret(
     # operator can fix is a 422 about the value, not a 503 about the volume.
     if not body.value or not is_storable(body.value):
         raise HTTPException(status_code=422, detail=VALUE_IS_NOT_STORABLE)
+    # The key on its own, and before the row. Everything the store can raise
+    # about the VOLUME -- a key file that is not a key, a state directory that
+    # refuses the create -- is raised here, so the sentence below can name that
+    # file and be true. Wrapping the write as well would report a database
+    # fault (a refused connection is an `OSError` too) as a corrupt key and
+    # send the operator to the wrong volume. `store_secret` re-reads the key it
+    # claims here: a 44-byte file, and one place still decides how a secret is
+    # encrypted.
+    try:
+        secret_store.load_or_create_key()
+    except (secret_store.UndecryptableSecret, ValueError, OSError) as exc:
+        # The step only, in the log: no name, no value, no errno text.
+        logger.error("a stored secret could not be written: the key file is unusable")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"{KEY_FILE_NOT_USABLE}: {secret_store.secret_key_path()} "
+                f"({type(exc).__name__})"
+            ),
+        ) from None
     async with request.app.state.session_factory() as session:
-        try:
-            await secret_store.store_secret(session, name, body.value)
-        except (secret_store.UndecryptableSecret, ValueError, OSError) as exc:
-            # One branch for the three faults the store documents, because
-            # from here they are one thing: this deployment's key file cannot
-            # be used, and the operator has to look at it. The step only in
-            # the log -- no name, no value, no errno text.
-            logger.error("a stored secret could not be written: the key file is unusable")
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"{KEY_FILE_NOT_USABLE}: {secret_store.secret_key_path()} "
-                    f"({type(exc).__name__})"
-                ),
-            ) from None
+        await secret_store.store_secret(session, name, body.value)
         await session.commit()
     _republish(request, name, body.value)
     # The NAME and the action. Never the value, and never a length.
@@ -183,23 +219,44 @@ async def clear_stored_secret(
 ) -> dict:
     """Remove the stored row; the next source down takes over (spec section 3).
 
-    Neither of the two names `set_secret` refuses is refused here. Clearing is
-    how an operator UNDOES a row, and a row this route would not create can
-    still exist -- written by an earlier version, or by hand -- so the one
-    action that removes it must stay reachable. There is nothing to protect:
-    a delete answers a source, never a value.
+    Neither of the two names `set_secret` refuses is refused here: both are
+    names this service reads, a row can hold either one without this route
+    having put it there, and the only way to remove such a row is this call.
+
+    Answers `{"name", "source", "restart_required"}`.
     """
     _known(name)
     async with request.app.state.session_factory() as session:
+        # The store as it will be, read BEFORE the delete, so a refusal leaves
+        # the row exactly where it was. The keys are the names that answer --
+        # a row this key cannot open answers nothing -- and the values are
+        # what the resolver needs to say which layer takes over.
+        remaining = {
+            stored_name: stored_value
+            for stored_name, stored_value in (
+                await secret_store.load_stored_secrets(session)
+            ).items()
+            if stored_name != name
+        }
+        source = secret_sources(sorted(remaining))[name]
+        # The same precedence every other reader follows, including its rule
+        # that a name `boot` exported from a row the table no longer holds
+        # resolves to nothing rather than to the copy of the value being
+        # cleared.
+        value = resolve_secret_values(remaining).get(name, "")
+        if source == "unset" and name in HARD_SECRET_NAMES:
+            raise HTTPException(status_code=409, detail=HARD_SECRET_WOULD_BE_UNSET)
         await secret_store.clear_secret(session, name)
         await session.commit()
-        # Both reads AFTER the commit, and both of the remaining store: the
-        # label comes from the names, the rebind from the values. This is the
-        # one path that decrypts, because the running value has to become
-        # whatever the next source down answers with -- not "" -- and only
-        # `resolve_secret_values` knows which layer that is.
-        remaining_names = await secret_store.stored_secret_names(session)
-        remaining = await secret_store.load_stored_secrets(session)
-    _republish(request, name, resolve_secret_values(remaining).get(name, ""))
+    _republish(request, name, value)
     logger.info("a stored secret was cleared: %s", name)
-    return {"name": name, "source": secret_sources(remaining_names)[name]}
+    return {
+        "name": name,
+        "source": source,
+        # A source that names this deployment's environment is one this
+        # process cannot read back: `boot._export` overwrote its entry with
+        # the row just removed, and only the next start sees the deployment's
+        # own value again. `unset` is not that case -- there is nothing to
+        # come back for.
+        "restart_required": source != "unset" and not value,
+    }

@@ -15,11 +15,13 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 import yaml
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 
 from autoposter.api.auth import hash_password
 from autoposter.api.secrets_api import (
     DATABASE_URL_CANNOT_BE_STORED,
+    HARD_SECRET_WOULD_BE_UNSET,
     KEY_FILE_NOT_USABLE,
     NOT_A_SECRET_THIS_SERVICE_READS,
     VALUE_IS_NOT_STORABLE,
@@ -29,23 +31,43 @@ from autoposter.app import create_app
 from autoposter.config import secret_store
 from autoposter.config.loader import build_config
 from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
     SECRET_NAMES,
     STATE_FILE_NAMES_ENV,
     STORED_SECRET_NAMES_ENV,
     Secrets,
 )
-from autoposter.config.state import STATE_DIR_ENV
+from autoposter.config.state import STATE_DIR_ENV, merge_secrets_file
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 PASSWORD = "correct horse battery staple"
+TMDB = "AUTOPOSTER_TMDB_TOKEN"
+MDBLIST = "AUTOPOSTER_MDBLIST_APIKEY"
+MARKERS = (STORED_SECRET_NAMES_ENV, STATE_FILE_NAMES_ENV, ENVIRONMENT_SECRET_NAMES_ENV)
 
 
 @pytest.fixture(autouse=True)
 def state(tmp_path, monkeypatch):
-    for name in (*SECRET_NAMES, STATE_FILE_NAMES_ENV, STORED_SECRET_NAMES_ENV):
+    for name in (*SECRET_NAMES, *MARKERS):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(STATE_DIR_ENV, str(tmp_path))
     return tmp_path
+
+
+def booted_with(monkeypatch, *, stored=(), state_file=(), environment=(), exported=None):
+    """The environment `boot` leaves behind for the application it execs.
+
+    The three markers it publishes -- each set unconditionally, possibly empty
+    -- and `_export`'s assignment of the WINNING value into `os.environ`, which
+    is the whole reason the markers exist: for a name the store won, what sits
+    in `os.environ` afterwards is a copy of the stored row, and whatever the
+    deployment itself set for that name is gone.
+    """
+    monkeypatch.setenv(STORED_SECRET_NAMES_ENV, ",".join(stored))
+    monkeypatch.setenv(STATE_FILE_NAMES_ENV, ",".join(state_file))
+    monkeypatch.setenv(ENVIRONMENT_SECRET_NAMES_ENV, ",".join(environment))
+    for name, value in (exported or {}).items():
+        monkeypatch.setenv(name, value)
 
 
 @pytest_asyncio.fixture
@@ -82,13 +104,51 @@ async def test_the_listing_carries_names_and_sources_and_no_values(
 ):
     monkeypatch.setenv("AUTOPOSTER_TVDB_APIKEY", "from-env")
     response = await client.get("/api/secrets", headers=auth_headers)
-    rows = {row["name"]: row for row in response.json()["secrets"]}
-    assert rows["AUTOPOSTER_TVDB_APIKEY"]["source"] == "environment"
-    assert rows["AUTOPOSTER_RADARR_APIKEY"]["source"] == "unset"
-    assert rows["AUTOPOSTER_WEBHOOK_SECRET"]["generated"] is True
-    assert rows["AUTOPOSTER_TMDB_TOKEN"]["generated"] is False
+
+    # The WHOLE body, written out: every row, every key, the order, and
+    # nowhere for a value to hide. A row added to `SECRET_NAMES` fails here
+    # rather than passing a containment check unnoticed.
+    assert response.json() == {
+        "secrets": [
+            {"name": "AUTOPOSTER_DATABASE_URL", "source": "unset", "generated": False},
+            {"name": "AUTOPOSTER_TMDB_TOKEN", "source": "unset", "generated": False},
+            {
+                "name": "AUTOPOSTER_TVDB_APIKEY",
+                "source": "environment",
+                "generated": False,
+            },
+            {"name": "AUTOPOSTER_FANART_APIKEY", "source": "unset", "generated": False},
+            {"name": "AUTOPOSTER_WEBHOOK_SECRET", "source": "unset", "generated": True},
+            {"name": "AUTOPOSTER_PLEX_TOKEN", "source": "unset", "generated": False},
+            {
+                "name": "AUTOPOSTER_JELLYFIN_APIKEY",
+                "source": "unset",
+                "generated": False,
+            },
+            {"name": "AUTOPOSTER_MDBLIST_APIKEY", "source": "unset", "generated": False},
+            {"name": "AUTOPOSTER_RADARR_APIKEY", "source": "unset", "generated": False},
+            {"name": "AUTOPOSTER_SONARR_APIKEY", "source": "unset", "generated": False},
+            {
+                "name": "AUTOPOSTER_ADMIN_PASSWORD_HASH",
+                "source": "unset",
+                "generated": False,
+            },
+            {
+                "name": "AUTOPOSTER_PLEX_ACCOUNT_TOKEN",
+                "source": "unset",
+                "generated": False,
+            },
+            {
+                "name": "AUTOPOSTER_TRACEARR_APIKEY",
+                "source": "unset",
+                "generated": False,
+            },
+            {"name": "AUTOPOSTER_API_KEY", "source": "unset", "generated": False},
+        ]
+    }
+    # The literal above is in `SECRET_NAMES`' order because the route is, and
+    # this is the line that says so.
     assert [row["name"] for row in response.json()["secrets"]] == list(SECRET_NAMES)
-    assert all(set(row) == {"name", "source", "generated"} for row in rows.values())
     assert "from-env" not in response.text
 
 
@@ -128,7 +188,13 @@ async def test_clearing_a_stored_secret_falls_through(
     response = await client.delete(
         "/api/secrets/AUTOPOSTER_TMDB_TOKEN", headers=auth_headers
     )
-    assert response.json() == {"name": "AUTOPOSTER_TMDB_TOKEN", "source": "environment"}
+    # No markers: nothing has exec'd this process, so the environment's value
+    # is the environment's own and is reachable.
+    assert response.json() == {
+        "name": "AUTOPOSTER_TMDB_TOKEN",
+        "source": "environment",
+        "restart_required": False,
+    }
     # The rebind follows the fall-through: the running value is what the next
     # source down answers, not the cleared one and not an empty string.
     assert app.state.secrets.tmdb_token == "from-env"
@@ -145,8 +211,129 @@ async def test_clearing_a_secret_no_source_answers_leaves_it_unset(
     response = await client.delete(
         "/api/secrets/AUTOPOSTER_MDBLIST_APIKEY", headers=auth_headers
     )
-    assert response.json() == {"name": "AUTOPOSTER_MDBLIST_APIKEY", "source": "unset"}
+    assert response.json() == {
+        "name": "AUTOPOSTER_MDBLIST_APIKEY",
+        "source": "unset",
+        "restart_required": False,
+    }
     assert app.state.secrets.mdblist_apikey == ""
+
+
+# --- the clear, in the environment `boot` actually leaves behind -------------
+#
+# Three arms, one per source that can take over, each with the markers and the
+# exported copy a real deployment carries. The copy is what makes these
+# different from the two cases above: `os.environ` holds the value being
+# cleared, so a route that read it would report the credential as coming from
+# a variable nobody set and go on using it until the next restart.
+
+
+async def test_a_clear_the_state_file_answers_takes_the_file_s_value(
+    client, auth_headers, app, monkeypatch
+):
+    await client.put(
+        f"/api/secrets/{TMDB}", json={"value": "the-stored-one"}, headers=auth_headers
+    )
+    merge_secrets_file({TMDB: "the-one-in-the-state-file"})
+    booted_with(
+        monkeypatch,
+        stored=[TMDB],
+        state_file=[TMDB],
+        exported={TMDB: "the-stored-one"},
+    )
+
+    response = await client.delete(f"/api/secrets/{TMDB}", headers=auth_headers)
+
+    assert response.json() == {
+        "name": TMDB,
+        "source": "state file",
+        "restart_required": False,
+    }
+    assert app.state.secrets.tmdb_token == "the-one-in-the-state-file"
+
+
+async def test_a_clear_the_environment_answers_needs_a_restart(
+    client, auth_headers, app, monkeypatch
+):
+    """The deployment set this variable and `_export` overwrote it with the
+    stored row, so the value that takes over cannot be read until the next
+    start. The row is gone either way -- the response says the rest."""
+    await client.put(
+        f"/api/secrets/{TMDB}", json={"value": "the-stored-one"}, headers=auth_headers
+    )
+    booted_with(
+        monkeypatch,
+        stored=[TMDB],
+        environment=[TMDB],
+        exported={TMDB: "the-stored-one"},
+    )
+
+    response = await client.delete(f"/api/secrets/{TMDB}", headers=auth_headers)
+
+    assert response.json() == {
+        "name": TMDB,
+        "source": "environment",
+        "restart_required": True,
+    }
+    assert app.state.secrets.tmdb_token == "", "the cleared value is not in force"
+    assert "the-stored-one" not in response.text
+
+
+async def test_a_clear_nothing_answers_does_not_resurrect_the_exported_copy(
+    client, auth_headers, app, monkeypatch
+):
+    """No layer below: the environment's entry for this name is `boot`'s echo
+    of the row itself, and it must not be mistaken for a source."""
+    await client.put(
+        f"/api/secrets/{MDBLIST}", json={"value": "the-stored-one"}, headers=auth_headers
+    )
+    booted_with(monkeypatch, stored=[MDBLIST], exported={MDBLIST: "the-stored-one"})
+
+    response = await client.delete(f"/api/secrets/{MDBLIST}", headers=auth_headers)
+
+    assert response.json() == {
+        "name": MDBLIST,
+        "source": "unset",
+        "restart_required": False,
+    }
+    assert app.state.secrets.mdblist_apikey == ""
+    assert "the-stored-one" not in response.text
+
+
+async def test_clearing_a_hard_secret_with_nothing_beneath_it_is_refused(
+    client, auth_headers, app, monkeypatch, session_factory
+):
+    """The deployment would not start again. Refused while the row is still
+    there, rather than reported after it is gone."""
+    await client.put(
+        f"/api/secrets/{TMDB}", json={"value": "the-stored-one"}, headers=auth_headers
+    )
+    booted_with(monkeypatch, stored=[TMDB], exported={TMDB: "the-stored-one"})
+
+    response = await client.delete(f"/api/secrets/{TMDB}", headers=auth_headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == HARD_SECRET_WOULD_BE_UNSET
+    async with session_factory() as session:
+        assert await secret_store.stored_secret_names(session) == [TMDB]
+    assert app.state.secrets.tmdb_token == "the-stored-one"
+
+
+async def test_a_row_this_key_cannot_open_is_not_reported_as_stored(
+    client, auth_headers
+):
+    """The lost or swapped volume, which this store is built to survive: the
+    resolver skips the row and the running value comes from the layer beneath,
+    so the listing has to say the same."""
+    await client.put(
+        f"/api/secrets/{TMDB}", json={"value": "the-stored-one"}, headers=auth_headers
+    )
+    secret_store.secret_key_path().write_bytes(Fernet.generate_key() + b"\n")
+
+    response = await client.get("/api/secrets", headers=auth_headers)
+
+    rows = {row["name"]: row for row in response.json()["secrets"]}
+    assert rows[TMDB]["source"] == "unset"
 
 
 async def test_an_unknown_name_is_a_404(client, auth_headers):
