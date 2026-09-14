@@ -1727,9 +1727,25 @@ async def apply_metadata(
             # The whole point of spec §0: a warning in the log and a `done`
             # job left no row anywhere saying the server still lacks this
             # item's metadata. Now it does, and the pass in Phase B drains it.
+            #
+            # This is `metadata_writes`' ONLY door out of `failed`, so it is
+            # also its re-arm: the full pass just tried an exhausted row
+            # again, and spec §2 promises such a row the whole budget rather
+            # than one retry. Without the reset, `failed` -- itself a counted
+            # attempt -- left the row permanently above the cap and the very
+            # next failure exhausted it again. Both flags, because this
+            # failure IS a real attempt as well as a fresh start; the reset
+            # is asked for only when the row was actually exhausted, so an
+            # ordinary streak of failures still climbs to the cap.
+            re_armed = (await session.execute(
+                select(MetadataWrite.status).where(
+                    MetadataWrite.item_id == media_item_id, MetadataWrite.server == name,
+                )
+            )).scalar_one_or_none() == "failed"
             await deliveries.record_metadata(
                 session, media_item_id, name, "pending",
                 detail=deliveries.failure_detail(exc), retry_in=deliveries.RETRY_SECONDS,
+                reset_attempts=re_armed,
             )
 
     if not facts.is_empty() or has_verbs or has_parental or has_overrides:

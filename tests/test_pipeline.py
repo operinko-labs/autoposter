@@ -2325,6 +2325,77 @@ async def test_a_failed_metadata_write_is_recorded_pending_with_its_class_name(
     assert "jf.internal" not in (row.detail or "")
 
 
+async def test_the_full_pass_re_arms_an_exhausted_metadata_row_with_its_whole_budget(
+    session, config_with_badges, monkeypatch
+):
+    """Review I1: `_write`'s own write-failure record is `metadata_writes`'
+    only door out of `failed`, and it did not reset the budget -- so from the
+    first exhaustion onward the row's effective budget was 1, not 8. Spec §2
+    promises a row re-armed by a full pass (or a catch-up) the whole budget.
+
+    The artwork twin is `test_a_re_armed_row_gets_its_whole_budget_again` in
+    test_deliveries.py; this is the table that fix did not reach.
+    """
+    import httpx
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select
+    from autoposter import deliveries
+    from autoposter.db.models import MetadataWrite
+    from autoposter.render import pipeline as pipeline_module
+    from autoposter.servers.registry import Servers
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS, resolved
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.ConnectError("jellyfin is down")
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    assert config_with_badges.scheduler.delivery_attempts == 8
+    item = resolved("jellyfin", "j-rearm", file_path="/m.mkv")
+    media_item = await pipeline_module._upsert_media_item(session, item)
+    jf.resolve_any = item
+    # The row runs its budget out: eight counted attempts and the `failed`
+    # the retry pass stamps on top of the eighth.
+    for _ in range(8):
+        await deliveries.record_metadata(session, media_item.id, "jellyfin", "pending", retry_in=0)
+    assert await deliveries.record_metadata(
+        session, media_item.id, "jellyfin", "failed", detail="connect: ConnectError",
+    ) == 9
+    await session.commit()
+
+    await pipeline_module.apply_metadata(
+        session, config_with_badges, media_item.id, item, jf,
+        _MinimalTMDBFacts(), NullMDBListClient(),
+    )
+
+    # Columns rather than the entity: the session's identity map hands an
+    # already-loaded `MetadataWrite` back unrefreshed, so a re-read would
+    # assert against the values the first read saw.
+    columns = select(MetadataWrite.status, MetadataWrite.attempts, MetadataWrite.detail)
+    row = (await session.execute(columns)).one()
+    assert row.status == "pending"
+    # One, not ten: the re-arm starts the row over AND this failure is its
+    # first new attempt.
+    assert row.attempts == 1
+
+    # And the budget that follows is the whole one -- seven more passes.
+    base = datetime.now(timezone.utc)
+    for pass_number in range(1, 8):
+        await deliveries.retry_pending_deliveries(
+            session, Servers({"jellyfin": jf}), config_with_badges,
+            now=base + timedelta(hours=12 * pass_number),
+        )
+        row = (await session.execute(columns)).one()
+        if pass_number < 7:
+            assert row.status == "pending", f"exhausted early, on pass {pass_number}"
+            assert row.attempts == pass_number + 1
+        else:
+            assert row.status == "failed" and row.detail == "connect: ConnectError"
+
+
 async def test_a_successful_write_is_recorded_written(session, config_with_badges):
     from sqlalchemy import select
     from autoposter.db.models import MetadataWrite
