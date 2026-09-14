@@ -1,10 +1,16 @@
-"""The database overrides layer: config deltas deep-merged over the YAML.
+"""The configuration store: the single row that holds the configuration.
 
 The mounted ``autoposter.yaml`` is delivered by Flux from git and is read-only
-in the pod, so the UI's edits cannot go back into it. They live in the
-single-row ``config_overrides`` table instead (``db/models.py``) and are merged
-over the file every time a ``Config`` is built. The file keeps owning the
-defaults; the database owns the deltas.
+in the pod, so the UI's edits cannot go back into it. The configuration lives
+in the single-row ``config_overrides`` table instead (``db/models.py``), and
+what that row holds is what runs: the whole document, validated through the
+same ``build_config`` as a file-only load.
+
+The file seeds an empty store once and is not read at boot again, which is
+what makes it removable -- a deployment whose store is seeded needs no file.
+A row written before the store held whole documents holds a delta instead
+(``STORE_FORMAT``), and is merged over the file exactly as it always was until
+it is converted.
 """
 import hashlib
 import json
@@ -15,6 +21,7 @@ from typing import Union, get_args, get_origin
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.config.loader import build_config, read_config_document
@@ -308,23 +315,49 @@ def without_migrated_sections(document: dict) -> dict:
     return {key: value for key, value in document.items() if key not in present}
 
 
-async def load_overrides_document(
-    session: AsyncSession, *, for_update: bool = False
+#: The store's own version, kept in the row's ``meta`` and nowhere else.
+#:
+#: 1 -- which is what an absent key means -- is the DELTA the row held while
+#: the mounted file owned the defaults: a partial document merged over it on
+#: every load. 2 is the whole configuration document, which ``build_config``
+#: validates directly and which is what runs.
+STORE_FORMAT = 2
+
+#: The ``ConfigOverrideSnapshot.reason`` a seed writes. ``String(16)`` holds it.
+SEED_REASON = "seed"
+
+
+def store_meta(
+    format_: int = STORE_FORMAT, restart_paths: list[str] | None = None
 ) -> dict:
-    """The stored overrides document, or ``{}`` when there is no row.
+    """The metadata column's value, built in one place.
 
-    An empty document is the pre-edit state of every deployment, and merging
-    ``{}`` is the identity, so "no overrides yet" costs nothing beyond one
-    primary-key lookup and behaves exactly like the file alone.
+    ``restart_paths`` is omitted rather than written empty: an absent key and
+    an empty list mean the same thing to every reader, and omitting it keeps
+    the ordinary row to one key.
+    """
+    meta: dict = {"format": format_}
+    if restart_paths:
+        meta["restart_paths"] = list(restart_paths)
+    return meta
 
-    Migrated sections are stripped here rather than at the merge, because this
-    is the single seam every reader of the stored document comes through: the
-    boot-time merge (``load_effective_config``) that would otherwise refuse to
-    validate, and ``GET /api/config``'s ``overridden_paths``, which would
-    otherwise mark a setting the editor no longer renders as overridden.
 
-    ``for_update`` takes a row lock, and only ``_persist_and_swap`` passes it:
-    a reader that locked would serialise ``GET /api/config`` behind every save
+async def load_store(
+    session: AsyncSession, *, for_update: bool = False
+) -> tuple[dict, dict]:
+    """The stored document and its metadata, or ``({}, {})`` when there is no row.
+
+    An empty store is the pre-configuration state of every deployment, and it
+    is the one state that sends the loader looking at the mounted file.
+
+    Migrated sections are stripped here rather than at any later point, because
+    this is the single seam every reader of the stored document comes through:
+    the boot-time load that would otherwise refuse to validate, and
+    ``GET /api/config``, which would otherwise serve a setting the editor no
+    longer renders.
+
+    ``for_update`` takes a row lock, and only the write path passes it: a
+    reader that locked would serialise ``GET /api/config`` behind every save
     for no benefit.
 
     When there is no row yet, ``SELECT ... FOR UPDATE`` has nothing to lock, so
@@ -341,7 +374,9 @@ async def load_overrides_document(
     committed by the time the second acquires the lock, so the second sees it,
     its ``EMPTY_DOCUMENT_REVISION`` no longer matches, and it gets the same 409
     every other stale writer gets. The row-present path is untouched -- the
-    lock is taken only on a store that has never been written.
+    lock is taken only on a store that has never been written. ``seed_store``
+    leans on the same property for the same reason: two pods booting against
+    one fresh database must not both decide the store is empty.
 
     Two properties this leans on, named because a future change to either would
     reopen the hole silently. The re-read must see a row committed after this
@@ -361,36 +396,162 @@ async def load_overrides_document(
     row = await session.scalar(statement)
     if for_update and row is None:
         # Nothing was locked, because there was nothing to lock. Serialise the
-        # first-ever save on the key instead, then look again: whoever gets
+        # first-ever write on the key instead, then look again: whoever gets
         # here second is now looking at whoever got here first.
-        await session.execute(select(func.pg_advisory_xact_lock(OVERRIDES_INSERT_LOCK_KEY)))
+        await session.execute(
+            select(func.pg_advisory_xact_lock(OVERRIDES_INSERT_LOCK_KEY))
+        )
         row = await session.scalar(statement)
     if row is None or not row.document:
-        return {}
+        return {}, {}
     if not isinstance(row.document, dict):
-        # Only ``PUT /api/config/overrides`` ever writes this column and it
-        # only ever writes an object, so this is unreachable through the
-        # application -- but JSONB will hold a list or a bare scalar quite
-        # happily if someone edits the row by hand, and the merge would then
-        # fail with an AttributeError from three frames down. Say what is
-        # actually wrong instead.
+        # Only the config write path ever writes this column and it only ever
+        # writes an object, so this is unreachable through the application --
+        # but JSONB will hold a list or a bare scalar quite happily if someone
+        # edits the row by hand, and validation would then fail with an
+        # AttributeError from three frames down. Say what is actually wrong
+        # instead.
         raise ValueError(
             "the config_overrides document must be a JSON object, not "
             f"{type(row.document).__name__}"
         )
-    return without_migrated_sections(row.document)
+    meta = row.meta if isinstance(row.meta, dict) else {}
+    return without_migrated_sections(row.document), meta
 
 
-async def load_effective_config(path: Path, session: AsyncSession) -> Config:
-    """The YAML config with the stored overrides merged over it.
+async def load_overrides_document(
+    session: AsyncSession, *, for_update: bool = False
+) -> dict:
+    """The stored document alone, for the readers that want only that.
+
+    ``GET /api/config``, the export, the collection and playlist builders and
+    the write path's read-compare-write all ask this question and have no use
+    for the row's metadata.
+    """
+    document, _meta = await load_store(session, for_update=for_update)
+    return document
+
+
+async def write_store(session: AsyncSession, document: dict, meta: dict) -> None:
+    """The upsert. One row, ``id=1``, enforced by the table's CHECK.
+
+    Not committed here: a caller writes the store as part of a larger
+    transaction -- with a snapshot of what it replaced, or with the emptiness
+    test that chose it -- and a commit in the middle of one of those would be
+    exactly the half-applied write the snapshot exists to prevent.
+    """
+    statement = insert(ConfigOverride).values(
+        id=OVERRIDES_ROW_ID, document=document, meta=meta
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=["id"],
+        set_={"document": document, "meta": meta, "updated_at": func.now()},
+    )
+    await session.execute(statement)
+
+
+async def seed_store(session: AsyncSession, document: dict) -> dict:
+    """Write ``document`` as the store, once, and answer what the store holds.
+
+    The emptiness test is taken under the row lock, so two pods starting at the
+    same instant against a fresh database cannot both seed -- the second reads
+    the first's row and gets it back, and validates and runs that one.
+
+    This is the one write in this module that takes no snapshot, because there
+    is nothing to snapshot: the store was empty.
+    """
+    held, _meta = await load_store(session, for_update=True)
+    if held:
+        return held
+    await write_store(session, document, store_meta())
+    return document
+
+
+async def migrate_delta_to_document(
+    session: AsyncSession, base: dict | None, delta: dict
+) -> dict:
+    """The document a delta-era store means: the file with the delta over it.
+
+    Computed exactly as the effective config was computed while the row held a
+    delta, so a store that has not been converted yet runs the configuration it
+    ran yesterday. Writing the result back -- with a snapshot of the delta
+    taken first -- is not wired up yet: this answers the question, it does not
+    yet settle it.
+
+    ``base`` is ``None`` when there is no mounted file. A delta with nothing to
+    merge over is not a configuration, and saying so is better than validating
+    a fragment and silently booting on the schema's defaults.
+    """
+    if base is None:
+        raise ValueError(
+            "the configuration store holds a partial document and there is no "
+            "configuration file to merge it over"
+        )
+    return merge_overrides(base, delta)
+
+
+def _read_file_document(path: Path | None) -> dict | None:
+    """The mounted document, or ``None`` when there is no readable file.
+
+    ``None`` and not an exception: a deployment configured from the UI has no
+    mounted file at all, and the caller already has to handle that.
+    """
+    if path is None:
+        return None
+    try:
+        return read_config_document(Path(path))
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return None
+
+
+def _validated(document: dict) -> Config:
+    """``build_config``, plus the secrets refusal the write path applies.
+
+    The stored document is the configuration now rather than a delta layered
+    over a file, which makes a ``secrets`` key in it something the config API
+    would echo back. ``merge_overrides`` keeps the editor from ever producing
+    one; this is what keeps a hand-edited row -- or a mounted file carrying the
+    key into the seed -- from doing it instead.
+    """
+    _reject_secrets(document)
+    return build_config(document)
+
+
+async def load_effective_config(path: Path | None, session: AsyncSession) -> Config:
+    """The stored configuration document, validated.
+
+    The mounted file is read ONLY when the store is empty, and then only to
+    seed it. After that the file is a drift report and nothing else, which is
+    what makes it removable: a deployment whose store is seeded needs no file.
+
+    ``path`` may be ``None`` or point at nothing -- a deployment configured
+    from the UI has no mounted file. An empty store AND no file is unreachable
+    from a booted application (``boot.is_configured`` refuses it and serves the
+    wizard instead), so it raises rather than inventing a document.
 
     Validated whole and versioned through the same ``build_config`` as
-    ``load_config``, so an overridden artwork setting moves ``config.version``
-    exactly as editing the file would, and an overridden scheduler setting
-    leaves it alone.
+    ``load_config``, so a stored artwork setting moves ``config.version``
+    exactly as editing the file would, and a stored scheduler setting leaves it
+    alone.
     """
-    base = read_config_document(path)
-    overrides = await load_overrides_document(session)
-    if not overrides:
-        return build_config(base)
-    return build_config(merge_overrides(base, overrides))
+    document, meta = await load_store(session)
+    if document and meta.get("format") == STORE_FORMAT:
+        return _validated(document)
+    base = _read_file_document(path)
+    if document:
+        return _validated(await migrate_delta_to_document(session, base, document))
+    if base is None:
+        raise ValueError(
+            "the configuration store is empty and no configuration file was "
+            "found; this deployment has not been configured"
+        )
+    seeded = await seed_store(session, base)
+    # Validated before the commit, deliberately: the seed is the last time this
+    # file is read, so a store seeded with a document the schema refuses could
+    # never be repaired -- the application would not start, and the editor that
+    # could clear the row sits behind the application. Refusing here leaves the
+    # store empty and the file editable, which is a state an operator can act
+    # on.
+    config = _validated(seeded)
+    await session.commit()
+    return config
