@@ -214,6 +214,13 @@ async def rollup(session: AsyncSession, render_id: int) -> str:
     elif "uploaded" in statuses:
         status = "uploaded"
     else:
+        # `absent` sits HERE, alongside `skipped`, by decision rather than by
+        # falling through: a server that does not carry the item's library has
+        # nothing to say about this render, so an absent row must never raise
+        # the roll-up above what the servers that DO carry it report -- and a
+        # render whose every row is absent or skipped is exactly the "nothing
+        # to report" that `skipped` means. Phase D's item page reads this
+        # back, so it is written down rather than left to be rediscovered.
         status = "skipped"
     uploaded_at = max((u for _, u in rows if u is not None), default=None)
     values: dict[str, object] = {"upload_status": status}

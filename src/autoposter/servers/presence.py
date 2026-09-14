@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import literal, select, true, update
+from sqlalchemy import and_, case, func, literal, or_, select, true, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -130,7 +130,64 @@ async def apply_presence(
             .values(status="pending", detail=None, next_attempt_at=now, attempts=0)
         )).rowcount
 
+    if artwork["absent"] or artwork["rearmed"]:
+        await _rollup_stamped_renders(session, server_name, now)
+
     return {"metadata": metadata, "artwork": artwork}
+
+
+async def _rollup_stamped_renders(session: AsyncSession, server_name: str, now: datetime) -> int:
+    """``deliveries.rollup``'s precedence ladder, set-shaped, over the renders
+    this call just restamped.
+
+    ``apply_presence`` writes ``render_deliveries`` directly and nothing else
+    recomputes what it touched, so a render rolled up ``pending`` because of a
+    Jellyfin row kept ``renders.upload_status = 'pending'`` after that row
+    became ``absent`` -- and that column is what ``/api/library``'s filter and
+    the dashboard tiles read. Spec §1's promise that the first pass "clears
+    the retry queue a mismatched map leaves behind" was true of the queue and
+    false of everything the operator can see.
+
+    The whole ladder, not a blanket ``skipped``: a render whose Plex row is
+    ``uploaded`` and whose Jellyfin row just went absent IS uploaded, and
+    writing ``skipped`` over it would be a second wrong answer for the same
+    column. One statement rather than a ``deliveries.rollup`` call per render,
+    for the same reason the stamps above are set-shaped -- fifteen thousand
+    renders. The rows this call touched are named by the timestamp it stamped
+    them with (``attempted_at`` on an absent stamp, ``next_attempt_at`` on a
+    re-arm), so no other server's renders are recomputed.
+
+    ``renders.uploaded_at`` is deliberately left alone: presence never erases
+    a delivered timestamp, so the maximum ``rollup`` carries forward has not
+    moved.
+    """
+    ladder = case(
+        (func.bool_or(RenderDelivery.status == "failed"), "failed"),
+        (func.bool_or(RenderDelivery.status == "pending"), "pending"),
+        (func.bool_or(RenderDelivery.status == "uploaded"), "uploaded"),
+        else_="skipped",
+    )
+    stamped = select(RenderDelivery.render_id).where(
+        RenderDelivery.server == server_name,
+        or_(
+            and_(RenderDelivery.status == "absent", RenderDelivery.attempted_at == now),
+            and_(RenderDelivery.status == "pending", RenderDelivery.next_attempt_at == now),
+        ),
+    )
+    recomputed = (
+        select(RenderDelivery.render_id.label("render_id"), ladder.label("status"))
+        .where(RenderDelivery.render_id.in_(stamped))
+        .group_by(RenderDelivery.render_id)
+        .subquery()
+    )
+    return (await session.execute(
+        update(Render)
+        .where(
+            Render.id == recomputed.c.render_id,
+            Render.upload_status.is_distinct_from(recomputed.c.status),
+        )
+        .values(upload_status=recomputed.c.status)
+    )).rowcount
 
 
 async def refresh_presence(session: AsyncSession, servers) -> dict[str, dict]:
