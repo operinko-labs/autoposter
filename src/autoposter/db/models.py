@@ -270,7 +270,9 @@ class RenderDelivery(Base):
     # history is trimmed at 500 rows per name, and an outcome row must outlive
     # the run that queued it.
     run_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("runs.id", ondelete="SET NULL"), index=True
+        BigInteger,
+        ForeignKey("runs.id", ondelete="SET NULL", name="fk_render_deliveries_run_id"),
+        index=True,
     )
     # What this row said before that run marked it `pending`, so cancelling
     # the run puts it back (spec §3). NULL means the run CREATED the row, and
@@ -330,7 +332,9 @@ class MetadataWrite(Base):
     # history is trimmed at 500 rows per name, and an outcome row must outlive
     # the run that queued it.
     run_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("runs.id", ondelete="SET NULL"), index=True
+        BigInteger,
+        ForeignKey("runs.id", ondelete="SET NULL", name="fk_metadata_writes_run_id"),
+        index=True,
     )
     # What this row said before that run marked it `pending`, so cancelling
     # the run puts it back (spec §3). NULL means the run CREATED the row, and

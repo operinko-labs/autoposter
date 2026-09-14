@@ -2055,10 +2055,13 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     # under it). That the stamp is DUE is proved behaviourally instead, by
     # the retry pass below reporting the row as `1 due`.
     assert row.status == "pending" and row.next_attempt_at is not None
-    # A re-arm is not an attempt: nothing was actually tried against
-    # jellyfin this pass (no compose, no upload), so the budget this row's
-    # `failed` outcome spent must not move again here.
-    assert row.attempts == first_pass_attempts
+    # A re-arm is not an attempt -- nothing was actually tried against
+    # jellyfin this pass (no compose, no upload) -- and it is a fresh START:
+    # review I1, the counter goes back to zero rather than staying where the
+    # exhausted row left it, or the first failure after a re-arm would
+    # exhaust the row again (`failed` is itself a counted attempt).
+    assert first_pass_attempts > 0, "the failed delivery did spend budget"
+    assert row.attempts == 0
 
     summary = await deliveries.retry_pending_deliveries(
         session, servers, config_with_badges, now=datetime.now(timezone.utc),

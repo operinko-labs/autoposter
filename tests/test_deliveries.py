@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -6,7 +6,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from autoposter import deliveries
-from autoposter.db.models import MetadataWrite, Render, RenderDelivery
+from autoposter.db.models import MediaItem, MetadataWrite, Render, RenderDelivery
 from autoposter.render import pipeline
 from media_server_doubles import resolved
 
@@ -343,7 +343,7 @@ async def test_a_database_error_on_one_row_does_not_abort_the_pass(
 
     assert summary == (
         "pending deliveries: 2 due, 1 done, 1 still pending; "
-        "jellyfin: 2 due, 1 uploaded, 0 written, 0 pending, 0 failed"
+        "jellyfin: 2 due, 1 uploaded, 0 written, 1 pending, 0 failed"
     )
     assert [u[0].native_id for u in jf.uploads] == ["j1", "j2"], "the second row was never attempted"
     # A separate session, because the point of the assertion is that the
@@ -483,7 +483,7 @@ async def test_a_rolled_back_row_keeps_every_other_rows_work(
 
     assert summary == (
         "pending deliveries: 3 due, 2 done, 1 still pending; "
-        "jellyfin: 3 due, 2 uploaded, 0 written, 0 pending, 0 failed"
+        "jellyfin: 3 due, 2 uploaded, 0 written, 1 pending, 0 failed"
     )
     assert [u[0].native_id for u in jf.uploads] == ["j1", "j2", "j3"], (
         "every row must still be attempted"
@@ -772,6 +772,9 @@ async def test_the_server_filter_leaves_every_other_servers_rows_alone(
     render = await _render(session)
     await deliveries.record(session, render.id, "plex", "pending", retry_in=0)
     await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    # Both tables, because a catch-up marks both (review M1).
+    await deliveries.record_metadata(session, render.item_id, "plex", "pending", retry_in=0)
+    await deliveries.record_metadata(session, render.item_id, "jellyfin", "pending", retry_in=0)
     await session.commit()
 
     summary = await deliveries.retry_pending_deliveries(
@@ -779,11 +782,15 @@ async def test_the_server_filter_leaves_every_other_servers_rows_alone(
         server="jellyfin",
     )
 
-    assert summary.startswith("pending deliveries: 1 due")
+    assert summary.startswith("pending deliveries: 2 due")
     rows = dict((await session.execute(
         select(RenderDelivery.server, RenderDelivery.status)
     )).all())
     assert rows == {"plex": "pending", "jellyfin": "failed"}
+    writes = dict((await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status)
+    )).all())
+    assert writes == {"plex": "pending", "jellyfin": "failed"}
 
 
 async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_badges):
@@ -802,10 +809,18 @@ async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_
     run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
     await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
     await deliveries.record(session, other.id, "jellyfin", "pending", retry_in=0)
+    # Both tables, because a catch-up marks both (review M1).
+    await deliveries.record_metadata(session, render.item_id, "jellyfin", "pending", retry_in=0)
+    await deliveries.record_metadata(session, other_item.id, "jellyfin", "pending", retry_in=0)
     await session.execute(
         update(RenderDelivery)
         .where(RenderDelivery.render_id == render.id)
         .values(run_id=run_id, previous_status="uploaded")
+    )
+    await session.execute(
+        update(MetadataWrite)
+        .where(MetadataWrite.item_id == render.item_id)
+        .values(run_id=run_id, previous_status="written")
     )
     await session.commit()
 
@@ -814,8 +829,189 @@ async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_
         run_id=run_id,
     )
 
-    assert summary.startswith("pending deliveries: 1 due")
+    assert summary.startswith("pending deliveries: 2 due")
     statuses = dict((await session.execute(
         select(RenderDelivery.render_id, RenderDelivery.status)
     )).all())
     assert statuses == {render.id: "failed", other.id: "pending"}
+    writes = dict((await session.execute(
+        select(MetadataWrite.item_id, MetadataWrite.status)
+    )).all())
+    assert writes == {render.item_id: "failed", other_item.id: "pending"}
+
+
+async def test_metadata_operations_turned_off_records_a_skip_and_writes_nothing(
+    session, config_with_badges
+):
+    """Review I2: `apply_metadata` returns before it writes a row at all when
+    `operations.enabled` is off, so this pass was the one path that could
+    still write to a server the operator had switched off entirely."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    item = await _item_with_facts(session, native="j12")
+    await deliveries.record_metadata(session, item.id, "jellyfin", "pending", retry_in=0)
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j12", file_path="/m.mkv")
+    config_with_badges.operations.enabled = False
+    config_with_badges.operations.write_to_jellyfin = True
+
+    await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges, now=datetime.now(timezone.utc),
+    )
+
+    assert jf.facts_written == [], "operations are off; nothing may be written anywhere"
+    row = (await session.execute(select(MetadataWrite.status, MetadataWrite.detail))).one()
+    assert row.status == "skipped" and row.detail == "config: operations.enabled is off"
+
+
+async def test_the_budget_turns_a_persistently_failing_delivery_failed(
+    session, config_with_badges
+):
+    """spec §2: nothing retries forever. The row is retried at the pass's
+    cadence up to `scheduler.delivery_attempts` and is then `failed`, with
+    the failure's class name, until a full pass or a catch-up re-arms it."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    config_with_badges.scheduler.delivery_attempts = 2
+    config_with_badges.badges.upload_to_jellyfin = True
+    render = await _render(session)
+    # Uncounted: the seeding must not be one of the two attempts under test.
+    await deliveries.record(
+        session, render.id, "jellyfin", "pending", retry_in=0, count_attempt=False,
+    )
+    await session.commit()
+    jf = FakeMediaServer(
+        name="jellyfin", capabilities=JELLYFIN_CAPS,
+        raise_on_resolve=httpx.ConnectError("jellyfin is down"),
+    )
+    servers = Servers({"jellyfin": jf})
+
+    # Each pass reads a `now` beyond the horizon the previous one stamped,
+    # rather than sleeping: this machine's container clock steps backwards.
+    first = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges,
+        now=datetime.now(timezone.utc) + timedelta(hours=12),
+    )
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.attempts, RenderDelivery.detail)
+    )).one()
+    assert row.status == "pending" and row.attempts == 1
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed" in first
+
+    second = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges,
+        now=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.detail, RenderDelivery.next_attempt_at)
+    )).one()
+    assert row.status == "failed" and row.detail == "connect: ConnectError"
+    assert row.next_attempt_at is None, "a failed row is not due again on its own"
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed" in second
+
+
+async def test_the_budget_turns_a_persistently_failing_metadata_write_failed(
+    session, config_with_badges
+):
+    """The metadata half of the same rule (spec §2): a write error is
+    `pending` again until the budget runs out and then `failed`, with its
+    class name."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    config_with_badges.scheduler.delivery_attempts = 2
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_jellyfin = True
+    item = await _item_with_facts(session, native="j13")
+    await deliveries.record_metadata(
+        session, item.id, "jellyfin", "pending", retry_in=0, count_attempt=False,
+    )
+    await session.commit()
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf.resolve_any = resolved("jellyfin", "j13", file_path="/m.mkv")
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.ConnectError("jellyfin is down")
+
+    jf.apply_facts = boom
+    servers = Servers({"jellyfin": jf})
+
+    first = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges,
+        now=datetime.now(timezone.utc) + timedelta(hours=12),
+    )
+    row = (await session.execute(
+        select(MetadataWrite.status, MetadataWrite.attempts, MetadataWrite.detail)
+    )).one()
+    assert row.status == "pending" and row.attempts == 1
+    assert row.detail == "connect: ConnectError"
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed" in first
+
+    second = await deliveries.retry_pending_deliveries(
+        session, servers, config_with_badges,
+        now=datetime.now(timezone.utc) + timedelta(hours=24),
+    )
+    row = (await session.execute(
+        select(MetadataWrite.status, MetadataWrite.detail, MetadataWrite.next_attempt_at)
+    )).one()
+    assert row.status == "failed" and row.detail == "connect: ConnectError"
+    assert row.next_attempt_at is None
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 0 pending, 1 failed" in second
+
+
+async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_badges):
+    """Review I1: `failed` is itself a counted attempt, so an exhausted row
+    stayed permanently above the budget -- `deliver`'s re-arm left the
+    counter where it was, and the next failure exhausted the row again on its
+    FIRST attempt. Spec §2 promises a row re-armed by a full pass (or, in
+    Phase C, by a catch-up) the whole budget, not one retry."""
+    from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
+    from autoposter.servers.registry import Servers
+
+    config_with_badges.scheduler.delivery_attempts = 2
+    config_with_badges.badges.upload_to_jellyfin = True
+    render = await _render(session)
+    render.status = "rendered"
+    media_item = (await session.execute(
+        select(MediaItem).where(MediaItem.id == render.item_id)
+    )).scalar_one()
+    # The row runs its budget out: two counted attempts and the `failed` the
+    # pass stamps on top of the second.
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
+    await deliveries.record(
+        session, render.id, "jellyfin", "failed", detail="connect: ConnectError",
+    )
+    await session.commit()
+
+    jf = FakeMediaServer(name="jellyfin", capabilities=JELLYFIN_CAPS)
+    jf_item = resolved("jellyfin", "j1", file_path="/m.mkv")
+    # What a full pass does for a render whose fingerprint has not moved:
+    # `data is None`, so `deliver` re-arms the failed row and composes
+    # nothing.
+    await pipeline.deliver(
+        session, config_with_badges, render, media_item,
+        Servers({"jellyfin": jf}), {"jellyfin": jf_item.ref}, None,
+    )
+
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.attempts)
+    )).one()
+    assert row.status == "pending" and row.attempts == 0, "a re-arm starts the row over"
+
+    # And the next failure is the FIRST attempt of the new budget, not one
+    # past the end of the old one.
+    jf.raise_on_resolve = httpx.ConnectError("jellyfin is down")
+    summary = await deliveries.retry_pending_deliveries(
+        session, Servers({"jellyfin": jf}), config_with_badges,
+        now=datetime.now(timezone.utc) + timedelta(hours=12),
+    )
+
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.attempts)
+    )).one()
+    assert row.status == "pending" and row.attempts == 1
+    assert "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed" in summary

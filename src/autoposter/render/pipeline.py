@@ -2295,8 +2295,17 @@ async def deliver(
                     # bytes for this server, so nothing was actually tried
                     # against it -- only the retry pass below actually
                     # delivers, and that is where the budget is spent.
+                    #
+                    # `reset_attempts`, because a re-arm is a fresh START and
+                    # not a continuation: `failed` is itself a counted
+                    # attempt, so an exhausted row left alone here came back
+                    # already over the budget and the very next failure
+                    # exhausted it again. Spec 2 promises the full pass and
+                    # the catch-up re-arm such a row; that is only true if
+                    # the counter goes back to zero with it.
                     await deliveries.record(
-                        session, render.id, name, "pending", retry_in=0, count_attempt=False,
+                        session, render.id, name, "pending", retry_in=0,
+                        count_attempt=False, reset_attempts=True,
                     )
                     recorded = True
                 continue
