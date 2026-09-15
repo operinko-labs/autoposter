@@ -5,13 +5,13 @@
  * one typed value is asserted against the stubbed request body and nowhere
  * else, and everything else asserted is a name, a state or a sentence.
  *
- * The stub routes by URL AND method. A card reaches eight routes, several of
- * them at one address with different verbs (the catch-up trio) and two of them
- * at the same verb on different addresses (the two PUTs), so a stub that
- * answered one body for every request would be asserting against itself.
- * Anything a test has not declared answers a 500 that names it, which is how a
- * request the card should not have made shows up as a failure rather than as
- * a passing test.
+ * The stub routes by URL AND method. A card reaches nine routes, three of them
+ * at one address with different verbs (the catch-up trio) and two of them at
+ * the same verb on different addresses (the two PUTs), so a stub that answered
+ * one body for every request would be asserting against itself. Anything a
+ * test has not declared answers a 500 that names it, which is how a request
+ * the card should not have made shows up as a failure rather than as a passing
+ * test.
  */
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -39,6 +39,17 @@ const JELLYFIN: ServerRow = {
   health: { ok: null, detail: null, checked_at: null },
 };
 
+/** What each switch is set to now, keyed by the dotted path the page reads it
+ * out of the served configuration by. One of the five is on, so the delta a
+ * save states has something to be a delta against in both directions. */
+const SWITCH_VALUES: Record<string, boolean> = {
+  "badges.upload_to_plex": false,
+  "operations.write_to_plex": true,
+  "badges.upload_to_jellyfin": false,
+  "operations.write_to_jellyfin": false,
+  "jellyfin.replace_thumb_with_backdrop": false,
+};
+
 const LIBRARIES = {
   libraries: [
     { id: "1", name: "Movies", kind: "movie" },
@@ -50,6 +61,20 @@ const SAVED = {
   version_before: "a",
   version_after: "b",
   restart_required: ["plex"],
+};
+
+const OPEN_RUN = {
+  run_id: 7,
+  server: "plex",
+  status: "running",
+  started_at: "2026-09-14T09:00:00Z",
+  finished_at: null,
+  cadence_seconds: 60,
+  detail: null,
+  due: 120,
+  done: 3,
+  failed: 1,
+  total: 124,
 };
 
 /** The sentence `api/servers.py` refuses a first save with, verbatim. */
@@ -78,13 +103,15 @@ type Route = (init: RequestInit | undefined) => Response;
 
 /** Stub `fetch` with one handler per `"METHOD /path"`, and record every call.
  *
- * The catch-up read is declared here rather than in every test because a
- * configured card makes it when it opens; a test that cares about it says so
- * by declaring its own. */
-function router(routes: Record<string, Route>): Call[] {
+ * The catch-up read is seeded here rather than in every test, because a
+ * configured card makes it when it opens -- keyed off the server's name, so a
+ * card for either server gets the named answer rather than the
+ * undeclared-route 500 as a surprise. A test that cares about that read
+ * declares its own. */
+function router(routes: Record<string, Route>, name = "plex"): Call[] {
   const calls: Call[] = [];
   const table: Record<string, Route> = {
-    "GET /api/servers/plex/catch-up": () => json({ run: null }),
+    [`GET /api/servers/${name}/catch-up`]: () => json({ run: null }),
     ...routes,
   };
   vi.stubGlobal(
@@ -111,11 +138,25 @@ function router(routes: Record<string, Route>): Call[] {
 
 async function renderCard(
   server: ServerRow = PLEX,
-  revision: string | null = "r1",
-  onChanged: () => void = () => {},
+  {
+    revision = "r1",
+    switches = SWITCH_VALUES,
+    onChanged = () => {},
+  }: {
+    revision?: string | null;
+    switches?: Record<string, boolean>;
+    onChanged?: () => void;
+  } = {},
 ) {
   await act(async () => {
-    render(<ServerCard server={server} revision={revision} onChanged={onChanged} />);
+    render(
+      <ServerCard
+        server={server}
+        switches={switches}
+        revision={revision}
+        onChanged={onChanged}
+      />,
+    );
   });
 }
 
@@ -155,6 +196,12 @@ describe("ServerCard", () => {
       },
     });
     expect(screen.getByText("unreachable")).toBeInTheDocument();
+  });
+
+  it("says when a saved server is not the one this deployment is running on", async () => {
+    router({});
+    await renderCard({ ...PLEX, restart_pending: true });
+    expect(screen.getByText("restart to apply")).toBeInTheDocument();
   });
 
   it("checks the connection with the typed address and the typed credential", async () => {
@@ -201,6 +248,22 @@ describe("ServerCard", () => {
     expect(bodyOf(calls, "POST", "/api/servers/plex/check")).toEqual({});
   });
 
+  it("refuses to probe a typed address with an empty credential field", async () => {
+    // That body is a 400 every time -- the deployment will not send a
+    // credential it holds to an address a request named -- so the card does
+    // not offer the press, and says which half is missing.
+    router({});
+    await renderCard();
+    type("Plex address", "http://elsewhere:32400");
+    expect(screen.getByRole("button", { name: "Check connection" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reload libraries" })).toBeDisabled();
+    expect(
+      screen.getByText(/must come with the credential to use against it/),
+    ).toBeInTheDocument();
+    type("Plex credential", "typed");
+    expect(screen.getByRole("button", { name: "Check connection" })).toBeEnabled();
+  });
+
   it("puts the version the server answered with into the pill", async () => {
     router({
       "POST /api/servers/plex/check": () =>
@@ -215,6 +278,27 @@ describe("ServerCard", () => {
     await renderCard();
     await click("Check connection");
     expect(screen.getByText("connected, version 1.41.0.8992")).toBeInTheDocument();
+  });
+
+  it("drops a probe result when the address it was about is edited", async () => {
+    // The pill is a state, and leaving that one up beside a different address
+    // would have it report a host nothing has contacted.
+    router({
+      "POST /api/servers/plex/check": () =>
+        json({
+          ok: true,
+          refused: false,
+          failure: null,
+          version: "1.41.0.8992",
+          detail: "Plex answered.",
+        }),
+    });
+    await renderCard();
+    await click("Check connection");
+    expect(screen.getByText("connected, version 1.41.0.8992")).toBeInTheDocument();
+    type("Plex address", "http://elsewhere:32400");
+    expect(screen.queryByText("connected, version 1.41.0.8992")).not.toBeInTheDocument();
+    expect(screen.getByText("connected")).toBeInTheDocument();
   });
 
   it("reloads the libraries and ticks the ones that are not excluded", async () => {
@@ -250,24 +334,36 @@ describe("ServerCard", () => {
       // seeded from what is stored and appended to, so a library the server
       // has stopped listing keeps its exclusion.
       excluded_libraries: ["Photos", "Movies"],
+      // No box was moved, so the save states nothing about the switches.
       switches: {},
       expected_revision: "r1",
       confirm: false,
     });
   });
 
-  it("sends only the switches that were set, as a delta", async () => {
+  it("shows each switch as it is set now, and sends the one that was moved", async () => {
     const calls = router({ "PUT /api/servers/plex": () => json(SAVED) });
     await renderCard();
-    type("Upload badged artwork to Plex", "on");
-    type("Write metadata to Plex", "off");
+    expect(screen.getByLabelText("Write metadata to Plex")).toBeChecked();
+    expect(screen.getByLabelText("Upload badged artwork to Plex")).not.toBeChecked();
+    fireEvent.click(screen.getByLabelText("Upload badged artwork to Plex"));
     await click("Save");
     expect(
       (bodyOf(calls, "PUT", "/api/servers/plex") as { switches: unknown }).switches,
-    ).toEqual({
-      "badges.upload_to_plex": true,
-      "operations.write_to_plex": false,
-    });
+    ).toEqual({ "badges.upload_to_plex": true });
+  });
+
+  it("states nothing about a switch put back where it was", async () => {
+    // The route merges what is sent over the stored block, so a path sent for
+    // a switch nobody changed is a write nobody asked for.
+    const calls = router({ "PUT /api/servers/plex": () => json(SAVED) });
+    await renderCard();
+    fireEvent.click(screen.getByLabelText("Write metadata to Plex"));
+    fireEvent.click(screen.getByLabelText("Write metadata to Plex"));
+    await click("Save");
+    expect(
+      (bodyOf(calls, "PUT", "/api/servers/plex") as { switches: unknown }).switches,
+    ).toEqual({});
   });
 
   it("says the saved address is not the one a check reaches until a restart", async () => {
@@ -283,13 +379,13 @@ describe("ServerCard", () => {
     // Both writes require one, so a card that sent the body anyway would be
     // trading a disabled button for a guaranteed refusal.
     router({});
-    await renderCard(PLEX, null);
+    await renderCard(PLEX, { revision: null });
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Remove server" })).toBeDisabled();
   });
 
   it("puts the credential field first on a server that is not configured", async () => {
-    router({});
+    router({}, "jellyfin");
     await renderCard(JELLYFIN);
     const credential = screen.getByLabelText("Jellyfin credential");
     const address = screen.getByLabelText("Jellyfin address");
@@ -299,9 +395,13 @@ describe("ServerCard", () => {
   });
 
   it("renders the server's refusal to save a server that has no credential", async () => {
-    router({
-      "PUT /api/servers/jellyfin": () => json({ detail: NEEDS_A_CREDENTIAL_FIRST }, 409),
-    });
+    router(
+      {
+        "PUT /api/servers/jellyfin": () =>
+          json({ detail: NEEDS_A_CREDENTIAL_FIRST }, 409),
+      },
+      "jellyfin",
+    );
     await renderCard(JELLYFIN);
     type("Jellyfin address", "http://jf:8096");
     await click("Save");
@@ -322,6 +422,35 @@ describe("ServerCard", () => {
     expect(screen.getByLabelText("Plex credential")).toHaveValue("");
   });
 
+  it("names the layer that takes over when a stored credential is cleared", async () => {
+    // The route answers the layer now supplying the value rather than a fixed
+    // word, so the card must not claim the server has no credential.
+    const calls = router({
+      "DELETE /api/servers/plex/credential": () =>
+        json({
+          name: "plex",
+          credential_source: "environment",
+          restart_required: true,
+        }),
+    });
+    await renderCard();
+    await click("Clear credential");
+    expect(
+      calls.filter((call) => call.method === "DELETE").map((call) => call.url),
+    ).toEqual(["/api/servers/plex/credential"]);
+    expect(screen.getByText(/It now comes from the environment/)).toBeInTheDocument();
+  });
+
+  it("says so when nothing takes over a cleared credential", async () => {
+    router({
+      "DELETE /api/servers/plex/credential": () =>
+        json({ name: "plex", credential_source: "unset", restart_required: false }),
+    });
+    await renderCard();
+    await click("Clear credential");
+    expect(screen.getByText(/No other source supplies it/)).toBeInTheDocument();
+  });
+
   it("says nothing has caught up yet for the empty envelope", async () => {
     // `{"run": null}` is a fact, not a failed read, and the card says so
     // rather than leaving the operator to guess which it was.
@@ -334,23 +463,7 @@ describe("ServerCard", () => {
     let reads = 0;
     const calls = router({
       "GET /api/servers/plex/catch-up": () =>
-        json(
-          reads++ === 0
-            ? { run: null }
-            : {
-                run_id: 7,
-                server: "plex",
-                status: "running",
-                started_at: "2026-09-14T09:00:00Z",
-                finished_at: null,
-                cadence_seconds: 60,
-                detail: null,
-                due: 120,
-                done: 3,
-                failed: 1,
-                total: 124,
-              },
-        ),
+        json(reads++ === 0 ? { run: null } : OPEN_RUN),
       "POST /api/servers/plex/catch-up": () =>
         json({ run_id: 7, server: "plex", cadence_seconds: 60 }),
     });
@@ -363,6 +476,39 @@ describe("ServerCard", () => {
     expect(screen.getByText(/120 due/)).toBeInTheDocument();
     // A run that is still open is one that can be called off.
     expect(screen.getByRole("button", { name: "Cancel catch-up" })).toBeInTheDocument();
+  });
+
+  it("calls off a run in flight and re-reads what it left behind", async () => {
+    let reads = 0;
+    const calls = router({
+      "GET /api/servers/plex/catch-up": () =>
+        json(
+          reads++ === 0
+            ? OPEN_RUN
+            : {
+                ...OPEN_RUN,
+                status: "cancelled",
+                finished_at: "2026-09-14T09:05:00Z",
+              },
+        ),
+      "DELETE /api/servers/plex/catch-up": () =>
+        json({
+          run_id: 7,
+          restored: 2,
+          removed: 1,
+          detail: "cancelled: 124 marked, 3 done, 1 failed; 2 restored, 1 removed",
+        }),
+    });
+    await renderCard();
+    await click("Cancel catch-up");
+    expect(
+      calls.filter((call) => call.method === "DELETE").map((call) => call.url),
+    ).toEqual(["/api/servers/plex/catch-up"]);
+    expect(screen.getByText(/2 restored, 1 removed/)).toBeInTheDocument();
+    expect(screen.getByText(/Catch up cancelled/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Cancel catch-up" }),
+    ).not.toBeInTheDocument();
   });
 
   it("retries this server's failed rows through its own route", async () => {
@@ -412,5 +558,94 @@ describe("ServerCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove server" }));
     await click("Yes, remove Plex");
     expect(screen.getByText(refusal)).toBeInTheDocument();
+  });
+
+  it("takes the values a re-read brings when nothing is being edited", async () => {
+    // The page re-reads for reasons that are not this card's own save, and a
+    // card still holding what it was mounted with would write that stale list
+    // back over somebody else's change: `excluded_libraries` is a
+    // replacement, and the revision it sends is the fresh one.
+    router({});
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(
+        <ServerCard
+          server={PLEX}
+          switches={SWITCH_VALUES}
+          revision="r1"
+          onChanged={() => {}}
+        />,
+      );
+    });
+    await act(async () => {
+      view.rerender(
+        <ServerCard
+          server={{ ...PLEX, url: "http://moved:32400" }}
+          switches={{ ...SWITCH_VALUES, "badges.upload_to_plex": true }}
+          revision="r2"
+          onChanged={() => {}}
+        />,
+      );
+    });
+    expect(screen.getByLabelText("Plex address")).toHaveValue("http://moved:32400");
+    expect(screen.getByLabelText("Upload badged artwork to Plex")).toBeChecked();
+  });
+
+  it("leaves an edit in flight alone when the page re-reads underneath it", async () => {
+    router({});
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(
+        <ServerCard
+          server={PLEX}
+          switches={SWITCH_VALUES}
+          revision="r1"
+          onChanged={() => {}}
+        />,
+      );
+    });
+    type("Plex address", "http://being-typed:32400");
+    await act(async () => {
+      view.rerender(
+        <ServerCard
+          server={{ ...PLEX, url: "http://moved:32400" }}
+          switches={SWITCH_VALUES}
+          revision="r2"
+          onChanged={() => {}}
+        />,
+      );
+    });
+    expect(screen.getByLabelText("Plex address")).toHaveValue("http://being-typed:32400");
+  });
+
+  it("has the page re-read after each of its three writes", async () => {
+    // The whole contract between this card and the tab: the card writes one
+    // server, the page re-reads the servers and the configuration.
+    const onChanged = vi.fn();
+    router({
+      "PUT /api/servers/plex/credential": () =>
+        json({ name: "plex", credential_source: "stored" }),
+      "PUT /api/servers/plex": () => json(SAVED),
+      "DELETE /api/servers/plex": () => json({ ...SAVED, credential_cleared: true }),
+    });
+    await renderCard(PLEX, { onChanged });
+    type("Plex credential", "a-token");
+    await click("Save credential");
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    await click("Save");
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "Remove server" }));
+    await click("Yes, remove Plex");
+    expect(onChanged).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not have the page re-read after a write the server refused", async () => {
+    const onChanged = vi.fn();
+    router({
+      "PUT /api/servers/plex": () => json({ detail: NEEDS_A_CREDENTIAL_FIRST }, 409),
+    });
+    await renderCard(PLEX, { onChanged });
+    await click("Save");
+    expect(onChanged).not.toHaveBeenCalled();
   });
 });

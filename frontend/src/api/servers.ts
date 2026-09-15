@@ -180,11 +180,14 @@ export async function fetchLibraries(
   name: string,
   body: ProbeBody,
 ): Promise<LibraryRow[]> {
-  const answer = await apiFetch<{ libraries: LibraryRow[] }>(
+  const answer = await apiFetch<{ libraries?: LibraryRow[] }>(
     `${at(name)}/libraries`,
     { method: "POST", body: JSON.stringify(body) },
   );
-  return answer.libraries;
+  // Guarded for the listing's reason and one more: the card maps over this
+  // list inside its render, so an answer without the key would throw where
+  // the card's own error line cannot catch it, taking the tab down with it.
+  return Array.isArray(answer.libraries) ? answer.libraries : [];
 }
 
 export function saveServer(

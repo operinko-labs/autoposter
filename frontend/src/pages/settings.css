@@ -481,30 +481,35 @@
 /* One server's card, inside the Servers tab's accordion. The accordion is the
    panel, so the card adds no box of its own: a second bordered surface inside
    it would be a fourth level of visual nesting where the page allows three
-   (tab, accordion, row). What is left is the heading, which carries the
-   connection pill beside the server's name. */
-.server-card h2 {
+   (tab, accordion, row). What is left is the heading -- an h3, because the
+   accordion's own title is the h2 above it -- which carries the connection
+   pill beside the server's name. */
+.server-card h3 {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-/* The managed-library tick-list. The legend is the label, and the fieldset's
-   own border is dropped for the reason the card has no panel. */
-.server-libraries {
+/* The two tick-lists: the libraries this server manages, and its own
+   settings. The legend is the label, and the fieldset's own border is dropped
+   for the reason the card has no panel. */
+.server-libraries,
+.server-switches {
   margin: 12px 0;
   padding: 0;
   border: none;
 }
 
-.server-libraries legend {
+.server-libraries legend,
+.server-switches legend {
   padding: 0;
   color: var(--text-muted);
   font-size: 13px;
 }
 
-.server-libraries label {
+.server-libraries label,
+.server-switches label {
   display: flex;
   align-items: center;
   gap: 8px;

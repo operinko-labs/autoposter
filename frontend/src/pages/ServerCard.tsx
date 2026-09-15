@@ -20,17 +20,26 @@
  * rather than silently coming back, because the list is seeded from the
  * stored exclusions and only the reload adds names to it.
  *
- * THE SWITCHES ARE A DELTA, and the listing serves no values for them, so
- * each is a three-way control whose third state is "leave as it is". A
- * checkbox here would have to pick a position for a switch this card has
- * never been told the value of, and an unticked box beside a switch that is
- * on is a lie the operator has no way to see through.
+ * THE SWITCHES ARE TICK-BOXES OVER VALUES THE PAGE ALREADY HOLDS. Each one is
+ * a leaf of the configuration document, so the page reads it by its dotted
+ * path and hands it in; the box shows that value, and a save sends back only
+ * the paths whose box was moved -- `switches` is a delta over the stored
+ * block, not a replacement of it, so a card that sent every box would write
+ * settings nobody touched.
+ *
+ * WHAT THE PROPS SAY WINS, EXCEPT WHERE AN EDIT IS IN FLIGHT. The three fields
+ * seeded from props -- the address, the exclusions and the switches -- are
+ * re-seeded when the page re-reads, so a change made somewhere else is not
+ * quietly reverted by this card's next save (`excluded_libraries` is written
+ * as a REPLACEMENT, and the revision this card sends is the fresh one, so
+ * nothing else would catch it). An edit in flight is left alone: a re-read
+ * that emptied the field being typed into is the worse failure.
  *
  * NO SECRET IS EVER READ BACK. The credential field holds a typed value for
  * exactly as long as the request that carries it, and is emptied when that
  * request ends, refused or not.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { refusalMessage, RESTART_NOTE } from "../api/overrides";
 import {
@@ -89,12 +98,38 @@ function pillFor(server: ServerRow, probe: CheckResult | null) {
   return { text: "unreachable", className: "config-pill off" };
 }
 
+/** Two lists or two switch tables holding the same thing.
+ *
+ * Compared by value rather than by identity because both arrive as fresh
+ * objects on every re-read: identity would report every re-read as a change
+ * and every card as edited. */
+function sameList(one: string[], other: string[]): boolean {
+  return one.length === other.length && one.every((name, at) => name === other[at]);
+}
+
+function sameSwitches(
+  one: Record<string, boolean>,
+  other: Record<string, boolean>,
+): boolean {
+  const keys = Object.keys(one);
+  return (
+    keys.length === Object.keys(other).length &&
+    keys.every((path) => one[path] === other[path])
+  );
+}
+
 export function ServerCard({
   server,
+  switches,
   revision,
   onChanged,
 }: {
   server: ServerRow;
+  /** What each of this server's switches is set to now, keyed by the dotted
+   * path -- the page reads them out of the served configuration, because they
+   * are ordinary settings that happen to be about one server. The card shows
+   * these and sends back only what was moved. */
+  switches: Record<string, boolean>;
   /** The configuration revision the page was served. Required by both of this
    * card's writes, so a page that was served none cannot save: the routes
    * refuse a body without one, and that refusal is the only thing standing
@@ -107,13 +142,71 @@ export function ServerCard({
   const [credential, setCredential] = useState("");
   const [libraries, setLibraries] = useState<LibraryRow[] | null>(null);
   const [excluded, setExcluded] = useState<string[]>(server.excluded_libraries);
-  const [switches, setSwitches] = useState<Record<string, boolean>>({});
+  const [chosen, setChosen] = useState<Record<string, boolean>>(switches);
   const [probe, setProbe] = useState<CheckResult | null>(null);
   const [progress, setProgress] = useState<CatchUpProgress | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+
+  /** What the three seeded fields were last seeded FROM.
+   *
+   * The baseline for two questions at once: whether the props have moved, and
+   * whether this card is holding an edit. A ref rather than state because
+   * changing it is never a reason to render -- what renders is the seeding
+   * itself. */
+  const seeded = useRef({
+    address: server.url ?? "",
+    excluded: server.excluded_libraries,
+    switches,
+  });
+
+  // Re-seed the three fields the props own when the page re-reads.
+  //
+  // The card is a long-lived child of the tab and its props are replaced on
+  // every re-read, including re-reads it did not cause -- another card's
+  // write, a settings save, a manual refresh. Seeding once at mount left it
+  // holding the list it was mounted with, and `excluded_libraries` is written
+  // as a REPLACEMENT, so the next save here would put that stale list back
+  // over somebody else's change with a 200 and no mention of it. The revision
+  // does not catch it: this card sends the fresh one it was just handed.
+  //
+  // An edit in flight is the one thing that wins over the re-read, because
+  // taking away what the operator is in the middle of typing is worse than
+  // showing a value one re-read old -- and a save makes what it sent the new
+  // baseline, so the re-read that follows it reconciles rather than counting
+  // as a conflict.
+  useEffect(() => {
+    const seed = seeded.current;
+    const fresh = {
+      address: server.url ?? "",
+      excluded: server.excluded_libraries,
+      switches,
+    };
+    if (
+      fresh.address === seed.address &&
+      sameList(fresh.excluded, seed.excluded) &&
+      sameSwitches(fresh.switches, seed.switches)
+    ) {
+      return;
+    }
+    if (
+      address !== seed.address ||
+      !sameList(excluded, seed.excluded) ||
+      !sameSwitches(chosen, seed.switches)
+    ) {
+      return;
+    }
+    seeded.current = fresh;
+    setAddress(fresh.address);
+    setExcluded(fresh.excluded);
+    setChosen(fresh.switches);
+    // The three fields are dependencies as well as props: a re-read that
+    // arrived while something was half-typed is reconciled as soon as the
+    // card stops holding that edit, rather than waiting for the next re-read.
+    // The first guard is what makes the extra passes free.
+  }, [server, switches, address, excluded, chosen]);
 
   // A configured server's catch-up is read once, when the card is opened: the
   // buttons below act on a run, and a card that offered "Catch up" without
@@ -134,16 +227,49 @@ export function ServerCard({
     };
   }, [server.configured, server.name]);
 
+  /** Whether the address in the field is one the request would have to name.
+   *
+   * The stored address is what an empty body asks for, and it is the only
+   * address this deployment will send a credential it holds to. Anything else
+   * has to travel in the request, and then the credential to use against it
+   * has to travel with it. */
+  const typedAddress = address !== (server.url ?? "");
+
   /** The typed-address rule, client side: an address this request names must
    * carry the credential to use against it, and a card with nothing typed
    * sends neither field and gets the booted address and the held credential.
-   * Sending both or neither is the only shape this card produces. */
+   * Sending both or neither is the only shape this card produces, which is
+   * why the two buttons below are refused while the field pair says neither
+   * -- an address with an empty credential is a 400 every time. */
   function probeBody() {
-    const typedAddress = address !== (server.url ?? "");
     if (typedAddress || credential !== "") {
       return { url: address, credential_value: credential };
     }
     return {};
+  }
+
+  /** The state in which neither probe button may be pressed: a new address in
+   * the field and nothing in the credential field to use against it. The
+   * default of the add flow, because storing the credential empties that
+   * field and the address is typed after it. */
+  const needsACredentialToProbe = typedAddress && credential === "";
+
+  /** What this save STATES about the switches: the boxes that were moved, and
+   * nothing else. The route merges this over the stored block, so a path sent
+   * for a switch nobody touched is a write nobody asked for -- and these are
+   * ordinary settings, editable on their own tabs too, so the one this card
+   * did not mean to state is the one somebody else had just changed.
+   *
+   * Keyed from this server's own table rather than from the prop, so a path
+   * the route does not accept for this server cannot be sent even if the page
+   * hands one in. */
+  function switchDelta(): Record<string, boolean> {
+    const delta: Record<string, boolean> = {};
+    for (const entry of SWITCHES[server.name] ?? []) {
+      const now = chosen[entry.path] ?? false;
+      if (now !== (switches[entry.path] ?? false)) delta[entry.path] = now;
+    }
+    return delta;
   }
 
   /** Run one action, with this card's one error line and one note line.
@@ -235,7 +361,14 @@ export function ServerCard({
           type="text"
           aria-label={`${label} address`}
           value={address}
-          onChange={(event) => setAddress(event.target.value)}
+          onChange={(event) => {
+            setAddress(event.target.value);
+            // The pill is a state, and the state it held was about the
+            // address that was there a moment ago. Dropping the probe hands
+            // the pill back to the listing's own health, which is the only
+            // thing that still knows something about an address.
+            setProbe(null);
+          }}
         />
       </span>
     </div>
@@ -246,7 +379,10 @@ export function ServerCard({
     // accordion, which is the panel, and a second bordered box inside it
     // would be a fourth level of visual nesting where the page allows three.
     <section className="server-card">
-      <h2>
+      {/* An h3: the tab wraps this card in an accordion whose own title is an
+          h2, so a second h2 here would be a heading nested inside a sibling
+          of itself and the outline would flatten. */}
+      <h3>
         {label}
         <span className={pill.className}>{pill.text}</span>
         {server.restart_pending && (
@@ -257,7 +393,7 @@ export function ServerCard({
             restart to apply
           </span>
         )}
-      </h2>
+      </h3>
       {error !== null && <p className="page-error">{error}</p>}
       {note !== null && <p className="config-saved">{note}</p>}
       {!server.configured && (
@@ -274,6 +410,13 @@ export function ServerCard({
       {detail !== null && <p className="muted">{detail}</p>}
       {probe === null && server.health.checked_at !== null && (
         <p className="muted">{`Last answered ${formatTime(server.health.checked_at)}.`}</p>
+      )}
+      {needsACredentialToProbe && (
+        <p className="muted config-note">
+          An address typed here must come with the credential to use against
+          it: this deployment does not send a credential it holds to an
+          address a request names.
+        </p>
       )}
 
       {libraries !== null && (
@@ -301,43 +444,26 @@ export function ServerCard({
         </fieldset>
       )}
 
-      {(SWITCHES[server.name] ?? []).map((entry) => (
-        <div className="config-row" key={entry.path}>
-          <span className="config-key">{entry.label}</span>
-          <span className="config-value">
-            <select
-              aria-label={entry.label}
-              value={
-                switches[entry.path] === undefined
-                  ? ""
-                  : switches[entry.path]
-                    ? "on"
-                    : "off"
-              }
-              onChange={(event) =>
-                setSwitches((current) => {
-                  const chosen = event.target.value;
-                  if (chosen === "") {
-                    const kept = { ...current };
-                    delete kept[entry.path];
-                    return kept;
-                  }
-                  return { ...current, [entry.path]: chosen === "on" };
-                })
-              }
-            >
-              <option value="">leave as it is</option>
-              <option value="on">on</option>
-              <option value="off">off</option>
-            </select>
-          </span>
-        </div>
-      ))}
       {(SWITCHES[server.name] ?? []).length > 0 && (
-        <p className="muted config-note">
-          A switch left at &ldquo;leave as it is&rdquo; is not sent, so this
-          card changes only what is set here.
-        </p>
+        <fieldset className="server-switches">
+          <legend>{`${label} settings`}</legend>
+          {(SWITCHES[server.name] ?? []).map((entry) => (
+            <label key={entry.path}>
+              <input
+                type="checkbox"
+                aria-label={entry.label}
+                checked={chosen[entry.path] ?? false}
+                onChange={(event) =>
+                  setChosen((current) => ({
+                    ...current,
+                    [entry.path]: event.target.checked,
+                  }))
+                }
+              />
+              {entry.label}
+            </label>
+          ))}
+        </fieldset>
       )}
 
       {progress !== null && (
@@ -351,7 +477,7 @@ export function ServerCard({
       <div className="config-actions">
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || needsACredentialToProbe}
           onClick={() =>
             void run(
               async () => {
@@ -366,7 +492,7 @@ export function ServerCard({
         </button>
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || needsACredentialToProbe}
           onClick={() =>
             void run(
               async () => {
@@ -439,15 +565,25 @@ export function ServerCard({
           disabled={busy || !writable}
           onClick={() =>
             void run(async () => {
+              // Narrowed rather than defaulted: `""` is a string the route
+              // accepts and then refuses as a stale revision, which is a
+              // worse answer than the disabled button above.
+              if (revision === null) return null;
               await saveServer(server.name, {
                 url: address,
                 excluded_libraries: excluded,
-                switches,
-                expected_revision: revision ?? "",
+                switches: switchDelta(),
+                expected_revision: revision,
                 confirm: false,
               });
-              // Applied, so they are not sent again by the next save.
-              setSwitches({});
+              // What was sent is the new baseline, so the re-read below
+              // reconciles this card rather than reading as a conflict with
+              // an edit in flight -- and the boxes keep the state they were
+              // saved in instead of blanking until the props catch up.
+              seeded.current = { address, excluded, switches: chosen };
+              // The address that was just saved is not the one the probe
+              // reached, so the pill goes back to what the listing knows.
+              setProbe(null);
               await onChanged();
               return (
                 `Saved ${label}. This deployment is still running on the ` +
@@ -477,8 +613,11 @@ export function ServerCard({
             disabled={busy}
             onClick={() =>
               void run(async () => {
+                // Narrowed for the reason the save is: an empty revision is a
+                // request the route takes and then refuses.
+                if (revision === null) return null;
                 const removed = await removeServer(server.name, {
-                  expected_revision: revision ?? "",
+                  expected_revision: revision,
                   confirm: true,
                 });
                 setConfirming(false);
