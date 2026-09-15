@@ -73,6 +73,24 @@ function openSection(tab: string, section?: string) {
   }
 }
 
+/** The same, awaited, for a tab carrying a panel that fetches on mount.
+ *
+ * The System tab's backup panel does, and it mounts with the tab rather than
+ * with the page now -- so the click is what has to settle. An update landing
+ * after the test that started it has ended is a leak, not a warning: this file
+ * shares one jsdom window across every test in it. */
+async function openSettled(tab: string, section?: string) {
+  // The tab click gets its own act: the accordion it reveals is not in the
+  // DOM until that one has flushed, so a second click batched into the same
+  // act would have nothing to find.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("tab", { name: tab }));
+  });
+  if (section !== undefined) {
+    fireEvent.click(screen.getByRole("button", { name: section }));
+  }
+}
+
 describe("Settings attribution", () => {
   it("renders TMDB's notice with their required wording, exactly", async () => {
     stubConfig();
@@ -139,6 +157,11 @@ describe("Settings configuration", () => {
       "Photos",
     );
     expect(screen.getByLabelText("plex.url")).toHaveValue("http://plex:32400");
+    // Asserted here, with a section open and its rows on screen, rather than
+    // only at the end: a dump would appear inside an accordion body, so a
+    // check run over a page of closed headers proves nothing.
+    expect(document.querySelector("pre")).toBeNull();
+    expect(document.body.textContent).not.toContain("{");
 
     openSection("Artwork", "Badges");
     expect(screen.getByRole("heading", { name: "Badges" })).toBeInTheDocument();
@@ -150,9 +173,30 @@ describe("Settings configuration", () => {
     expect(screen.getByLabelText("artwork.poster.text.font")).toHaveValue(
       "Comfortaa-Medium.ttf",
     );
-    // And the raw JSON <pre> dump is gone.
+    // And again over the deepest nesting on the page, which is where a dump
+    // would be the tempting shortcut.
     expect(document.querySelector("pre")).toBeNull();
     expect(document.body.textContent).not.toContain("{");
+  });
+
+  it("renders a redacted value as a badge, never as the marker or a field", async () => {
+    // The marker is a state, not a value, and two branches carry that: the
+    // field builder refuses to put a widget over it, and the value renderer
+    // shows a badge in its place. A page that lost either would offer an edit
+    // whose save stores the literal marker over the real setting.
+    stubConfig({ ...CONFIG, notifications: { enabled: false, url: REDACTED } });
+    await renderSettings();
+    openSection("Integrations", "Notifications");
+
+    const row = rowOf(screen.getByText("Url"));
+    expect(within(row).getByText("redacted")).toBeInTheDocument();
+    // No widget of any kind, so there is nothing to type the marker back in.
+    expect(within(row).queryByRole("textbox")).toBeNull();
+    expect(screen.queryByLabelText("notifications.url")).toBeNull();
+    // And the marker itself never reaches the page as text -- asserted with
+    // the accordion that holds it open, so it is a real read of a rendered
+    // value rather than of a page showing no values at all.
+    expect(document.body.textContent).not.toContain(REDACTED);
   });
 
   it("renders no secrets section at all, and never the marker string", async () => {
@@ -172,7 +216,7 @@ describe("Settings configuration", () => {
       "Integrations",
       "System",
     ]) {
-      openSection(tab);
+      await openSettled(tab);
       expect(screen.queryByRole("button", { name: "Secrets" })).toBeNull();
     }
     // And the literal marker never reaches the page as a value.
@@ -217,7 +261,7 @@ describe("Settings configuration", () => {
 
     // System is `tabForSection`'s fallback, which is the half of the tab map
     // that keeps an unassigned section reachable rather than invisible.
-    openSection("System", "Frobnicator");
+    await openSettled("System", "Frobnicator");
     expect(
       screen.getByRole("heading", { name: "Frobnicator" }),
     ).toBeInTheDocument();
@@ -271,7 +315,7 @@ describe("Settings configuration", () => {
     // fetches its own snapshot list on mount -- so the click is what has to
     // be awaited.
     await act(async () => {
-      openSection("System");
+      await openSettled("System");
     });
 
     expect(
@@ -283,7 +327,7 @@ describe("Settings configuration", () => {
   it("carries the webhook secret rotation panel", async () => {
     stubConfig();
     await renderSettings();
-    openSection("System");
+    await openSettled("System");
 
     expect(
       screen.getByRole("button", { name: /rotate webhook secret/i }),
@@ -419,7 +463,7 @@ describe("Settings editor", () => {
       }),
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await save();
@@ -444,7 +488,7 @@ describe("Settings editor", () => {
       }),
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await save();
@@ -515,7 +559,7 @@ describe("Settings editor", () => {
   it("marks an edited frozen field as needing a restart, with the server's reason", async () => {
     stubApi();
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     // Unedited, the marker would be noise: nothing is pending. No section
     // header carries one either -- `frozen_paths` here names `workers` and
@@ -543,7 +587,7 @@ describe("Settings editor", () => {
   it("hangs each setting's description off its label as hover text", async () => {
     stubApi();
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     const label = within(rowOf(screen.getByLabelText("workers"))).getByText(
       "Workers",
@@ -563,7 +607,7 @@ describe("Settings editor", () => {
   it("hangs a description off a row with no widget, since the text is all it shows", async () => {
     stubApi();
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     // `version` is a computed path, so it gets no editor and renders nothing
     // but its value -- the description is the one informative thing left on
@@ -579,7 +623,7 @@ describe("Settings editor", () => {
   it("renders a computed path read-only rather than offering an inert edit", async () => {
     stubApi();
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     // `version` is derived from the other settings; an override on it is
     // recomputed away, so the editor must not present it as a field.
@@ -616,7 +660,7 @@ describe("Settings editor", () => {
     // answers is "what is this set to", and the answer is the field.
     stubApi({ config: [{ ...EDITOR_CONFIG, workers: 9 }] });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     expect(screen.queryByText("overridden")).toBeNull();
     expect(
@@ -628,7 +672,7 @@ describe("Settings editor", () => {
   it("never makes a secret editable", async () => {
     stubApi();
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     // Stronger than the read-only panel this replaces: there is no secrets
     // section on the page at all, so there is nothing that could drift into
@@ -641,7 +685,7 @@ describe("Settings editor", () => {
   it("does not render the provenance keys as configuration", async () => {
     stubApi();
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     // `restart_paths` and `frozen_paths` are not settings; rendered as
     // sections they would offer the operator an edit the API cannot accept.
@@ -662,7 +706,7 @@ describe("Settings editor", () => {
 
     openSection("Artwork", "Badges");
     expect(screen.getByLabelText("badges.enabled")).toHaveAttribute("type", "checkbox");
-    openSection("System", "General");
+    await openSettled("System", "General");
     expect(screen.getByLabelText("workers")).toHaveAttribute("type", "number");
     openSection("Servers", "Plex");
     expect(screen.getByLabelText("plex.url")).toHaveAttribute("type", "text");
@@ -712,7 +756,7 @@ describe("Settings editor", () => {
   it("clearing a number input puts the served value back", async () => {
     const fetchMock = stubApi();
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     const field = screen.getByLabelText("workers");
     fireEvent.change(field, { target: { value: "9" } });
@@ -762,7 +806,7 @@ describe("Settings editor", () => {
   it("surfaces a save that failed for a reason that is not a field error", async () => {
     stubApi({ put: json({ detail: "the database is unreachable" }, 500) });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await save();
@@ -800,7 +844,7 @@ describe("Settings editor, redacted values", () => {
   it("seeds a redacted override with the server's keep marker, not with what it was served", async () => {
     const fetchMock = stubApi({ config: REDACTED_CONFIG });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await save();
@@ -875,7 +919,7 @@ describe("Settings editor, redacted values", () => {
       config: { ...REDACTED_CONFIG, keep_sentinel: undefined },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await save();
@@ -892,7 +936,7 @@ describe("Settings editor, redacted values", () => {
   it("does not render the redaction contract as configuration", async () => {
     stubApi({ config: REDACTED_CONFIG });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     expect(screen.queryByLabelText("keep_sentinel")).toBeNull();
     expect(screen.queryByText("Redacted paths")).toBeNull();
@@ -1169,7 +1213,7 @@ describe("Settings preview", () => {
       },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await click("Preview impact");
@@ -1200,7 +1244,7 @@ describe("Settings preview", () => {
       },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await save();
@@ -1224,7 +1268,7 @@ describe("Settings preview", () => {
       },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await click("Preview impact");
@@ -1247,7 +1291,7 @@ describe("Settings preview", () => {
       },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await click("Preview impact");
@@ -1267,7 +1311,7 @@ describe("Settings preview", () => {
       responses: { "/api/config/preview": previewBody(null, "abc123") },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await click("Preview impact");
@@ -1290,7 +1334,7 @@ describe("Settings preview", () => {
       },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await click("Preview impact");
@@ -1427,7 +1471,7 @@ describe("Settings apply", () => {
       },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await click("Save and re-render");
@@ -1534,7 +1578,7 @@ describe("Settings apply", () => {
       },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
 
@@ -1559,7 +1603,7 @@ describe("Settings apply", () => {
       }),
     );
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     fireEvent.click(screen.getByRole("button", { name: "Preview impact" }));
@@ -1628,7 +1672,7 @@ describe("Settings stale-save recovery", () => {
       },
     });
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await click("Preview impact");
@@ -1670,7 +1714,7 @@ describe("Settings stale-save recovery", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await save();
@@ -1705,7 +1749,7 @@ describe("Settings stale-save recovery", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     await renderSettings();
-    openSection("System", "General");
+    await openSettled("System", "General");
 
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await save();
@@ -1741,6 +1785,20 @@ describe("Settings tabs", () => {
     field_descriptions: {},
   };
 
+  /** A deployment the per-library matrix can actually render: it takes its
+   * columns from `collections.libraries` and its rows from the
+   * `libraries.{}.` wildcard in `field_descriptions`. `upload_to_plex` is
+   * deliberately outside that wildcard, so the branch survives clearing the
+   * one cell the matrix does offer. */
+  const LIBRARIES = {
+    ...CONFIG,
+    collections: { libraries: ["Movies", "Shows"] },
+    libraries: { Movies: { badges: { enabled: false, upload_to_plex: true } } },
+    field_descriptions: {
+      "libraries.{}.badges.enabled": "Whether this library gets badges.",
+    },
+  };
+
   it("renders the seven tabs and shows one tab's sections at a time", async () => {
     stubConfig(FULL);
     await renderSettings();
@@ -1763,7 +1821,7 @@ describe("Settings tabs", () => {
   it("collapses every section until one is opened", async () => {
     stubConfig(FULL);
     await renderSettings();
-    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    await openSettled("System");
     expect(screen.getByRole("button", { name: "Scheduler" })).toHaveAttribute(
       "aria-expanded",
       "false",
@@ -1775,7 +1833,7 @@ describe("Settings tabs", () => {
   it("carries the restart pill on a frozen section's header", async () => {
     stubConfig(FULL);
     await renderSettings();
-    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    await openSettled("System");
 
     // The section's own pill, from `frozen_paths`, and there before anything
     // is edited -- unlike a row's pill, which appears only once that row is
@@ -1795,7 +1853,7 @@ describe("Settings tabs", () => {
   it("names the tabs holding pending edits in the sticky bar", async () => {
     stubConfig(FULL);
     await renderSettings();
-    openSection("System", "Scheduler");
+    await openSettled("System", "Scheduler");
     fireEvent.change(screen.getByLabelText("scheduler.poll_seconds"), {
       target: { value: "9" },
     });
@@ -1813,7 +1871,7 @@ describe("Settings tabs", () => {
     // walked away from one has no other way to be told which.
     stubConfig(FULL);
     await renderSettings();
-    openSection("System", "Scheduler");
+    await openSettled("System", "Scheduler");
     fireEvent.change(screen.getByLabelText("scheduler.poll_seconds"), {
       target: { value: "9" },
     });
@@ -1831,7 +1889,7 @@ describe("Settings tabs", () => {
     // would bury one edit in every setting the service has.
     stubConfig(FULL);
     await renderSettings();
-    openSection("System", "Scheduler");
+    await openSettled("System", "Scheduler");
     fireEvent.change(screen.getByLabelText("scheduler.poll_seconds"), {
       target: { value: "9" },
     });
@@ -1849,13 +1907,127 @@ describe("Settings tabs", () => {
   it("discards the pending change and the bar goes with it", async () => {
     stubConfig(FULL);
     await renderSettings();
-    openSection("System", "Scheduler");
+    await openSettled("System", "Scheduler");
     fireEvent.change(screen.getByLabelText("scheduler.poll_seconds"), {
       target: { value: "9" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
     expect(screen.queryByText(/Unsaved changes on:/)).not.toBeInTheDocument();
     expect(screen.getByLabelText("scheduler.poll_seconds")).toHaveValue(5);
+  });
+
+  it("remembers the open section on a tab after a round trip to another", async () => {
+    stubConfig(FULL);
+    await renderSettings();
+    openSection("Integrations", "Radarr");
+    expect(screen.getByRole("button", { name: "Radarr" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+
+    // Away and back. The open section is remembered per tab, so the one
+    // opened here survives being off screen -- and the tab visited in between
+    // does not inherit it.
+    await openSettled("System");
+    expect(screen.getByRole("button", { name: "Scheduler" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    openSection("Integrations");
+    expect(screen.getByRole("button", { name: "Radarr" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("discards the preview and the save error along with the edit", async () => {
+    stubEditor({
+      config: FULL,
+      responses: {
+        "/api/config/preview": json({
+          version_before: "a",
+          version_after: "b",
+          restart_required: [],
+          impact: null,
+        }),
+        "/api/config/overrides": json({ detail: "the database is unreachable" }, 500),
+      },
+    });
+    await renderSettings();
+    await openSettled("System", "Scheduler");
+    fireEvent.change(screen.getByLabelText("scheduler.poll_seconds"), {
+      target: { value: "9" },
+    });
+
+    await click("Preview impact");
+    expect(screen.getByText(/No re-renders/)).toBeInTheDocument();
+    await save();
+    expect(screen.getByText("the database is unreachable")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    // Both go with the edit: the count answered a question about a document
+    // that no longer exists, and the refusal was reported against it.
+    expect(screen.queryByText(/No re-renders/)).toBeNull();
+    expect(screen.queryByText("the database is unreachable")).toBeNull();
+    expect(screen.getByLabelText("scheduler.poll_seconds")).toHaveValue(5);
+
+    // Discarded rather than merely hidden by the panel going away with the
+    // dirty flag: make the document pending again and neither comes back.
+    fireEvent.change(screen.getByLabelText("scheduler.poll_seconds"), {
+      target: { value: "11" },
+    });
+    expect(screen.getByText(/Unsaved changes on: System/)).toBeInTheDocument();
+    expect(screen.queryByText(/No re-renders/)).toBeNull();
+    expect(screen.queryByText("the database is unreachable")).toBeNull();
+  });
+
+  it("renders the per-library matrix on the Libraries tab and nowhere else", async () => {
+    stubConfig(LIBRARIES);
+    await renderSettings();
+    openSection("Libraries");
+
+    expect(
+      screen.getByRole("heading", { name: "Per-library overrides" }),
+    ).toBeInTheDocument();
+    // The generic tree for the same section sits under it. The matrix reports
+    // a per-library list or mapping cell it cannot edit, and the tree is
+    // where that edit lives -- so both belong on this tab, together.
+    expect(screen.getByRole("button", { name: "Libraries" })).toBeInTheDocument();
+
+    for (const tab of [
+      "Servers",
+      "Artwork",
+      "Collections",
+      "Metadata",
+      "Integrations",
+      "System",
+    ]) {
+      await openSettled(tab);
+      expect(
+        screen.queryByRole("heading", { name: "Per-library overrides" }),
+      ).toBeNull();
+    }
+  });
+
+  it("renders a cleared cell as a removal in the diff", async () => {
+    // Clearing a cell deletes the key rather than writing today's global into
+    // it -- that is the whole of the matrix's "inherit" -- so the diff has to
+    // be able to say a path went away, not just that it changed.
+    stubConfig(LIBRARIES);
+    await renderSettings();
+    openSection("Libraries");
+
+    fireEvent.change(screen.getByLabelText("libraries.Movies.badges.enabled"), {
+      target: { value: "inherit" },
+    });
+
+    const panel = screen
+      .getByRole("heading", { name: "Pending changes" })
+      .closest("section") as HTMLElement;
+    expect(
+      within(panel).getByText("libraries.Movies.badges.enabled"),
+    ).toBeInTheDocument();
+    expect(within(panel).getByText("off → (not set)")).toBeInTheDocument();
   });
 
   it("sends the whole document, not a delta, when saving", async () => {
@@ -1877,7 +2049,7 @@ describe("Settings tabs", () => {
       }),
     );
     await renderSettings();
-    openSection("System", "Scheduler");
+    await openSettled("System", "Scheduler");
     fireEvent.change(screen.getByLabelText("scheduler.poll_seconds"), {
       target: { value: "9" },
     });

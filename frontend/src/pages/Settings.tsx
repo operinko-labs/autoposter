@@ -448,6 +448,11 @@ function ConfigNode({
  * no config section can be called this, so it can never collide with one. */
 const GENERAL_SECTION = "__general__";
 
+/** The one tab panel's id, which every tab's `aria-controls` names. Fixed
+ * rather than generated because there is only ever one Settings page, the
+ * same reason `Sidebar.tsx` can hardcode `aria-controls="sidebar-nav"`. */
+const TAB_PANEL_ID = "settings-tab-panel";
+
 /** The sections of ONE tab, each in its own accordion.
  *
  * Shape-driven still: nothing here names a config field, and a section the
@@ -652,9 +657,15 @@ export function changedPaths(
  *
  * The keep sentinel is shown as itself. At a redacted path it is genuinely
  * what the document carries, and substituting the served rendering would put
- * a push token's bare host on screen as the value about to be replaced. */
+ * a push token's bare host on screen as the value about to be replaced.
+ *
+ * An absent key and a null read as "(not set)", the same words `ScalarValue`
+ * uses for both -- one vocabulary for one state on one page. An empty string
+ * keeps its own word: a diff is exactly where emptying a box has to be
+ * distinguishable from taking the setting away, because those are two
+ * different controls with two different outcomes. */
 function diffValue(value: unknown): string {
-  if (value === undefined) return "(not set)";
+  if (value === undefined || value === null) return "(not set)";
   if (typeof value === "boolean") return value ? "on" : "off";
   if (value === "") return "(empty)";
   if (typeof value === "string") return value;
@@ -677,17 +688,22 @@ function PendingDiff({ changes }: { changes: PendingChange[] }) {
 }
 
 /** Which tabs hold something unsaved. What the sticky bar names, so an
- * operator who edited two tabs and forgot one is told which. */
+ * operator who edited two tabs and forgot one is told which.
+ *
+ * Read off `changedPaths` rather than comparing the documents again: a second
+ * rule for "what counts as changed" is a second rule that can disagree with
+ * the panel standing right above the bar, and the one here would have been
+ * the key-order-sensitive one. Emitted in `TABS` order, which is the order
+ * they sit in on screen. */
 export function tabsWithPendingEdits(
   pending: OverridesDocument,
   saved: OverridesDocument,
 ): TabId[] {
-  const keys = new Set([...Object.keys(pending), ...Object.keys(saved)]);
-  const changed = new Set<TabId>();
-  for (const key of keys) {
-    if (JSON.stringify(pending[key]) === JSON.stringify(saved[key])) continue;
-    changed.add(tabForSection(key));
-  }
+  const changed = new Set<TabId>(
+    changedPaths(pending, saved).map((change) =>
+      tabForSection(change.path.split(".")[0]),
+    ),
+  );
   return TABS.map((entry) => entry.id).filter((id) => changed.has(id));
 }
 
@@ -952,6 +968,21 @@ export function Settings() {
           it. */}
       {staleNote !== null && <p className="page-error">{staleNote}</p>}
 
+      {/* Replaced by the pending bar the moment there is an edit, which says
+          the same thing about a change that exists. */}
+      {!dirty && (
+        <p className="muted config-note">
+          Every setting this service has, a tab at a time. Edits from any tab
+          are collected together and nothing is stored until you save.
+        </p>
+      )}
+
+      {/* Plain buttons, so Tab moves between them and Enter and Space
+          activate them without a keydown handler. No roving tabindex and no
+          arrow keys: that trade puts every tab in the tab order, which is
+          more keystrokes to cross the bar but nothing unreachable, and it is
+          the behaviour a reader gets from the markup rather than from a
+          handler they have to find. */}
       <div
         className="settings-tabs"
         role="tablist"
@@ -964,6 +995,7 @@ export function Settings() {
             type="button"
             role="tab"
             aria-selected={tab === entry.id}
+            aria-controls={TAB_PANEL_ID}
             className={tab === entry.id ? "settings-tab current" : "settings-tab"}
             onClick={() => setTab(entry.id)}
           >
@@ -972,7 +1004,14 @@ export function Settings() {
         ))}
       </div>
 
-      <div role="tabpanel" aria-labelledby={`settings-tab-${tab}`}>
+      {/* One panel that swaps its contents rather than seven, so it keeps one
+          id -- every tab points at it, and it points back at whichever tab is
+          selected. */}
+      <div
+        id={TAB_PANEL_ID}
+        role="tabpanel"
+        aria-labelledby={`settings-tab-${tab}`}
+      >
         {config === null && <p className="muted">Loading…</p>}
         {config !== null && tab === "libraries" && (
           <LibraryOverridesPanel config={config} editor={editor} />
