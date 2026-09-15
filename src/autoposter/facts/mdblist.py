@@ -277,7 +277,7 @@ class NullMDBListClient:
 
     Degrades only the ``content_rating`` field MDBList would have supplied;
     ``gather_facts`` already treats a ``None`` content rating as "no value",
-    so every other metadata operation proceeds untouched (see finding 1).
+    so every other metadata operation proceeds untouched.
     """
 
     name = "MDBList"

@@ -811,7 +811,7 @@ async def test_the_retry_records_the_fingerprint_it_actually_delivered(
     routinely, most sharply when the item has no Plex ref and the forced
     compose drops the resolution/format overlays. Recording the stored one
     would make a server holding visibly different artwork read as up to date
-    to Phase C's catch-up, which is the failure mode it exists to find."""
+    to a catch-up run, which is the failure mode it exists to find."""
     from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
     from autoposter.servers.registry import Servers
     render = await _render(session)
@@ -1229,8 +1229,8 @@ async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_b
     """Review I1: `failed` is itself a counted attempt, so an exhausted row
     stayed permanently above the budget -- `deliver`'s re-arm left the
     counter where it was, and the next failure exhausted the row again on its
-    FIRST attempt. Spec §2 promises a row re-armed by a full pass (or, in
-    Phase C, by a catch-up) the whole budget, not one retry."""
+    FIRST attempt. Spec §2 promises a row re-armed by a full pass (or by a
+    catch-up) the whole budget, not one retry."""
     from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
     from autoposter.servers.registry import Servers
 

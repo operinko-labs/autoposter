@@ -432,8 +432,8 @@ async def test_media_returns_the_show_document_verbatim():
 
 
 async def test_records_are_handed_back_unparsed():
-    """The API carries undocumented keys and omits documented ones (harvest
-    finding 7), so a model here would reject live payloads. Records cross this
+    """The API carries undocumented keys and omits documented ones,
+    so a model here would reject live payloads. Records cross this
     boundary as the dicts Tracearr sent."""
     record = {"id": "a", "media_type": "movie", "an_undocumented_key": 1}
     routes = {f"{API_PREFIX}/history": _history([record])}

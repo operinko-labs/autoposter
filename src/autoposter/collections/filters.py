@@ -265,8 +265,8 @@ SOURCE_TIERS = (
 OPERATORS_BY_TYPE: dict[str, tuple[str, ...]] = {
     # `.count_gt/.count_gte/.count_lt/.count_lte` are Kometa's own modifier
     # class for tag attributes (`builder.py:4350`) -- "how many tags does
-    # this item have", as opposed to "which". Added by roadmap row 100
-    # sub-phase C2b, whose `language_count` family selects on
+    # this item have", as opposed to "which". Added by roadmap row 100,
+    # whose `language_count` family selects on
     # `audio_language.count_gte: 2`.
     #
     # ADJUDICATION A-1, and it REVERSES the phase-C recon's own A8
@@ -720,8 +720,8 @@ _MISSING_ALWAYS_EXCLUDES = ("int", "float", "date", "duration")
 #
 # NOT derived from ``source == "facts"``, deliberately: ``tmdb_status`` and
 # ``last_episode_aired`` are on that tier too, carry KOMETA's own names
-# (sub-phase C2c's condition -- the column holds exactly the value space
-# Kometa's filter compares in), and are still refused for collections. A
+# (the column holds exactly the value space Kometa's filter compares in),
+# and are still refused for collections. A
 # derivation would have swept both in and silently changed overlay
 # `condition:` membership for them.
 FACTS_FILTER_ROWS: tuple[str, ...] = (
@@ -1630,8 +1630,8 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "`plex.float_attributes + ['aspect', 'tmdb_vote_average']`) -- so it "
         "is a CLIENT-SIDE `filters:` comparison and never a Plex search: the "
         "second of the 44 filter-only names to arrive under a table row, "
-        "after `versions`. ADJUDICATION A11 (raised in the phase-C recon, "
-        "ruled by sub-phase C2b). `listing`: the section listing carries "
+        "after `versions`. ADJUDICATION A11 (raised in the phase-C recon). "
+        "`listing`: the section listing carries "
         "`<Media>` in full and un-truncated (9a's probe, recorded on the "
         "`resolution` row above), which is the same read that row and "
         "`versions` already rely on. KINDS: both, and that is Kometa's own "
@@ -1691,7 +1691,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "filter value share one value space -- the condition row 156 set. A "
         "collection naming this row is refused at load; an overlay "
         "`condition:` reads it through `overlays/selection.py::"
-        "OverlayItemView`. Row 100 sub-phase C2c, adjudication A-2. A row "
+        "OverlayItemView`. Row 100, adjudication A-2. A row "
         "whose column is still NULL -- every row in the library until its "
         "next facts refresh, adjudication A-4 -- is excluded by the tag "
         "missing-value rule under every positive operator, which matches "

@@ -505,8 +505,8 @@ def test_every_operator_maps_onto_plexapis_own_operator_table():
     for pair, key in PLEXAPI_EQUIVALENT.items():
         assert key is None or key in OPERATORS, pair
     # The deliberate gaps: "in the last N days" is a relative window and
-    # plexapi's table is all absolute comparisons; `.count_*` (sub-phase
-    # C2b) asks how MANY children the item has, which plexapi spells with no
+    # plexapi's table is all absolute comparisons; `.count_*` asks how MANY
+    # children the item has, which plexapi spells with no
     # operator key at all; and roadmap row 157's `("date", "to")` has no
     # SINGLE key because its answer depends on the row (`MOMENT_DATE_ROWS`
     # or not) -- see the entry's own comment in `filters.py`.
@@ -943,8 +943,8 @@ def test_moment_date_rows_is_derived_from_the_same_search_field_suffix_it_docume
     is ``addedAt`` / ``lastViewedAt`` (or the ``episode.`` rescope of one),
     which plexapi hands back as a full datetime rather than a bare date.
 
-    Nothing enforced that claim before roadmap row 157's Important 2 review
-    finding: the set was held up only by three literal URL strings that
+    Nothing enforced that claim before roadmap row 157: the set was held
+    up only by three literal URL strings that
     happen to name ``added`` and ``last_played``, so dropping
     ``episode_added`` or ``episode_last_played`` from the frozenset left the
     whole suite green while ``episode_added.to`` silently rendered the
@@ -1414,7 +1414,7 @@ OPERATOR_CASES: dict[tuple[str, str], list[tuple[object, object, bool]]] = {
         (["Horror"], ["^Doc", "^Sci"], False),
         (None, ".", False),
     ],
-    # `.count_*` (roadmap row 100, sub-phase C2b): Kometa's
+    # `.count_*` (roadmap row 100): Kometa's
     # own modifier for "how many tags does this item have"
     # (`builder.py:419` declares the four, `builder.py:4350` parses their
     # value as an int), legal on every tag row. The written value is an int.
@@ -1794,7 +1794,7 @@ def test_the_missing_value_rule_splits_by_type_family():
 
     Read off the case table rather than re-listed, so the two cannot disagree.
 
-    THE ONE EXEMPTION, and it is upstream's own (sub-phase C2b): the four
+    THE ONE EXEMPTION, and it is upstream's own: the four
     ``.count_*`` modifiers never reach this rule in either system. Kometa
     reduces the collected list to ``len(test_number) if test_number else 0``
     BEFORE its missing-value test (``modules/plex.py:2931-2932``), so a
@@ -2218,8 +2218,8 @@ def test_a_relative_window_refuses_an_unknown_unit_naming_all_seven():
 def test_an_attribute_no_row_names_is_refused_with_the_right_vocabulary():
     """Two vocabularies, two lists. ``height`` is one of row 96's 44 Kometa
     filter-only names, and no row names it yet (``aspect`` -- the row this
-    test originally used as its example -- graduated into the table in
-    sub-phase C2b, so the example moved rather than the assertion), so both
+    test originally used as its example -- graduated into the table
+    later, so the example moved rather than the assertion), so both
     blocks answer "unknown" -- but each names ITS OWN vocabulary, not the
     table."""
     with pytest.raises(ValueError) as error:
@@ -2573,7 +2573,7 @@ def test_the_count_modifiers_have_no_plexapi_equivalent_and_say_so():
         assert PLEXAPI_EQUIVALENT[("tag", operator)] is None
 
 
-# --- roadmap row 100 sub-phase C2c: the two status rows on the `facts` tier -
+# --- roadmap row 100: the two status rows on the `facts` tier --------------
 
 
 def test_tmdb_status_is_a_show_only_tag_row_on_the_facts_tier():

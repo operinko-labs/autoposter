@@ -235,8 +235,8 @@ def test_the_stream_language_lists_come_from_the_streams_the_badge_pass_walks():
     """The data half. `media_info_from_plex` already reloads the
     item and holds its `<Media>`/`<Part>`/`<Stream>` children; these two
     fields are one more walk of those SAME already-in-hand objects -- zero
-    extra Plex requests, zero extra bytes, which is the cost property the
-    whole sub-phase rests on."""
+    extra Plex requests, zero extra bytes, which is the cost property this
+    feature rests on."""
     item = _item_with_streams(
         audio=[("eng", 2), ("fin", 2)],
         subtitles=[("eng", 3), ("swe", 3), ("fin", 3)],
@@ -334,8 +334,8 @@ def test_the_distinct_audio_languages_field_is_untouched_and_still_deduplicates(
 
 
 def test_the_new_fields_are_defaulted_so_positional_construction_still_works():
-    """`MediaInfo` is frozen and every construction site predating sub-phase
-    C2b passes the first nine fields positionally
+    """`MediaInfo` is frozen and every construction site predating this
+    change passes the first nine fields positionally
     (`tests/test_badge_parity.py`, `tests/test_overlay_engine_golden.py`'s
     ALL_SOULS/EPISODE among them). A non-defaulted tenth or eleventh field
     would be a TypeError in all of them. Roadmap row 106 changed three of

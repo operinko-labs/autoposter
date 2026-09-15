@@ -366,9 +366,9 @@ def definition_order(definition, library_type: str) -> str | None:
 
     Three families have one at definition level. Award winners (``imdb_award``)
     take ``LEADING_ORDER``, so they lead their own family's ceremony-year
-    expansions instead of filing after them (Important 1 -- a group mixing an
+    expansions instead of filing after them -- a group mixing an
     unkeyed parent with a keyed expansion otherwise sorts the parent last,
-    the reverse of Kometa's measured hand-order). A CEREMONY YEAR takes
+    the reverse of Kometa's measured hand-order. A CEREMONY YEAR takes
     ``year_order`` of the year it names: it reaches the engine as an ordinary
     definition of exactly one collection (``imdb_award.expand`` returns one per
     ceremony, carrying ``params={"year": ...}``), so by the time anything asks,

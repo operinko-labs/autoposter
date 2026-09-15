@@ -12,9 +12,9 @@ scopes for that reason (`audio_language`, `resolution`'s movie-only kind,
 this by construction rather than by relaxing a column. That is a
 `kinds`-column fact only, not an accessor one:
 `duplicate` and `network` still have no accessor on this view and are
-refused the same way they always were. `versions` (sub-phase C2a) was the
-first attribute this view genuinely gained since C1; sub-phase C2b added
-three more -- `aspect` (shared verbatim with `PlexItemView`) and the two
+refused the same way they always were. `versions` was the
+first attribute this view genuinely gained since C1; a later addition
+brought three more -- `aspect` (shared verbatim with `PlexItemView`) and the two
 stream-language rows, which this view answers from the `MediaInfo` the badge
 pass already built rather than from the collections engine's batched
 enrichment. `audio_language` is therefore no longer an example of an
@@ -198,7 +198,7 @@ def test_a_condition_can_now_name_versions():
 
 
 def test_a_search_only_attribute_is_refused_with_an_overlay_appropriate_message():
-    """L-4, met here: filters.py's own message for a search-only attribute
+    """filters.py's own message for a search-only attribute
     (`duplicate` -- still search-only after this phase; only `versions` is
     new) tells a COLLECTION operator to 'move it into the plex_search
     builder's params'. An overlay `condition:` has no plex_search builder to
@@ -243,8 +243,8 @@ def test_an_attribute_no_filter_vocabulary_has_is_refused_by_the_shared_parser()
 
 
 def test_an_operator_the_type_does_not_carry_is_refused():
-    """`content_rating` is a `tag`; `tag` takes eq/not/regex and, since
-    sub-phase C2b, the four `count_*` modifiers -- and nothing else.
+    """`content_rating` is a `tag`; `tag` takes eq/not/regex and, more
+    recently, the four `count_*` modifiers -- and nothing else.
     `.contains` is a `str` operator and stays refused."""
     with pytest.raises(ValueError) as caught:
         parse_condition({"content_rating.contains": "PG"})
@@ -331,7 +331,7 @@ def test_the_two_views_agree_on_aspect_raw_and_by_verdict():
     """`aspect` is the ONE C2b attribute whose agreement is structural: both
     views call the same `_aspect` function object, imported rather than
     copied, the way `resolution` and `versions` already are. So this is the
-    one place a RAW pin is legitimate (L-1's rule is that a raw pin is a
+    one place a RAW pin is legitimate (a raw pin is a
     stronger claim than the engine needs -- not that it is always false)."""
     band = parse_condition({"aspect.gt": 1.77, "aspect.lt": 1.79})
     for aspects, resolutions in (
@@ -397,8 +397,8 @@ def test_the_two_views_agree_by_verdict_on_distinct_languages_and_diverge_on_rep
     `plex/client.py::_stream_languages` ends in `_uniq` while this view
     carries Kometa's undeduplicated list. Kometa's own answer is this view's
     (`plex.py:2915-2922`); the collections side's dedupe is pre-existing,
-    predates C2b by two phases, is out of this sub-phase's Files block, and
-    affects only the four operators C2b introduces -- so it ships as a NAMED
+    predates this attribute, is out of this test file's Files block, and
+    affects only the four `.count_*` operators above -- so it ships as a NAMED
     divergence with a failing-if-it-changes pin rather than as a silent
     inconsistency. Closing it means widening `plex/client.py`, which is a
     separate adjudication.
@@ -449,7 +449,7 @@ def test_the_two_views_agree_by_verdict_on_distinct_languages_and_diverge_on_rep
     assert evaluate(dual, PlexItemView(repeats, tags=deduped)) is False, (
         "the collections view's ItemTags are deduped upstream in "
         "plex/client.py::_stream_languages -- a recorded, pre-existing "
-        "divergence, not something sub-phase C2b introduced or may fix here"
+        "divergence, not something this attribute introduced or may fix here"
     )
 
 
@@ -480,7 +480,7 @@ def test_an_attribute_still_outside_the_vocabulary_is_refused_naming_the_eight()
     )
 
 
-# --- roadmap row 100 sub-phase C2c: the first facts-backed attributes -------
+# --- roadmap row 100: the first facts-backed attributes ---------------------
 
 
 class _StatusFacts:
@@ -583,9 +583,10 @@ def test_the_bare_integer_is_a_window_in_days_through_the_real_view():
 
 
 def test_an_absolute_date_condition_compiles_instead_of_raising_a_type_error():
-    """**FINDING L-7, met here on a CORRECTED rationale.** The roadmap said
-    this lands with C2c because C2c brings the first date-typed attribute --
-    true -- but the trigger it named (the shipped family) is wrong: the
+    """**A corrected rationale.** The roadmap said
+    this lands here because `tmdb_status`/`last_episode_aired` bring the
+    first date-typed attribute -- true -- but the trigger it named (the
+    shipped family) is wrong: the
     `AIRING` band writes `{"last_episode_aired": 14}`, an int, which
     `json.dumps` handles. The reachable break is an OPERATOR writing the
     ABSOLUTE form, `last_episode_aired.after: 2026-01-01`, which YAML parses
@@ -617,8 +618,8 @@ def test_an_absolute_date_condition_compiles_instead_of_raising_a_type_error():
 
 
 def test_a_definition_carrying_a_date_condition_still_fingerprints():
-    """The other half of L-7, and the reason the plan pins both rather than
-    reasoning about one. `compiled_condition` is not the only place a
+    """The other half of the same date-serialization gap, and the reason both
+    are pinned rather than reasoned about from one. `compiled_condition` is not the only place a
     condition is serialised: `badges/compose.py::_definitions_digest` dumps
     every definition with `model_dump(mode="json")`, and a `date` sitting
     inside a `dict[str, object]` field is serialised by pydantic's json mode

@@ -301,8 +301,9 @@ NOT_SWEPT = {"/healthz"}
 
 
 def test_the_probe_is_the_only_path_outside_the_wizard_and_the_spa(setup_app):
-    """I-4's pin, in the shape test_the_probe_is_the_only_open_api_path_on_the
-    _normal_app uses: the setup application is a credential form on an
+    """This pin mirrors the shape
+    test_the_probe_is_the_only_open_api_path_on_the_normal_app uses: the
+    setup application is a credential form on an
     unauthenticated port, so what it serves BESIDES the wizard is enumerated
     rather than assumed. The `spa_dist` autouse stub means this app has no SPA
     routes at all, so everything left is either /api or the exemption.

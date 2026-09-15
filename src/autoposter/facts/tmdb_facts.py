@@ -288,7 +288,7 @@ def parse_show_facts(payload: dict) -> GatheredFacts:
     countries = _countries(payload)
     language = _language(payload)
     original_title = _original_title(payload, "original_name")
-    # Roadmap row 100, sub-phase C2c. Two more keys off the payload this
+    # Roadmap row 100. Two more keys off the payload this
     # function is already handed -- Kometa reads the same two out of the same
     # response in one block (`/modules/tmdb.py:272-273`). ``last_air_date`` is
     # the show's LAST episode; ``first_air_date`` above is its first, and they

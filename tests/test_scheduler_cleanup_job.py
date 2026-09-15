@@ -500,7 +500,7 @@ async def test_the_run_history_is_trimmed_even_when_the_cleanup_refuses(
 async def test_the_trim_survives_a_raise_later_in_the_pass(
     session, session_factory, tmp_path, monkeypatch
 ):
-    """Important 1: the trim commits in its OWN transaction, immediately --
+    """The trim commits in its OWN transaction, immediately --
     not the rest of the pass's session -- so a later raise (the orphan walk,
     the move) cannot roll it back with everything else."""
     monkeypatch.setattr(jobs, "RUN_HISTORY_KEEP", 2)

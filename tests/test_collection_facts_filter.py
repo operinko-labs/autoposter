@@ -216,7 +216,7 @@ async def test_the_read_is_memoised_on_the_run_cache_for_the_whole_pass(session)
 
 
 async def test_two_libraries_sharing_a_run_cache_get_independent_reads(session):
-    """Task-2 review, Minor 2: the memo key folds in the library, so a key
+    """The memo key folds in the library, so a key
     answered `ItemFactsValues()` for one library's ask is never served,
     unchanged, to a different library's ask over the same shared run_cache.
     Item "999" exists only in Shows; a Movies ask for it must see no row, and
@@ -275,7 +275,7 @@ async def test_a_failed_read_logs_the_root_cause_once_though_the_served_message_
     session,
     caplog,
 ):
-    """Task-2 review, Important 1. Row 213 forbids the root cause from
+    """Row 213 forbids the root cause from
     reaching the served, class-name-only message -- it says nothing about the
     log. Without a local `logger.exception`, a `TypeError` or an
     `AttributeError` here (the shape `broken` drives, by having neither

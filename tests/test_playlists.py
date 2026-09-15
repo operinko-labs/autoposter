@@ -1191,7 +1191,7 @@ def test_playlists_enabled_is_frozen_and_nothing_else_about_playlists_is():
         )
 
 
-# --- presets, and the empty scope L-6 found -----------------------------------
+# --- presets, and the empty scope this guard found --------------------------
 
 
 @pytest.fixture
@@ -1341,8 +1341,9 @@ async def test_an_mdblist_preset_is_named_when_the_deployment_has_no_key(
 
     Without one the builder raises before any request and the containment turns
     that into ``"source returned no items; leaving the playlist untouched"`` --
-    a SOURCE diagnosis for a CONFIGURATION mistake, the same wrong blame L-6
-    fixed one guard along. An operator who switched ``pokemon_timeline`` on
+    a SOURCE diagnosis for a CONFIGURATION mistake, the same wrong blame the
+    empty-scope guard below fixes one guard along. An operator who switched
+    ``pokemon_timeline`` on
     would read that and go looking at the list. So the pass names the KEY, once
     per pass, beside the conflict report.
     """
@@ -1360,7 +1361,7 @@ async def test_an_mdblist_preset_is_named_when_the_deployment_has_no_key(
 async def test_an_empty_library_scope_is_a_named_refusal_not_an_indexerror(
     session, config_factory
 ):
-    """L-6 from the 98a branch review.
+    """An empty library scope is a named refusal, not an ``IndexError``.
 
     ``collections.libraries`` carries no minimum length and
     ``playlists.libraries`` is unset here, so a definition that omits

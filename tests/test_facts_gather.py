@@ -436,7 +436,7 @@ async def test_a_later_gather_without_them_does_not_blank_them(session):
     assert row.critic_rating == pytest.approx(4.9)
 
 
-# --- roadmap row 100 sub-phase C2c: the two status columns ------------------
+# --- roadmap row 100: the two status columns --------------------------------
 
 
 async def test_persist_writes_the_two_status_columns(session):

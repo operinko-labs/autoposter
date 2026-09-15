@@ -562,7 +562,7 @@ def test_render_affecting_matches_render_versions_own_input_set():
     regression guard, not a bug fix.
 
     A section whose example value is an empty mapping is skipped by
-    CONDITION rather than by name (roadmap row 92 review, Important 3): an
+    CONDITION rather than by name (roadmap row 92): an
     empty mapping has no leaf at all for this generic mechanism to toggle,
     whatever the section happens to be called. Today that is only
     ``libraries`` (roadmap row 92; the shipped default is `{}`), so this

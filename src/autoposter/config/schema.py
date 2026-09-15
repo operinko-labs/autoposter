@@ -1841,8 +1841,8 @@ class MaintenanceConfig(BaseModel):
 #: and the config editor and neither one holds a library name.
 #:
 #: The ``operations.*`` entries below are DERIVED from ``config/live.py``'s
-#: ``FROZEN_SECTIONS`` rather than copied by hand (roadmap row 92 review,
-#: Important 2): those four settings are frozen because a process-wide
+#: ``FROZEN_SECTIONS`` rather than copied by hand (roadmap row 92):
+#: those four settings are frozen because a process-wide
 #: object reads them once at startup and never again, which is exactly why a
 #: per-library value could not be honoured either -- the object that would
 #: have to vary per library does not exist. Deriving means a FIFTH
@@ -1882,7 +1882,7 @@ LIBRARY_OVERRIDE_EXCLUSIONS: dict[str, str] = {
     ),
 }
 
-#: Roadmap row 92 review, Important 1. ``LIBRARY_OVERRIDE_EXCLUSIONS`` above
+#: Roadmap row 92. ``LIBRARY_OVERRIDE_EXCLUSIONS`` above
 #: is keyed ``section.name`` and only ever matches a LEAF of one of the three
 #: whitelisted sections (``operations``, ``badges``, ``maintenance``) -- so a
 #: whole SECTION under a library block, such as ``artwork`` or
@@ -1948,7 +1948,7 @@ def library_override_refusals(document: dict) -> list[tuple[str, str]]:
     vocabulary, two entry points.
 
     A whole SECTION that is not one of the three whitelisted ones is refused
-    here too (roadmap row 92 review, Important 1) -- whether it names a real
+    here too (roadmap row 92) -- whether it names a real
     ``Config`` field (``LIBRARY_OVERRIDE_SECTION_EXCLUSIONS``) or nothing at
     all (``_UNKNOWN_LIBRARY_SECTION_REASON``) -- so a section never reaches
     pydantic's default ``extra="ignore"`` and gets dropped without a trace.
@@ -2956,9 +2956,9 @@ class CollectionDefinition(BaseModel):
                     # one. Coverage and the convergence rate are disclosed in
                     # deploy/README.md. Only the COINED names pass: see below.
                     continue
-                # ADJUDICATION A-2 (roadmap row 100, sub-phase C2c), as row
-                # 156 leaves it. These two carry KOMETA'S own names -- C2c's
-                # condition, the column holding exactly the value space
+                # ADJUDICATION A-2 (roadmap row 100), as row
+                # 156 leaves it. These two carry KOMETA'S own names -- the
+                # column holding exactly the value space
                 # Kometa's filter compares in -- and row 156 opened the
                 # collections fence only for facts values under names this
                 # service COINED, each carrying its own sparsity note. Neither

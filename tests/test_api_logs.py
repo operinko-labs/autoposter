@@ -255,8 +255,8 @@ def test_a_nested_encoded_url_loses_its_host_and_keeps_its_encoded_path():
 
 
 def test_a_plain_url_with_a_literal_percent_2f_in_the_authority_is_fully_redacted():
-    """Regression pin (sweep 5 task 1 review, Important 1): the row-212
-    tempering that stops the ENCODED match at %2F was written on the class
+    """Regression pin: the row-212 tempering that stops the ENCODED match at
+    %2F was written on the class
     both branches of _URL_HOST shared, so a plain https:// URL whose
     authority itself carries a literal %2F (percent-encoded userinfo) also
     terminated early -- serving the host that c79d7f4 redacted whole. The

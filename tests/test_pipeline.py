@@ -311,7 +311,7 @@ async def test_concurrent_upserts_of_the_same_identity_succeed_and_leave_one_row
     session_factory,
 ):
     # Two workers can both resolve a fresh job for the same item while an earlier
-    # one is still running (spec: finding 3). A select-then-insert would race;
+    # one is still running. A select-then-insert would race;
     # the Postgres upsert must not.
     from autoposter.render.pipeline import _upsert_media_item
     from autoposter.servers.identity import identity_key_for
@@ -2565,7 +2565,7 @@ async def test_the_pipeline_re_arming_a_row_takes_it_out_of_its_catch_up_run(
     """Review I4: `run_id`/`previous_status` were never named by the outcome
     writers, so a row armed by catch-up run 5 kept `run_id=5` for the rest of
     its life -- including after the ordinary pipeline re-armed it weeks later.
-    Phase C's run-scoped progress and its cancel would then act on rows that
+    The catch-up run's run-scoped progress and its cancel would then act on rows that
     run no longer owns. A row leaves a run when the pipeline re-arms it;
     a terminal outcome INSIDE a run keeps its scope.
 
@@ -2676,7 +2676,7 @@ async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
 
 
 async def test_an_absent_server_is_never_asked_to_resolve(session, monkeypatch):
-    """Phase A review ruling 2: the guards in `apply_metadata` and `deliver`
+    """The guards in `apply_metadata` and `deliver`
     keep an `absent` ROW right, but the pass still spent a resolve request on
     that server for every item, every pass -- on a library the server does not
     carry at all. The absent set is read once, before the fan-out, off the

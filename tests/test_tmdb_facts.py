@@ -335,7 +335,7 @@ async def test_a_collection_summary_is_served_from_the_cache(session):
     assert len(calls) == 1
 
 
-# --- roadmap row 100, sub-phase C2c: the two status fields ------------------
+# --- roadmap row 100: the two status fields ----------------------------------
 
 
 def test_show_facts_carry_the_status_token_and_the_last_air_date():

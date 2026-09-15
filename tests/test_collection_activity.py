@@ -246,8 +246,8 @@ def test_a_show_bucket_never_carries_an_external_id():
     """The invariant, made structural rather than remembered.
 
     On an episode record ``imdb_id``/``tmdb_id``/``tvdb_id`` are the EPISODE's,
-    and ``GET /media/show:tvdb:<episode id>`` is a live-verified 404 (harvest
-    finding 3). An episode id emitted as a collection member would resolve to
+    and ``GET /media/show:tvdb:<episode id>`` is a live-verified 404. An
+    episode id emitted as a collection member would resolve to
     nothing on a Show library, and "matched nothing" is indistinguishable from
     a correct empty collection -- so the ids are not carried out of the ranking
     at all, and the builder has nothing to accidentally emit.

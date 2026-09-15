@@ -100,11 +100,11 @@ def _library_states_the_gate(request: Request, library: str | None) -> bool:
     """Whether ``library``'s own block states ``item_overrides_enabled``,
     rather than inheriting the global value.
 
-    Roadmap row 213 fix (branch review Important 1): the refusal sentence
-    must say what actually refused. A library that names no
-    ``item_overrides_enabled`` leaf at all is refused BY THE GLOBAL setting
-    -- it is not "this library's own" refusal, whatever ``config_for_library``
-    resolves it to -- so the global sentence is the true one there.
+    Roadmap row 213: the refusal sentence must say what actually refused. A
+    library that names no ``item_overrides_enabled`` leaf at all is refused
+    BY THE GLOBAL setting -- it is not "this library's own" refusal, whatever
+    ``config_for_library`` resolves it to -- so the global sentence is the
+    true one there.
     """
     if library is None:
         return False
@@ -117,20 +117,20 @@ def _library_states_the_gate(request: Request, library: str | None) -> bool:
 def _require_enabled(request: Request, library: str | None = None) -> None:
     """Raise the 409 for whichever gate refused: global or this library's own.
 
-    Roadmap row 213's Important 2: the two gates say different things
-    because they ARE different things. The global sentence names the one key
-    every deployment reads on the Settings page. The library-scoped sentence
+    Roadmap row 213: the two gates say different things because they ARE
+    different things. The global sentence names the one key every
+    deployment reads on the Settings page. The library-scoped sentence
     (no library name, no value -- just the fact of a per-library override)
     tells the operator the refusal came from their ``libraries:`` block
     instead, so a global ``true`` next to a library ``false`` does not read
     as a lie.
 
-    Branch review Important 1: the sentence is chosen by whether THIS
-    library's block actually states the leaf, not by whether a library was
-    passed at all. A library that overrides nothing here inherits the global
-    value and, if that value is off, gets the global sentence -- the refusal
-    came from the global key, and saying otherwise would send the operator
-    looking at a ``libraries:`` block that names nothing.
+    The sentence is chosen by whether THIS library's block actually states
+    the leaf, not by whether a library was passed at all. A library that
+    overrides nothing here inherits the global value and, if that value is
+    off, gets the global sentence -- the refusal came from the global key,
+    and saying otherwise would send the operator looking at a
+    ``libraries:`` block that names nothing.
     """
     if not _enabled(request, library):
         if _library_states_the_gate(request, library):
@@ -231,10 +231,10 @@ async def put_metadata_override(
     async with session_factory() as session:
         item = await _load_item(session, item_id)
         # Roadmap row 92: the library's own answer, now that the item is
-        # loaded. There is no bare global pre-gate any more -- branch review
-        # Important 1: a library that ENABLES item overrides while the
-        # global disables them must be accepted, matching what the pipeline
-        # honours and what the GET on the same resource already reports.
+        # loaded. There is no bare global pre-gate any more -- a library
+        # that ENABLES item overrides while the global disables them must
+        # be accepted, matching what the pipeline honours and what the GET
+        # on the same resource already reports.
         _require_enabled(request, item.library)
         # ONE exit for every refusal about the field or the value, so all of
         # them serve the same class-name-only detail. The unwritable
@@ -337,10 +337,10 @@ async def delete_metadata_override(
     async with session_factory() as session:
         item = await _load_item(session, item_id)
         # Roadmap row 92: the library's own answer, now that the item is
-        # loaded. There is no bare global pre-gate any more -- branch review
-        # Important 1: a library that ENABLES item overrides while the
-        # global disables them must be accepted, matching what the pipeline
-        # honours and what the GET on the same resource already reports.
+        # loaded. There is no bare global pre-gate any more -- a library
+        # that ENABLES item overrides while the global disables them must
+        # be accepted, matching what the pipeline honours and what the GET
+        # on the same resource already reports.
         _require_enabled(request, item.library)
         row = (
             await session.execute(

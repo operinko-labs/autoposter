@@ -73,7 +73,7 @@ class BadgeInputs:
     audience_rating: float | None = None
     content_rating: str | None = None
     video_format: str | None = None
-    # Roadmap row 100, sub-phase C2a: the eleven mdb_*, four plex_*, and
+    # Roadmap row 100: the eleven mdb_*, four plex_*, and
     # user_rating overlay rating sources, keyed by their <<variable>> name
     # (`overlays/variables.py::RATING_SOURCES`/`PLEX_NATIVE_RATINGS`). This
     # dataclass does not know imdb_rating/tmdb_rating are aliases of
@@ -166,7 +166,7 @@ def _rating_values_digest(
     definitions: list[OverlayDefinition], ratings: dict[str, float | None]
 ) -> str | None:
     """A stable digest of the RESOLVED rating values each definition's own
-    `<<variable>>` literal actually names (roadmap row 100, sub-phase C2a).
+    `<<variable>>` literal actually names (roadmap row 100).
 
     `badge_fingerprint`'s `values` argument never carries `inputs.ratings` --
     it is consumed only by `_variable_values`, for `<<variable>>` TEXT
@@ -249,7 +249,7 @@ def badge_fingerprint(
 
     ``ratings`` folds in the RESOLVED VALUE of every rating token a
     definition's own ``<<variable>>`` literal actually names (roadmap row
-    100, sub-phase C2a) -- guarded the same way ``outcomes`` is: a
+    100) -- guarded the same way ``outcomes`` is: a
     definition naming no rating token contributes nothing, and a later pass
     where an item's real MDBList/Plex rating changes moves the digest only
     for the definition(s) that actually reference it, closing the staleness
@@ -381,7 +381,7 @@ def _draw_languages(poster: Image.Image, canvas: tuple[int, int], inputs: BadgeI
 def _variable_values(art_kind: str, inputs: BadgeInputs) -> dict[str, object]:
     """The item values an operator's <<variable>> tokens can resolve against.
 
-    Roadmap row 100, sub-phase C2a: seventeen of the data-source probe's 29
+    Roadmap row 100: seventeen of the data-source probe's 29
     external rating sources now resolve here -- the eleven mdb_*, the four
     plex_*, and the imdb_rating/tmdb_rating aliases, all carried
     in `inputs.ratings` and merged in below. The remaining twelve (four
@@ -480,7 +480,7 @@ def _draw_definitions(
             # a resolution failure skips just THIS definition rather than
             # escaping compose() for `pipeline.py`'s blanket per-item handler.
             #
-            # A-4 (sub-phase C2b): `fonts_root` may be None, and that is no
+            # A-4: `fonts_root` may be None, and that is no
             # longer a short-circuit skip -- `resolve_font_path` falls back
             # to this service's own bundled faces by exact name, which is
             # what lets the `aspect` family draw its text in Inter-Medium for

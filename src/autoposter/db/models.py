@@ -488,10 +488,10 @@ class ItemFacts(Base):
     # ``belongs_to_collection.id``. The NAME is not stored: see
     # ``facts/tmdb_facts._collection_id``.
     tmdb_collection_id: Mapped[int | None] = mapped_column(Integer, index=True)
-    # Roadmap row 100 sub-phase C2c, and the first two columns here that ARE
+    # Roadmap row 100, and the first two columns here that ARE
     # `filters:`-vocabulary names. The three prefetch fields above are
     # enumeration-only because a facts-backed filter needs a `facts` source
-    # tier; C2c adds one (`collections/filters.py::SOURCE_TIERS`) and it is
+    # tier; this adds one (`collections/filters.py::SOURCE_TIERS`) and it is
     # REFUSAL-ONLY for a collection, readable by an overlay `condition:`. So
     # row 156's fence is named, not opened, and these two columns carry
     # exactly the value spaces Kometa's own filters compare in.

@@ -330,7 +330,7 @@ class TracearrClient:
         The only correct route from an episode play to the show it belongs to.
         An episode record's own ``imdb_id``/``tmdb_id``/``tvdb_id`` are the
         EPISODE's, and ``GET /media/show:tvdb:<episode id>`` is a live-verified
-        404 (harvest finding 3, banked as
+        404 (recorded in
         ``docs/research/tracearr/payloads/v2-media-show-by-tvdb-ref.json``) --
         so a show's ids come from here or from nowhere.
         """

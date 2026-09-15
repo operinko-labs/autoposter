@@ -168,15 +168,15 @@ def test_the_rating_vocabulary_is_the_banked_twenty_nine():
 
 
 def test_parse_ratings_keys_match_the_mdb_rating_sources():
-    """L-5: nothing structurally coupled `parse_ratings`' produced keys to
+    """Nothing structurally coupled `parse_ratings`' produced keys to
     the grammar's own vocabulary -- a rename on either side would go
     unnoticed until an operator's token silently stopped resolving. This is
-    what would have caught M-A's stale docstring count."""
+    what would have caught a stale docstring count going unnoticed."""
     assert set(parse_ratings({})) == {n for n in RATING_SOURCES if n.startswith("mdb_")}
 
 
 def test_plex_native_ratings_keys_match_the_plex_rating_sources_plus_user_rating():
-    """L-5's `plex_*` equivalent: the four `plex_*` RATING_SOURCES entries
+    """The `plex_*` equivalent: the four `plex_*` RATING_SOURCES entries
     plus the one PLEX_NATIVE_RATINGS entry (`user_rating`) this function
     actually produces -- `audience_rating`/`critic_rating` are sourced
     elsewhere (imdb_rating/tmdb_rating aliases)."""

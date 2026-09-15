@@ -186,9 +186,9 @@ async def test_a_stored_playlists_definitions_override_reports_override(
 async def test_the_listing_serves_summary_limit_and_schedule(
     client, app, auth_headers
 ):
-    """L-7 from the 98a branch review: without these three the editor cannot
-    show a definition, let alone round-trip one. Parity with the collections
-    listing was the reason they were missing and it is not a good enough one.
+    """Without these three the editor cannot show a definition, let alone
+    round-trip one. Parity with the collections listing was the reason they
+    were missing and it is not a good enough one.
     """
     _swap_playlists(app, definitions=[{
         **A_DEFINITION,

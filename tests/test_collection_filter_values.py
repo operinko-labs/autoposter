@@ -183,8 +183,7 @@ def test_the_fourteen_shipped_families_are_named():
     The last three of the first twelve are phase B's: probe (d) walked both
     section listings and found ``viewCount``/``lastViewedAt``/``userRating``
     present-when-set, which is the verdict ``unprobed`` was waiting for.
-    ``versions`` is sub-phase C2a's (adjudication A14); ``aspect`` is
-    sub-phase C2b's (adjudication A11)."""
+    ``versions`` is adjudication A14's; ``aspect`` is adjudication A11's."""
     assert SHIPPED_ATTRIBUTES == (
         "year",
         "resolution",

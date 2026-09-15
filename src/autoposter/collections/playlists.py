@@ -432,7 +432,7 @@ async def _reconcile_one(
         outcome.skipped = True
         return outcome
 
-    # L-6: an empty EFFECTIVE scope. ``_libraries_must_not_be_blank`` refuses
+    # An empty EFFECTIVE scope. ``_libraries_must_not_be_blank`` refuses
     # the explicitly empty list on a definition; this is the inherited one --
     # ``collections.libraries`` has no minimum length, so a definition that
     # omits ``libraries:`` can inherit nothing at all. Contained and named
@@ -968,7 +968,7 @@ def _sweep_name(row, playlist) -> str:
 def _delete_cap_message(total: int, user_count: int, cap: int) -> str:
     """The delete sweep's ``max_deletes`` refusal sentence, evaluated once,
     against the exact post-walk count -- see ``_sweep_playlists`` for why a
-    pre-walk estimate of this same cap turned out to be unsafe (I-3).
+    pre-walk estimate of this same cap turned out to be unsafe.
 
     Two wordings, not one: a pass with no per-user copies in the blast radius
     (98a's own shape, and every pre-98c caller of this sweep) gets the exact
@@ -1072,7 +1072,7 @@ async def _sweep_playlists(
         skip_walk = False
         if config.playlists.delete_unconfigured and not user_dry_run:
             # Pass one, ``plan_user_sync``'s own two-pass shape -- but this
-            # bounds the READ cost, not the delete count (I-3): a stale row's
+            # bounds the READ cost, not the delete count: a stale row's
             # object may already be gone, or its user unreachable, and
             # neither is ever a deletion or ever retired, so a count of ROWS
             # is not a safe stand-in for ``max_deletes`` -- it can refuse the
@@ -1135,7 +1135,7 @@ async def _sweep_playlists(
     # (the admin playlist) over copies it was never going to touch this pass.
     # THE ``max_deletes`` check, on the exact post-walk count -- see the
     # docstring for why an earlier draft tried to evaluate this cap before
-    # the walk too, and why that was wrong (I-3): ``user_candidates`` here is
+    # the walk too, and why that was wrong: ``user_candidates`` here is
     # never a guess, only what the walk actually confirmed is a live,
     # deletable copy.
     deletable_user_candidates = 0 if user_dry_run else len(user_candidates)

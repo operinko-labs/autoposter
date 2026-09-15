@@ -133,8 +133,8 @@ class MediaInfo:
     # film with an English track plus an English commentary track is "Dual"
     # upstream, and three English subtitle tracks satisfy
     # `subtitle_language.count_gte: 2`. That is upstream's arithmetic and it
-    # is transcribed, not corrected (roadmap row 100, sub-phase C2b,
-    # adjudication A-3). A stream with no language code counts too, and is
+    # is transcribed, not corrected (roadmap row 100, adjudication A-3). A
+    # stream with no language code counts too, and is
     # never skipped: Kometa's `a.language for a in part.audioStreams()`
     # appends whatever `a.language` is, so an unlabelled stream is one MORE
     # (empty-string) entry, mirrored here rather than dropped.
@@ -145,7 +145,7 @@ class MediaInfo:
     # counted streams. Two fields, two contracts, neither bent to serve the
     # other. `_stream_languages` in `plex/client.py` is the collections
     # engine's sibling read and it ends in `_uniq` -- that dedupe is
-    # pre-existing and out of this sub-phase's scope; the divergence it
+    # pre-existing and out of scope here; the divergence it
     # leaves between the two item views is recorded in
     # `overlays/selection.py` rather than papered over.
     #
@@ -170,21 +170,22 @@ def media_info_from_plex(item) -> MediaInfo:
     Plex to re-scan from its metadata agents, which can overwrite the artwork
     this project just uploaded.
 
-    ONE walk of ``item.media``, where sub-phase C2b had two. C2b's comment
-    said widening its primary-version loop "would change ``audio_languages``,
-    ``hdr_flags`` and ``file_path`` for every multi-version item" -- and that
-    is exactly what roadmap row 106 is, done deliberately with Kometa's weight
-    tables as the arbiter. Two of those three are widened here.
-    ``audio_languages`` is the exception and stays PRIMARY-VERSION-ONLY
-    (adjudication A-4): it feeds ``language_slots``' flag badge, which draws
-    DISTINCT codes and would draw duplicate flags off a whole-item read, and
-    C2b already built the undeduplicated whole-item pair beside it for the
+    ONE walk of ``item.media``, where the earlier version had two. That
+    version's comment said widening its primary-version loop "would change
+    ``audio_languages``, ``hdr_flags`` and ``file_path`` for every
+    multi-version item" -- and that is exactly what roadmap row 106 is,
+    done deliberately with Kometa's weight tables as the arbiter. Two of
+    those three are widened here. ``audio_languages`` is the exception and
+    stays PRIMARY-VERSION-ONLY (adjudication A-4): it feeds
+    ``language_slots``' flag badge, which draws DISTINCT codes and would
+    draw duplicate flags off a whole-item read, and the earlier version
+    already built the undeduplicated whole-item pair beside it for the
     filter dialect. Hence the ``index == 0`` gate below, which is the only
     place in this function that knows a primary version exists.
 
-    Both reads walk objects ``item.reload()`` already fetched, so the cost
-    claim C2b rests on -- zero extra Plex requests, zero extra bytes -- is
-    unchanged and this phase inherits it verbatim.
+    Both reads walk objects ``item.reload()`` already fetched, so the
+    earlier cost claim -- zero extra Plex requests, zero extra bytes --
+    stays unchanged and holds here too.
     """
     if not getattr(item, "media", None):
         item.reload()
@@ -253,7 +254,7 @@ def media_info_from_plex(item) -> MediaInfo:
         video_resolutions=tuple(resolutions),
         audio_track_titles=tuple(titles),
         # NOT `aspectRatio`, and that is deliberate (roadmap row 100,
-        # sub-phase C2b, adjudication A-2). A-2 ruled that `aspect` answers
+        # adjudication A-2). A-2 ruled that `aspect` answers
         # through the same whole-`<Media>`-list walk `resolution` uses, so the
         # read lives in `collections/filter_values.py::_aspect`, shared
         # verbatim by both item views, and `MediaInfo` deliberately carries no

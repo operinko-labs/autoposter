@@ -1,8 +1,8 @@
-"""The shipped overlay families (roadmap row 100, sub-phases C1 and C2a).
+"""The shipped overlay families (roadmap row 100).
 
 Three families ship: `direct_play` (one definition), the six
 content-rating regionals, and `versions` -- the `versions` row was needed in
-`collections/filters.py`, so C2a shipped it too.
+`collections/filters.py`, so this family shipped it too.
 
 Every number in `families.py` is transcribed from the pinned Kometa tree
 (v2.4.8, the image digest `assets/badges/PROVENANCE.md` records). These tests
@@ -70,7 +70,7 @@ def test_every_image_family_definition_names_an_image_that_exists():
     wrong region prefix, wrong bucket spelling and wrong colour suffix at
     once.
 
-    **A-7's second stale-doc correction (sub-phase C2b):** this asserted
+    **A-7's second stale-doc correction:** this asserted
     `definition.builtin` for EVERY family definition, which was true until
     `aspect` -- the first shipped family that draws TEXT and names no image
     at all. A text definition is exempted by its `text(...)` name rather than
@@ -440,7 +440,7 @@ def test_dual_beats_multi_on_a_two_language_item():
     assert evaluate(parse_condition(multi.condition), three) is True
 
 
-# --- sub-phase C2c: the `status` family ------------------------------------
+# --- The `status` family ----------------------------------------------------
 
 STATUS_BANDS = [
     ("AIRING", {"last_episode_aired": 14}, 40),

@@ -428,7 +428,7 @@ async def test_the_preview_reports_what_the_sweep_would_delete(
     assert len(rows) == 1, "a previewed deletion must not remove the row"
 
 
-# --- the Task-4 follow-ups: the enabled gate and per-library containment ----
+# --- follow-ups: the enabled gate and per-library containment --------------
 
 
 async def test_the_preview_refuses_when_collections_are_disabled(

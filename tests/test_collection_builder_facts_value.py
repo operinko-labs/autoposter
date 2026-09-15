@@ -109,7 +109,7 @@ async def test_a_failing_query_leaves_the_session_usable_for_what_runs_next(
     That invariant is false unless a failed read here leaves the shared
     `AsyncSession`'s transaction usable for whatever the pass runs next --
     without the `begin_nested()` savepoint around the read, a real DB error
-    (a transient one, or Important 1's type mismatch before its own fix)
+    (a transient one, or a type mismatch from before it was fixed)
     poisons the transaction and every later statement in the pass raises too."""
     async def _broken_query(*args, **kwargs):
         # A genuine Postgres-level error, not a Python one, so it poisons the
