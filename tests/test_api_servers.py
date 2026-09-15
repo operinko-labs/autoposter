@@ -292,7 +292,82 @@ async def test_an_answering_server_is_reported_with_the_answering_sentence(
     body = (
         await client.post("/api/servers/plex/check", json={}, headers=auth_headers)
     ).json()
-    assert body == {"ok": True, "refused": False, "failure": None, "detail": "Plex answered."}
+    assert body == {
+        "ok": True,
+        "refused": False,
+        "failure": None,
+        "version": None,
+        "detail": "Plex answered.",
+    }
+
+
+async def test_a_check_serves_the_version_each_server_states(
+    client, auth_headers, monkeypatch
+):
+    """Spec section 5's pill reads "connected, with the version". Both servers,
+    because they state it on different paths and under different keys -- Plex
+    on ``/identity`` and Jellyfin in the same ``/System/Info`` the probe already
+    asks."""
+
+    def handler(request):
+        if request.url.path == "/identity":
+            return httpx.Response(
+                200,
+                content=json.dumps(
+                    {"MediaContainer": {"version": "1.41.2.9200-abcdef"}}
+                ).encode(),
+            )
+        if request.url.path == "/System/Info":
+            return httpx.Response(
+                200, content=json.dumps({"Version": "10.11.0"}).encode()
+            )
+        return httpx.Response(
+            200, content=json.dumps({"MediaContainer": {}}).encode()
+        )
+
+    monkeypatch.setattr(
+        servers_api, "_transport", lambda: httpx.MockTransport(handler)
+    )
+    plex = (
+        await client.post("/api/servers/plex/check", json={}, headers=auth_headers)
+    ).json()
+    assert plex["ok"] is True
+    assert plex["version"] == "1.41.2.9200-abcdef"
+
+    jellyfin = (
+        await client.post(
+            "/api/servers/jellyfin/check",
+            json={"url": "http://jf:8096", "credential_value": "jf-key"},
+            headers=auth_headers,
+        )
+    ).json()
+    assert jellyfin["ok"] is True
+    assert jellyfin["version"] == "10.11.0"
+
+
+async def test_a_version_that_cannot_be_read_leaves_the_server_connected(
+    client, auth_headers, monkeypatch
+):
+    """The version is a second question asked of a server that already
+    answered, so nothing it finds may change what the check said: a card that
+    said "connected" does not stop saying it because a version is missing."""
+
+    def handler(request):
+        if request.url.path == "/identity":
+            return httpx.Response(500, content=b"secret internal detail")
+        return httpx.Response(
+            200, content=json.dumps({"MediaContainer": {}}).encode()
+        )
+
+    monkeypatch.setattr(
+        servers_api, "_transport", lambda: httpx.MockTransport(handler)
+    )
+    response = await client.post(
+        "/api/servers/plex/check", json={}, headers=auth_headers
+    )
+    assert response.json()["ok"] is True
+    assert response.json()["version"] is None
+    assert "secret internal detail" not in response.text
 
 
 async def test_a_check_response_carries_neither_the_credential_nor_the_address(
@@ -447,8 +522,10 @@ async def test_a_stored_address_is_guarded_like_a_typed_one(
     app, client, auth_headers, monkeypatch
 ):
     """``PlexConfig.url`` is a bare ``str`` with no validator, so a document can
-    carry what the typed path refuses. It is refused with the same sentence,
-    which names the field and never the value.
+    carry what the typed path refuses. It is refused by the same guard, with
+    its own sentence: the typed one is about a value in this request, and an
+    operator who typed nothing would read it as being about their own input.
+    Neither names the value.
     """
     sent: list[httpx.Request] = []
 
@@ -470,8 +547,10 @@ async def test_a_stored_address_is_guarded_like_a_typed_one(
     response = await client.post(
         "/api/servers/plex/check", json={}, headers=auth_headers
     )
-    assert response.status_code == 400
-    assert response.json()["detail"] == PUBLIC_URL_NOT_AN_ADDRESS
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.STORED_ADDRESS_NOT_USABLE
+    assert PUBLIC_URL_NOT_AN_ADDRESS not in response.text, "not the typed sentence"
+    assert "user:pass" not in response.text
     assert sent == [], "nothing is sent to an address that did not pass the guard"
 
 
@@ -538,7 +617,13 @@ async def test_adding_a_server_probes_and_lists_what_the_operator_typed(
         "/api/servers/jellyfin/check", json=typed, headers=auth_headers
     )
     assert checked.json() == {
-        "ok": True, "refused": False, "failure": None, "detail": "Jellyfin answered."
+        "ok": True,
+        "refused": False,
+        "failure": None,
+        # The folder listing this handler answers everything with carries no
+        # ``Version``, and a version that is not there is null, not a guess.
+        "version": None,
+        "detail": "Jellyfin answered.",
     }
 
     listed = await client.post(
@@ -668,8 +753,26 @@ async def _revision(client, auth_headers) -> str:
     return body["overrides_revision"]
 
 
-async def _save(client, auth_headers, name="jellyfin", **fields):
-    """A card's save, with the revision filled in unless a test overrides it."""
+async def _credential(client, auth_headers, name="jellyfin", value="jf-key"):
+    """Store this server's credential. A save is refused without one."""
+    return await client.put(
+        f"/api/servers/{name}/credential", json={"value": value}, headers=auth_headers
+    )
+
+
+async def _save(client, auth_headers, name="jellyfin", credential="jf-key", **fields):
+    """A card's save, with the revision filled in unless a test overrides it.
+
+    The credential goes FIRST, which is the order spec section 5's add-a-server
+    flow puts the two calls in and the order the save now requires: a
+    configured server whose credential resolves to nothing sends the next boot
+    into the first-start wizard. ``credential=None`` is the other order, for
+    the tests that are about that refusal.
+    """
+    if credential is not None:
+        assert (
+            await _credential(client, auth_headers, name, credential)
+        ).status_code == 200
     body = {
         "url": "http://jellyfin:8096",
         "excluded_libraries": [],
@@ -769,6 +872,78 @@ async def test_a_save_on_a_delta_era_store_merges_over_the_file(
     rows = await _rows(client, auth_headers)
     assert rows["plex"]["configured"] is True, "the file's server survived the merge"
     assert rows["jellyfin"]["configured"] is True
+
+
+async def test_a_save_without_a_credential_is_refused_and_writes_nothing(
+    client, auth_headers, session_factory
+):
+    """The hazard the whole write path is under: ``missing_server_setup``
+    reports EVERY configured server whose credential does not resolve, and boot
+    turns any one of those into setup mode. So a 200 here would be a running
+    deployment that comes back from the restart this response asks for as the
+    first-start wizard, with the page that could undo it behind a setup token.
+    """
+    response = await _save(client, auth_headers, credential=None)
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.SERVER_NEEDS_A_CREDENTIAL_FIRST
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "jellyfin" not in document
+
+
+async def test_a_save_with_the_credential_set_first_is_the_add_a_server_flow(
+    client, auth_headers, session_factory
+):
+    """The other order, which is the one spec section 5 already specifies: the
+    credential route, then the card's first save."""
+    assert (
+        await _credential(client, auth_headers, "jellyfin", "jf-key")
+    ).status_code == 200
+    saved = await _save(client, auth_headers, credential=None)
+    assert saved.status_code == 200, saved.text
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert document["jellyfin"]["url"] == "http://jellyfin:8096"
+
+
+async def test_a_credential_the_environment_supplies_is_enough_to_save(
+    client, auth_headers
+):
+    """All three layers count, because all three answer the next start too.
+    Plex's token is this deployment's environment variable and nothing is
+    stored for it, and that is a server the next boot reads as complete."""
+    response = await _save(
+        client,
+        auth_headers,
+        name="plex",
+        credential=None,
+        url="http://plex:32400",
+        excluded_libraries=["Muskarit"],
+    )
+    assert response.status_code == 200, response.text
+    rows = await _rows(client, auth_headers)
+    assert rows["plex"]["credential_source"] == "environment"
+
+
+async def test_a_save_that_omits_the_exclusions_is_refused(
+    client, auth_headers, session_factory
+):
+    """``excluded_libraries`` is written as a REPLACEMENT, so an omitted list
+    would empty that server's exclusions with a 200 and no mention of it."""
+    await _credential(client, auth_headers, "jellyfin", "jf-key")
+    response = await client.put(
+        "/api/servers/jellyfin",
+        json={
+            "url": "http://jellyfin:8096",
+            "switches": {},
+            "expected_revision": await _revision(client, auth_headers),
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert "excluded_libraries" in response.text
+    async with session_factory() as session:
+        assert "jellyfin" not in await load_overrides_document(session)
 
 
 async def test_a_switch_that_is_not_this_servers_is_refused(client, auth_headers):
@@ -936,6 +1111,41 @@ async def test_removing_the_only_server_is_refused(
         assert (await load_overrides_document(session))["plex"]["url"]
 
 
+async def test_removing_a_server_this_deployment_has_no_block_for_is_refused(
+    client, auth_headers, session_factory
+):
+    """The seeded example carries ``write_to_jellyfin``, so a removal of a
+    server that was never added used to be a 200 that flipped two real document
+    keys, wrote a snapshot and a "remove" audit row for a removal that removed
+    nothing -- and cleared the very credential spec section 5's add-a-server
+    flow stores BEFORE the card's first save."""
+    assert (
+        await _credential(client, auth_headers, "jellyfin", "jf-key")
+    ).status_code == 200
+    async with session_factory() as session:
+        before = await load_overrides_document(session)
+
+    response = await _remove(client, auth_headers, confirm=True)
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.SERVER_NOT_CONFIGURED
+
+    async with session_factory() as session:
+        after = await load_overrides_document(session)
+        stored = await secret_store.load_stored_secrets(session)
+        rows = (
+            (
+                await session.execute(
+                    select(EventLog).where(EventLog.event_type == "overrides_updated")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert after == before, "nothing was written"
+    assert "AUTOPOSTER_JELLYFIN_APIKEY" in stored, "the operator's own value"
+    assert rows == [], "and no removal was recorded"
+
+
 async def test_removing_a_server_drops_its_block_and_its_credential(
     client, auth_headers, session_factory
 ):
@@ -949,11 +1159,6 @@ async def test_removing_a_server_drops_its_block_and_its_credential(
             },
         )
     ).status_code == 200
-    await client.put(
-        "/api/servers/jellyfin/credential",
-        json={"value": "jf-key"},
-        headers=auth_headers,
-    )
     response = await _remove(client, auth_headers, confirm=True)
     assert response.status_code == 200, response.text
 
@@ -1064,11 +1269,6 @@ async def test_a_failing_credential_clear_is_reported_rather_than_swallowed(
         raise OSError("the key volume went away")
 
     assert (await _save(client, auth_headers)).status_code == 200
-    await client.put(
-        "/api/servers/jellyfin/credential",
-        json={"value": "jf-key"},
-        headers=auth_headers,
-    )
     monkeypatch.setattr(secret_store, "clear_secret", boom)
 
     with caplog.at_level(logging.ERROR, logger="autoposter.api.servers"):
@@ -1097,11 +1297,6 @@ async def test_a_refused_removal_leaves_the_credential_where_it_was(
     route can check itself. Clearing before that would have a REFUSED removal
     take a still-configured server's credential with it."""
     assert (await _save(client, auth_headers)).status_code == 200
-    await client.put(
-        "/api/servers/jellyfin/credential",
-        json={"value": "jf-key"},
-        headers=auth_headers,
-    )
 
     response = await _remove(
         client, auth_headers, expected_revision="not-the-current-one", confirm=True
@@ -1158,12 +1353,49 @@ async def test_the_credential_routes_report_the_source_and_no_value(
     }
 
 
+async def test_clearing_the_only_credential_of_a_configured_server_is_refused(
+    client, auth_headers, session_factory
+):
+    """The same end state as a save without a credential, reached from the
+    other side. ``secrets_api``'s own guard does not cover it: that one keys on
+    the names a deployment can never start without, and a server credential is
+    required only WHEN its server is configured. The row stays where it was."""
+    assert (await _save(client, auth_headers)).status_code == 200
+
+    response = await client.delete(
+        "/api/servers/jellyfin/credential", headers=auth_headers
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.CONFIGURED_SERVER_KEEPS_A_CREDENTIAL
+    async with session_factory() as session:
+        stored = await secret_store.load_stored_secrets(session)
+    assert "AUTOPOSTER_JELLYFIN_APIKEY" in stored
+
+
+async def test_clearing_the_credential_of_a_server_that_is_not_configured_is_fine(
+    client, auth_headers
+):
+    """The refusal is about a CONFIGURED server. Nothing reads a credential for
+    a server this deployment does not have, so there is no boot to protect."""
+    assert (
+        await _credential(client, auth_headers, "jellyfin", "jf-key")
+    ).status_code == 200
+    cleared = await client.delete(
+        "/api/servers/jellyfin/credential", headers=auth_headers
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["credential_source"] == "unset"
+
+
 async def test_a_cleared_credential_answers_the_layer_that_takes_over(
     client, auth_headers
 ):
     """Not a fixed word: the environment still supplies Plex's token, so the
     card must say so rather than claim the server has no credential -- and no
-    restart is needed, because this process can still read that value."""
+    restart is needed, because this process can still read that value. A
+    configured server whose clear another layer answers is not refused: what
+    the refusal above is about is the layer taking over being nothing at all.
+    """
     await client.put(
         "/api/servers/plex/credential",
         json={"value": "a stored token"},
@@ -1321,15 +1553,11 @@ async def _boot_both_servers(app, client, auth_headers):
     two reassignments here are that restart. ``object_config`` is the
     generation the application OBJECT was built from and a real restart builds
     a new one, so leaving it behind would model a process that cannot exist.
+
+    ``_save`` stores the credential itself, because the save is refused
+    without one.
     """
     assert (await _save(client, auth_headers)).status_code == 200
-    assert (
-        await client.put(
-            "/api/servers/jellyfin/credential",
-            json={"value": "jf-key"},
-            headers=auth_headers,
-        )
-    ).status_code == 200
     app.state.booted_config = app.state.config
     app.state.object_config = app.state.config
 
@@ -1399,7 +1627,8 @@ async def test_the_refusal_names_the_side_and_not_the_name_that_was_sent(
     response = await _map(client, auth_headers, {"Movies": "Elokuvat"})
     assert response.json()["detail"] == [
         {
-            "path": "jellyfin.library_map.Movies",
+            "path": servers_api.LIBRARY_MAP_PATH,
+            "library": "Movies",
             "message": servers_api.NOT_A_LIBRARY_THIS_SERVER_LISTS.format(
                 side="Jellyfin"
             ),
@@ -1533,7 +1762,8 @@ async def test_a_library_of_a_kind_this_service_never_walks_is_refused(
     assert response.status_code == 422
     assert response.json()["detail"] == [
         {
-            "path": "jellyfin.library_map.Movies",
+            "path": servers_api.LIBRARY_MAP_PATH,
+            "library": "Movies",
             "message": servers_api.NOT_A_LIBRARY_THIS_SERVICE_INDEXES.format(
                 side="Jellyfin"
             ),
@@ -1672,6 +1902,74 @@ async def test_a_differing_pair_naming_the_same_folder_is_still_refused(
     ) in response.text
 
 
+async def test_a_map_with_one_credential_missing_says_so_about_the_map(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """Both servers are configured and booted, and one credential has gone out
+    from under the running process. The probe's own sentence tells an operator
+    to "set one on its card before checking it" -- a check button, on a write
+    route, about a server they were not editing. This one is about the map."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    app.state.secrets = app.state.secrets.model_copy(
+        update={"jellyfin_api_key": ""}
+    )
+
+    response = await _map(client, auth_headers, {"Movies": "Films"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.LIBRARY_MAP_NEEDS_BOTH_CREDENTIALS
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "library_map" not in document["jellyfin"]
+
+
+async def test_two_plex_libraries_cannot_share_one_jellyfin_folder(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """Both halves of a many-to-one validate as listed-and-indexable, so
+    nothing else refuses it -- and what it stores is a map the index resolves
+    twice onto one folder. The rows are walked in sorted order, so the first
+    Plex name keeps the folder and the later one is the row reported."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Elokuvat", "Movies"], ["Films"])
+
+    response = await _map(
+        client, auth_headers, {"Movies": "Films", "Elokuvat": "Films"}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {
+            "path": servers_api.LIBRARY_MAP_PATH,
+            "library": "Movies",
+            "message": servers_api.LIBRARY_MAP_PAIRS_ONCE.format(jellyfin="Films"),
+        }
+    ]
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "library_map" not in document["jellyfin"]
+
+
+async def test_removing_plex_drops_the_library_map_its_keys_name(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """The map's KEYS are Plex library names. With Plex gone nothing carries
+    them, so every row names a library this deployment has no server for -- and
+    the map route would later measure those rows against a live read of a
+    server that is not there."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    assert (await _map(client, auth_headers, {"Movies": "Films"})).status_code == 200
+
+    assert (
+        await _remove(client, auth_headers, name="plex", confirm=True)
+    ).status_code == 200
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "plex" not in document
+    assert "library_map" not in document["jellyfin"]
+    assert document["jellyfin"]["url"] == "http://jellyfin:8096", "the block survived"
+
+
 async def test_a_real_pair_is_still_refused_beside_a_discarded_row(
     app, client, auth_headers, monkeypatch, session_factory
 ):
@@ -1685,7 +1983,8 @@ async def test_a_real_pair_is_still_refused_beside_a_discarded_row(
     assert response.status_code == 422
     assert response.json()["detail"] == [
         {
-            "path": "jellyfin.library_map.Movies",
+            "path": servers_api.LIBRARY_MAP_PATH,
+            "library": "Movies",
             "message": servers_api.NOT_A_LIBRARY_THIS_SERVER_LISTS.format(
                 side="Jellyfin"
             ),

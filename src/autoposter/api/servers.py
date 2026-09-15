@@ -78,6 +78,18 @@ is what makes that race a 409 instead, so it is not optional here the way it is
 on the settings body: the page always has the revision it was served, and a
 caller that cannot produce one is exactly the caller this refusal is for.
 
+NOTHING THIS API ACCEPTS MAY LEAVE THE DEPLOYMENT IN A SHAPE THE NEXT BOOT
+READS AS UNCONFIGURED. ``config/schema.missing_server_setup`` reports every
+configured server whose credential does not resolve, and ``boot`` turns any
+one of those into setup mode -- so a save without a credential, or a clear of
+the only credential a configured server has, is a running deployment that
+comes back from its next restart as the first-start wizard, with the page that
+could undo it behind a setup token. Both routes refuse instead
+(``SERVER_NEEDS_A_CREDENTIAL_FIRST``, ``CONFIGURED_SERVER_KEEPS_A_CREDENTIAL``),
+and the removal route refuses a server it has no block for rather than writing
+a removal that removes nothing and clearing a credential the add-a-server flow
+had just stored.
+
 The catch-up and retry-failed buttons own no logic of their own --
 ``catchup.py`` does -- and their whole job is turning a ``CatchUpRefused`` into
 a 409 whose ``detail`` is the sentence the button shows, so the operator reads
@@ -100,7 +112,7 @@ from autoposter.catchup import (
 )
 from autoposter.config import secret_store
 from autoposter.config.overrides import STORE_FORMAT, load_store
-from autoposter.config.schema import secret_sources
+from autoposter.config.schema import resolve_secret_values, secret_sources
 from autoposter.db.models import Session as SessionModel
 from autoposter.servers import probe
 
@@ -127,6 +139,17 @@ TYPED_ADDRESS_NEEDS_A_TYPED_CREDENTIAL = (
     "an address supplied with this request must come with the credential to "
     "use against it; this service does not send a stored credential to an "
     "address a request named"
+)
+#: A STORED address that does not pass the shared guard. Its own sentence,
+#: because the guard's is written for a value the caller typed: an operator who
+#: typed nothing at all and pressed "Check connection" would read
+#: ``PUBLIC_URL_NOT_AN_ADDRESS`` as being about their own input and go looking
+#: for a mistake they did not make. This one names where the value is and what
+#: to do about it, and it is a 409 rather than a 400 for the same reason --
+#: nothing is wrong with the request.
+STORED_ADDRESS_NOT_USABLE = (
+    "the stored address for this server is not a usable http(s) address; "
+    "correct it on the card"
 )
 
 
@@ -214,8 +237,10 @@ def _resolve_target(request: Request, name: str, body: ProbeBody) -> tuple[str, 
 
     The stored address is the BOOTED generation's, for the reason the header
     gives, and it goes through the same guard a typed one does: a document is
-    not a validated address, and the refusal names the field rather than the
-    value whichever of the two it came from.
+    not a validated address. What differs is the SENTENCE each refusal gets --
+    the typed one is about a value in this request, the stored one is about a
+    value on the card -- because they send an operator to two different places.
+    Neither names the value.
     """
     if body.url:
         if not body.credential_value:
@@ -235,7 +260,13 @@ def _resolve_target(request: Request, name: str, body: ProbeBody) -> tuple[str, 
     credential = body.credential_value or _stored_credential(request, name)
     if not credential:
         raise HTTPException(status_code=400, detail=NEEDS_A_CREDENTIAL)
-    return _require_http_url(url, PUBLIC_URL_NOT_AN_ADDRESS), credential
+    try:
+        checked = _require_http_url(url, PUBLIC_URL_NOT_AN_ADDRESS)
+    except HTTPException:
+        raise HTTPException(
+            status_code=409, detail=STORED_ADDRESS_NOT_USABLE
+        ) from None
+    return checked, credential
 
 
 def _health(request: Request, name: str) -> dict:
@@ -335,6 +366,11 @@ async def check(
         "ok": result.ok,
         "refused": result.refused,
         "failure": result.failure,
+        # The one field here that is the SERVER's own text rather than this
+        # service's: spec section 5's pill reads "connected, version ...".
+        # Bounded where it is read (``setup_checks.read_version``) and null
+        # whenever the server volunteered nothing this service would show.
+        "version": result.version,
         "detail": result.detail,
     }
 
@@ -409,6 +445,34 @@ LAST_SERVER = (
     "removing it"
 )
 NOT_THIS_SERVERS_SWITCH = "that setting does not belong to this server"
+#: THE refusal this module's writes exist under. ``config/schema``'s
+#: ``missing_server_setup`` reports EVERY configured server whose credential
+#: does not resolve -- not "unless another one is complete" -- and ``boot``
+#: turns any entry in that list into setup mode. So a card that saved an
+#: address without a credential would write a document whose next start serves
+#: the first-start wizard instead of the application, behind a setup token,
+#: with the Settings page that could undo it on the other side of it. The
+#: restart that same response asks for is what would do it.
+SERVER_NEEDS_A_CREDENTIAL_FIRST = (
+    "set this server's credential before saving it; a configured server "
+    "without one sends the deployment back to first-start setup"
+)
+#: The same end state reached from the other side: a configured server whose
+#: only credential is the stored row, and a clear with nothing underneath it.
+#: ``secrets_api``'s own guard does not cover these two names -- it keys on the
+#: HARD secrets, and a server credential is required only when its server is
+#: configured -- so the condition is asked here, where that "if" is known.
+CONFIGURED_SERVER_KEEPS_A_CREDENTIAL = (
+    "this server is configured; remove it, or set its credential elsewhere, "
+    "before clearing the stored value"
+)
+#: A removal of a server this deployment does not have. Not a 404: the NAME is
+#: one this service manages, which is what a 404 here would deny. What is
+#: absent is the block, and that matters beyond tidiness -- the removal clears
+#: the stored credential, and spec section 5's add-a-server flow stores that
+#: credential BEFORE the card's first save. A removal of a half-added server
+#: would take the value the operator had just typed.
+SERVER_NOT_CONFIGURED = "this server is not configured"
 #: A store that still holds a DELTA over the mounted file. A save is fine on
 #: one -- the delta arm merges, which is exactly what a settings save does --
 #: but a removal is not: dropping a key from a delta stops OVERRIDING the
@@ -451,7 +515,12 @@ class ServerBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     url: str
-    excluded_libraries: list[str] = []
+    #: Required, with no default, because it is written as a REPLACEMENT: an
+    #: omitted list would empty that server's exclusions with a 200 and no
+    #: mention of it, which is the silent-revert failure ``expected_revision``
+    #: is required one field below for. ``switches`` may default, because that
+    #: one is a delta over the block rather than a replacement of it.
+    excluded_libraries: list[str]
     switches: dict[str, bool] = {}
     expected_revision: str
     confirm: bool = False
@@ -540,10 +609,25 @@ def _without_server(document: dict, name: str) -> dict:
     ``libraries.<lib>.operations`` are merged OVER the global sections, so a
     ``true`` there beats the ``false`` written here and that library would keep
     delivering to a server this deployment no longer configures.
+
+    Removing PLEX takes ``jellyfin.library_map`` with it, which looks like the
+    wrong section until you read what its keys are: PLEX library names. With
+    Plex gone nothing carries them, so every row is a pair naming a library
+    this deployment has no server for -- and the map route would later measure
+    those rows against a live read of a server that is not there.
     """
     candidate = {key: value for key, value in document.items() if key != name}
     for path in (f"badges.upload_to_{name}", f"operations.write_to_{name}"):
         candidate = _with_path(candidate, path, False)
+    if name == "plex" and isinstance(candidate.get("jellyfin"), dict):
+        candidate = {
+            **candidate,
+            "jellyfin": {
+                key: value
+                for key, value in candidate["jellyfin"].items()
+                if key != "library_map"
+            },
+        }
     libraries = candidate.get("libraries")
     if not isinstance(libraries, dict):
         return candidate
@@ -571,6 +655,21 @@ async def _stored(request: Request) -> tuple[dict, bool]:
     async with request.app.state.session_factory() as session:
         document, meta = await load_store(session)
     return document, meta.get("format") == STORE_FORMAT
+
+
+async def _credential_resolves(request: Request, name: str) -> bool:
+    """Whether the NEXT BOOT would find this server's credential.
+
+    Not ``_stored_credential``, which reads the ``Secrets`` object this process
+    was handed and would answer for a value cleared since. What decides the
+    boot mode is ``config/schema.missing_server_setup`` over
+    ``resolve_secret_values``, so that is the question asked here, against the
+    store as it is NOW -- and all three of its layers count, because all three
+    answer the next start too: a stored row, the state file, the environment.
+    """
+    async with request.app.state.session_factory() as session:
+        stored = await secret_store.load_stored_secrets(session)
+    return bool(resolve_secret_values(stored).get(probe.SERVER_CREDENTIAL[name]))
 
 
 def _configured(document: dict, config) -> list[str]:
@@ -613,6 +712,13 @@ async def save_server(
     settings save of the same deployment would be. Neither arm is this route's
     to choose -- ``_validated_generation`` reads the row's format and chooses,
     which is the only way this save and the next boot can agree.
+
+    A CREDENTIAL FIRST, or nothing is written. ``SERVER_NEEDS_A_CREDENTIAL_FIRST``
+    carries the argument; what it means for the card is that the add-a-server
+    flow's two calls happen in the order spec section 5 already puts them in --
+    ``PUT .../credential``, then this. The check is asked after the body has
+    been validated, so a request that is wrong about a switch or an address
+    still hears about that rather than about a credential it may well have.
     """
     _known(name)
     unknown = sorted(set(body.switches) - set(SERVER_SWITCHES[name]))
@@ -627,6 +733,10 @@ async def save_server(
             ],
         )
     url = _require_http_url(body.url, PUBLIC_URL_NOT_AN_ADDRESS)
+    if not await _credential_resolves(request, name):
+        raise HTTPException(
+            status_code=409, detail=SERVER_NEEDS_A_CREDENTIAL_FIRST
+        )
 
     document, _whole = await _stored(request)
     block = {
@@ -661,8 +771,29 @@ async def save_server(
 LIBRARY_MAP_NEEDS_BOTH_SERVERS = (
     "the library map pairs two servers; configure both before setting it"
 )
+#: The map's own sentence about a missing credential, rather than the probe's
+#: ``NEEDS_A_CREDENTIAL`` -- which says "set one on its card before checking
+#: it" and would be answered to an operator who pressed neither check button,
+#: on a write route, about a server they were not editing. The refusal beside
+#: it is the shape this one wants: a 409 about the map.
+LIBRARY_MAP_NEEDS_BOTH_CREDENTIALS = (
+    "the library map is read from both servers' own library lists; set both "
+    "servers' credentials before setting it"
+)
+#: The section a map refusal points at. The ROW is named beside it rather than
+#: appended to this with a dot, because a library name is DATA and Plex allows
+#: a dot in one: ``jellyfin.library_map.Star Trek: Deep Space 9`` is readable,
+#: but ``jellyfin.library_map.season 1.5`` names a section nobody wrote, and
+#: nothing in the editor or the store escapes a key on the way into a dotted
+#: path (``config/overrides.document_paths`` joins them raw).
+LIBRARY_MAP_PATH = "jellyfin.library_map"
+#: Rendered with the JELLYFIN library's name, which is the operator's own value
+#: and is already on the card they are looking at. Two Plex libraries pointed
+#: at one Jellyfin folder both validate as listed-and-indexable, so nothing
+#: else refuses a many-to-one the index would then resolve twice.
+LIBRARY_MAP_PAIRS_ONCE = "{jellyfin} is already paired with another Plex library"
 #: Rendered with the SIDE's own label -- ``Plex`` or ``Jellyfin`` -- and never
-#: with the name the caller sent, which is already in the ``path`` beside it.
+#: with the name the caller sent, which is in the ``library`` field beside it.
 #: The two halves of a pair fail for different reasons and an operator fixes
 #: them on different servers, so the sentence has to say which one was asked.
 NOT_A_LIBRARY_THIS_SERVER_LISTS = "{side} lists no library called that"
@@ -754,6 +885,15 @@ async def save_library_map(
     self-paired row is discarded before it can be refused: it is not a
     statement about the two servers that this route could be wrong about.
 
+    A Jellyfin folder may be paired by at most ONE Plex library. Both sides of
+    a many-to-one validate as listed-and-indexable, so nothing else would
+    refuse it, and what it stores is a map the index resolves twice onto the
+    same folder.
+
+    A refusal names the ROW in its own ``library`` field rather than inside the
+    dotted ``path``, for the reason ``LIBRARY_MAP_PATH`` gives: a library name
+    is the operator's data and may carry a dot.
+
     The map's leaf paths DO land on the restart list: the Jellyfin client and
     its library index are built once at startup from ``library_map``
     (``servers/registry.py``), so a saved map is genuinely not in force until
@@ -775,6 +915,11 @@ async def save_library_map(
         for name in probe.SERVER_NAMES
     ):
         raise HTTPException(status_code=409, detail=LIBRARY_MAP_NEEDS_BOTH_SERVERS)
+    # Asked here rather than left to ``_resolve_target``'s own refusal below,
+    # which is the probe's sentence about a card's check button and not this
+    # route's about the map.
+    if not all(_stored_credential(request, name) for name in probe.SERVER_NAMES):
+        raise HTTPException(status_code=409, detail=LIBRARY_MAP_NEEDS_BOTH_CREDENTIALS)
 
     # Filtered BEFORE anything is checked, because the filter decides what is
     # stored and only what is stored is worth refusing. An editor that submits
@@ -800,6 +945,7 @@ async def save_library_map(
         }
 
     problems = []
+    paired: set[str] = set()
     for plex_name, jellyfin_name in sorted(pairs.items()):
         # Zipped against ``SERVER_NAMES`` rather than spelled again: the two
         # halves of a pair ARE the two servers, in their order, and a third
@@ -815,7 +961,8 @@ async def save_library_map(
             # fixed ones and the label is this service's own.
             problems.append(
                 {
-                    "path": f"jellyfin.library_map.{plex_name}",
+                    "path": LIBRARY_MAP_PATH,
+                    "library": plex_name,
                     "message": (
                         NOT_A_LIBRARY_THIS_SERVICE_INDEXES
                         if library in listed[name]
@@ -823,6 +970,19 @@ async def save_library_map(
                     ).format(side=setup_checks.CHECK_SYSTEMS[name].label),
                 }
             )
+        # One Jellyfin folder, one Plex library. The rows are walked in sorted
+        # order, so the first Plex name keeps the folder and every later one is
+        # the row reported -- a stable answer for one body, which a set
+        # iterated in insertion order would not be.
+        if jellyfin_name in paired:
+            problems.append(
+                {
+                    "path": LIBRARY_MAP_PATH,
+                    "library": plex_name,
+                    "message": LIBRARY_MAP_PAIRS_ONCE.format(jellyfin=jellyfin_name),
+                }
+            )
+        paired.add(jellyfin_name)
     if problems:
         raise HTTPException(status_code=422, detail=problems)
 
@@ -864,7 +1024,9 @@ async def remove_server(
     than by ``build_config``'s own ``_at_least_one_media_server``, because that
     validator's message is about a document and this refusal is about a button.
     The document validator still stands behind it; this is the sentence an
-    operator reads.
+    operator reads. Refused before that when the stored document has no block
+    for this server at all (``SERVER_NOT_CONFIGURED``), which is a fact about
+    THIS server and so is asked before what would be left without it.
 
     The block goes, and with it everything that lived in it -- for Jellyfin
     that is ``replace_thumb_with_backdrop`` and ``library_map``, which are
@@ -902,6 +1064,13 @@ async def remove_server(
     document, whole_store = await _stored(request)
     if not whole_store:
         raise HTTPException(status_code=409, detail=DELTA_STORE_CANNOT_REMOVE)
+    # THIS server, before the question of what would be left. A server with no
+    # stored block has nothing to remove, and a route that wrote anyway would
+    # flip two real document keys, take a snapshot and an audit row for a
+    # removal that removed nothing, and clear a credential the add-a-server
+    # flow stores before the first save.
+    if not _stored_block(document, name).get("url"):
+        raise HTTPException(status_code=409, detail=SERVER_NOT_CONFIGURED)
     if _configured(document, request.app.state.config) == [name]:
         raise HTTPException(status_code=409, detail=LAST_SERVER)
 
@@ -981,8 +1150,33 @@ async def clear_server_credential(
     row just removed, so the deployment's own value comes back at the next
     start and not before. Answering the source without it would have the card
     name a layer whose value is not yet the one in force.
+
+    REFUSED when the server is configured and nothing would take over.
+    ``secrets_api``'s own ``HARD_SECRET_WOULD_BE_UNSET`` guard cannot answer
+    this one: it keys on the names a deployment can never start without, and
+    these two are required only WHEN their server is configured -- the "if"
+    this route knows and that module does not. Without the refusal, a
+    Plex-only deployment's card could clear the one token it has, leaving a
+    configured server with no credential, which is the state
+    ``SERVER_NEEDS_A_CREDENTIAL_FIRST`` exists to keep a save out of; and the
+    response would say nothing about it, because ``restart_required`` is
+    ``source != "unset" and not value``, which is exactly ``False`` here.
+
+    The layer that WOULD take over is computed the way the delegate computes
+    it -- ``secret_sources`` over the store minus this name -- and anything
+    other than ``unset`` is allowed through untouched: clearing a stored token
+    on a deployment whose environment also sets one is an ordinary thing to do.
     """
     _known(name)
+    document, _whole = await _stored(request)
+    if name in _configured(document, request.app.state.config):
+        async with request.app.state.session_factory() as session:
+            stored = await secret_store.load_stored_secrets(session)
+        remaining = sorted(set(stored) - {probe.SERVER_CREDENTIAL[name]})
+        if secret_sources(remaining)[probe.SERVER_CREDENTIAL[name]] == "unset":
+            raise HTTPException(
+                status_code=409, detail=CONFIGURED_SERVER_KEEPS_A_CREDENTIAL
+            )
     answer = await clear_stored_secret(probe.SERVER_CREDENTIAL[name], request, None)
     return {
         "name": name,
@@ -1007,6 +1201,11 @@ async def start(
     name: str, request: Request, body: CatchUpBody | None = None,
     _: SessionModel = Depends(require_session),
 ) -> dict:
+    # One module, one vocabulary for one typo: the six routes above answer 404
+    # and ``NOT_A_SERVER`` for a name this service manages no server by, and
+    # these four sit on the same router. Without it this one answered a 409
+    # carrying the caller's own string and the two below answered 200.
+    _known(name)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         try:
@@ -1030,6 +1229,7 @@ async def start(
 async def progress(
     name: str, request: Request, _: SessionModel = Depends(require_session),
 ) -> dict:
+    _known(name)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         found = await catch_up_progress(session, name)
@@ -1042,6 +1242,7 @@ async def progress(
 async def cancel(
     name: str, request: Request, _: SessionModel = Depends(require_session),
 ) -> dict:
+    _known(name)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         try:
@@ -1058,9 +1259,11 @@ async def retry(
 ) -> dict:
     """Re-arm this server's failed rows without a full catch-up (spec §5).
 
-    Never refused: re-arming nothing is a legitimate answer, and the counts
-    say so.
+    Never refused for a server this service manages: re-arming nothing is a
+    legitimate answer, and the counts say so. A name it manages no server by
+    is the router's own 404, like every other route here.
     """
+    _known(name)
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
         outcome = await retry_failed(session, name)
