@@ -72,11 +72,17 @@ def test_provenance_stamp_matches_production_plus_the_resolution_bound(config):
     -- which is every real poster and backdrop, and the golden fixture -- so
     ``tests/test_golden.py``'s byte-exact parity against the production asset
     still holds. Only a source larger than any canvas is touched at all.
+
+    The comment is the second divergence, and the only one that changes the
+    written bytes: the captured command stamps "created with posterizarr",
+    the string Posterizarr greps for to recognise its own output, and its
+    author asked that this service not label artwork with it. The comment
+    segment is the one place the golden's byte comparison looks past.
     """
     assert compositor.build_stamp_argv(config.magick_binary, TC_IMAGE) == [
         "magick", TC_IMAGE,
         "-resize", "3840x3000>",
-        "-set", "comment", "created with posterizarr",
+        "-set", "comment", "created with autoposter",
         TC_IMAGE,
     ]
 

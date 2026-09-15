@@ -30,12 +30,15 @@ def test_canvas_sizes_are_fixed():
     assert BACKGROUND_SIZE == "3840x2160"
 
 
-def test_stamp_writes_the_posterizarr_comment_and_bounds_the_source():
+def test_stamp_writes_this_services_own_comment_and_bounds_the_source():
+    """Never Posterizarr's marker: it greps its own assets for that string,
+    so a comment copied from its command would make it skip artwork this
+    service wrote, and mislabel the artwork besides."""
     argv = build_stamp_argv("magick", "/tmp/x.jpg")
     assert argv == [
         "magick", "/tmp/x.jpg",
         "-resize", "3840x3000>",
-        "-set", "comment", "created with posterizarr",
+        "-set", "comment", "created with autoposter",
         "/tmp/x.jpg",
     ]
 

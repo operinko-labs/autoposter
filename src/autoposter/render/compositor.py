@@ -23,9 +23,13 @@ BACKGROUND_SIZE = "3840x2160"
 # cover), which is deliberate: that is precisely the shape this bounds.
 STAMP_MAX_GEOMETRY = "3840x3000"
 
-# Provenance marker. Posterizarr writes this exact string and later greps for it
-# to decide whether artwork has already been processed. Keep it byte-identical.
-PROVENANCE_COMMENT = "created with posterizarr"
+# The comment every rendered asset carries. It names THIS service: the
+# captured Posterizarr command stamped "created with posterizarr", which
+# Posterizarr later greps for to decide whether it has already processed an
+# asset, so artwork this service wrote must not answer to Posterizarr's own
+# marker. This service never reads the comment back -- its provenance is the
+# EXIF ImageDescription written by ``badges/compose.py`` (``plex/exif.py``).
+PROVENANCE_COMMENT = "created with autoposter"
 
 
 def build_stamp_argv(magick: str, image: str) -> list[str]:
