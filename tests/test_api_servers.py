@@ -1638,3 +1638,59 @@ async def test_a_map_that_crosses_the_drop_cap_needs_confirm(
     async with session_factory() as session:
         after = await load_overrides_document(session)
     assert after["jellyfin"]["library_map"] == {"Movies": "Films"}
+
+
+async def test_a_self_paired_row_this_service_never_walks_is_not_refused(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """An editor submits every row it shows, and a music library is named the
+    same on both servers as often as any other. The row is discarded before it
+    is checked, because a pair this route will not store is not a statement
+    about the two servers that it could be wrong about."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(
+        monkeypatch, ["Music"], ["Music"], plex_kind="artist", jellyfin_kind="music"
+    )
+    response = await _map(client, auth_headers, {"Music": "Music"})
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "library_map" not in document["jellyfin"]
+
+
+async def test_a_differing_pair_naming_the_same_folder_is_still_refused(
+    app, client, auth_headers, monkeypatch
+):
+    """The filter softens nothing about the pairs that ARE stored: the same
+    music folder on the far side of a real pair is the refusal it was."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Music"], jellyfin_kind="music")
+    response = await _map(client, auth_headers, {"Movies": "Music"})
+    assert response.status_code == 422
+    assert servers_api.NOT_A_LIBRARY_THIS_SERVICE_INDEXES.format(
+        side="Jellyfin"
+    ) in response.text
+
+
+async def test_a_real_pair_is_still_refused_beside_a_discarded_row(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """One wholesale submit carrying both shapes: the self-paired photo row is
+    discarded, the typo in the real pair is not."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    response = await _map(
+        client, auth_headers, {"Photos": "Photos", "Movies": "Elokuvat"}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {
+            "path": "jellyfin.library_map.Movies",
+            "message": servers_api.NOT_A_LIBRARY_THIS_SERVER_LISTS.format(
+                side="Jellyfin"
+            ),
+        }
+    ]
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "library_map" not in document["jellyfin"]

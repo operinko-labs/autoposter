@@ -726,8 +726,9 @@ async def save_library_map(
 ) -> dict:
     """Pair Plex's libraries with Jellyfin's, from the servers' own lists.
 
-    Every name on both sides is checked against a LIVE read of the server that
-    would have to carry it (spec §6). A name typed by hand is not accepted, and
+    Every name this route would STORE is checked against a LIVE read of the
+    server that would have to carry it (spec §6). A name typed by hand is not
+    accepted, and
     that refusal is load-bearing rather than fussy: whether an item is missing
     from Jellyfin is decided by looking for its library's map partner among the
     folders Jellyfin lists, so a map naming a library nothing carries would
@@ -749,7 +750,9 @@ async def save_library_map(
     library is renamed -- an editor that sends every row it shows therefore
     writes only what is not already implied, and an editor whose every row has
     been cleared leaves the key absent, which is how "no map" is spelled
-    everywhere else in a configuration document.
+    everywhere else in a configuration document. That filter runs FIRST, so a
+    self-paired row is discarded before it can be refused: it is not a
+    statement about the two servers that this route could be wrong about.
 
     The map's leaf paths DO land on the restart list: the Jellyfin client and
     its library index are built once at startup from ``library_map``
@@ -773,6 +776,19 @@ async def save_library_map(
     ):
         raise HTTPException(status_code=409, detail=LIBRARY_MAP_NEEDS_BOTH_SERVERS)
 
+    # Filtered BEFORE anything is checked, because the filter decides what is
+    # stored and only what is stored is worth refusing. An editor that submits
+    # every row it shows carries a row for each library the deployment has,
+    # self-paired ones included -- and a section this service never walks is
+    # named the same on both servers as often as any other, so validating the
+    # rows this route is about to discard would refuse a whole wholesale submit
+    # over a pair that was never going to be written.
+    pairs = {
+        plex_name: jellyfin_name
+        for plex_name, jellyfin_name in body.pairs.items()
+        if plex_name != jellyfin_name
+    }
+
     carried: dict[str, set[str]] = {}
     listed: dict[str, set[str]] = {}
     for name in probe.SERVER_NAMES:
@@ -784,7 +800,7 @@ async def save_library_map(
         }
 
     problems = []
-    for plex_name, jellyfin_name in sorted(body.pairs.items()):
+    for plex_name, jellyfin_name in sorted(pairs.items()):
         # Zipped against ``SERVER_NAMES`` rather than spelled again: the two
         # halves of a pair ARE the two servers, in their order, and a third
         # name added to that tuple must fail this loop rather than slip past
@@ -810,11 +826,6 @@ async def save_library_map(
     if problems:
         raise HTTPException(status_code=422, detail=problems)
 
-    pairs = {
-        plex_name: jellyfin_name
-        for plex_name, jellyfin_name in body.pairs.items()
-        if plex_name != jellyfin_name
-    }
     block = {
         key: value
         for key, value in _stored_block(document, "jellyfin").items()
