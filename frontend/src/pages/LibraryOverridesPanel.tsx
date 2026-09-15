@@ -2,11 +2,13 @@
  *
  * Rows are Plex libraries, columns are the settings a library may do
  * differently, and every cell is one of three states: inheriting the global,
- * set to something else, or not editable here. The generic settings editor
- * below this panel can already DISPLAY and EDIT a per-library leaf that
- * exists -- `ConfigNode` is shape-driven -- but it can neither create one,
- * remove one, nor say that a setting is unset and follows the global, and
- * those three are the whole feature.
+ * set to something else, or not editable here. It is the section's only home
+ * on the page now: a generic accordion over `libraries` used to sit beneath
+ * it, and it was an empty accordion on a deployment that overrides nothing
+ * and a second, differently shaped copy of this table on one that does. What
+ * that tree could do and this cannot is edit a per-library LIST or MAPPING
+ * cell -- those are reported here and set through the API, which is the cost
+ * of the section having one home instead of two.
  *
  * It writes through the page's own `Editor` rather than fetching anything,
  * and that is the decision everything else falls out of. One pending
@@ -116,10 +118,10 @@ function Cell({
     );
   }
 
-  // A list or a mapping needs the list editor the generic page already has,
-  // and a second copy of it here is exactly the shape `api/overrides.ts`'s
-  // own docstring warns about. The cell reports its state instead and the
-  // panel's copy says where to edit one.
+  // A list or a mapping needs a list editor, and a copy of the settings
+  // page's inside a table cell is exactly the shape `api/overrides.ts`'s own
+  // docstring warns about. The cell reports its state instead, and the
+  // panel's copy says so rather than implying an edit that is not here.
   if (Array.isArray(globalValue) || isPlainObject(globalValue)) {
     return (
       <span className="muted library-cell-note">
@@ -180,8 +182,8 @@ export function LibraryOverridesPanel({
       </p>
       <p className="muted config-note">
         List and mapping settings (ignore lists, overlay families, the genre
-        and content-rating mappers, field verbs) are shown here but edited in
-        the Libraries section below, once the library has a value for them.
+        and content-rating mappers, field verbs) say here whether a library
+        overrides the global, but are not edited on this page.
       </p>
       <div className="library-overrides-scroll">
         <table className="library-overrides-table">

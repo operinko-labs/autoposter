@@ -117,6 +117,32 @@ const SERVERS_TAB_SECTION_TITLE: Record<string, string> = {
   jellyfin: "More Jellyfin settings",
 };
 
+/** The leaves that already have exactly one home, and it is not a generic row.
+ *
+ * A server's address and the libraries it excludes are what the card on the
+ * Servers tab is for -- it saves them itself, against the listing, without
+ * joining the page's pending change -- and the Plex-to-Jellyfin library map is
+ * what the map panel beside it is for. Rendered here as well, they were the
+ * same setting in two places, disagreeing about which of them had been saved.
+ *
+ * Skipped everywhere rather than on the Servers tab alone: a leaf is owned by
+ * one control or it is not, and a second home that only appears if the section
+ * is later keyed to another tab is the same bug waiting.
+ *
+ * `jellyfin.replace_thumb_with_backdrop` is deliberately NOT here even though
+ * a card switch sets it too -- nor are the other switches, which are leaves of
+ * `badges` and `operations` and sit on other tabs entirely. A switch writes
+ * the same stored path this row does, so the two say the same thing whichever
+ * one it was set from; the address, the exclusions and the map are different
+ * in kind, because the card saves them against the server listing. */
+const CARD_OWNED_PATHS = [
+  "plex.url",
+  "plex.excluded_libraries",
+  "jellyfin.url",
+  "jellyfin.excluded_libraries",
+  "jellyfin.library_map",
+];
+
 /** The reason a restart is needed for `path`, or undefined if it is live.
  * `frozen_paths` keys are prefixes: `notifications` freezes everything under
  * it. `live` wins over all of them -- a path the server reads per use is live
@@ -264,24 +290,48 @@ function StringListField({
   );
 }
 
-/** The widget is chosen from the value the *server* serves, not from what is
- * currently typed: picking off the pending value would swap a number input
- * for a text one the moment the field was cleared, losing focus mid-edit.
- * A type with no editor -- null, a list of objects, a redaction -- keeps the
- * read-only rendering, which is also how a schema this page has never seen
- * stays safe. */
+/** Which control a row gets.
+ *
+ * The value the *server* serves answers this, not what is currently typed:
+ * picking off the pending value would swap a number input for a text one the
+ * moment the field was cleared, losing focus mid-edit.
+ *
+ * A setting nobody has set carries no answer at all -- it is served as `null`,
+ * which is a value of no type -- and a row that had only the value to go on
+ * rendered "(not set)" and no control, so the setting could not be set from
+ * the page it is on. `declared` is what the server says the schema declares
+ * for that path (`field_types`), and it is what those rows are built from.
+ *
+ * `undefined` is "no control": a list of objects, a mapping, a shape the
+ * schema calls an `object`, or a leaf an older server named no kind for.
+ * Those keep the read-only rendering, which is also how a schema this page
+ * has never seen stays safe. */
+function fieldKind(base: unknown, declared?: string): string | undefined {
+  if (base === null || base === undefined) return declared;
+  if (typeof base === "boolean") return "boolean";
+  if (typeof base === "number") return "integer";
+  if (typeof base === "string") return "string";
+  if (Array.isArray(base) && base.every((item) => typeof item === "string")) {
+    return "string_list";
+  }
+  return undefined;
+}
+
 function Field({
   path,
   base,
   current,
   editor,
   title,
+  declared,
 }: {
   path: string;
   base: unknown;
   current: unknown;
   editor: Editor | null;
   title?: string;
+  /** The kind the server says this path holds, for a value that cannot say. */
+  declared?: string;
 }) {
   const readOnly = (
     <>
@@ -294,18 +344,23 @@ function Field({
   );
   if (editor === null || base === REDACTED_MARKER) return readOnly;
 
-  if (typeof base === "boolean") {
+  const kind = fieldKind(base, declared);
+  if (kind === "boolean") {
     return (
       <input
         type="checkbox"
         aria-label={path}
         title={title}
+        // Toggled on and then off leaves `false`, not the `null` an unset
+        // setting started as: the operator chose a value, and a control that
+        // put the setting back to unset on its way through would refuse to
+        // express half of what it offers.
         checked={current === true}
         onChange={(event) => editor.setValue(path, event.target.checked)}
       />
     );
   }
-  if (typeof base === "number") {
+  if (kind === "integer" || kind === "number") {
     return (
       <input
         type="number"
@@ -320,7 +375,7 @@ function Field({
       />
     );
   }
-  if (typeof base === "string") {
+  if (kind === "string") {
     return (
       <input
         type="text"
@@ -331,7 +386,7 @@ function Field({
       />
     );
   }
-  if (Array.isArray(base) && base.every((item) => typeof item === "string")) {
+  if (kind === "string_list") {
     return (
       <StringListField
         path={path}
@@ -349,12 +404,14 @@ function ConfigRow({
   value,
   editor,
   description,
+  declared,
 }: {
   name: string;
   path: string;
   value: unknown;
   editor: Editor | null;
   description?: string;
+  declared?: string;
 }) {
   // A computed path is the server's to set: an override on it is recomputed
   // away, so offering an input would be offering an edit that does nothing.
@@ -397,6 +454,7 @@ function ConfigRow({
           current={current}
           editor={rowEditor}
           title={isRedacted ? REDACTED_EDIT_NOTE : undefined}
+          declared={declared}
         />
         {restart !== undefined && (
           <span className="config-pill restart" title={restart}>
@@ -416,44 +474,56 @@ function ConfigRow({
 /** Recursive renderer driven entirely by the response's shape: scalars and
  * lists become label/value rows, nested objects become indented subsections.
  * Nothing here names a config field, so a new key appears without a frontend
- * change. `path` accumulates the dotted path the API speaks in, and
- * `descriptions` is keyed on exactly that path. */
+ * change. `path` accumulates the dotted path the API speaks in, and both
+ * `descriptions` and `types` are keyed on exactly that path.
+ *
+ * The one thing it does name is `CARD_OWNED_PATHS`, and that list is about
+ * where a setting is edited rather than about what it is -- see its own
+ * comment. */
 function ConfigNode({
   value,
   path = "",
   editor = null,
   descriptions = {},
+  types = {},
 }: {
   value: Record<string, unknown>;
   path?: string;
   editor?: Editor | null;
   descriptions?: Record<string, string>;
+  types?: Record<string, string>;
 }) {
   return (
     <div className="config-node">
-      {Object.entries(value).map(([key, entry]) => {
-        const childPath = path === "" ? key : `${path}.${key}`;
-        return isPlainObject(entry) ? (
-          <div className="config-subsection" key={key}>
-            <h3>{labelFor(key)}</h3>
-            <ConfigNode
-              value={entry}
+      {Object.entries(value)
+        .filter(
+          ([key]) => !CARD_OWNED_PATHS.includes(path === "" ? key : `${path}.${key}`),
+        )
+        .map(([key, entry]) => {
+          const childPath = path === "" ? key : `${path}.${key}`;
+          return isPlainObject(entry) ? (
+            <div className="config-subsection" key={key}>
+              <h3>{labelFor(key)}</h3>
+              <ConfigNode
+                value={entry}
+                path={childPath}
+                editor={editor}
+                descriptions={descriptions}
+                types={types}
+              />
+            </div>
+          ) : (
+            <ConfigRow
+              key={key}
+              name={key}
               path={childPath}
+              value={entry}
               editor={editor}
-              descriptions={descriptions}
+              description={descriptions[childPath]}
+              declared={types[childPath]}
             />
-          </div>
-        ) : (
-          <ConfigRow
-            key={key}
-            name={key}
-            path={childPath}
-            value={entry}
-            editor={editor}
-            description={descriptions[childPath]}
-          />
-        );
-      })}
+          );
+        })}
     </div>
   );
 }
@@ -475,6 +545,23 @@ function describedFields(config: ConfigResponse): Record<string, string> {
     : {};
 }
 
+/** The served kinds, one word per dotted path -- what the schema says each
+ * setting holds, for the rows whose own value is `null` and says nothing.
+ *
+ * An absent map reads as an empty one rather than as an error: a deployment
+ * whose server predates `field_types` still renders every row it can pick a
+ * control for from the value, which is what the page did before. */
+function typedFields(config: ConfigResponse): Record<string, string> {
+  return isPlainObject(config.field_types)
+    ? Object.fromEntries(
+        Object.entries(config.field_types).map(([key, kind]) => [
+          key,
+          String(kind),
+        ]),
+      )
+    : {};
+}
+
 /** The keys the two accordions that are not config sections are remembered
  * under. Not section names: no config section can be called either of these,
  * so neither can ever collide with one. Both go through the page's
@@ -483,6 +570,11 @@ function describedFields(config: ConfigResponse): Record<string, string> {
  * it opened alongside whatever was already open and was forgotten on reload. */
 const GENERAL_SECTION = "__general__";
 const SECRETS_SECTION = "__secrets__";
+
+/** The config section the per-library matrix owns, and the generic sections
+ * therefore skip. A real section name, unlike the two above: this one names
+ * the map of per-library overrides the panel on that tab renders. */
+const LIBRARIES_SECTION = "libraries";
 
 /** The one tab panel's id, which every tab's `aria-controls` names. Fixed
  * rather than generated because there is only ever one Settings page, the
@@ -495,18 +587,17 @@ const TAB_PANEL_ID = "settings-tab-panel";
  * server grows appears without a frontend change -- on System, which is what
  * `tabForSection`'s fallback is for.
  *
- * Two documented departures from pure shape. The top-level scalars have no
+ * Three documented departures from pure shape. The top-level scalars have no
  * section of their own, so they are gathered into a "General" accordion on
- * System; and `secrets` is not rendered from the config at all any more,
- * because an all-redacted read-only block is a weaker answer than the panel
- * that can actually set one.
+ * System; `secrets` is not rendered from the config at all any more, because
+ * an all-redacted read-only block is a weaker answer than the panel that can
+ * actually set one; and `libraries` belongs to the per-library matrix alone.
  *
- * `libraries` is NOT a third omission: it is rendered here like every other
- * section, on the Libraries tab under the per-library matrix. The matrix is
- * the only thing that can say a cell is unset and follows the global, but it
- * is also the only thing that cannot edit one -- a per-library list or
- * mapping is a cell the matrix reports and this tree edits, and dropping the
- * tree would take that edit away with it. */
+ * `libraries` is a section by shape and nothing else: its keys are Plex
+ * library NAMES, so a generic accordion over it is empty on the deployments
+ * that override nothing and a second, differently shaped copy of the matrix
+ * on the ones that do -- both on the tab the matrix is already on. One
+ * setting, one home. */
 function ConfigSections({
   config,
   editor,
@@ -525,13 +616,19 @@ function ConfigSections({
   // anything. That is why this is a prop of its own rather than a field of
   // `Editor`, which such a row deliberately does not get.
   const descriptions = describedFields(config);
+  // The same, for what a row holds rather than what it means: an unset
+  // setting is served as `null` and needs the schema's own answer to get a
+  // control at all.
+  const types = typedFields(config);
   const entries = Object.entries(config).filter(
     ([key]) => !PROVENANCE_KEYS.includes(key),
   );
   const general = entries.filter(([, value]) => !isPlainObject(value));
   const sections = entries.filter(
     (entry): entry is [string, Record<string, unknown>] =>
-      isPlainObject(entry[1]) && tabForSection(entry[0]) === tab,
+      isPlainObject(entry[1]) &&
+      entry[0] !== LIBRARIES_SECTION &&
+      tabForSection(entry[0]) === tab,
   );
 
   return (
@@ -552,6 +649,7 @@ function ConfigSections({
             value={Object.fromEntries(general)}
             editor={editor}
             descriptions={descriptions}
+            types={types}
           />
         </SettingsAccordion>
       )}
@@ -572,6 +670,7 @@ function ConfigSections({
             path={key}
             editor={editor}
             descriptions={descriptions}
+            types={types}
           />
         </SettingsAccordion>
       ))}
