@@ -82,9 +82,11 @@ attempt fails closed rather than skipping auth. See `deploy/README.md`'s
 
 Booting without every required credential no longer crashloops. The
 container's entrypoint (`python -m autoposter.boot`) re-derives, at every
-boot, whether every hard credential resolves (environment first, the state
-file second) and a config document is readable — never against the
-database, which stays exactly as reachable or unreachable as it always was.
+boot, whether every hard credential resolves (the stored row first, the state
+file second, the process environment third) and a config document is readable
+(the configuration store when it holds one, a mounted or state-directory file
+otherwise). A database that does not answer leaves the stored layer empty
+rather than stopping the boot, so the decision is as reachable as it ever was.
 Missing a credential serves a first-start setup wizard on the same port
 instead of migrating and starting the application; credentials all present
 with no document is instead a configuration error, logged and non-zero, not
@@ -104,24 +106,22 @@ all, `docker compose up web api` boots into the wizard, served at
 `http://localhost:5173`. `api` alone also enters setup mode, but serves no
 page on a fresh checkout — see "Docker Compose" in `deploy/README.md`.
 
-Every **credential** the wizard collects goes to `$AUTOPOSTER_STATE_DIR`
-(default `/state`) — into `secrets.env` there, never into the config document
-and never into the database — and **the process environment always wins over
-that file**. (The media-server step does write a config document, to
-`$AUTOPOSTER_STATE_DIR/autoposter.yaml`, when the deployment has none: it
-holds the server addresses and nothing secret.) Adding an ExternalSecret later
-takes effect at the next restart, but once ALL five hard names resolve
-from the environment the state file stops being read at all, for any name —
-at that point also carry every other name the wizard wrote into the
-environment (or the Secret) in the same change: `AUTOPOSTER_ADMIN_PASSWORD_HASH`,
-the media-server credential (`AUTOPOSTER_PLEX_TOKEN` or
-`AUTOPOSTER_JELLYFIN_APIKEY`, whichever this deployment configures), and every
-provider key the Systems step collected (`AUTOPOSTER_MDBLIST_APIKEY`,
-`AUTOPOSTER_RADARR_APIKEY`, `AUTOPOSTER_SONARR_APIKEY`,
-`AUTOPOSTER_PLEX_ACCOUNT_TOKEN`, `AUTOPOSTER_TRACEARR_APIKEY`), or they are
-silently dropped. A hand-added
-`AUTOPOSTER_API_KEY` is subject to the same rule, though the wizard never
-writes it. See "First-start setup" in `deploy/README.md` for the
+Every **credential** the wizard collects goes into the database, encrypted —
+the `secrets` table, never the config document — and the key that opens those
+rows lives at `$AUTOPOSTER_STATE_DIR/secret.key` (default `/state`) and never
+enters the database itself. The database URL is the one exception and stays in
+`secrets.env` on the same volume, because reading the store requires it. The configuration document the
+wizard writes goes into the store as well as onto the volume. **So the
+deployment the wizard produces needs neither a ConfigMap nor a single
+environment secret** — and every setting after that, servers and secrets
+included, is set from the Settings page, without editing a file.
+
+Back that volume up: losing `secret.key` means every stored credential has to
+be re-entered rather than recovered. Secrets resolve stored row first, then
+`secrets.env`, then the environment, so handing a wizard-configured deployment
+to an ExternalSecret later is a migration rather than an overlay — see
+"Secrets" and "Where it writes" in `deploy/README.md` for the names to carry
+over and the file to delete. See "First-start setup" there for the
 six steps, the file modes and the rotation story, and for the one bound this
 project's own deployment relies on: the wizard, unauthenticated until a
 master password exists, is reachable only over an internal gateway route,

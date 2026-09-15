@@ -275,7 +275,12 @@ returned 200.
 
    Then the write. Steps 2–5 are staged in memory rather than persisted as
    they are collected. This step writes the config document **first**, then
-   the secrets file, each atomically, then re-runs the same CONFIGURED check
+   the credentials, each atomically — and each half is itself two writes: the
+   document onto the volume and then, once the migration has run, into the
+   configuration store the next boot reads first; the database URL into the
+   secrets file and every other staged credential into the encrypted `secrets`
+   table. **So the deployment the wizard produces needs neither a ConfigMap nor
+   a single environment secret.** Then it re-runs the same CONFIGURED check
    the next boot will run — over what was actually just written, not over what
    this process believes it wrote. Only if that agrees does it hand the
    process over: an `os.execv` into a fresh `python -m autoposter.boot`, which
@@ -571,48 +576,102 @@ Three rules the page enforces, each for a reason worth knowing:
 Uploading under a **new** name moves nothing. The file takes effect when a config value
 names it, and then only that art kind re-renders.
 
-## Config overrides (the Settings editor)
+## The configuration store (the Settings page)
 
-The Settings page can edit configuration. Edits do NOT touch the mounted
-file — they live in the database, in the single-row `config_overrides`
-table, as a partial document deep-merged OVER the file at every load. The
-precedence is therefore: **database override, else ConfigMap value**. The
-ConfigMap stays the git-owned base; the app owns only the deltas an
-operator has explicitly saved, so a Flux sync and a UI edit can never fight
-over the same file.
+**The database holds the configuration.** The single-row `config_overrides`
+table's `document` is the *whole* document rather than a delta over anything,
+and it is what the process runs on. It is validated through the same
+`build_config` a mounted file goes through, and it carries the same revision,
+the same snapshots, the same drop cap and the same restore, export and import
+the delta carried before it (`config/overrides.py`). The table and the route
+names keep the word "overrides"; renaming them would be churn with no
+behaviour behind it.
+
+The mounted `autoposter.yaml` is read **only when the store is empty**, and
+then only to seed it. After that it is a drift report and nothing else. `GET
+/api/config/drift` compares the two as *configurations* rather than as
+documents — each side is built and dumped, so a sparse file and the whole model
+dump the page stores do not report a difference merely for being spelled
+differently — and the System tab renders one notice when they differ, offering
+**Import the file** (through the existing import path, with its drop cap,
+pre-write snapshot and revision check) and **Export the store**. The file's own
+contents never reach the browser: the notice carries a content hash, the import
+asks the server to read the file itself, and a file that changed between the
+two is refused rather than imported. *No* file is not drift, and an empty store
+is not drift either. So a deployment whose store is seeded needs no file at
+all, which is what makes the ConfigMap removable.
+
+The first boot after this lands converts a delta-era store into a document: the
+mounted file merged with the delta, exactly as the effective configuration was
+computed at every load while the row held one, with a snapshot of the delta
+taken first under the reason `migrate`. Every existing snapshot stays
+restorable, and restoring a delta-era one re-runs the same merge. A delta-era
+store whose file cannot be read is refused rather than promoted — a delta is a
+statement *about* a document, and without that document every key the file
+carried would silently default.
+
+There is no "override" pill and no per-field reset. The stored document *is*
+the configuration, so "which of these came from the database" has no answer
+worth rendering: every value did. The question is what a setting is set to, and
+the answer is the field beside it.
 
 Practical consequences:
 
 - A saved change to anything the app reads per-use (all of `artwork:`,
   badge/collection/operation behaviour, `settle_seconds`, scheduler
   cadences) takes effect immediately in the serving pod — no restart. The
-  editor marks the rest ("restart to apply"): worker count, provider
-  clients, notification wiring, Plex connection settings, `poll_seconds`,
-  and whether a scheduled job is registered at all. A restart also brings
-  any other replica up to date; a running sibling replica keeps its old
+  rest is **frozen**, and `config/live.py`'s `FROZEN_SECTIONS` is the list:
+  `plex:`, `jellyfin:`, `workers`, `providers`, `notifications`,
+  `scheduler.enabled`, `scheduler.poll_seconds`, the
+  `collections.enabled` / `playlists.enabled` / `arr_sync.enabled` switches
+  that decide whether a job is registered at all, the `operations.imdb_*`
+  loop settings, `operations.tmdb_backoff_seconds` and `api_docs_enabled`.
+  (`plex.resolve_max_attempts` is the one exception the `plex:` prefix would
+  otherwise swallow: it is read per use and is live.) A frozen change is
+  **saved** and then **applied by a restart**, and the Settings page carries
+  the button rather than a note telling you to go and find one. A restart
+  also brings any other replica up to date; a running sibling keeps its old
   configuration until then. In the shipped manifests that case does not
   arise: the deployment pins a single replica with the `Recreate` strategy,
   so two pods never run at once — not even for the seconds a rolling update
-  would give them — and every pod re-reads the persisted overrides at boot
-  before anything is built from them.
-- `api_docs_enabled` is the one exception a *swap* never reaches, not even
-  in part: FastAPI decides whether `/docs`, `/redoc` and `/openapi.json`
-  exist when the application object is built, and that happens before the
-  pod has merged a single override. It takes effect at the next restart
-  instead, because the object is built from the stored document — so a save
-  followed by a restart closes the docs on a pod whose ConfigMap has them
-  on, and so does editing the ConfigMap (or pointing `AUTOPOSTER_CONFIG` at
-  a file that has them off) and restarting. The editor says as much in its
-  own reason text.
-- An invalid save changes nothing — the merged result is validated whole
-  before anything is persisted or applied, and errors come back
+  would give them — and every pod reads the store at boot before anything is
+  built from it.
+- The settings waiting for that restart are listed in the store's own
+  metadata — `config_overrides.meta`'s `restart_paths`, beside the document
+  rather than inside it — so the banner survives a reload and shows to a
+  second admin. Every save rewrites the list against the generation *this
+  process booted on*, and the next boot empties it, so it is empty exactly
+  when a restart would change nothing: edit a frozen setting and put it back,
+  and the entry goes away by itself.
+- **Restart now** is `POST /api/system/restart`, and it re-executes boot the
+  way the first-start wizard's finish step does — an `os.execv` of
+  `python -m autoposter.boot`, same PID, no supervisor. It refuses in three
+  cases: when `WEB_CONCURRENCY` or `UVICORN_WORKERS` declares more than one
+  worker on the port; while a run that lives in this process is in flight (a
+  full pass, a scheduled job — **not** a catch-up, whose state is rows in the
+  database and whose drain resumes on the other side of the boot); and while
+  the process-wide mode lock is held, which answers one of two sentences —
+  an artwork or metadata mode is mid-write to a media server, or a restart is
+  already under way. `AUTOPOSTER_HOST` and `AUTOPOSTER_PORT` are what a
+  manual install on another port sets, so the replacement process comes back
+  on the address the operator reached it on; see "Radarr / Sonarr webhooks"
+  below for both variables and the orphaned-run-row case in full.
+- `api_docs_enabled` is the one setting a *swap* never reaches even in part:
+  FastAPI decides whether `/docs`, `/redoc` and `/openapi.json` exist when
+  the application object is constructed, which happens before the running
+  generation is merged. A restart is what applies it, because the new
+  process builds its application object from the stored document. The editor
+  reports it separately from "restart required" for that reason, and says as
+  much in its own text.
+- An invalid save changes nothing — the candidate document is validated
+  whole before anything is persisted or applied, and errors come back
   field-labelled.
-- "Revert to base" in the editor removes the key from the override
-  document; the ConfigMap value shows through again on the next load/swap.
-- To inspect or clear the overrides by hand:
-  `SELECT document FROM config_overrides;` /
-  `DELETE FROM config_overrides;` (the next boot then runs on the file
-  alone). The events feed records every save as
+- To inspect the store by hand: `SELECT document, meta FROM
+  config_overrides;`. Deleting the row empties the store, and the next boot
+  therefore seeds it again from whichever file it can find — or, with no file
+  anywhere, reports the "credentials but no config document" configuration
+  error "First-start setup" above describes and exits non-zero. The events
+  feed records every save as
   `config / overrides_updated` with the version movement, never the
   contents.
 - Editing `artwork:` settings (or repointing a root) from the UI carries
@@ -781,6 +840,85 @@ Jellyfin **12.x** only. The client is written against the 12.0 OpenAPI
 document captured at `docs/reference/2026-09-jellyfin-openapi-12.md` and
 verified against a live 12.0.0 server. An older major version is not refused
 with a friendly message — it simply answers differently.
+
+A server is **added, checked, configured and removed from the Settings page's
+Servers tab** on a running deployment; the wizard is only how a deployment that
+has none gets its first. The subsections below describe the blocks those cards
+write, which the schema owns and which are unchanged.
+
+### Adding a server from the UI
+
+One card per server on the **Servers** tab. A card holds the server's address,
+its credential (the *source* of it — stored, state file, environment — never
+the value, with a **Save credential** control), the libraries the server lists
+as a tick-list, that server's own switches, and a connection pill reading `not
+checked`, `connected` (with the version the server answered with), `refused` or
+`unreachable`, over the time the background health check last got an answer.
+Its buttons are Check connection, Reload libraries, Catch up, Retry failed,
+Remove server and Save. A card is a form of its own and saves on its own: an
+address, a credential and a set of exclusions belong together.
+
+The ticked libraries are the ones this service manages; **the unticked ones
+become that server's `excluded_libraries`**, which is the same list the
+subsections below describe.
+
+The order is credential first, then Save, and it is enforced rather than
+suggested. `PUT /api/servers/{name}` refuses a server whose credential does not
+resolve from any of the three layers, because a configured server without one
+is exactly what sends the *next* boot into the first-start wizard — behind a
+setup token, with the page that could undo it on the other side of it. Store
+the credential (`PUT /api/servers/{name}/credential`), then save the card.
+
+Then **Restart now**, from the banner. `plex:` and `jellyfin:` are frozen
+sections — the clients, the liveness probes and the scheduler's server factory
+are all built once at startup — so a saved server is not a server this
+deployment is running until the restart, and the banner is what says so.
+
+**Check connection and Reload libraries never send a credential this deployment
+holds to an address a request named.** A body that carries a typed address must
+carry the credential to use against it; a body that carries neither uses the
+address this process *booted* on together with the credential it holds. An
+address that is saved but not yet restarted onto is therefore not one the
+stored credential is sent to, and the refusal says so.
+
+Which cards open by themselves: every configured server that lacks a
+credential, and nothing else — that is the one state that will not boot. The
+choice is made once from the first listing of a visit and then left to the
+operator, so a card that opened itself does not slam shut on the re-read that
+follows storing the credential. An **Add a server** row lists the servers the
+schema knows and this deployment has no configuration for; picking one opens
+an empty card, and nothing is stored until that card is saved.
+
+**Removing a server** is refused when it is the only configured one, and
+refused when the stored document has no block for it at all. Otherwise the
+block goes, and with it everything that lived inside it; `badges.upload_to_*`
+and `operations.write_to_*` are turned off for that server both globally and in
+any per-library block that states one, because a `true` in a library's own
+block beats a global `false` and that library would go on delivering to a
+server this deployment no longer has. Removing Plex also drops
+`jellyfin.library_map`, whose keys are Plex library names. The server's stored
+credential is cleared after the document write commits, never before.
+
+**The library map** (`jellyfin.library_map`, below) has an accordion of its own
+that appears only when *both* servers are configured; a single-server
+deployment never sees it. Each row is a Plex library with a dropdown of
+Jellyfin libraries. A name typed by hand is not accepted: every name the map
+would store is checked against a live read of the server that would have to
+carry it, and against the two library kinds this service walks. That refusal is
+load-bearing rather than fussy — whether an item is missing from Jellyfin is
+decided by looking for its library's map partner among the folders Jellyfin
+lists, so a map naming a library nothing carries would leave every item in it
+permanently pending. Only pairs whose two names differ are stored, a map with
+every row cleared stores no `library_map` key at all, and one Jellyfin folder
+may be paired by at most one Plex library. The map's own paths land on the
+restart list too: the Jellyfin client and its library index are built once at
+startup from `library_map`.
+
+A deployment whose store still holds a delta over the mounted file can *save* a
+server but cannot remove one or set the map: dropping a key from a delta stops
+overriding the file's block rather than removing it. Both routes refuse with a
+sentence saying so and pointing at the restart, which is the boot that converts
+the store into a whole document.
 
 ### The `jellyfin:` block
 
@@ -1154,8 +1292,58 @@ claim it had composited nothing this time. A cancelled run carries the status
 
 ## Secrets
 
-Secrets come from an ExternalSecret providing the `AUTOPOSTER_*` environment
-variables:
+**Three layers answer each name, in this order: the encrypted `secrets` table,
+then `$AUTOPOSTER_STATE_DIR/secrets.env`, then the process environment.** The
+first is new. The other two have **swapped**: a name present in both is now
+answered by the file. No existing deployment changes behaviour because of it —
+the wizard writes to the file only the names the environment left unresolved,
+so for every real deployment exactly one of the two answers any given name —
+but a variable added by hand for a name the wizard already wrote is now the
+loser rather than the winner, and "Where it writes" above carries the
+ExternalSecrets-migration instruction that follows from it.
+
+A stored value wins over both. Clearing one hands the name back to whichever
+layer still answers, and `DELETE /api/secrets/{name}` says which that is —
+including when the answer is a value this process can no longer read, in which
+case the response says a restart is needed rather than pretending the new value
+is live. Clearing a name this deployment cannot start without, with nothing
+beneath it, is refused outright.
+
+The Settings page's **secrets accordion** (System tab) lists every name this
+service reads with the layer its running value comes from — `stored`, `state
+file`, `environment` or `unset` — and a Set / Replace / Clear control. **It
+never shows a value, and there is no endpoint that serves one.** Three names
+are listed without a field: the webhook secret, which is generated rather than
+typed and has its own rotation action instead; `AUTOPOSTER_DATABASE_URL`, which cannot be
+stored; and the admin password hash, which belongs with the sign-in rather than
+beside an API key. The two media-server credentials are not in that list at all
+— they live on their server's card, which is the one place a server is
+configured.
+
+`stored` means *this deployment's key can open that row*. A row this key cannot
+open is skipped by the resolver and is not labelled `stored`, because the
+running value then comes from the layer beneath and a label that disagrees with
+the value in force sends an operator to change a variable nothing is reading.
+
+**The key is `secret.key` in the state directory** — mode 0600, generated on the
+first write that needs it, never in the database. Losing the volume loses the
+key and therefore every stored secret: the deployment still starts, each
+unreadable row is skipped with a warning naming the variable, and every stored
+name reads as whatever the next layer down supplies until it is set again. Back
+the volume up, and see "Where it writes" above for what that file is and is
+not. A CLI to export the key and the stored secrets for a volume migration is
+filed as a follow-up and is not built.
+
+`AUTOPOSTER_DATABASE_URL` is the one name that cannot be stored, because
+reading the store requires it: it stays in the environment or, on a
+wizard-configured deployment, in the state file. `PUT` of it is refused.
+
+**A GitOps/ExternalSecrets deployment is unchanged by all of this.** It stores
+nothing, so every name reads as `environment`, nothing about its boot differs,
+and a deployment whose hard names all resolve from the environment and which
+has stored nothing does not open the state file at all.
+
+The names this service reads, and what each one is for:
 
 - `AUTOPOSTER_DATABASE_URL`
 - `AUTOPOSTER_TMDB_TOKEN`
