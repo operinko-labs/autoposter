@@ -24,6 +24,7 @@ from copy import deepcopy
 
 import pytest
 import pytest_asyncio
+import yaml
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
@@ -412,6 +413,71 @@ async def test_a_restore_strips_a_migrated_section(
     assert response.status_code == 200, response.text
     stored = (await session.execute(select(ConfigOverride))).scalar_one().document
     assert stored == whole_store
+
+
+async def test_a_restore_strips_a_setting_that_left_the_schema(
+    client, auth_headers, session, whole_store
+):
+    """The same trap one level down, on an individual setting rather than a
+    whole section. A snapshot taken while the store still held
+    ``providers.favourite`` carries it for as long as the snapshot is kept,
+    and a restore is a save -- so without the strip the recovery path 422s on
+    ``unknown setting`` for exactly the snapshots taken before the key left."""
+    await _store(client, auth_headers, _whole(whole_store, {"workers": 9}))
+    [row] = (await client.get("/api/config/snapshots", headers=auth_headers)).json()
+
+    stored_row = (
+        await session.execute(select(ConfigOverrideSnapshot))
+    ).scalar_one()
+    stored_row.document = _whole(whole_store, {"providers": {"favourite": "TMDB"}})
+    await session.commit()
+
+    response = await client.post(
+        f"/api/config/snapshots/{row['id']}/restore",
+        headers=auth_headers,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 200, response.text
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == whole_store
+
+
+async def test_a_delta_restore_strips_the_setting_the_mounted_file_puts_back(
+    client, auth_headers, session, config_file, whole_store
+):
+    """The other arm of the same restore, where the key comes back from
+    underneath.
+
+    A format-1 snapshot is a DELTA and is restored the way it was applied --
+    merged over the mounted file -- and on the deployment this strip is for
+    that file is the one still naming ``providers.favourite``, which is how the
+    key reached the store to begin with. Stripping the snapshot alone leaves
+    the merge to put it straight back and the restore 422s, so the strip runs
+    again afterwards. Reachable rather than hypothetical: the boot that
+    converts a delta-era store writes exactly this snapshot."""
+    document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    document["providers"]["favourite"] = "TMDB"
+    config_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+    session.add(
+        ConfigOverrideSnapshot(
+            document={"workers": 9}, path_count=1, reason="migrate", format=1
+        )
+    )
+    await session.commit()
+    [snapshot] = await _snapshots(session)
+
+    response = await client.post(
+        f"/api/config/snapshots/{snapshot.id}/restore",
+        headers=auth_headers,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 200, response.text
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert "favourite" not in stored["providers"]
+    assert stored["workers"] == 9, "the delta itself still landed"
+    assert "plex" in stored, "and it landed as a whole document"
 
 
 async def test_a_restore_honours_the_revision_check(client, auth_headers):

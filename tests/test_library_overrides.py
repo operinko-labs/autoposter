@@ -450,7 +450,7 @@ def test_the_libraries_section_moves_no_render_version(config_factory):
 def test_a_library_with_no_block_gets_the_config_object_itself(config_factory):
     """Identity, not equality. The ordinary deployment -- every one whose
     operator never opened the matrix -- must allocate nothing at all, which
-    is the posture ``without_migrated_sections`` already takes for the same
+    is the posture ``without_migrated_settings`` already takes for the same
     reason."""
     config = config_factory()
     assert config_for_library(config, "Movies") is config

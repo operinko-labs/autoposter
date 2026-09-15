@@ -86,7 +86,7 @@ from autoposter.config.overrides import (
     store_row,
     unknown_key_paths,
     with_restart_paths,
-    without_migrated_sections,
+    without_migrated_settings,
     write_store,
 )
 from autoposter.config.schema import Config, library_override_refusals
@@ -2428,7 +2428,7 @@ async def preview_config_overrides(
     impact beside a real collection-poster count. Also an over-estimate --
     render it with a "~".
 
-    Migrated sections are stripped first, for the same reason
+    Migrated sections and settings are stripped first, for the same reason
     ``import_config_overrides`` strips them: a pre-migration backup previewed
     here must validate the same way importing it would, or the panel's
     "Import these settings" button never appears for the file the strip
@@ -2436,7 +2436,7 @@ async def preview_config_overrides(
     """
     before = request.app.state.config
     _, after, _whole = await _validated_generation(
-        request, without_migrated_sections(body.document)
+        request, without_migrated_settings(body.document)
     )
     impact = None
     collection_posters = 0
@@ -2594,11 +2594,11 @@ async def restore_config_snapshot(
     taken, and a snapshot from before a schema change must fail loudly here
     rather than brick the pod at the next boot.
 
-    ``without_migrated_sections`` runs first, and it is not optional. A whole
-    section that left the schema is stripped from the *stored* document on
-    every read, but a raw snapshot row still holds it -- so without this the
-    one recovery path would 422 on exactly the old snapshots recovery exists
-    for.
+    ``without_migrated_settings`` runs first, and it is not optional. A whole
+    section or an individual setting that left the schema is stripped from the
+    *stored* document on every read, but a raw snapshot row still holds it --
+    so without this the one recovery path would 422 on exactly the old
+    snapshots recovery exists for.
 
     A snapshot older than the store format is a DELTA, not a document: it is a
     statement about the file that was mounted when it was taken, and it is
@@ -2614,7 +2614,7 @@ async def restore_config_snapshot(
                 status_code=404, detail=f"no config snapshot {snapshot_id}"
             ) from None
 
-    candidate = without_migrated_sections(snapshot)
+    candidate = without_migrated_settings(snapshot)
     is_delta = snapshot_format < STORE_FORMAT
     if is_delta:
         base = _read_file_document(request.app.state.config_path)
@@ -2637,6 +2637,14 @@ async def restore_config_snapshot(
             raise HTTPException(
                 status_code=422, detail=[_error("secrets", str(exc))]
             ) from exc
+        # For ``migrate_delta_to_document``'s reason, and it has to come after
+        # the merge: the snapshot above has been stripped, the mounted file
+        # underneath it has not, so a setting that left the schema re-enters
+        # from the file's side -- on exactly the deployment this strip is for,
+        # whose file is how the keys reached the store to begin with. Leaves
+        # only, so a ``version_check:`` section the file names is still
+        # refused rather than dropped.
+        candidate = without_migrated_settings(candidate, drop_sections=False)
 
     document, after, whole = await _validated_generation(
         request, candidate, check_empty_leaves=not is_delta
@@ -2771,7 +2779,7 @@ async def import_config_file(
     """Store the mounted configuration file as the configuration.
 
     The drift notice's Import. Everything after the read is
-    ``import_config_overrides``: the same ``without_migrated_sections``, the
+    ``import_config_overrides``: the same ``without_migrated_settings``, the
     same ``_validated_generation``, the same ``_persist_and_swap`` with the
     same drop cap, pre-write snapshot and revision check, under the same
     ``import`` reason. There is no import-only write path here and there must
@@ -2793,7 +2801,7 @@ async def import_config_file(
             raise HTTPException(status_code=409, detail=FILE_CHANGED_REFUSAL)
 
     document, after, whole = await _validated_generation(
-        request, without_migrated_sections(file_document)
+        request, without_migrated_settings(file_document)
     )
     return await _persist_and_swap(
         request,
@@ -2863,7 +2871,7 @@ async def import_config_overrides(
     is precisely the reason to route it through the guards rather than around
     them.
 
-    Migrated sections are stripped first, for the reason
+    Migrated sections and settings are stripped first, for the reason
     ``restore_config_snapshot`` gives: a file exported before a section left the
     schema is exactly the file somebody reaches for a year later.
     """
@@ -2880,7 +2888,7 @@ async def import_config_overrides(
         )
 
     document, after, whole = await _validated_generation(
-        request, without_migrated_sections(body.document)
+        request, without_migrated_settings(body.document)
     )
     return await _persist_and_swap(
         request,
