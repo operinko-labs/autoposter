@@ -106,6 +106,17 @@ function labelFor(key: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+/** The two sections the Servers tab already shows a card for. The card's own
+ * accordion is called "Plex"; this one holds the leaves that are not on it, so
+ * it says so rather than naming the same server a second time.
+ *
+ * Applied only on the Servers tab, so the rename is tied to the tab the cards
+ * are on rather than to the section name wherever it is later keyed. */
+const SERVERS_TAB_SECTION_TITLE: Record<string, string> = {
+  plex: "More Plex settings",
+  jellyfin: "More Jellyfin settings",
+};
+
 /** The reason a restart is needed for `path`, or undefined if it is live.
  * `frozen_paths` keys are prefixes: `notifications` freezes everything under
  * it. `live` wins over all of them -- a path the server reads per use is live
@@ -547,7 +558,11 @@ function ConfigSections({
       {sections.map(([key, value]) => (
         <SettingsAccordion
           key={key}
-          title={labelFor(key)}
+          title={
+            tab === "servers"
+              ? (SERVERS_TAB_SECTION_TITLE[key] ?? labelFor(key))
+              : labelFor(key)
+          }
           open={openSection === key}
           onToggle={() => onOpen(openSection === key ? null : key)}
           restartReason={frozenReason(editor.frozen, editor.live, key)}
@@ -1061,7 +1076,11 @@ export function Settings() {
         role="tabpanel"
         aria-labelledby={`settings-tab-${tab}`}
       >
-        {config === null && <p className="muted">Loading…</p>}
+        {/* A read that failed is not a read still running: the error line
+            above says what happened, and a panel that went on saying
+            "Loading…" under it would promise something that is never
+            coming. */}
+        {config === null && error === null && <p className="muted">Loading…</p>}
         {/* The cards, the Add a server row and the library map. Mounted only
             once the configuration has been served, because the five
             server-specific switches the cards show are leaves of that

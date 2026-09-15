@@ -16,6 +16,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ServersTab, cardsToOpen } from "./ServersTab";
+import { ApiError } from "../api/client";
 import type { ServerRow } from "../api/servers";
 import type { ConfigResponse } from "../api/types";
 
@@ -183,13 +184,17 @@ describe("cardsToOpen", () => {
 
 describe("ServersTab", () => {
   it("names each configured server once, and leaves a settled card closed", async () => {
-    router(listing(PLEX_ONLY));
+    const calls = router(listing(PLEX_ONLY));
     await renderTab();
 
     // The accordion's title is the only place the server is named: the card
     // inside carries no heading of its own.
     expect(screen.getAllByRole("button", { name: "Plex" })).toHaveLength(1);
     expect(screen.queryByLabelText("Plex address")).toBeNull();
+    // A closed accordion renders no body, so the card is not mounted and
+    // reads nothing -- which is the whole point of opening only the cards
+    // that need attention, and is a request rather than a rendering.
+    expect(countOf(calls, "GET", "/api/servers/plex/catch-up")).toBe(0);
     // An unconfigured server has no card at all -- it is offered under Add a
     // server instead.
     expect(screen.queryByRole("button", { name: "Jellyfin" })).toBeNull();
@@ -261,6 +266,17 @@ describe("ServersTab", () => {
     ).not.toBeChecked();
   });
 
+  it("reads a leaf that is not a boolean as off, not as truthy", async () => {
+    router(listing(PLEX_NEEDS_A_KEY));
+    // A document no save from this page could have produced, so the box has
+    // to refuse it rather than tick itself on a non-empty string.
+    await renderTab({ config: { badges: { upload_to_plex: "yes" } } });
+
+    expect(
+      screen.getByLabelText("Upload badged artwork to Plex"),
+    ).not.toBeChecked();
+  });
+
   it("re-reads the listing and the page after a card writes", async () => {
     const calls = router({
       ...listing(JELLYFIN_NEEDS_A_KEY),
@@ -280,6 +296,45 @@ describe("ServersTab", () => {
     expect(countOf(calls, "PUT", "/api/servers/jellyfin/credential")).toBe(1);
     expect(countOf(calls, "GET", "/api/servers")).toBe(2);
     expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a card's success note when the page's own re-read fails", async () => {
+    router({
+      ...listing(JELLYFIN_NEEDS_A_KEY),
+      "PUT /api/servers/jellyfin/credential": () =>
+        json({ name: "jellyfin", credential_source: "stored" }),
+    });
+    await renderTab({
+      onChanged: () =>
+        Promise.reject(new ApiError(500, "the configuration could not be read")),
+    });
+
+    fireEvent.change(screen.getByLabelText("Jellyfin credential"), {
+      target: { value: "a-key" },
+    });
+    await click("Save credential");
+
+    // The write landed. A re-read that failed afterwards is said here, not
+    // thrown back into the card, where it would be rendered as that write's
+    // refusal and take the note with it -- and an operator reading that types
+    // a stored credential in a second time.
+    expect(
+      screen.getByText(/Stored Jellyfin's credential/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("the configuration could not be read"),
+    ).toBeInTheDocument();
+  });
+
+  it("says so when the listing carries no servers at all", async () => {
+    // What `fetchServers` answers for a 200 whose body has no list: a blank
+    // tab would read as one that had not finished loading.
+    router({ "GET /api/servers": () => json({}) });
+    await renderTab();
+
+    expect(
+      screen.getByText("This deployment listed no servers."),
+    ).toBeInTheDocument();
   });
 
   it("offers the library map only when both servers are configured", async () => {

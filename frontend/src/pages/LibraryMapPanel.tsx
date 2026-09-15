@@ -281,7 +281,8 @@ export function LibraryMapPanel({
         items. Libraries called the same thing on both servers pair themselves,
         so those rows are not stored and cannot be cleared. Every name here
         comes from the servers&apos; own listings, and each Jellyfin library can
-        be paired with one Plex library.
+        be paired with one Plex library. A server added here is not mapped
+        until this deployment restarts.
       </p>
       {readError !== null && <p className="page-error">{readError}</p>}
       {dropped.map((sentence) => (

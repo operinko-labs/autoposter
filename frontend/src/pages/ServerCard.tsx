@@ -61,13 +61,22 @@ import {
 } from "../api/servers";
 import { formatTime } from "../format";
 
-const LABELS: Record<string, string> = { plex: "Plex", jellyfin: "Jellyfin" };
+/** What each server is called on screen. Exported because the tab titles this
+ * card's accordion with it: two copies would be two names for one server, one
+ * of them on the header and the other inside every field label under it. */
+export const LABELS: Record<string, string> = { plex: "Plex", jellyfin: "Jellyfin" };
 
 /** The switches this card owns, per server, matching `api/servers.py`'s
  * `SERVER_SWITCHES` exactly. A path that table does not name is a 422 naming
  * the key, which is a refusal an operator cannot act on, so the two tables say
- * the same thing. */
-const SWITCHES: Record<string, { path: string; label: string }[]> = {
+ * the same thing.
+ *
+ * Exported because the tab reads these paths out of the served configuration
+ * and hands their values back here. Derived there rather than listed again: a
+ * switch added below and forgotten in a second list would show its box off
+ * while the document said on, and this card is the only place that setting
+ * appears on that tab. */
+export const SWITCHES: Record<string, { path: string; label: string }[]> = {
   plex: [
     { path: "badges.upload_to_plex", label: "Upload badged artwork to Plex" },
     { path: "operations.write_to_plex", label: "Write metadata to Plex" },
@@ -375,10 +384,11 @@ export function ServerCard({
   );
 
   return (
-    // Not a panel of its own: this card sits inside the Servers tab's
-    // accordion, which is the panel, and a second bordered box inside it
-    // would be a fourth level of visual nesting where the page allows three.
-    <section className="server-card">
+    // Not a panel of its own, and no class of its own: this card sits inside
+    // the Servers tab's accordion, which is the panel, and a second bordered
+    // box inside it would be a fourth level of visual nesting where the page
+    // allows three. The one thing that needed laying out is the pill row.
+    <section>
       {/* The pills, and no heading of its own: the accordion this card sits
           inside is titled with the server's name, so a heading here would name
           the same server a second time one line below the first. */}

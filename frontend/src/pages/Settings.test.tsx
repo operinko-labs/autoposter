@@ -153,9 +153,13 @@ describe("Settings configuration", () => {
     await renderSettings();
 
     // Top-level objects become accordions, each on the tab its section maps
-    // to, with the heading carried by the accordion's own toggle.
-    openSection("Servers", "Plex");
-    expect(screen.getByRole("heading", { name: "Plex" })).toBeInTheDocument();
+    // to, with the heading carried by the accordion's own toggle. On the
+    // Servers tab the section's title says which half of the server it holds,
+    // because the card above it is the one called "Plex".
+    openSection("Servers", "More Plex settings");
+    expect(
+      screen.getByRole("heading", { name: "More Plex settings" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Excluded libraries")).toBeInTheDocument();
     // The values are editable fields now rather than text, so they are read
     // off the widgets -- the row labels above are still plain text.
@@ -321,6 +325,10 @@ describe("Settings configuration", () => {
     render(<Settings />);
 
     expect(await screen.findByText("config unreadable")).toBeInTheDocument();
+    // And the panel stops claiming a read is still running: this test's name
+    // is the promise, and "Loading…" sitting under the sentence above would
+    // be the page making one it cannot keep.
+    expect(screen.queryByText("Loading…")).toBeNull();
     // The attribution is static and must survive an API failure -- it is a
     // licence condition, not a view of server data. It lives on the Artwork
     // tab now, and that tab renders it without waiting for a config load that
@@ -731,7 +739,7 @@ describe("Settings editor", () => {
       ),
     });
     await renderSettings();
-    openSection("Servers", "Plex");
+    openSection("Servers", "More Plex settings");
 
     fireEvent.change(screen.getByLabelText("plex.url"), {
       target: { value: "not a url" },
@@ -766,7 +774,7 @@ describe("Settings editor", () => {
       ),
     });
     await renderSettings();
-    openSection("Servers", "Plex");
+    openSection("Servers", "More Plex settings");
 
     fireEvent.change(screen.getByLabelText("plex.url"), {
       target: { value: "not a url" },
@@ -858,7 +866,7 @@ describe("Settings editor", () => {
   it("does not demand a restart for a live path inside a frozen section", async () => {
     stubApi();
     await renderSettings();
-    openSection("Servers", "Plex");
+    openSection("Servers", "More Plex settings");
 
     // `plex` is frozen as a whole, but this one path is read per use -- the
     // server says so in `live_paths`, and the save response already omits it.
@@ -936,7 +944,7 @@ describe("Settings editor", () => {
     expect(screen.getByLabelText("workers")).toHaveAttribute("type", "number");
     // Awaited: coming BACK to Servers mounts its cards again, and the listing
     // they read would otherwise land after this test has ended.
-    await openSettled("Servers", "Plex");
+    await openSettled("Servers", "More Plex settings");
     expect(screen.getByLabelText("plex.url")).toHaveAttribute("type", "text");
     expect(screen.getByLabelText("plex.excluded_libraries[0]")).toHaveAttribute(
       "type",
@@ -947,7 +955,7 @@ describe("Settings editor", () => {
   it("edits a string list as a whole list at its own path", async () => {
     const fetchMock = stubApi();
     await renderSettings();
-    openSection("Servers", "Plex");
+    openSection("Servers", "More Plex settings");
 
     fireEvent.click(screen.getByRole("button", { name: "Add to plex.excluded_libraries" }));
     fireEvent.change(screen.getByLabelText("plex.excluded_libraries[2]"), {
@@ -1019,7 +1027,7 @@ describe("Settings editor", () => {
       },
     });
     await renderSettings();
-    openSection("Servers", "Plex");
+    openSection("Servers", "More Plex settings");
 
     fireEvent.change(screen.getByLabelText("plex.url"), {
       target: { value: "http://plex:32401" },
@@ -1585,7 +1593,7 @@ describe("Settings preview", () => {
       },
     });
     await renderSettings();
-    openSection("Servers", "Plex");
+    openSection("Servers", "More Plex settings");
 
     fireEvent.change(screen.getByLabelText("plex.url"), {
       target: { value: "not a url" },
@@ -2048,25 +2056,22 @@ describe("Settings tabs", () => {
     expect(screen.queryByRole("button", { name: "Collections" })).not.toBeInTheDocument();
   });
 
+  /** One configured Plex, as `GET /api/servers` answers it. */
+  const PLEX_ROW = {
+    name: "plex",
+    configured: true,
+    url: "http://plex:32400",
+    excluded_libraries: [],
+    credential_source: "stored",
+    restart_pending: false,
+    health: { ok: true, detail: null, checked_at: null },
+  };
+
   it("puts the server cards on the Servers tab, outside the pending change", async () => {
     // A configuration with no `plex` section of its own, so the only thing
     // named "Plex" on the tab is the card's own accordion.
     stubByUrl(
-      {
-        "/api/servers": {
-          servers: [
-            {
-              name: "plex",
-              configured: true,
-              url: "http://plex:32400",
-              excluded_libraries: [],
-              credential_source: "stored",
-              restart_pending: false,
-              health: { ok: true, detail: null, checked_at: null },
-            },
-          ],
-        },
-      },
+      { "/api/servers": { servers: [PLEX_ROW] } },
       { workers: 5, badges: { upload_to_plex: false }, overrides_revision: "rev-1" },
     );
     await renderSettings();
@@ -2078,9 +2083,36 @@ describe("Settings tabs", () => {
 
     // A card saves on its own and never joins the page's pending change, so
     // nothing done inside one raises the sticky bar -- not even a switch that
-    // is an ordinary setting elsewhere on the page.
+    // is an ordinary setting elsewhere on the page. Both halves are stated:
+    // a card that swallowed the click would satisfy the second on its own.
     fireEvent.click(screen.getByLabelText("Upload badged artwork to Plex"));
+    expect(screen.getByLabelText("Upload badged artwork to Plex")).toBeChecked();
     expect(screen.queryByText(/Unsaved changes on:/)).toBeNull();
+  });
+
+  it("does not name one server twice on the tab that carries its card", async () => {
+    // The card's accordion and the generic editor for the leaves the card
+    // does not carry -- `plex.resolve_max_attempts` and its siblings -- are
+    // both on this tab, and two controls with one accessible name is a tab
+    // where "Plex" resolves to neither of them.
+    stubByUrl(
+      { "/api/servers": { servers: [PLEX_ROW] } },
+      {
+        workers: 5,
+        plex: { resolve_max_attempts: 10 },
+        overrides_revision: "rev-1",
+      },
+    );
+    await renderSettings();
+
+    expect(screen.getByRole("button", { name: "Plex" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "More Plex settings" }),
+    ).toBeInTheDocument();
+    // ...and the rename is tied to this tab, not to the section: the same
+    // key on any other tab would still be titled from its own name.
+    fireEvent.click(screen.getByRole("button", { name: "More Plex settings" }));
+    expect(screen.getByLabelText("plex.resolve_max_attempts")).toHaveValue(10);
   });
 
   it("collapses every section until one is opened", async () => {

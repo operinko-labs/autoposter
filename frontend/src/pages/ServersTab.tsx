@@ -30,25 +30,20 @@ import { readPath, refusalMessage } from "../api/overrides";
 import { fetchServers, type ServerRow } from "../api/servers";
 import type { ConfigResponse } from "../api/types";
 import { LibraryMapPanel } from "./LibraryMapPanel";
-import { ServerCard } from "./ServerCard";
+import { LABELS, ServerCard, SWITCHES } from "./ServerCard";
 import { SettingsAccordion } from "./SettingsAccordion";
-
-const LABELS: Record<string, string> = { plex: "Plex", jellyfin: "Jellyfin" };
 
 /** Every switch a card on this tab can show, as a dotted path into the served
  * configuration.
  *
- * One list for both cards rather than one per server: `ServerCard` keys its
- * save off its OWN table, so a path meant for the other server is read and
- * handed over but can never be sent, and a single list cannot fall out of step
- * with itself the way two would. */
-const SWITCH_PATHS = [
-  "badges.upload_to_plex",
-  "operations.write_to_plex",
-  "badges.upload_to_jellyfin",
-  "operations.write_to_jellyfin",
-  "jellyfin.replace_thumb_with_backdrop",
-];
+ * DERIVED from the card's own table rather than listed again: a switch added
+ * there and forgotten here would read `false` whatever the document said, and
+ * the box would show off over a setting that is on. One list for both cards,
+ * because the card keys its SAVE off its own half of that table -- a path
+ * meant for the other server is read and handed over but can never be sent. */
+const SWITCH_PATHS = Object.values(SWITCHES).flatMap((entries) =>
+  entries.map((entry) => entry.path),
+);
 
 /** What the five switches are set to now.
  *
@@ -146,7 +141,15 @@ export function ServersTab({
    * switches come from the page's configuration, so the two reads are the two
    * halves of one card and a write is only settled once both have landed. The
    * page is re-read even when the listing failed -- the write happened, and
-   * the configuration is a separate read that has no reason to be skipped. */
+   * the configuration is a separate read that has no reason to be skipped.
+   *
+   * NEITHER HALF IS ALLOWED TO THROW BACK INTO THE CARD. A card awaits this
+   * inside the same block that catches its write's refusal, so a re-read that
+   * failed after a write that landed would be rendered as that write's own
+   * error -- and would take the card's "Stored ...'s credential" note with it,
+   * which is an operator typing a stored secret in a second time. Both are
+   * reported here, where they are what they are: the write happened, and the
+   * screen is one read behind. */
   async function changed() {
     try {
       setServers(await fetchServers());
@@ -154,7 +157,11 @@ export function ServersTab({
     } catch (caught) {
       setError(refusalMessage(caught));
     }
-    await onChanged();
+    try {
+      await onChanged();
+    } catch (caught) {
+      setError(refusalMessage(caught));
+    }
   }
 
   function toggle(name: string) {
@@ -190,13 +197,28 @@ export function ServersTab({
         <section className="panel">
           <p className="page-error">{error}</p>
           <div className="config-actions">
-            <button type="button" onClick={() => setAttempt((count) => count + 1)}>
+            <button
+              type="button"
+              // The sentence goes with the press, so a read that takes its
+              // time reads as something happening rather than as a dead
+              // button under a failure that is still on screen.
+              onClick={() => {
+                setError(null);
+                setAttempt((count) => count + 1);
+              }}
+            >
               Try again
             </button>
           </div>
         </section>
       )}
       {servers === null && error === null && <p className="muted">Loading…</p>}
+      {/* Only reachable from a 200 whose body carried no server list, which
+          `fetchServers` reads as none rather than letting the tab throw. A
+          blank tab would look like a page that had not finished loading. */}
+      {servers !== null && rows.length === 0 && error === null && (
+        <p className="muted">This deployment listed no servers.</p>
+      )}
 
       {shown.map((server) => (
         // The accordion's title is the only place this server is named: the
