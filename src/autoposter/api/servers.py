@@ -1,5 +1,6 @@
 """The Servers tab's backend (spec §5): list them, probe one, read its
-libraries, catch up, and retry what failed.
+libraries, save or remove one, set or clear its credential, catch up, and retry
+what failed.
 
 The listing and the two live reads are here because the tab asks on a RUNNING
 deployment the same two questions the wizard asks before there is one -- does
@@ -51,6 +52,18 @@ per request; it is not written down as safe.
 Everything served here is a name, an address the operator already typed, a
 boolean, a timestamp or one of the fixed sentences below. No credential, ever.
 
+NEITHER WRITE OWNS A WRITE PATH. A card's save and a card's removal are edits
+to the configuration document, so they go through ``api/routes.py``'s
+``_validated_generation`` and ``_persist_and_swap`` -- the two functions a
+settings save goes through -- and get that path's validation, pre-write
+snapshot, drop cap, stale-revision 409, audit event and restart list by
+construction rather than by a second implementation that would drift from it.
+The credential routes delegate the same way, to ``api/secrets_api.py``, so the
+value rules, the encryption and the rebind of ``app.state.secrets`` stay in the
+one module whose subject they are. What is left here is the translation: a
+server NAME into a document section, a switch table, and the two refusals that
+are about a button rather than about a document.
+
 The catch-up and retry-failed buttons own no logic of their own --
 ``catchup.py`` does -- and their whole job is turning a ``CatchUpRefused`` into
 a 409 whose ``detail`` is the sentence the button shows, so the operator reads
@@ -64,12 +77,15 @@ from pydantic import BaseModel, ConfigDict
 
 from autoposter.api import setup_checks
 from autoposter.api.auth import require_session
-from autoposter.api.secrets_api import _FIELD_FOR_NAME
+from autoposter.api.secrets_api import (
+    SecretBody, _FIELD_FOR_NAME, clear_stored_secret, set_secret,
+)
 from autoposter.api.setup import PUBLIC_URL_NOT_AN_ADDRESS, _require_http_url
 from autoposter.catchup import (
     CatchUpRefused, cancel_catch_up, catch_up_progress, retry_failed, start_catch_up,
 )
 from autoposter.config import secret_store
+from autoposter.config.overrides import STORE_FORMAT, load_store
 from autoposter.config.schema import secret_sources
 from autoposter.db.models import Session as SessionModel
 from autoposter.servers import probe
@@ -81,9 +97,14 @@ router = APIRouter()
 #: The probe's own refusal for a name this service manages no server by, so a
 #: card and the wizard answer one sentence about one typo.
 NOT_A_SERVER = probe.NOT_A_SERVER
+#: The BOOTED generation's address is the one a probe may reuse the held
+#: credential against, so an address that is saved but not yet restarted onto
+#: is not an address this deployment has -- and the sentence says so, rather
+#: than saying "no stored address" to an operator looking straight at the one
+#: they just saved on the card.
 NEEDS_AN_ADDRESS = (
-    "this server has no stored address, so the address to check must be sent "
-    "with the request"
+    "this deployment has no address it booted with for this server, so the "
+    "address to check must be sent with the request"
 )
 NEEDS_A_CREDENTIAL = (
     "this server has no credential; set one on its card before checking it"
@@ -225,6 +246,16 @@ async def list_servers(
     owns that rule and this is the same map it serves, asked with the names of
     the rows that DECRYPT rather than the rows that merely exist, in the same
     expression that discards their values.
+
+    ``restart_pending`` is the one place the card sees BOTH generations at
+    once: the saved address differs from the one this process booted with, so
+    the clients, the liveness poller and the scheduler's server factory are
+    still pointed at the old one and the check button still probes it. A save
+    swaps the generation without a restart, which is why this is a fact worth
+    serving rather than an impossibility -- and the save's own
+    ``restart_required`` says the same thing once, at the moment of the save,
+    while this says it for as long as it stays true and to every admin who
+    opens the tab.
     """
     async with request.app.state.session_factory() as session:
         readable = sorted(await secret_store.load_stored_secrets(session))
@@ -235,6 +266,7 @@ async def list_servers(
         # one question a save answers immediately.
         block = _block(request.app.state.config, name)
         url = getattr(block, "url", "") or ""
+        booted = _block(request.app.state.booted_config, name)
         servers.append(
             {
                 "name": name,
@@ -242,6 +274,7 @@ async def list_servers(
                 "url": url or None,
                 "excluded_libraries": list(getattr(block, "excluded_libraries", []) or []),
                 "credential_source": sources[probe.SERVER_CREDENTIAL[name]],
+                "restart_pending": url != (getattr(booted, "url", "") or ""),
                 "health": _health(request, name),
             }
         )
@@ -323,6 +356,298 @@ async def libraries(
             {"id": row.id, "name": row.name, "kind": row.kind} for row in found
         ]
     }
+
+
+LAST_SERVER = (
+    "this is the only configured media server; configure another one before "
+    "removing it"
+)
+NOT_THIS_SERVERS_SWITCH = "that setting does not belong to this server"
+#: A store that still holds a DELTA over the mounted file. A save is fine on
+#: one -- the delta arm merges, which is exactly what a settings save does --
+#: but a removal is not: dropping a key from a delta stops OVERRIDING the
+#: file's block, it does not remove it, so the card would report a removal that
+#: changed nothing. The next start converts the store (``config/overrides.py``'s
+#: ``migrate_delta_to_document``), and then the removal means what it says.
+DELTA_STORE_CANNOT_REMOVE = (
+    "this deployment still stores its settings as changes to the mounted "
+    "configuration file, and removing a server from those would leave the "
+    "file's own block in force; restart this deployment, which converts the "
+    "stored settings into a whole document, then remove the server"
+)
+
+#: The switches a card may set, per server (spec §5). Compiled in, so a body
+#: can never reach a config path this table does not name.
+SERVER_SWITCHES: dict[str, tuple[str, ...]] = {
+    "plex": ("badges.upload_to_plex", "operations.write_to_plex"),
+    "jellyfin": (
+        "badges.upload_to_jellyfin",
+        "operations.write_to_jellyfin",
+        "jellyfin.replace_thumb_with_backdrop",
+    ),
+}
+
+
+class ServerBody(BaseModel):
+    """One card's save: address, exclusions and that server's switches.
+
+    A form, not a patch: a card saves as a unit because a server IS a unit --
+    address, credential and exclusions belong together (spec §5). The revision
+    and the confirm flag are the settings page's, unchanged, because this write
+    goes through the settings page's own write path.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    excluded_libraries: list[str] = []
+    switches: dict[str, bool] = {}
+    expected_revision: str | None = None
+    confirm: bool = False
+
+
+class ServerRemovalBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: str | None = None
+    confirm: bool = False
+
+
+def _config_write():
+    """The settings page's own two write functions, imported on use.
+
+    ``api/routes.py`` collects every sub-router in this package, this one
+    included, so a module-scope import here would close a cycle that neither
+    file can carry -- the same shape, and the same answer,
+    ``config/overrides.py`` uses for ``capture_snapshot``. Deferring it is what
+    lets a server write go through the settings page's write path rather than
+    around it, which is the whole point of these two routes.
+    """
+    from autoposter.api.routes import _persist_and_swap, _validated_generation
+
+    return _validated_generation, _persist_and_swap
+
+
+def _stored_block(document: dict, name: str) -> dict:
+    """This server's section of a stored DOCUMENT, or ``{}``.
+
+    Not ``_block``: that reads a built ``Config`` and answers a model. What a
+    save edits is the document, where an absent section is an absent key and
+    the keys it does carry are the operator's own -- ``library_map`` and
+    ``liveness_interval_seconds`` among them, which no card sends and which a
+    save must therefore carry through rather than default away.
+    """
+    block = document.get(name)
+    return dict(block) if isinstance(block, dict) else {}
+
+
+def _with_path(document: dict, path: str, value: object) -> dict:
+    """``document`` with one dotted path set, copied rather than mutated.
+
+    Copied because the document in hand was read from the store and is about to
+    be handed to a validator that may refuse it: nothing may be left changed on
+    the way to a 422.
+    """
+    head, _, rest = path.partition(".")
+    if not rest:
+        return {**document, head: value}
+    child = document.get(head)
+    return {
+        **document,
+        head: _with_path(child if isinstance(child, dict) else {}, rest, value),
+    }
+
+
+async def _stored(request: Request) -> tuple[dict, bool]:
+    """The stored document and whether it is a whole one.
+
+    The document a server write edits is the STORE's, never the running
+    generation's dump: the running generation is the mounted file plus the
+    store on a delta-era deployment, and writing its dump back would promote
+    the file's every value into overrides in passing.
+    """
+    async with request.app.state.session_factory() as session:
+        document, meta = await load_store(session)
+    return document, meta.get("format") == STORE_FORMAT
+
+
+def _configured(document: dict, config) -> list[str]:
+    """The servers this deployment has an address for.
+
+    Both sources, because either one alone is wrong on one of the two store
+    shapes: the document alone misses a server the mounted file configures,
+    and the running config alone misses nothing but is the merged generation,
+    which is the right answer here precisely because the refusal below is about
+    what this deployment HAS rather than about what its store says.
+    """
+    return [
+        name
+        for name in probe.SERVER_NAMES
+        if _stored_block(document, name).get("url")
+        or (getattr(_block(config, name), "url", "") or "")
+    ]
+
+
+@router.put("/servers/{name}")
+async def save_server(
+    name: str,
+    body: ServerBody,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Write this server's block into the stored document (spec §5).
+
+    Through ``_validated_generation`` and ``_persist_and_swap`` -- the settings
+    page's own two functions -- and not around them. That is what gives this
+    route the pre-write snapshot, the drop cap, the stale-revision 409, the
+    audit event and the restart-list update without a second implementation of
+    any of them; and it is what makes ``PUT /api/servers/jellyfin`` on a
+    Plex-only deployment add ``jellyfin`` to the restart list, because the
+    section is frozen and ``_restart_required`` already knows it.
+
+    The candidate is built from the STORED document, whatever shape it is in,
+    and handed over unchanged in that respect: a whole document is validated
+    whole, and a delta-era one is merged over the mounted file exactly as a
+    settings save of the same deployment would be. Neither arm is this route's
+    to choose -- ``_validated_generation`` reads the row's format and chooses,
+    which is the only way this save and the next boot can agree.
+    """
+    _known(name)
+    unknown = sorted(set(body.switches) - set(SERVER_SWITCHES[name]))
+    if unknown:
+        # The path, not the value: a body naming another server's switch is a
+        # page bug or a hand-written request, and either way the answer is
+        # which key was refused.
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {"path": path, "message": NOT_THIS_SERVERS_SWITCH} for path in unknown
+            ],
+        )
+    url = _require_http_url(body.url, PUBLIC_URL_NOT_AN_ADDRESS)
+
+    document, _whole = await _stored(request)
+    block = {
+        **_stored_block(document, name),
+        "url": url,
+        "excluded_libraries": list(body.excluded_libraries),
+    }
+    # The block first and the switches over it, because one of the switches
+    # LIVES in the block (`jellyfin.replace_thumb_with_backdrop`) and the card
+    # that sent it must win over the section it was carried through in.
+    candidate = {**document, name: block}
+    for path, value in body.switches.items():
+        candidate = _with_path(candidate, path, value)
+
+    validated_generation, persist_and_swap = _config_write()
+    validated, after, whole = await validated_generation(request, candidate)
+    result = await persist_and_swap(
+        request,
+        validated,
+        after,
+        whole_document=whole,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+    )
+    # The server NAME and the action -- never the address, which is the one
+    # thing an operator just typed and the one thing this module's header
+    # promises no log line carries.
+    logger.info("a media server's configuration was saved (%s)", name)
+    return result
+
+
+@router.delete("/servers/{name}")
+async def remove_server(
+    name: str,
+    request: Request,
+    body: ServerRemovalBody | None = None,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Drop this server's block and clear its stored credential (spec §5).
+
+    Refused when it would leave no server configured -- and refused HERE rather
+    than by ``build_config``'s own ``_at_least_one_media_server``, because that
+    validator's message is about a document and this refusal is about a button.
+    The document validator still stands behind it; this is the sentence an
+    operator reads.
+
+    The block goes, and with it everything that lived in it -- for Jellyfin
+    that is ``replace_thumb_with_backdrop`` and ``library_map``, which are
+    settings ABOUT a server this deployment no longer has. The two switches
+    that live elsewhere are turned off by name, because nothing else would:
+    ``badges.upload_to_<name>`` and ``operations.write_to_<name>`` would
+    otherwise stay true and describe uploads to a server that is gone.
+
+    The credential is cleared AFTER the document write commits. The other order
+    leaves a window where the block still names a server whose credential is
+    gone, which ``missing_server_setup`` reads as "not configured" -- a boot in
+    that window would serve the wizard.
+    """
+    _known(name)
+    body = body or ServerRemovalBody()
+    document, whole_store = await _stored(request)
+    if not whole_store:
+        raise HTTPException(status_code=409, detail=DELTA_STORE_CANNOT_REMOVE)
+    if _configured(document, request.app.state.config) == [name]:
+        raise HTTPException(status_code=409, detail=LAST_SERVER)
+
+    candidate = {key: value for key, value in document.items() if key != name}
+    for path in (f"badges.upload_to_{name}", f"operations.write_to_{name}"):
+        candidate = _with_path(candidate, path, False)
+
+    validated_generation, persist_and_swap = _config_write()
+    validated, after, whole = await validated_generation(request, candidate)
+    result = await persist_and_swap(
+        request,
+        validated,
+        after,
+        whole_document=whole,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+    )
+    await clear_stored_secret(probe.SERVER_CREDENTIAL[name], request, None)
+    logger.info("a media server was removed from the configuration (%s)", name)
+    return result
+
+
+@router.put("/servers/{name}/credential")
+async def set_server_credential(
+    name: str,
+    body: SecretBody,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Store this server's credential. Delegated, never re-implemented.
+
+    ``api/secrets_api.py`` owns the value rules, the key-file failure, the
+    encryption and the rebind of ``app.state.secrets``; this route owns the
+    translation from a server NAME to the environment name that credential is
+    known by. Re-implementing any of it here would be a second place for a
+    value to leak from, on a route whose whole subject is a credential.
+
+    The delegate's own refusals come back untouched -- an unstorable value is
+    its 422, in its words -- because two sentences about one rule is how a page
+    ends up telling an operator something the store does not believe.
+    """
+    _known(name)
+    answer = await set_secret(probe.SERVER_CREDENTIAL[name], body, request, None)
+    return {"name": name, "credential_source": answer["source"]}
+
+
+@router.delete("/servers/{name}/credential")
+async def clear_server_credential(
+    name: str, request: Request, _: SessionModel = Depends(require_session)
+) -> dict:
+    """Clear the stored credential; the next source down takes over.
+
+    ``credential_source`` is the delegate's ``source``, which is the layer that
+    now supplies the value rather than a fixed word: clearing a stored token on
+    a deployment whose environment also sets one answers ``environment``, and
+    the card must say so instead of claiming the server has no credential.
+    """
+    _known(name)
+    answer = await clear_stored_secret(probe.SERVER_CREDENTIAL[name], request, None)
+    return {"name": name, "credential_source": answer["source"]}
 
 
 class CatchUpBody(BaseModel):

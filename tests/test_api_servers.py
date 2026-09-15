@@ -15,12 +15,16 @@ import pytest_asyncio
 import yaml
 from httpx import ASGITransport, AsyncClient
 
+from autoposter.api import secrets_api
 from autoposter.api import servers as servers_api
 from autoposter.api.auth import hash_password
 from autoposter.api.setup import PUBLIC_URL_NOT_AN_ADDRESS
 from autoposter.app import create_app
+from autoposter.config import secret_store
 from autoposter.config.loader import build_config
-from autoposter.config.overrides import seed_store
+from autoposter.config.overrides import (
+    load_overrides_document, load_store, seed_store, store_meta, write_store,
+)
 from autoposter.config.schema import Secrets
 from autoposter.config.state import STATE_DIR_ENV
 from autoposter.jellyfin.health import JellyfinHealth
@@ -645,3 +649,335 @@ async def test_every_route_needs_a_session(client):
     assert (await client.get("/api/servers")).status_code == 401
     assert (await client.post("/api/servers/plex/check", json={})).status_code == 401
     assert (await client.post("/api/servers/plex/libraries", json={})).status_code == 401
+
+
+async def test_adding_a_server_writes_its_block_and_lists_it_for_restart(
+    client, auth_headers, session_factory
+):
+    """Spec section 5: the PUT writes the block into the stored document; the
+    section is frozen, so it lands on the restart list."""
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    response = await client.put(
+        "/api/servers/jellyfin",
+        json={
+            "url": "http://jellyfin:8096",
+            "excluded_libraries": ["Home Videos"],
+            "switches": {
+                "badges.upload_to_jellyfin": True,
+                "operations.write_to_jellyfin": True,
+                "jellyfin.replace_thumb_with_backdrop": True,
+            },
+            "expected_revision": seed["overrides_revision"],
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert "jellyfin" in response.json()["restart_required"]
+
+    async with session_factory() as session:
+        document, meta = await load_store(session)
+    assert document["jellyfin"]["url"] == "http://jellyfin:8096"
+    assert document["jellyfin"]["excluded_libraries"] == ["Home Videos"]
+    assert document["jellyfin"]["replace_thumb_with_backdrop"] is True
+    assert document["badges"]["upload_to_jellyfin"] is True
+    assert document["operations"]["write_to_jellyfin"] is True
+    assert "jellyfin" in meta["restart_paths"]
+
+
+async def test_a_save_keeps_the_block_keys_no_card_sends(
+    client, auth_headers, session_factory
+):
+    """``library_map`` is a Jellyfin setting with no field on the card, so a
+    save that defaulted it away would silently unmap every renamed library."""
+    await client.put(
+        "/api/servers/jellyfin",
+        json={"url": "http://jellyfin:8096", "excluded_libraries": [], "switches": {}},
+        headers=auth_headers,
+    )
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+        document["jellyfin"]["library_map"] = {"Films": "Movies"}
+        await write_store(session, document, store_meta())
+        await session.commit()
+
+    await client.put(
+        "/api/servers/jellyfin",
+        json={"url": "http://jellyfin:8097", "excluded_libraries": [], "switches": {}},
+        headers=auth_headers,
+    )
+    async with session_factory() as session:
+        after = await load_overrides_document(session)
+    assert after["jellyfin"]["library_map"] == {"Films": "Movies"}
+    assert after["jellyfin"]["url"] == "http://jellyfin:8097"
+
+
+async def test_a_switch_that_is_not_this_servers_is_refused(client, auth_headers):
+    response = await client.put(
+        "/api/servers/jellyfin",
+        json={
+            "url": "http://jellyfin:8096",
+            "excluded_libraries": [],
+            "switches": {"badges.upload_to_plex": False},
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert servers_api.NOT_THIS_SERVERS_SWITCH in response.text
+
+
+async def test_a_refused_switch_writes_nothing(client, auth_headers, session_factory):
+    """The refusal is reached before the document is touched, so the address
+    that came with it is not stored either."""
+    await client.put(
+        "/api/servers/jellyfin",
+        json={
+            "url": "http://jellyfin:8096",
+            "excluded_libraries": [],
+            "switches": {"operations.write_to_plex": True},
+        },
+        headers=auth_headers,
+    )
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "jellyfin" not in document
+
+
+async def test_an_address_that_is_not_an_address_is_refused_on_a_save(
+    client, auth_headers, session_factory
+):
+    """The same shared guard the probe uses, with its own sentence."""
+    response = await client.put(
+        "/api/servers/jellyfin",
+        json={
+            "url": "http://user:pass@jellyfin:8096",
+            "excluded_libraries": [],
+            "switches": {},
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == PUBLIC_URL_NOT_AN_ADDRESS
+    async with session_factory() as session:
+        assert "jellyfin" not in await load_overrides_document(session)
+
+
+async def test_a_stale_revision_is_refused(client, auth_headers, session_factory):
+    response = await client.put(
+        "/api/servers/jellyfin",
+        json={
+            "url": "http://jellyfin:8096",
+            "excluded_libraries": [],
+            "switches": {},
+            "expected_revision": "not-the-current-one",
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 409
+    async with session_factory() as session:
+        assert "jellyfin" not in await load_overrides_document(session)
+
+
+async def test_a_saved_address_is_reported_as_pending_a_restart(client, auth_headers):
+    """The swapped generation carries the new address; the booted one does not,
+    so the clients and the probe are still pointed at the old one."""
+    rows = {
+        row["name"]: row
+        for row in (
+            await client.get("/api/servers", headers=auth_headers)
+        ).json()["servers"]
+    }
+    assert rows["plex"]["restart_pending"] is False
+    assert rows["jellyfin"]["restart_pending"] is False
+
+    await client.put(
+        "/api/servers/jellyfin",
+        json={"url": "http://jellyfin:8096", "excluded_libraries": [], "switches": {}},
+        headers=auth_headers,
+    )
+    rows = {
+        row["name"]: row
+        for row in (
+            await client.get("/api/servers", headers=auth_headers)
+        ).json()["servers"]
+    }
+    assert rows["jellyfin"]["configured"] is True
+    assert rows["jellyfin"]["url"] == "http://jellyfin:8096"
+    assert rows["jellyfin"]["restart_pending"] is True
+    assert rows["plex"]["restart_pending"] is False
+
+
+async def test_a_saved_address_is_not_an_address_this_deployment_booted_with(
+    client, auth_headers
+):
+    """The probe reads the BOOTED generation, so a save alone does not give it
+    somewhere to send the held credential -- and the refusal says which
+    generation it means."""
+    await client.put(
+        "/api/servers/jellyfin",
+        json={"url": "http://jellyfin:8096", "excluded_libraries": [], "switches": {}},
+        headers=auth_headers,
+    )
+    response = await client.post(
+        "/api/servers/jellyfin/check", json={}, headers=auth_headers
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == servers_api.NEEDS_AN_ADDRESS
+
+
+async def test_removing_the_only_server_is_refused(
+    client, auth_headers, session_factory
+):
+    response = await client.request(
+        "DELETE", "/api/servers/plex", json={}, headers=auth_headers
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.LAST_SERVER
+    async with session_factory() as session:
+        assert (await load_overrides_document(session))["plex"]["url"]
+
+
+async def test_removing_a_server_drops_its_block_and_its_credential(
+    client, auth_headers, session_factory
+):
+    await client.put(
+        "/api/servers/jellyfin",
+        json={
+            "url": "http://jellyfin:8096",
+            "excluded_libraries": [],
+            "switches": {
+                "badges.upload_to_jellyfin": True,
+                "operations.write_to_jellyfin": True,
+            },
+        },
+        headers=auth_headers,
+    )
+    await client.put(
+        "/api/servers/jellyfin/credential",
+        json={"value": "jf-key"},
+        headers=auth_headers,
+    )
+    response = await client.request(
+        "DELETE", "/api/servers/jellyfin", json={"confirm": True}, headers=auth_headers
+    )
+    assert response.status_code == 200, response.text
+
+    async with session_factory() as session:
+        document, _meta = await load_store(session)
+        stored = await secret_store.load_stored_secrets(session)
+    assert "jellyfin" not in document
+    assert document["badges"]["upload_to_jellyfin"] is False
+    assert document["operations"]["write_to_jellyfin"] is False
+    assert "AUTOPOSTER_JELLYFIN_APIKEY" not in stored
+
+
+async def test_a_removal_from_a_delta_era_store_is_refused(
+    client, auth_headers, session_factory
+):
+    """Dropping a key from a delta stops overriding the mounted file's block;
+    it does not remove it. The card would report a removal that changed
+    nothing, so it is refused until the next start converts the store."""
+    await client.put(
+        "/api/servers/jellyfin",
+        json={"url": "http://jellyfin:8096", "excluded_libraries": [], "switches": {}},
+        headers=auth_headers,
+    )
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+        await write_store(session, document, store_meta(1))
+        await session.commit()
+
+    response = await client.request(
+        "DELETE", "/api/servers/jellyfin", json={"confirm": True}, headers=auth_headers
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.DELTA_STORE_CANNOT_REMOVE
+    async with session_factory() as session:
+        assert "jellyfin" in await load_overrides_document(session)
+
+
+async def test_the_credential_routes_report_the_source_and_no_value(
+    client, auth_headers
+):
+    response = await client.put(
+        "/api/servers/jellyfin/credential",
+        json={"value": "jf-key"},
+        headers=auth_headers,
+    )
+    assert response.json() == {"name": "jellyfin", "credential_source": "stored"}
+    assert "jf-key" not in response.text
+
+    rows = {
+        row["name"]: row
+        for row in (
+            await client.get("/api/servers", headers=auth_headers)
+        ).json()["servers"]
+    }
+    assert rows["jellyfin"]["credential_source"] == "stored"
+
+    cleared = await client.delete(
+        "/api/servers/jellyfin/credential", headers=auth_headers
+    )
+    assert cleared.json() == {"name": "jellyfin", "credential_source": "unset"}
+
+
+async def test_a_cleared_credential_answers_the_layer_that_takes_over(
+    client, auth_headers
+):
+    """Not a fixed word: the environment still supplies Plex's token, so the
+    card must say so rather than claim the server has no credential."""
+    await client.put(
+        "/api/servers/plex/credential",
+        json={"value": "a stored token"},
+        headers=auth_headers,
+    )
+    cleared = await client.delete("/api/servers/plex/credential", headers=auth_headers)
+    assert cleared.json() == {"name": "plex", "credential_source": "environment"}
+
+
+async def test_the_credential_delegates_refusal_comes_back_unchanged(
+    client, auth_headers
+):
+    """The store's own value rule, in the store's own words -- there is no
+    second copy of it here to disagree with."""
+    response = await client.put(
+        "/api/servers/jellyfin/credential",
+        json={"value": "two\nlines"},
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == secrets_api.VALUE_IS_NOT_STORABLE
+
+
+async def test_an_unknown_server_is_a_404_on_every_write(client, auth_headers):
+    assert (
+        await client.put(
+            "/api/servers/emby",
+            json={"url": "http://emby:8096", "excluded_libraries": [], "switches": {}},
+            headers=auth_headers,
+        )
+    ).status_code == 404
+    assert (
+        await client.request(
+            "DELETE", "/api/servers/emby", json={}, headers=auth_headers
+        )
+    ).status_code == 404
+    assert (
+        await client.put(
+            "/api/servers/emby/credential", json={"value": "x"}, headers=auth_headers
+        )
+    ).status_code == 404
+    assert (
+        await client.delete("/api/servers/emby/credential", headers=auth_headers)
+    ).status_code == 404
+
+
+async def test_every_write_route_needs_a_session(client):
+    body = {"url": "http://jellyfin:8096", "excluded_libraries": [], "switches": {}}
+    assert (await client.put("/api/servers/jellyfin", json=body)).status_code == 401
+    assert (
+        await client.request("DELETE", "/api/servers/jellyfin", json={})
+    ).status_code == 401
+    assert (
+        await client.put("/api/servers/jellyfin/credential", json={"value": "x"})
+    ).status_code == 401
+    assert (await client.delete("/api/servers/jellyfin/credential")).status_code == 401
