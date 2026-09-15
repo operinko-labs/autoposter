@@ -109,3 +109,33 @@ The drop cap, the revision check and the confirm flow protect the document as th
 ## 10. Testing
 
 Through the real entry points: boot with an empty store and a file seeds the store and never reads the file again; boot with no file and an empty store serves the wizard, and the wizard's finish writes the store; a stored secret wins over the state file and the environment, and clearing it falls through; the encryption key is generated once and a value encrypted with it is unreadable without it; `PUT /api/servers/jellyfin` on a Plex-only deployment adds the block, lists `jellyfin` in the restart list, and after `POST /api/system/restart` the registry holds both servers; `DELETE` of the last configured server is refused; the library-map accordion is served only with both servers configured and refuses a name the server does not list; the restart route is refused during a run; a delta-era snapshot restores correctly after the migration; the Settings page's tabs hold every section the served config has, each exactly once.
+
+## 11. Amendments
+
+Decisions the implementation had to make that the sections above did not name, recorded here so the next reader finds them beside the design rather than in a diff. Each names the section it amends.
+
+**1. Secret precedence (section 3).** Precedence is stored → state file → environment, as section 3 states it — but the last two have *swapped* relative to what `resolve_secret_values` did before this work, where the environment outranked the file. The reversal is deliberate: what an operator sets from the UI or the wizard must not be shadowed by a variable they cannot see from the page they set it on. Section 8's "a deployment that never stores a secret sees no difference" holds in practice, because no existing deployment has a value on both layers — the wizard writes to the state file only the names the environment left unresolved — so the reversal is a rule about what the UI and the wizard may do from now on rather than a change to any running deployment. Two consequences travel with it. `api/secret_rotation.py`'s refusal now keys on the name's *winning source* being `environment` rather than on the layer order; and `state_file_secret_names` lists a name the environment also carries, because the file is what answers it.
+
+**2. The store's own metadata (section 2).** The restart list and the store's format version live in a new `config_overrides.meta` column rather than inside `document`. Everything in `document` is validated by `build_config`, so an extra key there would come back as an "unknown setting" 422 on the very next save. Splitting them also means a boot can forget the restart list by writing one column, without reading, re-validating or rewriting the document beside it.
+
+**3. The database URL is not storable (section 3).** Every secret moves into the store except `AUTOPOSTER_DATABASE_URL`, which is what reading the store requires — storing it there would be a boot that needs the credential in order to find the credential. The wizard writes it to the state file instead, and `PUT /api/secrets/AUTOPOSTER_DATABASE_URL` is refused with a sentence saying where to set it.
+
+**4. The library map does land on the restart list (section 6).** Section 6 says changing the map adds nothing to the restart list on its own. It does: `save_library_map` writes `jellyfin.library_map` through the same `_persist_and_swap` every other save goes through, and `jellyfin` is a frozen section — the Jellyfin client and its library index are built once at startup from the map, so a saved map is genuinely not in force until the restart. The banner is what says so. The catch-up the map triggers is unaffected.
+
+**5. The Plex card does not open by itself on a fresh deployment (section 5).** Section 5's "a fresh deployment shows the Plex card open" describes a state that cannot be reached. The schema refuses a document with no server at all, and setup always configures one, so by the time the Servers tab exists there is never a deployment with nothing configured. The shipped rule is therefore the second half of that sentence alone: the tab opens every configured server that lacks a credential — the one shape that will not boot — and nothing else. The choice is made once from a visit's first listing and then left to the operator, so a card that opened itself does not close again on the re-read that follows storing the credential.
+
+**6. The section-to-tab map (section 7).** Section 7's table was editorial and was decided again against the schema as it actually is. What shipped is `SECTION_TAB` in `frontend/src/pages/settingsTabs.ts`:
+
+| Tab | Sections |
+|---|---|
+| Servers | `plex`, `jellyfin` |
+| Libraries | `libraries`, `cleanup`, `prune`, `merge`, `adopt` |
+| Artwork | `artwork`, `badges`, `providers`, `artwork_modes` |
+| Collections | `collections`, `playlists` |
+| Metadata | `operations`, `maintenance` |
+| Integrations | `radarr`, `sonarr`, `tracearr`, `arr_sync`, `notifications` |
+| System | `scheduler` |
+
+A section that map does not name falls back to System rather than vanishing from a page that renders only what it recognises. Four things on the page are not configuration sections and so are not in the map: the server cards and the library map on Servers, and the General accordion of top-level scalars, the secrets accordion, the config-safety panel and the drift notice on System.
+
+**7. Which accordions are remembered (section 7).** Section 7's "collapsed by default except the one last opened, remembered per browser" is the rule for the ordinary section accordions, and the secrets accordion joins them under a reserved key (`__secrets__`, as the General accordion uses `__general__`) so that opening it closes whichever section was open on that tab. The Servers tab's own accordions are outside that rule entirely: they open by amendment 5's rule, several can be open at once, and none of them is remembered. The two are different questions — "the section I was last reading" against "the card that needs attention" — and persisting the second would mean a card that opened itself because a credential was missing went on opening itself after the credential was stored.
