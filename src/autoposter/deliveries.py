@@ -616,6 +616,21 @@ async def retry_pending_deliveries(
                         _tally(delivery.server, "failed")
                         await rollup(session, render.id)
                         continue
+                    except ItemNotFound:
+                        # The identity server no longer holds this item -- a
+                        # stale ref, which no retry resolves, so waiting on it
+                        # left a delivery owed to ANOTHER server pending
+                        # forever against a server that has nothing to say.
+                        # `identity_item` stays `None`, which is exactly the
+                        # `server=None, ref=None` the compose below already
+                        # passes for an item with no Plex ref: the
+                        # resolution/format overlays drop out and the delivery
+                        # lands. Correcting the ref itself belongs to the full
+                        # pass, which is what writes refs.
+                        logger.info(
+                            "delivery to %s composes without %s's media info: it no longer has the item",
+                            delivery.server, identity_name,
+                        )
                     except Exception as exc:
                         # Never deliver overlay-less bytes: not being able to
                         # sample the identity server is a wait, and the row
@@ -633,7 +648,7 @@ async def retry_pending_deliveries(
                         )
                         await record(
                             session, render.id, delivery.server, "pending",
-                            detail=None if isinstance(exc, ItemNotFound) else failure_detail(exc),
+                            detail=failure_detail(exc),
                             retry_in=RETRY_SECONDS, count_attempt=False,
                         )
                         still_pending += 1
