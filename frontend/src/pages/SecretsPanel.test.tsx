@@ -6,6 +6,7 @@
  * and the rest of the assertions are names, sources and sentences.
  */
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { SecretsPanel } from "./SecretsPanel";
@@ -15,6 +16,11 @@ import { SecretsPanel } from "./SecretsPanel";
 const ROWS = {
   secrets: [
     { name: "AUTOPOSTER_DATABASE_URL", source: "environment", generated: false },
+    {
+      name: "AUTOPOSTER_ADMIN_PASSWORD_HASH",
+      source: "state file",
+      generated: false,
+    },
     { name: "AUTOPOSTER_TMDB_TOKEN", source: "stored", generated: false },
     { name: "AUTOPOSTER_TVDB_APIKEY", source: "environment", generated: false },
     { name: "AUTOPOSTER_FANART_APIKEY", source: "state file", generated: false },
@@ -49,11 +55,30 @@ function stubSecrets(
   );
 }
 
-async function renderPanel(onChanged?: () => void) {
+/** The page owns whether this accordion is open -- one open section per tab,
+ * remembered per browser -- so the tests drive it the way the page does, from
+ * the collapsed state a fresh browser starts in. */
+function Harness({ descriptions }: { descriptions?: Record<string, string> }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <SecretsPanel
+      descriptions={descriptions}
+      open={open}
+      onToggle={() => setOpen(!open)}
+    />
+  );
+}
+
+async function renderPanel() {
   await act(async () => {
-    render(<SecretsPanel onChanged={onChanged} />);
+    render(<Harness />);
   });
   fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
+}
+
+/** Type into a row's field, which is what its Set button waits for. */
+function typeInto(name: string, value: string) {
+  fireEvent.change(screen.getByLabelText(name), { target: { value } });
 }
 
 describe("SecretsPanel", () => {
@@ -67,7 +92,7 @@ describe("SecretsPanel", () => {
     // Two rows are answered as `environment`; one of them is a server
     // credential and is not listed here.
     expect(screen.getAllByText("environment")).toHaveLength(2);
-    expect(screen.getByText("state file")).toBeInTheDocument();
+    expect(screen.getAllByText("state file")).toHaveLength(2);
     expect(screen.getByText("unset")).toBeInTheDocument();
   });
 
@@ -119,9 +144,7 @@ describe("SecretsPanel", () => {
     const calls: { url: string; init?: RequestInit }[] = [];
     stubSecrets(calls);
     await renderPanel();
-    fireEvent.change(screen.getByLabelText("AUTOPOSTER_RADARR_APIKEY"), {
-      target: { value: "a-typed-key" },
-    });
+    typeInto("AUTOPOSTER_RADARR_APIKEY", "a-typed-key");
     await act(async () => {
       fireEvent.click(
         screen.getByRole("button", { name: "Set AUTOPOSTER_RADARR_APIKEY" }),
@@ -143,11 +166,11 @@ describe("SecretsPanel", () => {
     expect(field).toHaveAttribute("autocomplete", "off");
   });
 
-  it("re-reads the sources and the page's configuration after a write", async () => {
+  it("re-reads the sources after a write, and nothing else", async () => {
     const calls: { url: string; init?: RequestInit }[] = [];
-    const onChanged = vi.fn();
     stubSecrets(calls);
-    await renderPanel(onChanged);
+    await renderPanel();
+    typeInto("AUTOPOSTER_RADARR_APIKEY", "a-typed-key");
     await act(async () => {
       fireEvent.click(
         screen.getByRole("button", { name: "Set AUTOPOSTER_RADARR_APIKEY" }),
@@ -161,7 +184,54 @@ describe("SecretsPanel", () => {
           call.url === "/api/secrets" && (call.init?.method ?? "GET") === "GET",
       ),
     ).toHaveLength(2);
-    expect(onChanged).toHaveBeenCalled();
+    // And NOT the configuration: nothing on the settings page says where a
+    // secret comes from except this listing, so a re-read would buy nothing
+    // and would re-seed the editor over whatever is typed on another tab.
+    expect(calls.filter((call) => call.url === "/api/config")).toHaveLength(0);
+  });
+
+  it("offers no press until there is a value to send", async () => {
+    // The server answers an empty value with `VALUE_IS_NOT_STORABLE` every
+    // time, so a press on an untouched field is a guaranteed round trip to a
+    // refusal rather than a control.
+    const calls: { url: string; init?: RequestInit }[] = [];
+    stubSecrets(calls);
+    await renderPanel();
+    const set = screen.getByRole("button", {
+      name: "Set AUTOPOSTER_RADARR_APIKEY",
+    });
+    expect(set).toBeDisabled();
+
+    typeInto("AUTOPOSTER_RADARR_APIKEY", "a-typed-key");
+    expect(set).toBeEnabled();
+    // Emptying the field again takes the press away with it.
+    typeInto("AUTOPOSTER_RADARR_APIKEY", "");
+    expect(set).toBeDisabled();
+    expect(calls.filter((call) => call.init?.method === "PUT")).toHaveLength(0);
+  });
+
+  it("offers no field for the admin password, and says where it is set", async () => {
+    stubSecrets();
+    await renderPanel();
+    // The server takes this one, and takes it live for the very next sign-in
+    // -- so a field that accepted a password where a hash belongs would lock
+    // every sign-in out of the deployment at once.
+    expect(
+      screen.getByText("AUTOPOSTER_ADMIN_PASSWORD_HASH"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("AUTOPOSTER_ADMIN_PASSWORD_HASH"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", {
+        name: "Set AUTOPOSTER_ADMIN_PASSWORD_HASH",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The admin password is set at first start, or through this environment variable, not here.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("says what a cleared value hands back to, and when it takes effect", async () => {
@@ -199,6 +269,7 @@ describe("SecretsPanel", () => {
       ),
     );
     await renderPanel();
+    typeInto("AUTOPOSTER_RADARR_APIKEY", "a-typed-key");
     await act(async () => {
       fireEvent.click(
         screen.getByRole("button", { name: "Set AUTOPOSTER_RADARR_APIKEY" }),
@@ -229,7 +300,7 @@ describe("SecretsPanel", () => {
         ),
     );
     await act(async () => {
-      render(<SecretsPanel />);
+      render(<Harness />);
     });
     fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
 
@@ -246,7 +317,7 @@ describe("SecretsPanel", () => {
   it("says so when the listing answers no names at all", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ secrets: [] })));
     await act(async () => {
-      render(<SecretsPanel />);
+      render(<Harness />);
     });
     fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
 
@@ -278,7 +349,7 @@ describe("SecretsPanel", () => {
     stubSecrets();
     await act(async () => {
       render(
-        <SecretsPanel
+        <Harness
           descriptions={{
             "secrets.tmdb_token": "The TMDb API token metadata requests use.",
           }}
@@ -301,7 +372,7 @@ describe("SecretsPanel", () => {
   it("keeps the whole list behind one collapsed accordion", async () => {
     stubSecrets();
     await act(async () => {
-      render(<SecretsPanel />);
+      render(<Harness />);
     });
     // Nothing is mounted until the header is pressed: the body of a closed
     // accordion is not in the document at all.

@@ -392,6 +392,53 @@ describe("Settings configuration", () => {
       within(accordion).getByRole("button", { name: /rotate webhook secret/i }),
     ).toBeInTheDocument();
   });
+
+  it("holds the secrets accordion to the one-open-section rule, and remembers it", async () => {
+    // It had a private open state, so it opened alongside whatever section was
+    // already open and was forgotten on the next load -- a third contract on
+    // the one tab that carries the most panels.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) =>
+        json(
+          path === "/api/secrets"
+            ? {
+                secrets: [
+                  {
+                    name: "AUTOPOSTER_TMDB_TOKEN",
+                    source: "stored",
+                    generated: false,
+                  },
+                ],
+              }
+            : CONFIG,
+        ),
+      ),
+    );
+    let unmount = () => {};
+    await act(async () => {
+      unmount = render(<Settings />).unmount;
+    });
+    await openSettled("System", "General");
+    expect(screen.getByLabelText("workers")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
+    });
+
+    // One section open at a time: opening this one folds the other away.
+    expect(screen.queryByLabelText("workers")).toBeNull();
+    expect(screen.getByText("AUTOPOSTER_TMDB_TOKEN")).toBeInTheDocument();
+
+    // And remembered like any section: the next load of the page opens it
+    // again, without a press.
+    unmount();
+    await act(async () => {
+      render(<Settings />);
+    });
+    await openSettled("System");
+    expect(screen.getByText("AUTOPOSTER_TMDB_TOKEN")).toBeInTheDocument();
+  });
 });
 
 /** The editor's own fixture: it carries the keys the enriched GET adds that
@@ -620,9 +667,15 @@ describe("Settings editor", () => {
     expect(screen.getByRole("button", { name: "Restart now" })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
 
-    expect(screen.getByRole("button", { name: "Restart now" })).toBeDisabled();
+    const restart = screen.getByRole("button", { name: "Restart now" });
+    expect(restart).toBeDisabled();
+    // Scoped to the banner: every System-tab control that acts on the stored
+    // settings now carries this same sentence while an edit is pending, so the
+    // page holds more than one copy of it and this is the button's own.
     expect(
-      screen.getByText(/Save or discard the changes below first/),
+      within(restart.closest("section") as HTMLElement).getByText(
+        /Save or discard the changes below first/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -1038,7 +1091,7 @@ describe("Settings editor, redacted values", () => {
     expect(field).toHaveAttribute("title", REDACTED_EDIT_NOTE);
   });
 
-  it("shows the keep marker in the pending diff, never the truncated value", async () => {
+  it("says a replaced redaction was unchanged, naming neither the marker nor the truncated value", async () => {
     stubApi({ config: REDACTED_CONFIG });
     await renderSettings();
     openSection("Integrations", "Notifications");
@@ -1047,13 +1100,15 @@ describe("Settings editor, redacted values", () => {
     // what is being replaced, and the document holds the marker there. The
     // served rendering is a bare host with its push token already stripped,
     // so showing it as the "from" side would name a value that was never the
-    // setting.
+    // setting -- and the marker is a state rather than a value, so showing it
+    // as one reads as though the setting used to be that string.
     fireEvent.change(screen.getByLabelText("notifications.url"), {
       target: { value: "https://ntfy.example.net/newToken" },
     });
 
     const diff = document.querySelector(".config-diff") as HTMLElement;
-    expect(diff.textContent).toContain(KEEP);
+    expect(diff.textContent).toContain("(unchanged)");
+    expect(diff.textContent).not.toContain(KEEP);
     expect(diff.textContent).not.toContain("kuma.example.com");
   });
 

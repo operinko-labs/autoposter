@@ -70,12 +70,17 @@ const AGREEING = {
 /** The report is fetched on mount, so a render that is not awaited leaves a
  * state update outside act(). */
 async function mount(
-  props: { revision?: string | null; onChanged?: () => void } = {},
+  props: {
+    revision?: string | null;
+    pendingEdits?: boolean;
+    onChanged?: () => void;
+  } = {},
 ) {
   await act(async () => {
     render(
       <DriftNotice
         revision={props.revision ?? null}
+        pendingEdits={props.pendingEdits ?? false}
         onChanged={props.onChanged ?? (() => {})}
       />,
     );
@@ -286,6 +291,73 @@ describe("DriftNotice", () => {
     await press("Import the file");
 
     expect(screen.getByText(message)).toBeInTheDocument();
+  });
+
+  it("refuses the import while the page is holding an unsaved edit", async () => {
+    // The import replaces the whole stored configuration and this notice then
+    // re-seeds the page from it, so a press would throw the typing away with
+    // no message at all. The same rule, and the same sentence, as the restart
+    // button's -- carrying the edit across an import is not on offer.
+    const fetchMock = stubDrift(DIFFERING);
+    await mount({ pendingEdits: true });
+
+    expect(screen.getByRole("button", { name: "Import the file" })).toBeDisabled();
+    expect(
+      screen.getByText(/Save or discard the changes below first/),
+    ).toBeInTheDocument();
+    // The export writes nothing, so it stays available: it is how an operator
+    // keeps a copy of what is stored before deciding.
+    expect(screen.getByRole("button", { name: "Export the store" })).toBeEnabled();
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(0);
+  });
+
+  it("re-reads after a stale refusal, so the next press is composed against what the server holds", async () => {
+    // Both 409 arms leave this component holding the value that caused them --
+    // the page's revision, or the file's -- so without a re-read every press
+    // for the life of the page repeats the same refusal.
+    const reports = [
+      json(DIFFERING),
+      json({ ...DIFFERING, file_revision: "file-rev-2" }),
+    ];
+    const posts = [
+      json(
+        {
+          detail:
+            "the configuration file changed while this page was open, so " +
+            "nothing was imported",
+        },
+        409,
+      ),
+      json({ version_before: "abc123", version_after: "def456" }),
+    ];
+    const fetchMock = vi.fn((_input: string, init?: RequestInit) =>
+      Promise.resolve(
+        (init?.method ?? "GET") === "GET"
+          ? (reports.shift() ?? json(DIFFERING))
+          : (posts.shift() ?? json({})),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const onChanged = vi.fn();
+    await mount({ onChanged });
+
+    await press("Import the file");
+    expect(
+      screen.getByText(/the configuration file changed while this page was open/),
+    ).toBeInTheDocument();
+    // The configuration and the report, both re-read: the refusal named one of
+    // them as stale and the page cannot tell which.
+    expect(onChanged).toHaveBeenCalled();
+    expect(getsTo(fetchMock, "/api/config/drift")).toBe(2);
+
+    await press("Import the file");
+    const bodies = fetchMock.mock.calls
+      .filter(([, init]) => init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].expected_file_revision).toBe("file-rev-2");
   });
 
   it("exports through the endpoint rather than a bare link to it", async () => {

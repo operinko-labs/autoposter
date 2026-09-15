@@ -452,7 +452,7 @@ function ConfigNode({
  * the same map for its own rows, and it is not part of the tree: the two
  * would otherwise normalise the same field twice and be free to disagree
  * about what a missing description is. */
-export function describedFields(config: ConfigResponse): Record<string, string> {
+function describedFields(config: ConfigResponse): Record<string, string> {
   return isPlainObject(config.field_descriptions)
     ? Object.fromEntries(
         Object.entries(config.field_descriptions).map(([key, text]) => [
@@ -463,9 +463,14 @@ export function describedFields(config: ConfigResponse): Record<string, string> 
     : {};
 }
 
-/** The key the "General" accordion is remembered under. Not a section name:
- * no config section can be called this, so it can never collide with one. */
+/** The keys the two accordions that are not config sections are remembered
+ * under. Not section names: no config section can be called either of these,
+ * so neither can ever collide with one. Both go through the page's
+ * `useOpenSection`, which is what keeps one section open at a time and
+ * remembers which -- the secrets accordion held its own `useState` before, so
+ * it opened alongside whatever was already open and was forgotten on reload. */
 const GENERAL_SECTION = "__general__";
+const SECRETS_SECTION = "__secrets__";
 
 /** The one tab panel's id, which every tab's `aria-controls` names. Fixed
  * rather than generated because there is only ever one Settings page, the
@@ -490,7 +495,7 @@ const TAB_PANEL_ID = "settings-tab-panel";
  * is also the only thing that cannot edit one -- a per-library list or
  * mapping is a cell the matrix reports and this tree edits, and dropping the
  * tree would take that edit away with it. */
-export function ConfigSections({
+function ConfigSections({
   config,
   editor,
   tab,
@@ -628,7 +633,7 @@ function ImpactReport({
 }
 
 /** One changed path: what the server holds for it, and what is pending. */
-export interface PendingChange {
+interface PendingChange {
   path: string;
   before: unknown;
   after: unknown;
@@ -640,7 +645,7 @@ export interface PendingChange {
  * render it as a JSON dump was showing the operator every setting the service
  * has in order to tell them about one. What they need before committing is
  * the difference, and only the difference. */
-export function changedPaths(
+function changedPaths(
   pending: OverridesDocument,
   saved: OverridesDocument,
 ): PendingChange[] {
@@ -667,16 +672,20 @@ export function changedPaths(
 
 /** A value as one side of a diff line.
  *
- * The keep sentinel is shown as itself. At a redacted path it is genuinely
- * what the document carries, and substituting the served rendering would put
- * a push token's bare host on screen as the value about to be replaced.
+ * The keep sentinel reads as "(unchanged)", which is what it means: it is a
+ * state the document carries at a redacted path, not a setting anyone ever
+ * stored, and rendering it as itself reads as though the setting used to be
+ * that string. Substituting the served rendering is not the alternative --
+ * that would put a push token's bare host on screen as the value about to be
+ * replaced.
  *
  * An absent key and a null read as "(not set)", the same words `ScalarValue`
  * uses for both -- one vocabulary for one state on one page. An empty string
  * keeps its own word: a diff is exactly where emptying a box has to be
  * distinguishable from taking the setting away, because those are two
  * different controls with two different outcomes. */
-function diffValue(value: unknown): string {
+function diffValue(value: unknown, sentinel: string): string {
+  if (sentinel !== "" && value === sentinel) return "(unchanged)";
   if (value === undefined || value === null) return "(not set)";
   if (typeof value === "boolean") return value ? "on" : "off";
   if (value === "") return "(empty)";
@@ -684,14 +693,21 @@ function diffValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function PendingDiff({ changes }: { changes: PendingChange[] }) {
+function PendingDiff({
+  changes,
+  sentinel,
+}: {
+  changes: PendingChange[];
+  /** The server's keep marker for this response, or `""` when it sent none. */
+  sentinel: string;
+}) {
   return (
     <ul className="config-diff">
       {changes.map((change) => (
         <li key={change.path}>
           <code className="config-diff-path">{change.path}</code>
           <span className="config-diff-values">
-            {`${diffValue(change.before)} → ${diffValue(change.after)}`}
+            {`${diffValue(change.before, sentinel)} → ${diffValue(change.after, sentinel)}`}
           </span>
         </li>
       ))}
@@ -707,7 +723,7 @@ function PendingDiff({ changes }: { changes: PendingChange[] }) {
  * the panel standing right above the bar, and the one here would have been
  * the key-order-sensitive one. Emitted in `TABS` order, which is the order
  * they sit in on screen. */
-export function tabsWithPendingEdits(
+function tabsWithPendingEdits(
   pending: OverridesDocument,
   saved: OverridesDocument,
 ): TabId[] {
@@ -729,7 +745,7 @@ type Action = "preview" | "save" | "apply";
  * It names the tabs rather than the paths because the paths are already on
  * screen, in the panel above it; what the bar adds is the edit the operator
  * left behind on a tab they are no longer looking at. */
-export function PendingBar({
+function PendingBar({
   tabsWithEdits,
   busy,
   onDiscard,
@@ -1058,13 +1074,21 @@ export function Settings() {
           />
         )}
         {config !== null && tab === "system" && (
-          <ConfigSafetyPanel revision={storedRevision} onChanged={reload} />
+          <ConfigSafetyPanel
+            revision={storedRevision}
+            pendingEdits={dirty}
+            onChanged={reload}
+          />
         )}
         {/* The mounted file's whole remaining job, on the tab that owns the
             rest of the deployment's plumbing. It renders nothing at all when
             the file agrees with the store, or when there is no file. */}
         {config !== null && tab === "system" && (
-          <DriftNotice revision={storedRevision} onChanged={reload} />
+          <DriftNotice
+            revision={storedRevision}
+            pendingEdits={dirty}
+            onChanged={reload}
+          />
         )}
         {/* Not gated on the config load: this accordion fetches its own names
             and sources, and rotating the webhook secret -- which it carries --
@@ -1074,7 +1098,12 @@ export function Settings() {
         {tab === "system" && (
           <SecretsPanel
             descriptions={config === null ? {} : describedFields(config)}
-            onChanged={reload}
+            open={openSection === SECRETS_SECTION}
+            onToggle={() =>
+              setOpenSection(
+                openSection === SECRETS_SECTION ? null : SECRETS_SECTION,
+              )
+            }
           />
         )}
         {/* TMDB's and TheTVDB's notices are a licence condition of showing
@@ -1119,7 +1148,7 @@ export function Settings() {
           {/* The difference, not the document. The document is the whole
               configuration, so rendering it would bury one edit in several
               hundred unchanged settings. */}
-          <PendingDiff changes={changes} />
+          <PendingDiff changes={changes} sentinel={keep.sentinel} />
           {saveError !== null && <p className="page-error">{saveError}</p>}
           {/* An error naming a path that is not in the document has no field
               to sit at -- a malformed body reports at the body itself. It is

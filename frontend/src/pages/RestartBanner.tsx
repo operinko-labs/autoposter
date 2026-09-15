@@ -26,9 +26,16 @@ import { ApiError, apiFetch } from "../api/client";
  * reading that the edit on screen is one of them. It is not -- nothing
  * unsaved is in the store, and a restart reads the store. Refusing the press
  * says both of those things at once, and the pending bar is already on screen
- * with the two ways out of it. */
-const PENDING_EDITS_NOTE =
-  "Save or discard the changes below first — a restart applies the stored " +
+ * with the two ways out of it.
+ *
+ * Exported because two other controls on the System tab do the same re-read
+ * and need the same refusal: the drift notice's import, and the backup
+ * panel's restore and import. One rule and one sentence for all three -- three
+ * wordings of one rule is how an operator learns it as three rules. It names
+ * the stored settings rather than a restart for that reason: what the three
+ * have in common is that they act on what is stored, and nothing unsaved is. */
+export const PENDING_EDITS_NOTE =
+  "Save or discard the changes below first — this acts on the stored " +
   "settings, and anything unsaved would be lost.";
 
 export function RestartBanner({

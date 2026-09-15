@@ -108,6 +108,36 @@ beforeEach(() => {
   });
 });
 
+describe("an unsaved edit on the page", () => {
+  it("refuses a restore and an import while the page is holding one", async () => {
+    // A restore and an import both replace the whole stored document and then
+    // re-seed the page from it, which would throw the typing away without
+    // saying so. The same rule, and the same sentence, as the restart button's.
+    const { calls } = stubFetch();
+    await act(async () => {
+      render(
+        <ConfigSafetyPanel
+          revision="rev-1"
+          pendingEdits
+          onChanged={vi.fn(async () => {})}
+        />,
+      );
+    });
+
+    const rows = screen.getAllByRole("listitem");
+    expect(within(rows[0]).getByRole("button", { name: /Restore/ })).toBeDisabled();
+    expect(screen.getByLabelText(/Restore from a backup file/i)).toBeDisabled();
+    expect(
+      screen.getByText(/Save or discard the changes below first/),
+    ).toBeInTheDocument();
+    // Taking a backup writes nothing, so it stays available.
+    expect(
+      screen.getByRole("button", { name: /Download a backup/i }),
+    ).toBeEnabled();
+    expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(0);
+  });
+});
+
 describe("the previous-versions list", () => {
   it("lists each snapshot by how many settings it held and when", async () => {
     await renderPanel();

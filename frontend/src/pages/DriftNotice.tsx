@@ -16,10 +16,11 @@
  */
 import { useEffect, useRef, useState } from "react";
 
-import { apiFetch } from "../api/client";
+import { ApiError, apiFetch } from "../api/client";
 import { refusalMessage } from "../api/overrides";
 import type { ConfigExport, ConfigSaveResponse, DriftResponse } from "../api/types";
 import { EXPORT_WARNING } from "./ConfigSafetyPanel";
+import { PENDING_EDITS_NOTE } from "./RestartBanner";
 
 /** The design's own sentence, verbatim. */
 export const DRIFT_NOTICE =
@@ -38,6 +39,7 @@ const IMPORT_NOTE =
 
 export function DriftNotice({
   revision = null,
+  pendingEdits = false,
   onChanged,
 }: {
   /** The revision the settings page seeded from, sent with the import for the
@@ -45,6 +47,11 @@ export function DriftNotice({
    * page that has gone stale is a lost update. Absent -- the component
    * rendered on its own -- means the server is not asked to check. */
   revision?: string | null;
+  /** Whether the editor is holding an edit nobody has stored. The import
+   * replaces the whole stored configuration and this component then re-seeds
+   * the page from it, so refusing the press is the only honest answer:
+   * carrying the edit across is not something an import can do. */
+  pendingEdits?: boolean;
   /** Re-read `/api/config` and re-adopt, exactly as a save does. */
   onChanged: () => Promise<void> | void;
 }) {
@@ -93,6 +100,21 @@ export function DriftNotice({
     try {
       await action();
     } catch (caught) {
+      // A 409 is the one refusal that repeats for the life of the page
+      // otherwise: both arms of it are the server saying a value this
+      // component is holding has moved on -- the page's revision, or the
+      // file's -- and pressing again would send the same two back. So they
+      // are re-read before the sentence is shown, and the next press is
+      // composed against what the server holds now. A re-read that fails
+      // changes nothing about which sentence is right to show.
+      if (caught instanceof ApiError && caught.status === 409) {
+        try {
+          await onChanged();
+          setDrift(await apiFetch<DriftResponse>("/api/config/drift"));
+        } catch {
+          // Deliberately silent; see above.
+        }
+      }
       // The server's own sentence, whatever shape it arrived in -- the drop
       // cap's is the one that says what to do next.
       setError(refusalMessage(caught));
@@ -152,10 +174,14 @@ export function DriftNotice({
   if (!drift.file_present || !drift.differs) {
     // An import that succeeded is the one way this section has anything to say
     // about a file that no longer differs -- and it is the only acknowledgement
-    // the operator gets, since everything else here has just gone away.
-    return note === null ? null : (
+    // the operator gets, since everything else here has just gone away. A
+    // refusal is here for the same reason: the re-read a 409 triggers can be
+    // what makes the two agree, and the sentence saying nothing was imported
+    // must not go away with the notice it was raised under.
+    return note === null && error === null ? null : (
       <section className="panel config-drift" role="status">
-        <p className="config-saved">{note}</p>
+        {error !== null && <p className="page-error">{error}</p>}
+        {note !== null && <p className="config-saved">{note}</p>}
       </section>
     );
   }
@@ -178,6 +204,7 @@ export function DriftNotice({
 
       {error !== null && <p className="page-error">{error}</p>}
       {note !== null && <p className="config-saved">{note}</p>}
+      {pendingEdits && <p className="muted">{PENDING_EDITS_NOTE}</p>}
 
       <label className="config-drift-confirm">
         <input
@@ -189,7 +216,11 @@ export function DriftNotice({
       </label>
 
       <div className="config-drift-actions">
-        <button type="button" disabled={busy} onClick={() => void importFile()}>
+        <button
+          type="button"
+          disabled={busy || pendingEdits}
+          onClick={() => void importFile()}
+        >
           Import the file
         </button>
         <button type="button" disabled={busy} onClick={() => void exportStore()}>
