@@ -79,11 +79,20 @@ async def library_list(
         return bytes(head[:JELLYFIN_BODY_LIMIT_BYTES])
 
     folders = json.loads(await asyncio.wait_for(read(), timeout=JELLYFIN_TIMEOUT_SECONDS))
+    # ``or ""`` rather than a ``get`` default, because all three fields are
+    # nullable in Jellyfin's own schema and a key that is PRESENT and null
+    # takes that null rather than the default -- which made ``ItemId: null``
+    # into the literal string "None" and ``CollectionType: null`` into a
+    # ``kind`` of null on a field typed ``str``. The folder is still SERVED
+    # rather than skipped: it is a real folder the operator can see in their
+    # own server, and a tick-list that silently omitted it would disagree with
+    # what they are looking at. An empty kind is in neither server's indexable
+    # set, so such a folder still cannot be paired into a library map.
     return [
         {
-            "id": str(folder.get("ItemId", "")),
-            "name": folder.get("Name", ""),
-            "type": folder.get("CollectionType", ""),
+            "id": str(folder.get("ItemId") or ""),
+            "name": folder.get("Name") or "",
+            "type": folder.get("CollectionType") or "",
         }
         for folder in folders
     ]

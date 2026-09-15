@@ -76,7 +76,6 @@ from autoposter.config.loader import (
 )
 from autoposter.config.schema import (
     _SECRET_ENV,
-    _SERVER_SECRET_ENV,
     _SOFT_SECRET_ENV,
     missing_hard_secret_names,
     missing_server_setup,
@@ -92,6 +91,7 @@ from autoposter.config.state import (
     write_state_file,
 )
 from autoposter.db.base import database_answers
+from autoposter.servers import probe
 
 logger = logging.getLogger(__name__)
 
@@ -267,12 +267,16 @@ CHECK_NEEDS_A_TYPED_CREDENTIAL = (
     "a credential this deployment already holds is never sent to an address a "
     "request names"
 )
-# The three outcomes, spelled once. `system` is always one of
+# The three outcomes, spelled once -- in `servers/probe.py`, and imported back
+# under this module's own names. `system` is always one of
 # setup_checks.CHECK_SYSTEMS' own labels -- never the caller's key -- and the
-# third carries an exception class name, the database_answers precedent.
-CHECK_ANSWERED = "{system} answered."
-CHECK_REFUSED = "{system} refused the credential."
-CHECK_UNREACHABLE = "{system} could not be reached ({failure})."
+# third carries an exception class name, the database_answers precedent. The
+# wizard renders them for all TEN systems and the Servers tab for two, which is
+# why they are imported here rather than duplicated for the other eight: one
+# vocabulary, so a sentence cannot drift between the two applications.
+CHECK_ANSWERED = probe.ANSWERED
+CHECK_REFUSED = probe.REFUSED
+CHECK_UNREACHABLE = probe.UNREACHABLE
 
 # The registration's own vocabulary. Two step names for the
 # values the registration needs and does not have, one refusal for a name it
@@ -383,13 +387,12 @@ _PROVIDER_ENV = tuple(
 # `_PROVIDER_ENV` is what keeps them out of the presence map the systems step
 # renders an accordion from, which would otherwise ask for the same credential
 # on two steps.
-# Keyed by the name the config document, the check table and /progress all use
-# for the server; `config/schema._SERVER_SECRET_ENV` keys the same two by the
-# MODEL FIELD instead, which is the one spelling this module never wants.
-_SERVER_CREDENTIAL = {
-    "plex": _SERVER_SECRET_ENV["plex_token"],
-    "jellyfin": _SERVER_SECRET_ENV["jellyfin_api_key"],
-}
+# `servers/probe.py` holds the map, keyed by the name the config document, the
+# check table and /progress all use for the server, and this module reads it
+# from there: the Servers tab needs the same two names from the running
+# application, and two copies of "which environment name is this server's
+# credential" is a card that stages a value under a name nothing resolves.
+_SERVER_CREDENTIAL = probe.SERVER_CREDENTIAL
 _SERVERS = tuple(_SERVER_CREDENTIAL)
 _SERVER_ENV = tuple(_SERVER_CREDENTIAL.values())
 

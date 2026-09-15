@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from autoposter import deliveries
 from autoposter.api.auth import hash_password
+from autoposter.api.servers import NOT_A_SERVER
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
@@ -174,10 +175,24 @@ async def test_retry_failed_re_arms_that_servers_failed_rows(client, auth_header
     assert (await session.execute(select(RenderDelivery.status))).scalar_one() == "pending"
 
 
-async def test_an_unknown_server_is_409_not_500(client, auth_headers):
-    response = await client.post("/api/servers/emby/catch-up", headers=auth_headers, json={})
-    assert response.status_code == 409
-    assert response.json()["detail"] == "no media server named 'emby' is configured"
+async def test_an_unknown_server_is_a_404_on_every_route_of_this_router(
+    client, auth_headers
+):
+    """One module, one vocabulary for one typo: these four routes sit on the
+    same router as the six the Servers tab adds, which answer 404 and the
+    probe's one sentence. Two of these used to answer 200 for a name this
+    service manages no server by."""
+    for method, path in (
+        ("POST", "/api/servers/emby/catch-up"),
+        ("GET", "/api/servers/emby/catch-up"),
+        ("DELETE", "/api/servers/emby/catch-up"),
+        ("POST", "/api/servers/emby/retry-failed"),
+    ):
+        response = await client.request(
+            method, path, headers=auth_headers, json={}
+        )
+        assert response.status_code == 404, (method, path, response.text)
+        assert response.json()["detail"] == NOT_A_SERVER
 
 
 async def test_a_catch_up_with_the_scheduler_off_is_409_and_marks_nothing(
