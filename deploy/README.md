@@ -274,13 +274,16 @@ returned 200.
    and `public_url` if a supplied document meant it could not be written.
 
    Then the write. Steps 2–5 are staged in memory rather than persisted as
-   they are collected. This step writes the config document **first**, then
-   the credentials, each atomically — and each half is itself two writes: the
-   document onto the volume and then, once the migration has run, into the
-   configuration store the next boot reads first; the database URL into the
-   secrets file and every other staged credential into the encrypted `secrets`
-   table. **So the deployment the wizard produces needs neither a ConfigMap nor
-   a single environment secret.** Then it re-runs the same CONFIGURED check
+   they are collected. This step writes the config document onto the volume
+   **first**, then the database URL into the secrets file, then — once the
+   migration that creates the table has run — the same document into the
+   configuration store the next boot reads first, and finally every other
+   staged credential into the encrypted `secrets` table. The URL goes early on
+   purpose: an interruption after it leaves a deployment that can still reach
+   its database and whose other hard secrets are still absent, which is the
+   wizard again. **So the deployment the wizard produces needs neither a
+   ConfigMap nor a single environment secret.** Then it re-runs the same
+   CONFIGURED check
    the next boot will run — over what was actually just written, not over what
    this process believes it wrote. Only if that agrees does it hand the
    process over: an `os.execv` into a fresh `python -m autoposter.boot`, which
@@ -1327,9 +1330,11 @@ the value in force sends an operator to change a variable nothing is reading.
 
 **The key is `secret.key` in the state directory** — mode 0600, generated on the
 first write that needs it, never in the database. Losing the volume loses the
-key and therefore every stored secret: the deployment still starts, each
-unreadable row is skipped with a warning naming the variable, and every stored
-name reads as whatever the next layer down supplies until it is set again. Back
+key and therefore every stored secret: the deployment still starts, one warning
+names the key file and the number of rows nothing can open, and every stored
+name reads as whatever the next layer down supplies until it is set again. (A
+single row this key cannot open — a key replaced rather than lost — is skipped
+with its own warning naming the variable.) Back
 the volume up, and see "Where it writes" above for what that file is and is
 not. A CLI to export the key and the stored secrets for a volume migration is
 filed as a follow-up and is not built.
@@ -3825,11 +3830,18 @@ while a run that lives in this process is in flight — a full pass, a scheduled
 job — but **not** during a catch-up: a catch-up's state is rows in the database
 and its drain resumes on the other side of the boot, so restarting interrupts
 nothing and an operator with a day-long backlog would otherwise never be able to
-apply a setting. Finally, an *orphaned* open run row — one left `running` by a
-process that was killed mid-pass, which nothing reconciles except the next pass
-of that same job — keeps refusing until it is older than the full pass's own
-timeout horizon, 24 hours, after which it is ignored. Either wait it out or
-close the row.
+apply a setting. It refuses, last, while the process-wide mode lock is held, and
+the sentence depends on who holds it: an artwork or metadata mode is mid-write
+to a media server, or a restart is already under way from an earlier press. That
+guard is asked last on purpose — it is the only one that has to still be true at
+the instant of the exec, and the only one this process can hold true by taking
+the lock and keeping it.
+
+The run guard has a ceiling of its own: an *orphaned* open run row — one left
+`running` by a process that was killed mid-pass, which nothing reconciles except
+the next pass of that same job — keeps refusing until it is older than the full
+pass's own timeout horizon, 24 hours, after which it is ignored. Either wait it
+out or close the row.
 
 Configure Radarr and Sonarr with a webhook notification pointing at this
 service's webhook URL (`/webhook/radarr` and `/webhook/sonarr` respectively),
