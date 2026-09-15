@@ -8,6 +8,7 @@ And one event that happens once per deployment: a row written before the store
 held whole documents is converted into one, with the delta it used to be kept
 as a snapshot.
 """
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -300,6 +301,29 @@ async def test_clearing_an_empty_restart_list_writes_nothing(session_factory):
         row = await store_row(session, for_update=False)
     assert row.updated_at == written_at
     assert row.meta == store_meta()
+
+
+@pytest.mark.asyncio
+async def test_clearing_an_empty_restart_list_does_not_wait_for_a_save(session_factory):
+    """And it does not queue behind one either.
+
+    Every boot there is calls this and almost every one of them has nothing to
+    forget, so asking for the row lock before discovering that would put a
+    pod's start-up behind whatever transaction a save happens to be in the
+    middle of, with no timeout on the wait. The existence question is asked
+    unlocked first, and only a list that actually needs clearing pays for the
+    lock.
+    """
+    async with session_factory() as session:
+        await write_store(session, _document(), store_meta())
+        await session.commit()
+
+    async with session_factory() as saving:
+        # A save, mid-transaction, holding the row lock this used to ask for
+        # unconditionally.
+        await store_row(saving, for_update=True)
+        async with session_factory() as booting:
+            await asyncio.wait_for(clear_restart_paths(booting), timeout=5)
 
 
 @pytest.mark.asyncio

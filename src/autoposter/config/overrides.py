@@ -524,10 +524,18 @@ async def write_store(session: AsyncSession, document: dict, meta: dict) -> None
 async def clear_restart_paths(session: AsyncSession) -> None:
     """Forget the restart list. Called by the boot, and by nothing else.
 
-    Under the row lock, because the save path takes the same one and the two
-    must not interleave: a save that added a path between an unlocked read
-    here and the write would have its claim erased by a boot that never
-    applied it.
+    Under the row lock when there is something to clear, because the save path
+    takes the same one and the two must not interleave: a save that added a
+    path between an unlocked read here and the write would have its claim
+    erased by a boot that never applied it.
+
+    The existence question is asked FIRST and without the lock, reading the
+    metadata column alone so that no ORM row is loaded and the locked read
+    below still sees the row as it stands. Almost every boot there is has an
+    empty list, and locking before discovering that would put the boot behind
+    any concurrent save's row lock with no timeout -- a wait nothing here
+    needs, for a row it is about to leave untouched. A list that appears
+    between the two reads is one the very next boot clears.
 
     The METADATA column only, and the document is neither read nor written.
     Two reasons, and both are about a write nobody asked for: a read strips
@@ -542,6 +550,11 @@ async def clear_restart_paths(session: AsyncSession) -> None:
     transaction. Nothing is written when the list is already empty, so the
     ordinary boot leaves the row untouched.
     """
+    unlocked = await session.scalar(
+        select(ConfigOverride.meta).where(ConfigOverride.id == OVERRIDES_ROW_ID)
+    )
+    if not restart_paths(unlocked if isinstance(unlocked, dict) else {}):
+        return
     row = await store_row(session, for_update=True)
     if row is None:
         return
