@@ -19,6 +19,15 @@ import { ServersTab, cardsToOpen } from "./ServersTab";
 import { ApiError } from "../api/client";
 import type { ServerRow } from "../api/servers";
 import type { ConfigResponse } from "../api/types";
+import { PENDING_EDITS_NOTE } from "./RestartBanner";
+import {
+  click,
+  countOf,
+  json,
+  router as stubFetch,
+  type Call,
+  type Route,
+} from "./testRouter";
 
 const NOTHING: ServerRow[] = [
   {
@@ -87,46 +96,16 @@ const CONFIG: ConfigResponse = {
   operations: { write_to_plex: false },
 };
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-interface Call {
-  url: string;
-  method: string;
-}
-
-type Route = () => Response;
-
-/** Stub `fetch` with one handler per `"METHOD /path"`, and record every call.
+/** The shared stub, with both cards' opening reads seeded.
  *
- * The two catch-up reads are seeded here rather than in every test: a
- * configured card makes one when its accordion opens, and which cards those
+ * A configured card makes one when its accordion opens, and which cards those
  * are is what half of this file is about. */
 function router(routes: Record<string, Route>): Call[] {
-  const calls: Call[] = [];
-  const table: Record<string, Route> = {
+  return stubFetch({
     "GET /api/servers/plex/catch-up": () => json({ run: null }),
     "GET /api/servers/jellyfin/catch-up": () => json({ run: null }),
     ...routes,
-  };
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      const method = init?.method ?? "GET";
-      calls.push({ url, method });
-      const route = table[`${method} ${url}`];
-      return Promise.resolve(
-        route === undefined
-          ? json({ detail: `the tab asked for ${method} ${url}` }, 500)
-          : route(),
-      );
-    }),
-  );
-  return calls;
+  });
 }
 
 /** The listing route, which every test declares. */
@@ -137,28 +116,24 @@ function listing(servers: ServerRow[]): Record<string, Route> {
 async function renderTab({
   config = CONFIG,
   revision = "r1",
+  pendingEdits = false,
   onChanged = () => {},
 }: {
   config?: ConfigResponse | null;
   revision?: string | null;
+  pendingEdits?: boolean;
   onChanged?: () => void | Promise<void>;
 } = {}) {
   await act(async () => {
     render(
-      <ServersTab config={config} revision={revision} onChanged={onChanged} />,
+      <ServersTab
+        config={config}
+        revision={revision}
+        pendingEdits={pendingEdits}
+        onChanged={onChanged}
+      />,
     );
   });
-}
-
-async function click(name: string) {
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name }));
-  });
-}
-
-function countOf(calls: Call[], method: string, url: string): number {
-  return calls.filter((call) => call.method === method && call.url === url)
-    .length;
 }
 
 beforeEach(() => {
@@ -169,8 +144,12 @@ beforeEach(() => {
 });
 
 describe("cardsToOpen", () => {
-  it("opens Plex on a fresh deployment and leaves Jellyfin closed", () => {
-    expect(cardsToOpen(NOTHING)).toEqual(["plex"]);
+  it("opens nothing at all for a listing with no configured server", () => {
+    // Which a served page cannot have -- the schema refuses a document with
+    // neither block -- and which this tab could not render if it did: a card
+    // exists only for a configured server or one picked from Add a server, so
+    // a name returned here would open nothing.
+    expect(cardsToOpen(NOTHING)).toEqual([]);
   });
 
   it("opens nothing once a server is configured and complete", () => {
@@ -289,7 +268,7 @@ describe("ServersTab", () => {
     fireEvent.change(screen.getByLabelText("Jellyfin credential"), {
       target: { value: "a-key" },
     });
-    await click("Save credential");
+    await click("Save Jellyfin credential");
 
     // Both halves of a card move together: the listing it is rendered from,
     // and the configuration its switches are read out of.
@@ -312,7 +291,7 @@ describe("ServersTab", () => {
     fireEvent.change(screen.getByLabelText("Jellyfin credential"), {
       target: { value: "a-key" },
     });
-    await click("Save credential");
+    await click("Save Jellyfin credential");
 
     // The write landed. A re-read that failed afterwards is said here, not
     // thrown back into the card, where it would be rendered as that write's
@@ -355,9 +334,132 @@ describe("ServersTab", () => {
     expect(screen.queryByRole("button", { name: "Save the map" })).toBeNull();
   });
 
+  it("says a removed server's credential is still stored, where the card cannot", async () => {
+    // The card that made the removal is unmounted by the re-read that follows
+    // it -- the listing comes back with that server unconfigured -- so the one
+    // durable record that a credential for a server this deployment no longer
+    // has survived in the store belongs here.
+    let removed = false;
+    router({
+      "GET /api/servers": () => json({ servers: removed ? PLEX_ONLY : BOTH }),
+      "DELETE /api/servers/jellyfin": () => {
+        removed = true;
+        return json({
+          version_before: "a",
+          version_after: "b",
+          restart_required: [],
+          credential_cleared: false,
+        });
+      },
+    });
+    await renderTab();
+
+    await click("Jellyfin");
+    await click("Remove Jellyfin");
+    await click("Yes, remove Jellyfin");
+
+    // The card is gone, and the sentence is not.
+    expect(screen.queryByLabelText("Jellyfin address")).toBeNull();
+    expect(
+      screen.getByText(
+        "Removed Jellyfin, but its credential could not be cleared and is " +
+          "still stored. Open Jellyfin again from Add a server to clear it.",
+      ),
+    ).toBeInTheDocument();
+    // ...and the advice is something the operator can follow: the server is
+    // back under Add a server, which is where a card for it comes from now.
+    expect(
+      screen.getByRole("button", { name: "Add Jellyfin" }),
+    ).toBeInTheDocument();
+  });
+
+  it("puts a server added during this visit back under Add a server when it is removed", async () => {
+    // `added` is what keeps a picked-but-unconfigured server's card on screen.
+    // Left alone, a removal would leave the empty card standing under a
+    // sentence telling the operator to open it from Add a server.
+    let removed = false;
+    router({
+      "GET /api/servers": () => json({ servers: removed ? PLEX_ONLY : BOTH }),
+      "DELETE /api/servers/jellyfin": () => {
+        removed = true;
+        return json({
+          version_before: "a",
+          version_after: "b",
+          restart_required: [],
+          credential_cleared: true,
+        });
+      },
+    });
+    await renderTab();
+
+    await click("Jellyfin");
+    await click("Remove Jellyfin");
+    await click("Yes, remove Jellyfin");
+
+    expect(screen.getByText("Removed Jellyfin.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Jellyfin address")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Add Jellyfin" }),
+    ).toBeInTheDocument();
+  });
+
+  it("re-reads only this tab's listing when a catch-up is started", async () => {
+    // A catch-up changes no setting, and the page's re-read re-seeds its
+    // editor from the server -- so asking for it here would discard an
+    // operator's unsaved edit on another tab to refresh something that has
+    // not moved.
+    const calls = router({
+      ...listing(JELLYFIN_NEEDS_A_KEY),
+      "POST /api/servers/jellyfin/catch-up": () =>
+        json({ run_id: 3, server: "jellyfin", cadence_seconds: 60 }),
+    });
+    const onChanged = vi.fn();
+    await renderTab({ onChanged });
+
+    await click("Catch Jellyfin up");
+
+    expect(countOf(calls, "POST", "/api/servers/jellyfin/catch-up")).toBe(1);
+    expect(countOf(calls, "GET", "/api/servers")).toBe(2);
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(countOf(calls, "GET", "/api/config")).toBe(0);
+  });
+
+  it("refuses a card's writes while the page is holding an unsaved edit", async () => {
+    router(listing(JELLYFIN_NEEDS_A_KEY));
+    await renderTab({ pendingEdits: true });
+
+    expect(screen.getByRole("button", { name: "Save Jellyfin" })).toBeDisabled();
+    expect(screen.getByText(PENDING_EDITS_NOTE)).toBeInTheDocument();
+    // The read beside it is untouched, and so is the catch-up: neither of
+    // them asks the page to re-read.
+    expect(
+      screen.getByRole("button", { name: "Catch Jellyfin up" }),
+    ).toBeEnabled();
+  });
+
+  it("gives two open cards' buttons a name each, and names each card's region", async () => {
+    // Two configured servers both missing a credential is a state this tab
+    // opens by itself, and "Save" beside "Save" is two controls with one name.
+    router(
+      listing([
+        { ...PLEX_ONLY[0], credential_source: "unset" },
+        JELLYFIN_NEEDS_A_KEY[1],
+      ]),
+    );
+    await renderTab();
+
+    expect(screen.queryAllByRole("button", { name: "Save" })).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Save Plex" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Save Jellyfin" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Plex" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Jellyfin" })).toBeInTheDocument();
+  });
+
   it("says why the listing failed, and retries only when asked", async () => {
     let answer: Route = () => json({ detail: "the database is unreachable" }, 500);
-    const calls = router({ "GET /api/servers": () => answer() });
+    const calls = router({ "GET /api/servers": (init) => answer(init) });
     await renderTab();
 
     // The server's own sentence, verbatim.

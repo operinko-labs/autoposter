@@ -38,6 +38,14 @@
  * NO SECRET IS EVER READ BACK. The credential field holds a typed value for
  * exactly as long as the request that carries it, and is emptied when that
  * request ends, refused or not.
+ *
+ * A WRITE IS REFUSED WHILE THE PAGE HOLDS AN UNSAVED EDIT. The card takes no
+ * part in that edit, but the re-read every one of its writes owes the page
+ * re-seeds the editor from the server, which would throw the operator's typing
+ * away with nothing on screen to say so. The three buttons that re-seed the
+ * page are disabled and the shared sentence says why; the reads beside them,
+ * and the catch-up buttons -- which re-read this tab's own listing and nothing
+ * else -- are left alone, because none of them touches the stored document.
  */
 import { useEffect, useRef, useState } from "react";
 
@@ -50,6 +58,7 @@ import {
   fetchCatchUp,
   fetchLibraries,
   removeServer,
+  restartWaiting,
   retryFailed,
   saveServer,
   setServerCredential,
@@ -57,9 +66,11 @@ import {
   type CatchUpProgress,
   type CheckResult,
   type LibraryRow,
+  type ServerRemovalResult,
   type ServerRow,
 } from "../api/servers";
 import { formatTime } from "../format";
+import { PENDING_EDITS_NOTE } from "./RestartBanner";
 
 /** What each server is called on screen. Exported because the tab titles this
  * card's accordion with it: two copies would be two names for one server, one
@@ -90,6 +101,28 @@ export const SWITCHES: Record<string, { path: string; label: string }[]> = {
     },
   ],
 };
+
+/** What a run's stored status word means, said the way an operator would say
+ * it.
+ *
+ * The four values are the run table's own (`scheduler/run_history.py` opens a
+ * row as `running` and closes an abandoned one as `interrupted`;
+ * `catchup.py` closes its own as `ok` or `cancelled`), and they are written
+ * for the table rather than for a card: "Catch up ok" reads as a state nobody
+ * would call a finished backlog, and "interrupted" says nothing about what
+ * interrupted it. A word this table does not carry is printed as it arrived
+ * rather than guessed at. */
+const RUN_WORDS: Record<string, string> = {
+  running: "still running",
+  ok: "finished",
+  cancelled: "cancelled",
+  interrupted: "stopped when this deployment restarted",
+};
+
+/** How often an open run's counts are read again, in milliseconds. Slow on
+ * purpose: this is a backlog measured in hours, and the card is one of several
+ * on a page an operator leaves open. */
+const PROGRESS_INTERVAL = 10_000;
 
 /** The connection pill. A STATE and nothing else, plus the one piece of the
  * server's own text this tab shows: the version it answered with. */
@@ -131,7 +164,9 @@ export function ServerCard({
   server,
   switches,
   revision,
+  pendingEdits = false,
   onChanged,
+  onRemoved,
 }: {
   server: ServerRow;
   /** What each of this server's switches is set to now, keyed by the dotted
@@ -144,7 +179,19 @@ export function ServerCard({
    * refuse a body without one, and that refusal is the only thing standing
    * between a concurrent settings save and a silent revert of it. */
   revision: string | null;
-  onChanged: () => Promise<void> | void;
+  /** Whether the page is holding an edit nobody has stored. Every control
+   * below whose success re-seeds the page is refused while it is true. */
+  pendingEdits?: boolean;
+  /** Re-read what this card is rendered from. `page: false` asks for the
+   * tab's listing alone, which is what the catch-up buttons need: they change
+   * no setting, and the page's own re-read would discard an unsaved edit. */
+  onChanged: (options?: { page?: boolean }) => Promise<void> | void;
+  /** What a removal answered, handed to the tab. The removal takes this card
+   * off the screen, so a sentence about it belongs to something that outlives
+   * it -- and one of the two sentences is the only record an operator gets
+   * that a credential for a server this deployment no longer has is still in
+   * the store. */
+  onRemoved: (result: ServerRemovalResult) => void;
 }) {
   const label = LABELS[server.name] ?? server.name;
   const [address, setAddress] = useState(server.url ?? "");
@@ -236,6 +283,49 @@ export function ServerCard({
     };
   }, [server.configured, server.name]);
 
+  const catchUp = catchUpRun(progress);
+  /** A run nothing has closed yet. The one state in which the counts on
+   * screen go stale by themselves, and the one in which starting another is
+   * refused. */
+  const runOpen = catchUp !== null && catchUp.finished_at === null;
+
+  // While a run is open, read its counts again on a slow interval: they are
+  // the only thing on this card that moves without anybody pressing
+  // anything, and a line frozen at the counts the card was opened with reads
+  // as a run that has stopped making progress. It stops when the run closes
+  // and when the card goes -- an accordion collapsed over an open run must
+  // not leave a timer reading a server behind it.
+  useEffect(() => {
+    if (!runOpen) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      fetchCatchUp(server.name)
+        .then((found) => {
+          if (!cancelled) setProgress(found);
+        })
+        .catch(() => {});
+    }, PROGRESS_INTERVAL);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [runOpen, server.name]);
+
+  /** The counts again, after a press that may have changed them.
+   *
+   * Never this card's own failure: a progress read that failed after an
+   * action that landed would be rendered as that action's refusal and take
+   * its note with it -- the rule the tab keeps for the re-read it owes the
+   * page. The line keeps the counts it had, which is one read old rather than
+   * wrong. */
+  async function refreshProgress() {
+    try {
+      setProgress(await fetchCatchUp(server.name));
+    } catch {
+      // Deliberately silent; see above.
+    }
+  }
+
   /** Whether the address in the field is one the request would have to name.
    *
    * The stored address is what an empty body asks for, and it is the only
@@ -257,11 +347,28 @@ export function ServerCard({
     return {};
   }
 
-  /** The state in which neither probe button may be pressed: a new address in
-   * the field and nothing in the credential field to use against it. The
-   * default of the add flow, because storing the credential empties that
-   * field and the address is typed after it. */
-  const needsACredentialToProbe = typedAddress && credential === "";
+  /** Why neither probe button may be pressed, or null when both may.
+   *
+   * The three states `_resolve_target` refuses outright (`api/servers.py`),
+   * each with the sentence that names the half that is missing -- an operator
+   * sent to the credential field for a missing address fixes the wrong thing.
+   * Offering a press that is a 400 by construction is the rule this card set
+   * for itself with the first of the three; the other two are as reachable,
+   * and the second of them is the state the tab OPENS a card in.
+   */
+  const cannotProbe: string | null =
+    typedAddress && credential === ""
+      ? "An address typed here must come with the credential to use against " +
+        "it: this deployment does not send a credential it holds to an " +
+        "address a request names."
+      : address === ""
+        ? "There is no address to check. Type this server's address above " +
+          "first; a check with none is refused."
+        : !typedAddress && credential === "" && server.credential_source === "unset"
+          ? `This deployment holds no credential for ${label}, and a check ` +
+            "needs one. Store it above, or type it in beside the address to " +
+            "check that pair without storing it."
+          : null;
 
   /** What this save STATES about the switches: the boxes that were moved, and
    * nothing else. The route merges this over the stored block, so a path sent
@@ -306,9 +413,11 @@ export function ServerCard({
   }
 
   const pill = pillFor(server, probe);
-  const catchUp = catchUpRun(progress);
   const detail = probe === null ? server.health.detail : probe.detail;
   const writable = revision !== null;
+  /** Whether a write is allowed at all: the revision this card sends, and the
+   * page not holding an edit the re-read after a write would discard. */
+  const canWrite = writable && !pendingEdits;
 
   const credentialField = (
     <div className="config-row">
@@ -327,7 +436,8 @@ export function ServerCard({
         <span className="config-pill">{`credential: ${server.credential_source}`}</span>
         <button
           type="button"
-          disabled={busy || credential === ""}
+          aria-label={`Save ${label} credential`}
+          disabled={busy || credential === "" || pendingEdits}
           onClick={() =>
             void run(
               async () => {
@@ -344,7 +454,8 @@ export function ServerCard({
         {server.credential_source === "stored" && (
           <button
             type="button"
-            disabled={busy}
+            aria-label={`Clear ${label} credential`}
+            disabled={busy || pendingEdits}
             onClick={() =>
               void run(async () => {
                 const cleared = await clearServerCredential(server.name);
@@ -388,7 +499,11 @@ export function ServerCard({
     // the Servers tab's accordion, which is the panel, and a second bordered
     // box inside it would be a fourth level of visual nesting where the page
     // allows three. The one thing that needed laying out is the pill row.
-    <section>
+    // Named with the server it is about, so the buttons inside it are told
+    // apart by the region that carries them: two cards are open together in
+    // exactly the states this tab is built for, and "Save" beside "Save" with
+    // nothing between them is two controls with one name.
+    <section aria-label={label}>
       {/* The pills, and no heading of its own: the accordion this card sits
           inside is titled with the server's name, so a heading here would name
           the same server a second time one line below the first. */}
@@ -405,6 +520,10 @@ export function ServerCard({
       </p>
       {error !== null && <p className="page-error">{error}</p>}
       {note !== null && <p className="config-saved">{note}</p>}
+      {/* One line for every control it refuses, in the wording the two other
+          re-reading panels use: three sentences for one rule is how an
+          operator learns it as three rules. */}
+      {pendingEdits && <p className="muted config-note">{PENDING_EDITS_NOTE}</p>}
       {!server.configured && (
         <p className="muted config-note">
           Store this server&apos;s credential before saving it: a configured
@@ -420,12 +539,8 @@ export function ServerCard({
       {probe === null && server.health.checked_at !== null && (
         <p className="muted">{`Last answered ${formatTime(server.health.checked_at)}.`}</p>
       )}
-      {needsACredentialToProbe && (
-        <p className="muted config-note">
-          An address typed here must come with the credential to use against
-          it: this deployment does not send a credential it holds to an
-          address a request names.
-        </p>
+      {cannotProbe !== null && (
+        <p className="muted config-note">{cannotProbe}</p>
       )}
 
       {libraries !== null && (
@@ -479,14 +594,22 @@ export function ServerCard({
         <p className="muted">
           {catchUp === null
             ? `No catch-up has run for ${label} yet.`
-            : `Catch up ${catchUp.status}: ${catchUp.due} due, ${catchUp.done} done, ${catchUp.failed} failed, of ${catchUp.total}.`}
+            : `Catch up ${RUN_WORDS[catchUp.status] ?? catchUp.status}: ` +
+              `${catchUp.due} due, ${catchUp.done} done, ${catchUp.failed} failed, ` +
+              `of ${catchUp.total}.` +
+              // The run's own summary, which the server writes when it closes
+              // one: it is what the cancel button shows for a cancel made on
+              // this screen, and without this it was lost the moment the card
+              // was re-opened.
+              (catchUp.detail === null ? "" : ` ${catchUp.detail}`)}
         </p>
       )}
 
       <div className="config-actions">
         <button
           type="button"
-          disabled={busy || needsACredentialToProbe}
+          aria-label={`Check ${label} connection`}
+          disabled={busy || cannotProbe !== null}
           onClick={() =>
             void run(
               async () => {
@@ -501,7 +624,8 @@ export function ServerCard({
         </button>
         <button
           type="button"
-          disabled={busy || needsACredentialToProbe}
+          aria-label={`Reload ${label} libraries`}
+          disabled={busy || cannotProbe !== null}
           onClick={() =>
             void run(
               async () => {
@@ -514,16 +638,27 @@ export function ServerCard({
         >
           Reload libraries
         </button>
-        {server.configured && (
+        {/* Not offered over a run nothing has closed: the service takes one
+            lock per server and refuses a second start in so many words, so
+            this press beside the Cancel button below is a guaranteed refusal
+            -- and the operator who pressed it was asking for the counts to
+            move, which they now do on their own. */}
+        {server.configured && !runOpen && (
           <button
             type="button"
+            aria-label={`Catch ${label} up`}
             disabled={busy}
             onClick={() =>
               void run(async () => {
                 await startCatchUp(server.name);
                 // The counts come from the read, which is the one place they
                 // are computed; starting one answers the run and its cadence.
-                setProgress(await fetchCatchUp(server.name));
+                await refreshProgress();
+                // The listing carries this server's health and its restart
+                // pill and nothing else moved, so the tab's own read is all
+                // that is asked for: the page's would re-seed the editor from
+                // the server and take an unsaved edit with it.
+                await onChanged({ page: false });
                 return null;
               })
             }
@@ -531,14 +666,16 @@ export function ServerCard({
             Catch up
           </button>
         )}
-        {catchUp !== null && catchUp.finished_at === null && (
+        {runOpen && (
           <button
             type="button"
+            aria-label={`Cancel ${label} catch-up`}
             disabled={busy}
             onClick={() =>
               void run(async () => {
                 const cancelled = await cancelCatchUp(server.name);
-                setProgress(await fetchCatchUp(server.name));
+                await refreshProgress();
+                await onChanged({ page: false });
                 return cancelled.detail;
               })
             }
@@ -549,10 +686,15 @@ export function ServerCard({
         {server.configured && (
           <button
             type="button"
+            aria-label={`Retry ${label}'s failed deliveries`}
             disabled={busy}
             onClick={() =>
               void run(async () => {
                 const retried = await retryFailed(server.name);
+                // Re-armed rows are rows a run is owed, so the counts on the
+                // line above are the ones this press just changed.
+                await refreshProgress();
+                await onChanged({ page: false });
                 return `Re-armed ${retried.artwork} artwork and ${retried.metadata} metadata deliveries for ${label}.`;
               })
             }
@@ -563,7 +705,8 @@ export function ServerCard({
         {server.configured && (
           <button
             type="button"
-            disabled={busy || !writable}
+            aria-label={`Remove ${label}`}
+            disabled={busy || !canWrite}
             onClick={() => setConfirming(true)}
           >
             Remove server
@@ -571,14 +714,19 @@ export function ServerCard({
         )}
         <button
           type="button"
-          disabled={busy || !writable}
+          aria-label={`Save ${label}`}
+          disabled={busy || !canWrite}
           onClick={() =>
             void run(async () => {
               // Narrowed rather than defaulted: `""` is a string the route
               // accepts and then refuses as a stale revision, which is a
               // worse answer than the disabled button above.
               if (revision === null) return null;
-              await saveServer(server.name, {
+              const exclusionsMoved = !sameList(
+                excluded,
+                server.excluded_libraries,
+              );
+              const saved = await saveServer(server.name, {
                 url: address,
                 excluded_libraries: excluded,
                 switches: switchDelta(),
@@ -594,12 +742,24 @@ export function ServerCard({
               // reached, so the pill goes back to what the listing knows.
               setProbe(null);
               await onChanged();
-              return (
+              const said = [
                 `Saved ${label}. This deployment is still running on the ` +
-                "address it started with, so a connection check reaches the " +
-                "saved address only once it has restarted, or while it is " +
-                `typed in above. ${RESTART_NOTE}`
-              );
+                  "address it started with, so a connection check is refused " +
+                  "until it has restarted, unless the address and the " +
+                  "credential to use against it are typed in above.",
+                // Which libraries a server is expected to carry decides which
+                // items it is owed, so the service starts the backlog itself
+                // -- and the operator who is not told goes looking for the
+                // button that started it.
+                ...(exclusionsMoved
+                  ? [`Changing the managed libraries also starts a catch-up for ${label}.`]
+                  : []),
+                // The response's own list, not a fixed sentence: it is what
+                // this write left waiting, and a save that left nothing
+                // waiting must not claim otherwise.
+                ...(restartWaiting(saved.restart_required) ? [RESTART_NOTE] : []),
+              ];
+              return said.join(" ");
             })
           }
         >
@@ -619,7 +779,7 @@ export function ServerCard({
           {`Removing ${label} drops its configuration and clears its stored credential.`}
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !canWrite}
             onClick={() =>
               void run(async () => {
                 // Narrowed for the reason the save is: an empty revision is a
@@ -630,16 +790,23 @@ export function ServerCard({
                   confirm: true,
                 });
                 setConfirming(false);
+                // Handed up BEFORE the re-read, and rendered by the tab: the
+                // listing that re-read brings back has this server
+                // unconfigured, so the accordion and this card are gone
+                // before a sentence written here could be read.
+                onRemoved(removed);
                 await onChanged();
-                return removed.credential_cleared
-                  ? `Removed ${label}.`
-                  : `Removed ${label}, but its credential could not be cleared and is still stored. Open this card again from Add a server to clear it.`;
+                return null;
               })
             }
           >
             {`Yes, remove ${label}`}
           </button>
-          <button type="button" onClick={() => setConfirming(false)}>
+          <button
+            type="button"
+            aria-label={`Keep ${label}`}
+            onClick={() => setConfirming(false)}
+          >
             Cancel
           </button>
         </p>

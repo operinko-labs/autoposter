@@ -1091,11 +1091,16 @@ export function Settings() {
 
             It takes `onChanged` rather than the editor: a server saves on its
             own, never joining the pending change, so what it needs from the
-            page is the re-read that follows its write. */}
+            page is the re-read that follows its write. And it takes
+            `pendingEdits` for the reason the restart banner and the two
+            System-tab panels do: `reload` re-seeds this editor from the
+            server, so a write allowed to call it while something is unsaved
+            would throw that edit away with nothing on screen to say so. */}
         {config !== null && tab === "servers" && (
           <ServersTab
             config={config}
             revision={storedRevision}
+            pendingEdits={dirty}
             onChanged={reload}
           />
         )}

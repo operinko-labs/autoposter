@@ -8,6 +8,15 @@
  * own `onChanged`, so the listing a card was re-rendered from and the
  * configuration the switches are read out of move together after every write.
  *
+ * THAT RE-READ IS WHY A WRITE IS REFUSED WHILE THE PAGE IS DIRTY. The page's
+ * half of it re-seeds the editor from the server, which silently discards an
+ * unsaved edit made on any other tab -- so `pendingEdits` disables every
+ * control here whose success asks for it, in the same sentence the restart
+ * banner and the two System-tab panels use. The catch-up buttons are the
+ * exception and ask for the listing alone: they change no setting, so there is
+ * nothing on the page for them to refresh and nothing of the operator's to
+ * lose.
+ *
  * THE SWITCHES COME FROM THE PAGE'S CONFIGURATION, NOT FROM A SECOND READ.
  * `badges.upload_to_plex` and its four siblings are ordinary settings that
  * happen to be about one server; the page already holds the served document,
@@ -60,27 +69,31 @@ function switchValues(config: ConfigResponse | null): Record<string, boolean> {
   return values;
 }
 
-/** Which cards open by themselves (spec section 5).
+/** Which cards open by themselves: the ones that need attention, which is
+ * exactly one shape -- a configured server with no credential, because that
+ * deployment will not boot.
  *
- * A fresh deployment opens Plex and leaves Jellyfin closed -- that is the pane
- * the Plex-only operator has always landed on, and two open cards is a long
- * column for somebody who runs one server. Once ANY server is configured,
- * cards open only when they need attention, which is exactly one shape: a
- * configured server with no credential, because that deployment will not boot.
+ * There is no fresh-deployment case. A served page always has at least one
+ * configured server: the schema refuses a document with neither block, and an
+ * address is required in both, so the listing this reads can never be all
+ * unconfigured. A card is rendered only for a configured server or one picked
+ * from Add a server, so a name returned for a server in neither state would
+ * open nothing at all.
  *
  * Extracted as a function rather than inlined so the rule can be tested
- * without rendering, and so the three cases are readable at once. */
+ * without rendering. */
 export function cardsToOpen(servers: ServerRow[]): string[] {
-  const configured = servers.filter((server) => server.configured);
-  if (configured.length === 0) return ["plex"];
-  return configured
-    .filter((server) => server.credential_source === "unset")
+  return servers
+    .filter(
+      (server) => server.configured && server.credential_source === "unset",
+    )
     .map((server) => server.name);
 }
 
 export function ServersTab({
   config,
   revision,
+  pendingEdits = false,
   onChanged,
 }: {
   /** The configuration the page was served, which is where the five switches
@@ -91,10 +104,18 @@ export function ServersTab({
    * and the map's are checked against it, so a page served none renders the
    * cards read-only rather than sending a write the routes will refuse. */
   revision: string | null;
+  /** Whether the page is holding an edit nobody has stored. Handed down
+   * unchanged: the page's re-read re-seeds the editor from the server, so
+   * every control here whose success asks for that re-read is refused while
+   * an edit is outstanding. */
+  pendingEdits?: boolean;
   onChanged: () => Promise<void> | void;
 }) {
   const [servers, setServers] = useState<ServerRow[] | null>(null);
   const [added, setAdded] = useState<string[]>([]);
+  /** What a removal answered, said here rather than on the card that made it:
+   * the re-read below takes that card off the screen. */
+  const [removal, setRemoval] = useState<string | null>(null);
   const [open, setOpen] = useState<string[]>([]);
   const [mapOpen, setMapOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,18 +171,42 @@ export function ServersTab({
    * which is an operator typing a stored secret in a second time. Both are
    * reported here, where they are what they are: the write happened, and the
    * screen is one read behind. */
-  async function changed() {
+  async function changed({ page = true }: { page?: boolean } = {}) {
     try {
       setServers(await fetchServers());
       setError(null);
     } catch (caught) {
       setError(refusalMessage(caught));
     }
+    // `page: false` is for a press that changed no setting -- the catch-up
+    // trio, which moves rows in the outcome tables and nothing in the stored
+    // document. The page's re-read re-seeds its editor from the server, so
+    // asking for it there would throw away an unsaved edit on another tab to
+    // refresh something that has not moved.
+    if (!page) return;
     try {
       await onChanged();
     } catch (caught) {
       setError(refusalMessage(caught));
     }
+  }
+
+  /** What a card's removal answered, in this tab's words.
+   *
+   * The card is unmounted by the re-read that follows -- the listing comes
+   * back with that server unconfigured -- so this is where the sentence has to
+   * live. `added` is pruned with it: a server removed during this visit goes
+   * back to Add a server, which is both what the listing now says about it and
+   * what the second sentence tells the operator to do. */
+  function removed(name: string, cleared: boolean) {
+    const label = LABELS[name] ?? name;
+    setAdded((current) => current.filter((other) => other !== name));
+    setRemoval(
+      cleared
+        ? `Removed ${label}.`
+        : `Removed ${label}, but its credential could not be cleared and is ` +
+          `still stored. Open ${label} again from Add a server to clear it.`,
+    );
   }
 
   function toggle(name: string) {
@@ -212,6 +257,9 @@ export function ServersTab({
           </div>
         </section>
       )}
+      {/* Above the accordions, because the card it is about has just gone
+          from underneath it. */}
+      {removal !== null && <p className="config-saved">{removal}</p>}
       {servers === null && error === null && <p className="muted">Loading…</p>}
       {/* Only reachable from a 200 whose body carried no server list, which
           `fetchServers` reads as none rather than letting the tab throw. A
@@ -234,7 +282,9 @@ export function ServersTab({
             server={server}
             switches={switches}
             revision={revision}
+            pendingEdits={pendingEdits}
             onChanged={changed}
+            onRemoved={(result) => removed(server.name, result.credential_cleared)}
           />
         </SettingsAccordion>
       ))}
@@ -253,6 +303,9 @@ export function ServersTab({
                 key={server.name}
                 type="button"
                 onClick={() => {
+                  // The sentence above was about this server not being here,
+                  // and it is being put back.
+                  setRemoval(null);
                   setAdded((current) => [...current, server.name]);
                   setOpen((current) =>
                     current.includes(server.name)
@@ -275,6 +328,7 @@ export function ServersTab({
       {bothConfigured && (
         <LibraryMapPanel
           revision={revision}
+          pendingEdits={pendingEdits}
           onChanged={changed}
           open={mapOpen}
           onToggle={() => setMapOpen((current) => !current)}

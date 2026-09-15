@@ -17,6 +17,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import { LibraryMapPanel } from "./LibraryMapPanel";
 import { RESTART_NOTE } from "../api/overrides";
+import { PENDING_EDITS_NOTE } from "./RestartBanner";
+import {
+  bodiesOf,
+  bodyOf,
+  json,
+  router as stubFetch,
+  type Call,
+  type Route,
+} from "./testRouter";
 
 const PLEX_LIBRARIES = {
   libraries: [
@@ -81,55 +90,17 @@ const JELLYFIN_REFUSED = "Jellyfin refused the credential.";
 /** `probe.UNREACHABLE`, rendered with Plex's label and a failure. */
 const PLEX_UNREACHABLE = "Plex could not be reached (ConnectError).";
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
-interface Call {
-  url: string;
-  method: string;
-  body: unknown;
-}
-
-type Route = (init: RequestInit | undefined) => Response;
-
-/** Stub `fetch` with one handler per `"METHOD /path"`, and record every call.
+/** The shared stub, with the three reads the panel makes when it opens.
  *
- * The three reads the panel makes when it opens are seeded here, because every
- * test needs them; a test that cares about one of them declares its own over
- * the top. */
+ * They are seeded here because every test needs them; a test that cares about
+ * one of them declares its own over the top. */
 function router(routes: Record<string, Route> = {}): Call[] {
-  const calls: Call[] = [];
-  const table: Record<string, Route> = {
+  return stubFetch({
     "GET /api/config": () => json(CONFIG),
     "POST /api/servers/plex/libraries": () => json(PLEX_LIBRARIES),
     "POST /api/servers/jellyfin/libraries": () => json(JELLYFIN_LIBRARIES),
     ...routes,
-  };
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockImplementation((url: string, init?: RequestInit) => {
-      const method = init?.method ?? "GET";
-      calls.push({
-        url,
-        method,
-        body:
-          init?.body === undefined || init?.body === null
-            ? undefined
-            : JSON.parse(String(init.body)),
-      });
-      const route = table[`${method} ${url}`];
-      return Promise.resolve(
-        route === undefined
-          ? json({ detail: `the panel asked for ${method} ${url}` }, 500)
-          : route(init),
-      );
-    }),
-  );
-  return calls;
+  });
 }
 
 /** The panel mounted CLOSED, with the tab's `open` flag in the test's hand.
@@ -138,11 +109,17 @@ function router(routes: Record<string, Route> = {}): Call[] {
  * starting and arriving can be asserted; `settle` does both. */
 function mountPanel({
   revision = "r1",
+  pendingEdits = false,
   onChanged = () => {},
-}: { revision?: string | null; onChanged?: () => void } = {}) {
+}: {
+  revision?: string | null;
+  pendingEdits?: boolean;
+  onChanged?: () => void;
+} = {}) {
   const panel = (open: boolean) => (
     <LibraryMapPanel
       revision={revision}
+      pendingEdits={pendingEdits}
       onChanged={onChanged}
       open={open}
       onToggle={() => {}}
@@ -164,7 +141,11 @@ function mountPanel({
 }
 
 async function renderPanel(
-  options: { revision?: string | null; onChanged?: () => void } = {},
+  options: {
+    revision?: string | null;
+    pendingEdits?: boolean;
+    onChanged?: () => void;
+  } = {},
 ) {
   const view = mountPanel(options);
   // A closed section reads nothing, so the first render needs no flush: the
@@ -192,18 +173,6 @@ async function save() {
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Save the map" }));
   });
-}
-
-function bodiesOf(calls: Call[], method: string, url: string): unknown[] {
-  return calls
-    .filter((call) => call.method === method && call.url === url)
-    .map((call) => call.body);
-}
-
-function bodyOf(calls: Call[], method: string, url: string): unknown {
-  const found = bodiesOf(calls, method, url);
-  if (found.length === 0) throw new Error(`no ${method} ${url} was sent`);
-  return found[0];
 }
 
 describe("LibraryMapPanel", () => {
@@ -383,6 +352,62 @@ describe("LibraryMapPanel", () => {
     await save();
     expect(onChanged).toHaveBeenCalled();
     expect(screen.getByText(new RegExp(RESTART_NOTE))).toBeInTheDocument();
+    // Which Jellyfin folder holds a Plex library's items decides which items
+    // Jellyfin is owed, so the service starts the backlog itself -- and the
+    // operator who is not told goes looking for the button that started it.
+    expect(
+      screen.getByText(/This also starts a catch-up for Jellyfin/),
+    ).toBeInTheDocument();
+  });
+
+  it("claims no restart when the write's own answer says nothing waits", async () => {
+    // The route is the contract of record for what a map save leaves waiting,
+    // and this panel says what the response says rather than asserting either
+    // side of that question itself.
+    router({
+      "PUT /api/servers/jellyfin/library-map": () =>
+        json({ ...SAVED, restart_required: [] }),
+    });
+    await renderPanel();
+    await save();
+    expect(screen.getByText(/Saved the library map\./)).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(RESTART_NOTE))).not.toBeInTheDocument();
+  });
+
+  it("offers neither a row nor an option for a library this service never walks", async () => {
+    // The route validates each half of a pair against the listing filtered by
+    // the two kinds this service indexes, so a photo section and a music
+    // folder are a row and an option that can only be refused -- and the
+    // pairing they invite maps a library onto nothing.
+    router({
+      "POST /api/servers/plex/libraries": () =>
+        json({
+          libraries: [
+            { id: "1", name: "Movies", kind: "movie" },
+            { id: "9", name: "Family Photos", kind: "photo" },
+          ],
+        }),
+      "POST /api/servers/jellyfin/libraries": () =>
+        json({
+          libraries: [
+            { id: "a", name: "Films", kind: "movies" },
+            { id: "z", name: "Music", kind: "music" },
+          ],
+        }),
+    });
+    await renderPanel();
+    expect(screen.getByLabelText("Movies")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Family Photos")).toBeNull();
+    expect(optionsOf("Movies")).toEqual(["(not paired)", "Films"]);
+  });
+
+  it("refuses the save while the page is holding an unsaved edit", async () => {
+    // This save asks the page to re-read, and that re-read re-seeds its
+    // editor from the server: refusing the press is the only honest answer.
+    router();
+    await renderPanel({ pendingEdits: true });
+    expect(screen.getByRole("button", { name: "Save the map" })).toBeDisabled();
+    expect(screen.getByText(PENDING_EDITS_NOTE)).toBeInTheDocument();
   });
 
   it("carries nothing from the last opening into the next one", async () => {

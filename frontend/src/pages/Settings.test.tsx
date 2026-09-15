@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setToken } from "../api/client";
 import { STALE_SAVE_NOTE } from "../api/overrides";
 import { DRIFT_NOTICE } from "./DriftNotice";
+import { PENDING_EDITS_NOTE } from "./RestartBanner";
 import {
   IMPACT_CAVEAT,
   REDACTED_EDIT_NOTE,
@@ -2088,6 +2089,37 @@ describe("Settings tabs", () => {
     fireEvent.click(screen.getByLabelText("Upload badged artwork to Plex"));
     expect(screen.getByLabelText("Upload badged artwork to Plex")).toBeChecked();
     expect(screen.queryByText(/Unsaved changes on:/)).toBeNull();
+  });
+
+  it("refuses a card's write while another tab is holding an unsaved edit", async () => {
+    // The tab's re-read is the page's own: it re-seeds this editor from the
+    // server, so a card allowed to write here would throw the edit below away
+    // with nothing on screen to say so. The card refuses the press instead,
+    // in the sentence the restart banner and the two System-tab panels use.
+    stubByUrl(
+      { "/api/servers": { servers: [PLEX_ROW] } },
+      {
+        workers: 5,
+        scheduler: { poll_seconds: 5 },
+        badges: { upload_to_plex: false },
+        overrides_revision: "rev-1",
+      },
+    );
+    await renderSettings();
+    await openSettled("System", "Scheduler");
+    fireEvent.change(screen.getByLabelText("scheduler.poll_seconds"), {
+      target: { value: "9" },
+    });
+    expect(screen.getByText(/Unsaved changes on: System/)).toBeInTheDocument();
+
+    await openSettled("Servers");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Plex" }));
+    });
+    expect(screen.getByRole("button", { name: "Save Plex" })).toBeDisabled();
+    expect(screen.getByText(PENDING_EDITS_NOTE)).toBeInTheDocument();
+    // ...and the edit is still there to go back to.
+    expect(screen.getByText(/Unsaved changes on: System/)).toBeInTheDocument();
   });
 
   it("does not name one server twice on the tab that carries its card", async () => {

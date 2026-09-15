@@ -142,6 +142,19 @@ export interface ConfigWriteResult {
   restart_required: string[];
 }
 
+/** Whether a write's own answer says it left something waiting on a restart.
+ *
+ * The field is this write's difference against the RUNNING generation, which
+ * is the question a note beside the button that made it is answering -- the
+ * banner at the top of the page answers the other one, "what is waiting since
+ * this process booted", and reads the stored list for it. Shape-checked
+ * rather than trusted for the reason every listing on this tab is: a 200 whose
+ * body is not what the route documents must not make a note claim a restart
+ * nobody needs. */
+export function restartWaiting(paths: string[] | undefined): boolean {
+  return Array.isArray(paths) && paths.length > 0;
+}
+
 export interface ServerRemovalResult extends ConfigWriteResult {
   /** False when the block was removed but the stored credential survived it.
    * The removal still happened, so the card says the credential is still

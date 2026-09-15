@@ -13,6 +13,13 @@
  * row the dropdown cannot display is a row the panel would otherwise submit
  * behind the operator's back and have refused.
  *
+ * AND ONLY THE LIBRARIES THIS SERVICE WALKS. A listing carries every folder a
+ * server holds, but the route validates each half of a pair against the movie
+ * and show libraries alone, so the two listings are filtered by kind before
+ * anything is seeded from them: a photo section offered as a row, or a music
+ * folder offered on a dropdown, is a pairing the route refuses and an index
+ * that would resolve that library to nothing.
+ *
  * SAME-NAMED LIBRARIES PAIR THEMSELVES. A row whose two names match is shown
  * as paired and the server drops it from what it stores, so the panel sends
  * every row it shows and the server decides which of them are worth keeping.
@@ -34,12 +41,45 @@ import { useEffect, useState } from "react";
 
 import { ApiError, apiFetch } from "../api/client";
 import { isPlainObject, readPath, refusalMessage, RESTART_NOTE } from "../api/overrides";
-import { fetchLibraries, saveLibraryMap, type LibraryRow } from "../api/servers";
+import {
+  fetchLibraries,
+  restartWaiting,
+  saveLibraryMap,
+  type LibraryRow,
+} from "../api/servers";
 import type { ConfigResponse } from "../api/types";
+import { PENDING_EDITS_NOTE } from "./RestartBanner";
 import { SettingsAccordion } from "./SettingsAccordion";
 
 /** What the empty option says, and what it means: this row sends nothing. */
 const NOT_PAIRED = "(not paired)";
+
+/** What each server calls the two library kinds this service walks, mirrored
+ * from `INDEXED_KINDS` in `src/autoposter/api/servers.py` the way `SWITCHES`
+ * mirrors `SERVER_SWITCHES`.
+ *
+ * The listings both servers answer with are unfiltered -- every folder they
+ * hold, with its own kind -- but the route validates each half of a pair
+ * against the listing FILTERED by these, and refuses anything else with "has
+ * a library called that, but it is not a movie or show library". A row for a
+ * photo library, or a music folder on a dropdown, is therefore a refusal this
+ * panel would be offering: the pairing is not merely unsupported, it maps a
+ * library onto nothing, and every item in it stays unresolved forever. A
+ * stored pair naming one falls into the "Jellyfin no longer lists" path
+ * below, which says so. */
+const INDEXED_KINDS: Record<string, Set<string>> = {
+  plex: new Set(["movie", "show"]),
+  jellyfin: new Set(["movies", "tvshows"]),
+};
+
+/** One server's listing, with the folders this service would never walk taken
+ * out. A kind this table does not name is dropped rather than kept: the route
+ * refuses it, so keeping it would put a control on screen for a pairing that
+ * cannot be made. */
+function indexable(rows: LibraryRow[], name: string): LibraryRow[] {
+  const kinds = INDEXED_KINDS[name];
+  return kinds === undefined ? rows : rows.filter((row) => kinds.has(row.kind));
+}
 
 /** One refused row, as the route reports it.
  *
@@ -111,6 +151,7 @@ function storedMap(config: ConfigResponse): Record<string, string> {
 
 export function LibraryMapPanel({
   revision,
+  pendingEdits = false,
   onChanged,
   open,
   onToggle,
@@ -120,6 +161,10 @@ export function LibraryMapPanel({
    * without one, and that refusal is the only thing standing between a
    * concurrent settings save and a silent revert of it. */
   revision: string | null;
+  /** Whether the page is holding an edit nobody has stored. This save asks
+   * the page to re-read, and that re-read re-seeds its editor from the
+   * server, so the press is refused rather than allowed to discard it. */
+  pendingEdits?: boolean;
   onChanged: () => Promise<void> | void;
   /** Whether this accordion is the open one. Held by the tab, the way the
    * System tab holds the secrets accordion's, so the page keeps its one rule:
@@ -173,12 +218,17 @@ export function LibraryMapPanel({
       }
     };
     void (async () => {
-      const [config, plexRows, jellyfinRows] = await Promise.all([
+      const [config, allPlexRows, allJellyfinRows] = await Promise.all([
         settle<ConfigResponse>(apiFetch<ConfigResponse>("/api/config"), {}),
         settle<LibraryRow[]>(fetchLibraries("plex", {}), []),
         settle<LibraryRow[]>(fetchLibraries("jellyfin", {}), []),
       ]);
       if (cancelled) return;
+      // Both listings, before anything is seeded from them: a photo section
+      // is a row the route refuses, and a music folder is an option on every
+      // dropdown that cannot be chosen honestly.
+      const plexRows = indexable(allPlexRows, "plex");
+      const jellyfinRows = indexable(allJellyfinRows, "jellyfin");
       const stored = storedMap(config);
       const jellyfinNames = new Set(jellyfinRows.map((row) => row.name));
       // Folders the stored map has already given to a Plex library. A second
@@ -243,12 +293,21 @@ export function LibraryMapPanel({
       const filled = Object.fromEntries(
         Object.entries(pairs).filter(([, value]) => value !== ""),
       );
-      await saveLibraryMap(filled, revision, overrule);
+      const saved = await saveLibraryMap(filled, revision, overrule);
       await onChanged();
-      // The map's leaf paths do land on the restart list: the Jellyfin client
-      // and its library index are built once at startup from the stored map,
-      // so a saved map is genuinely not in force until the restart.
-      setNote(`Saved the library map. ${RESTART_NOTE}`);
+      // Which Jellyfin folder holds a Plex library's items decides which
+      // items Jellyfin is owed, so the service starts the backlog itself --
+      // and the operator who is not told goes looking for the button that
+      // started it.
+      const said = "Saved the library map. This also starts a catch-up for Jellyfin.";
+      // Then what the response says rather than a sentence of this panel's
+      // own: the map's leaf paths do reach the restart list, because the
+      // Jellyfin client and its library index are built once at startup from
+      // the stored map -- but the route is the contract of record, and a save
+      // that left nothing waiting must not claim otherwise.
+      setNote(
+        restartWaiting(saved.restart_required) ? `${said} ${RESTART_NOTE}` : said,
+      );
     } catch (caught) {
       const refused = mapProblems(caught);
       if (refused.length > 0) setProblems(refused);
@@ -280,9 +339,10 @@ export function LibraryMapPanel({
         Pair each Plex library with the Jellyfin library that holds the same
         items. Libraries called the same thing on both servers pair themselves,
         so those rows are not stored and cannot be cleared. Every name here
-        comes from the servers&apos; own listings, and each Jellyfin library can
-        be paired with one Plex library. A server added here is not mapped
-        until this deployment restarts.
+        comes from the servers&apos; own listings, and only their movie and
+        show libraries appear: those are the ones this service walks. Each
+        Jellyfin library can be paired with one Plex library. A server added
+        here is not mapped until this deployment restarts.
       </p>
       {readError !== null && <p className="page-error">{readError}</p>}
       {dropped.map((sentence) => (
@@ -370,10 +430,13 @@ export function LibraryMapPanel({
           Allow this to remove settings I have saved
         </label>
       )}
+      {/* One line for the one control it refuses, in the wording the restart
+          banner and the two System-tab panels use. */}
+      {pendingEdits && <p className="muted config-note">{PENDING_EDITS_NOTE}</p>}
       <div className="config-actions">
         <button
           type="button"
-          disabled={busy || !writable || !read}
+          disabled={busy || !writable || !read || pendingEdits}
           onClick={() => void save()}
         >
           Save the map
