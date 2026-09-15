@@ -5,6 +5,7 @@ this module inherits from the wizard has its own test: a credential this
 deployment holds never travels to an address a request named.
 """
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -946,6 +947,7 @@ async def test_removing_a_server_drops_its_block_and_its_credential(
     assert document["badges"]["upload_to_jellyfin"] is False
     assert document["operations"]["write_to_jellyfin"] is False
     assert "AUTOPOSTER_JELLYFIN_APIKEY" not in stored
+    assert response.json()["credential_cleared"] is True
 
 
 async def test_a_removal_turns_off_the_per_library_overrides_of_its_switches(
@@ -1034,35 +1036,66 @@ async def test_a_removal_is_recorded_as_a_removal(
     assert [row.payload["reason"] for row in rows] == ["save", "remove"]
 
 
-async def test_a_failing_credential_clear_leaves_the_server_configured(
-    app, client, auth_headers, session_factory, monkeypatch
+async def test_a_failing_credential_clear_is_reported_rather_than_swallowed(
+    client, auth_headers, session_factory, monkeypatch, caplog
 ):
-    """The clear is part of the write, not a step beside it: a clear that fails
-    writes no document, so a retry has a server to remove rather than an
-    orphaned credential row nobody can see."""
+    """The removal has committed, so there is no failure left to report -- only
+    a fact to act on: the row survived, the response says so, and the log says
+    which server and what went wrong."""
 
     async def boom(session, name):
         raise OSError("the key volume went away")
 
     assert (await _save(client, auth_headers)).status_code == 200
+    await client.put(
+        "/api/servers/jellyfin/credential",
+        json={"value": "jf-key"},
+        headers=auth_headers,
+    )
     monkeypatch.setattr(secret_store, "clear_secret", boom)
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False),
-        base_url="http://test",
-    ) as failing:
-        revision = await _revision(failing, auth_headers)
-        response = await failing.request(
-            "DELETE",
-            "/api/servers/jellyfin",
-            json={"expected_revision": revision, "confirm": True},
-            headers=auth_headers,
-        )
-    assert response.status_code >= 500
+    with caplog.at_level(logging.ERROR, logger="autoposter.api.servers"):
+        response = await _remove(client, auth_headers, confirm=True)
+    assert response.status_code == 200, response.text
+    assert response.json()["credential_cleared"] is False
+
+    logged = [record.getMessage() for record in caplog.records]
+    assert any(
+        "could not be cleared" in line and "jellyfin" in line and "OSError" in line
+        for line in logged
+    ), logged
+    assert "jf-key" not in caplog.text
 
     async with session_factory() as session:
         document = await load_overrides_document(session)
-    assert "jellyfin" in document, "no document was written"
+        stored = await secret_store.load_stored_secrets(session)
+    assert "jellyfin" not in document, "the removal itself stands"
+    assert "AUTOPOSTER_JELLYFIN_APIKEY" in stored, "the row the log names"
+
+
+async def test_a_refused_removal_leaves_the_credential_where_it_was(
+    client, auth_headers, session_factory
+):
+    """A stale revision is decided under the row lock, after everything this
+    route can check itself. Clearing before that would have a REFUSED removal
+    take a still-configured server's credential with it."""
+    assert (await _save(client, auth_headers)).status_code == 200
+    await client.put(
+        "/api/servers/jellyfin/credential",
+        json={"value": "jf-key"},
+        headers=auth_headers,
+    )
+
+    response = await _remove(
+        client, auth_headers, expected_revision="not-the-current-one", confirm=True
+    )
+    assert response.status_code == 409
+
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+        stored = await secret_store.load_stored_secrets(session)
+    assert document["jellyfin"]["url"] == "http://jellyfin:8096"
+    assert "AUTOPOSTER_JELLYFIN_APIKEY" in stored
 
 
 async def test_a_removal_from_a_delta_era_store_is_refused(

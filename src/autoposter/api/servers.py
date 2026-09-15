@@ -673,13 +673,23 @@ async def remove_server(
     to a server the deployment no longer has -- for as long as the frozen
     section keeps the client alive, which is until the restart.
 
-    The credential is cleared BEFORE the document write. A clear is idempotent
-    and a credential lost to a write that then fails is recoverable -- the
-    operator types it again -- while the other order's failure is silent: a
-    committed removal whose credential row survives, ready to be adopted by
-    the next deployment that re-adds the server without being asked for one.
-    Which makes the clear part of the write rather than a step beside it, so a
-    clear that fails answers its own error with nothing written.
+    The credential is cleared AFTER the document write succeeds, because of
+    the refusals that live INSIDE that write. A stale revision and the drop cap
+    are both decided under the row lock, after everything this route can check
+    by itself has already passed -- so clearing first would let a removal that
+    is REFUSED strip the credential of a server that is still configured, and
+    take the running deployment's access to it with it (the delegate rebinds
+    ``app.state.secrets``). A refusal has to leave the deployment exactly as it
+    found it.
+
+    What that order costs is a clear that fails after the removal has
+    committed, and the answer to that is to be loud rather than silent: the
+    failure is logged with the server's name and the exception's CLASS, and the
+    response carries ``credential_cleared: false`` so the card can say the row
+    survived and send the operator to the credential route, which removes it on
+    its own. The 200 stands, because the removal itself did happen -- reporting
+    it as a failure would have an operator retry a removal already made and
+    land on ``LAST_SERVER`` or a stale revision for their trouble.
 
     ``reason="remove"`` rather than the default, because the pre-write snapshot
     and the audit row are the one durable record that a server was removed, and
@@ -694,12 +704,8 @@ async def remove_server(
 
     candidate = _without_server(document, name)
 
-    # Everything that can refuse this document refuses it here, before the
-    # credential is touched: `_validated_generation` persists nothing, so a
-    # 422 leaves both the document and the credential exactly as they were.
     validated_generation, persist_and_swap = _config_write()
     validated, after, whole = await validated_generation(request, candidate)
-    await clear_stored_secret(probe.SERVER_CREDENTIAL[name], request, None)
     result = await persist_and_swap(
         request,
         validated,
@@ -709,8 +715,25 @@ async def remove_server(
         confirm=body.confirm,
         reason="remove",
     )
+    cleared = True
+    try:
+        await clear_stored_secret(probe.SERVER_CREDENTIAL[name], request, None)
+    except Exception as exc:
+        # Broad on purpose: the removal has committed, so there is no failure
+        # left for this request to report -- only a fact for the operator to
+        # act on. The server's name and the exception's CLASS, never its text,
+        # which for a key-file or database fault is one line from a path or a
+        # credential.
+        cleared = False
+        logger.error(
+            "a removed media server's stored credential could not be cleared "
+            "and is still in the store (%s, %s); clear it from its credential "
+            "route",
+            name,
+            type(exc).__name__,
+        )
     logger.info("a media server was removed from the configuration (%s)", name)
-    return result
+    return {**result, "credential_cleared": cleared}
 
 
 @router.put("/servers/{name}/credential")
