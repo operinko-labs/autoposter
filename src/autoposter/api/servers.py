@@ -888,7 +888,9 @@ async def save_library_map(
     A Jellyfin folder may be paired by at most ONE Plex library. Both sides of
     a many-to-one validate as listed-and-indexable, so nothing else would
     refuse it, and what it stores is a map the index resolves twice onto the
-    same folder.
+    same folder. A row that has already failed claims no folder, so a bad row
+    gets one sentence about the mistake it made rather than a second about a
+    folder that may not exist.
 
     A refusal names the ROW in its own ``library`` field rather than inside the
     dotted ``path``, for the reason ``LIBRARY_MAP_PATH`` gives: a library name
@@ -947,6 +949,7 @@ async def save_library_map(
     problems = []
     paired: set[str] = set()
     for plex_name, jellyfin_name in sorted(pairs.items()):
+        row = []
         # Zipped against ``SERVER_NAMES`` rather than spelled again: the two
         # halves of a pair ARE the two servers, in their order, and a third
         # name added to that tuple must fail this loop rather than slip past
@@ -959,7 +962,7 @@ async def save_library_map(
             # The PAIR is what an operator fixes, so both halves are reported
             # against the row that carries them; the sentence is one of the two
             # fixed ones and the label is this service's own.
-            problems.append(
+            row.append(
                 {
                     "path": LIBRARY_MAP_PATH,
                     "library": plex_name,
@@ -970,11 +973,19 @@ async def save_library_map(
                     ).format(side=setup_checks.CHECK_SYSTEMS[name].label),
                 }
             )
-        # One Jellyfin folder, one Plex library. The rows are walked in sorted
-        # order, so the first Plex name keeps the folder and every later one is
-        # the row reported -- a stable answer for one body, which a set
-        # iterated in insertion order would not be.
-        if jellyfin_name in paired:
+        # One Jellyfin folder, one Plex library -- and a folder is CLAIMED only
+        # by a row both servers carry both halves of. A row that has already
+        # failed claims nothing: it is not a pairing this route would store,
+        # and the folder it names may not exist at all. Without that, two rows
+        # pointing at one name neither server lists reported the second one
+        # TWICE, the second sentence telling the operator their typo was
+        # already paired with another Plex library.
+        if row:
+            problems.extend(row)
+        elif jellyfin_name in paired:
+            # Sorted order, so the first Plex name keeps the folder and every
+            # later one is the row reported -- a stable answer for one body,
+            # which a set iterated in insertion order would not be.
             problems.append(
                 {
                     "path": LIBRARY_MAP_PATH,
@@ -982,7 +993,8 @@ async def save_library_map(
                     "message": LIBRARY_MAP_PAIRS_ONCE.format(jellyfin=jellyfin_name),
                 }
             )
-        paired.add(jellyfin_name)
+        else:
+            paired.add(jellyfin_name)
     if problems:
         raise HTTPException(status_code=422, detail=problems)
 

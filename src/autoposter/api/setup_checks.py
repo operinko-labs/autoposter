@@ -97,6 +97,11 @@ SETUP_VERSION = "setup"
 # than truncated, which would put a version on a card that no server reported.
 VERSION_LIMIT_CHARS = 64
 
+# What every outbound call here asks for and the whole of what an
+# UNCREDENTIALED one sends. The credential, where there is one, is added over
+# this by ``_credentialed``.
+BASE_HEADERS: dict[str, str] = {"accept": "application/json"}
+
 
 class _DropEveryRecord(logging.Filter):
     """Attached to the ``httpx`` logger for the length of one probe."""
@@ -166,6 +171,11 @@ class Check:
     version_path: str | None = None
     #: The key path into that answer, outermost first.
     version_keys: tuple[str, ...] = ()
+    #: Whether the version read carries the credential. Off unless the path
+    #: needs it: a credential that does not gate a value has no business making
+    #: a second trip for it, and the header would put this deployment's token
+    #: on a request that would have been answered without one.
+    version_auth: bool = False
 
 
 CHECK_SYSTEMS: dict[str, Check] = {
@@ -176,7 +186,10 @@ CHECK_SYSTEMS: dict[str, Check] = {
     # The version comes from /identity and not from the section list, which
     # carries none: /identity is the read plex/health.py already polls, it is
     # the same fixed shape on every server, and it is asked only after the
-    # section list has proved the address and the token.
+    # section list has proved the address and the token. WITHOUT the token,
+    # because /identity does not ask for one (plex/health.py:58 polls it with
+    # none) and a value that is not gated by the credential is not a reason to
+    # send the credential anywhere a second time.
     "plex": Check(
         label="Plex",
         host=None,
@@ -209,6 +222,10 @@ CHECK_SYSTEMS: dict[str, Check] = {
         auth="mediabrowser",
         version_path="/System/Info",
         version_keys=("Version",),
+        # The same authenticated read the probe just made: /System/Info answers
+        # 401 without the key, and the unauthenticated /System/Info/Public is a
+        # different endpoint this table deliberately does not use.
+        version_auth=True,
     ),
     # providers/tmdb.py:131 -- the configured token is a v4 read access token,
     # carried as a bearer. /3/configuration is the cheapest authenticated read.
@@ -302,7 +319,7 @@ def _credentialed(
     version read -- and a second spelling of the Jellyfin header in particular
     is a typo indistinguishable from a wrong API key.
     """
-    headers: dict[str, str] = {"accept": "application/json"}
+    headers: dict[str, str] = dict(BASE_HEADERS)
     params: dict[str, str] = {}
     json_body: dict[str, str] | None = None
 
@@ -432,14 +449,23 @@ async def read_version(
     may change what the check said, which is why every arm answers ``None``:
     a card that said "connected" does not stop saying it because a version
     could not be read.
+
+    And asked without the credential unless the path needs one
+    (``Check.version_auth``). The probe sends a credential because the probe's
+    whole subject IS the credential; this call's subject is a version string,
+    and on a path that answers it to anyone the credential would be one more
+    trip for a value it does not gate.
     """
     check = CHECK_SYSTEMS[system]
     if check.version_path is None:
         return None
     try:
-        headers, params, _body = _credentialed(
-            check, credentials.get(check.credential or "", "")
-        )
+        if check.version_auth:
+            headers, params, _body = _credentialed(
+                check, credentials.get(check.credential or "", "")
+            )
+        else:
+            headers, params = dict(BASE_HEADERS), {}
         host = check.host if check.host is not None else base_url
         url = f"{host}{check.version_path}"
 

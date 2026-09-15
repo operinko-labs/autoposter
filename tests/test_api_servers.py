@@ -1949,6 +1949,32 @@ async def test_two_plex_libraries_cannot_share_one_jellyfin_folder(
     assert "library_map" not in document["jellyfin"]
 
 
+async def test_a_row_neither_server_carries_is_reported_once_and_claims_nothing(
+    app, client, auth_headers, monkeypatch
+):
+    """Two Plex libraries pointed at one name Jellyfin does not list. A row that
+    has already failed claims no folder: claiming one would report the second
+    row twice, the second sentence telling the operator that the folder they
+    mistyped is already paired with another Plex library."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Elokuvat", "Movies"], ["Films"])
+
+    response = await _map(
+        client, auth_headers, {"Movies": "Sarjat", "Elokuvat": "Sarjat"}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {
+            "path": servers_api.LIBRARY_MAP_PATH,
+            "library": library,
+            "message": servers_api.NOT_A_LIBRARY_THIS_SERVER_LISTS.format(
+                side="Jellyfin"
+            ),
+        }
+        for library in ("Elokuvat", "Movies")
+    ], "one sentence per row, and neither of them about a second pairing"
+
+
 async def test_removing_plex_drops_the_library_map_its_keys_name(
     app, client, auth_headers, monkeypatch, session_factory
 ):

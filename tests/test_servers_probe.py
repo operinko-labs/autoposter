@@ -111,6 +111,39 @@ async def test_each_server_states_its_version_on_its_own_path():
     assert jellyfin.ok is True and jellyfin.version == "10.11.0"
 
 
+async def test_the_plex_version_read_sends_no_token_and_jellyfins_sends_its_key():
+    """``/identity`` answers without a credential -- ``plex/health.py`` polls it
+    with none -- so the token does not make a second trip for a value it does
+    not gate. Jellyfin's ``/System/Info`` is the authenticated read the probe
+    itself makes, and answers 401 without the key."""
+    seen: list[httpx.Request] = []
+
+    def handler(request):
+        seen.append(request)
+        if request.url.path == "/identity":
+            return httpx.Response(
+                200,
+                content=json.dumps({"MediaContainer": {"version": "1.41.2"}}).encode(),
+            )
+        if request.url.path == "/System/Info":
+            return httpx.Response(200, content=json.dumps({"Version": "10.11.0"}).encode())
+        return httpx.Response(200, content=_plex_sections())
+
+    transport = httpx.MockTransport(handler)
+    plex = await probe.check_server("plex", "http://plex:32400", "tok", transport=transport)
+    assert plex.version == "1.41.2", "the value still arrives"
+    identity = [request for request in seen if request.url.path == "/identity"]
+    assert len(identity) == 1
+    assert "x-plex-token" not in identity[0].headers
+
+    seen.clear()
+    jellyfin = await probe.check_server(
+        "jellyfin", "http://jf:8096", "key", transport=transport
+    )
+    assert jellyfin.version == "10.11.0"
+    assert all("MediaBrowser" in request.headers["authorization"] for request in seen)
+
+
 async def test_a_version_longer_than_a_version_is_not_passed_on():
     """The one value these probes answer with that is the third party's own
     text, so it is bounded rather than trusted: too long is answered as none
