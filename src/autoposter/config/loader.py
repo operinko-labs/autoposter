@@ -281,7 +281,7 @@ def moved_kinds(before: Config, after: Config) -> set[str]:
 
     Option (b)'s one useful half, taken as a plain helper rather than as a
     field on ``Config``. A ``config.versions`` map would grow
-    ``api/routes.COMPUTED_PATHS``, would make ``GET /api/config`` serve a
+    ``COMPUTED_PATHS``, would make ``GET /api/config`` serve a
     mapping where the editor renders a scalar, would turn
     ``ConfigSaveResponse.version_before``/``version_after`` into a four-way
     display, and would need a story for a computed ``dict[str, str]`` in both
@@ -388,6 +388,21 @@ def build_config(data: dict) -> Config:
     config = Config(**data)
     config.version = render_version(config)
     return config
+
+
+#: Paths the service computes rather than the operator setting.
+#:
+#: ``version`` is the render-settings hash ``build_config`` stamps above,
+#: stored on each Render row so a settings change is detectable as staleness --
+#: writing one by hand overrides it with a value the next load recomputes away.
+#: Served by ``GET /api/config`` so the editor can render it read-only instead
+#: of offering an edit that does nothing (roadmap row 112). Not a refusal: an
+#: override on it is still accepted and still inert, exactly as before.
+#:
+#: Here rather than beside that endpoint because two readers need it now: the
+#: drift report subtracts these before comparing the file with the store, since
+#: a value neither of them owns cannot be a difference between them.
+COMPUTED_PATHS: tuple[str, ...] = ("version",)
 
 
 def load_config(path: Path) -> Config:

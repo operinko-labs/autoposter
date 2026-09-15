@@ -63,16 +63,17 @@ FROZEN_SECTIONS: dict[str, str] = {
         "the TMDb rate budget captures its window length when the facts client "
         "is built at startup (facts/tmdb_budget.py)"
     ),
-    # The one entry here that a restart does not fix either. FastAPI builds
-    # the docs routes into the application object, which exists before the
-    # lifespan has read a single override -- so this value can only ever come
-    # from the mounted file. Said plainly rather than as "restart to apply",
-    # which would be a lie an operator would only discover by restarting.
+    # The one entry here that no part of a running generation reaches. FastAPI
+    # builds the docs routes into the application object, which exists before
+    # the lifespan has read a single override -- so this value is settled for
+    # the life of the process. A restart applies it: the application object is
+    # built from the stored document (main.build), which is what the Settings
+    # page writes.
     "api_docs_enabled": (
         "FastAPI decides whether /docs, /redoc and /openapi.json exist when "
         "the application object is constructed, which happens before the "
-        "overrides are read -- so a restart will not apply this one either; "
-        "set it in the mounted autoposter.yaml"
+        "overrides are read -- so this one takes effect at the next restart "
+        "and never on save"
     ),
     "scheduler.enabled": (
         "the scheduler's job set is registered once at startup; the cadences "
@@ -101,11 +102,11 @@ FROZEN_SECTIONS: dict[str, str] = {
 # any client -- see app.py.
 LIVE_EXCEPTIONS: frozenset[str] = frozenset({"plex.resolve_max_attempts"})
 
-# The one entry in FROZEN_SECTIONS whose own reason says a restart does not
-# help either -- see the comment on api_docs_enabled above. The editor reports
-# these separately from "restart required" (routes.py's _inert_changes), so it
-# never promises an operator a restart will apply something only editing the
-# mounted file can.
+# The entries in FROZEN_SECTIONS that no swap reaches even in part -- see the
+# comment on api_docs_enabled above. The editor reports these separately from
+# "restart required" (routes.py's _inert_changes) because they land at a
+# different moment of the boot: when the application OBJECT is built, before
+# the lifespan merges anything, so nothing short of a restart moves them.
 INERT_SECTIONS: frozenset[str] = frozenset({"api_docs_enabled"})
 
 
@@ -114,8 +115,8 @@ def _covers(prefix: str, path: str) -> bool:
 
 
 def is_inert(path: str) -> bool:
-    """Whether nothing short of editing the mounted config file reaches
-    ``path`` -- not a swap, and not a restart either."""
+    """Whether nothing short of a restart reaches ``path`` -- no swap does,
+    not even the part of one the lifespan performs."""
     return any(_covers(prefix, path) for prefix in INERT_SECTIONS)
 
 

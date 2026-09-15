@@ -16,8 +16,22 @@ from autoposter.app import _build_mdblist, _build_providers, _handle_intent, cre
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import build_config, load_config, read_config_document
-from autoposter.config.overrides import OVERRIDES_ROW_ID
-from autoposter.config.schema import STATE_FILE_NAMES_ENV, Secrets
+from autoposter.config.overrides import (
+    OVERRIDES_ROW_ID,
+    STORE_FORMAT,
+    load_store,
+    restart_paths,
+    store_meta,
+    write_store,
+)
+from autoposter.config import state as state_module
+from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
+    Secrets,
+    secret_sources,
+)
 from autoposter.db.models import ConfigOverride
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
 from autoposter.intake.arr import RenderIntent
@@ -210,6 +224,50 @@ async def test_the_lifespan_boots_on_the_effective_config_not_the_file_alone(
             "the worker pool was sized from the file config, so the overrides "
             f"swap happens after its consumers read it ({started!r})"
         )
+
+
+async def test_the_lifespan_forgets_the_restart_list(
+    session_factory, secrets, stubbed_background_services
+):
+    """Whatever restarted this process, it came up on the configuration the
+    store held -- so every path the list was waiting for has just been applied.
+
+    The button is only one of the ways a process is replaced; a container
+    restart, a crash-restart and the wizard's own exec all run this same
+    boot, and a notice that outlives what it asks for is worse than no notice
+    at all.
+
+    The row is written delta-era on purpose: that shape sends the boot through
+    the one-time conversion, which is the longest road the list has to survive
+    before anything clears it.
+    """
+    file_config = load_config(EXAMPLE)
+    overridden = file_config.workers + 7
+    async with session_factory() as writing:
+        await write_store(
+            writing,
+            {"workers": overridden},
+            store_meta(format_=1, restart_list=["workers"]),
+        )
+        await writing.commit()
+
+    app = _background_app(file_config, session_factory, secrets)
+    async with app.router.lifespan_context(app):
+        await asyncio.sleep(0)
+        assert app.state.booted_config.workers == overridden, (
+            "precondition: the lifespan booted on the stored generation"
+        )
+
+    async with session_factory() as reading:
+        _document, meta = await load_store(reading)
+    assert restart_paths(meta) == [], (
+        "the banner would ask for a restart that has already happened, and "
+        "keep asking until the operator saved another frozen setting"
+    )
+    assert meta["format"] == STORE_FORMAT, (
+        "the clear took the format with it: the next boot would go looking "
+        "for a file to merge this whole document over"
+    )
 
 
 async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(
@@ -845,8 +903,11 @@ async def test_the_catch_up_drain_is_registered_for_a_jellyfin_only_deployment(
 ):
     """Spec §3. The drain sits beside the retry pass it uses and inside the
     same gate: not Plex-gated, since a catch-up is for whatever server the
-    deployment has, and not ahead of the gate like ``stale_job_reclaim``,
-    since its runs ARE recorded and trimmed by the cleanup pass.
+    deployment has.
+
+    Its ticks record no run history, which is a different question from where
+    it is registered: the catch-up itself owns the row that says work is in
+    flight, and a look that finds nothing due is not a second one.
     """
     await _store_override(session, {"plex": None, "jellyfin": {"url": "https://jf"}})
 
@@ -858,7 +919,7 @@ async def test_the_catch_up_drain_is_registered_for_a_jellyfin_only_deployment(
         )
         assert "catch_up_drain" in app.state.scheduler_intervals
         assert any(job.name == "catch_up_drain" for job in app.state.scheduler_jobs)
-        assert "catch_up_drain" not in UNRECORDED
+        assert "catch_up_drain" in UNRECORDED
 
 
 def test_every_application_publishes_the_catch_up_request_queue(
@@ -1041,34 +1102,41 @@ async def test_the_asset_stats_job_is_registered_by_the_lifespan(
         assert app.state.scheduler_intervals["asset_stats"] == 7 * 24 * 3600
 
 
-def test_an_app_that_never_booted_says_no_secret_came_from_the_state_file(secrets):
-    """Fail closed. Every test application, and any operator running
-    `python -m autoposter.main` directly, has no marker -- and the refusal is
-    the answer they get, which is the right default and the one a test has to
-    opt OUT of rather than into."""
-    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+def test_the_app_publishes_no_per_name_source_flag_of_its_own(secrets, session_factory):
+    """`create_app` used to freeze a per-name "came from the state file"
+    boolean onto `app.state` at construction. It could only ever answer one
+    layer of three, it was decided once and could not follow a secret stored or
+    cleared while the process ran, and after `boot._export` it was the only
+    thing standing between the rotation route and labelling every deployment
+    `environment`.
 
-    assert app.state.secret_from_state_file.get("AUTOPOSTER_WEBHOOK_SECRET", False) is False
+    What the route reads instead is `config/schema.secret_sources`, over
+    `boot`'s two markers and -- through this factory -- the live table. So the
+    two things this application owes it are the absence of the old flag and the
+    session it opens.
+    """
+    app = create_app(load_config(EXAMPLE), session_factory, secrets=secrets)
+
+    assert not hasattr(app.state, "secret_from_state_file")
+    assert app.state.session_factory is session_factory
 
 
-def test_the_boot_marker_becomes_a_per_name_boolean(secrets, monkeypatch):
-    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "AUTOPOSTER_WEBHOOK_SECRET,AUTOPOSTER_RADARR_APIKEY")
+def test_an_app_that_never_booted_still_fails_closed(secrets, session_factory, monkeypatch, tmp_path):
+    """Fail closed, now from the markers rather than from a per-app attribute.
+    Every test application, and any operator running `python -m autoposter.main`
+    directly, has none of the three markers and no state file -- so nothing is
+    stored, nothing came from the file, the environment answers for itself, and
+    the rotation route's guard (`== "environment"`) refuses. The right default,
+    and the one a test has to opt OUT of."""
+    monkeypatch.setenv(state_module.STATE_DIR_ENV, str(tmp_path / "state"))
+    monkeypatch.delenv(STATE_FILE_NAMES_ENV, raising=False)
+    monkeypatch.delenv(STORED_SECRET_NAMES_ENV, raising=False)
+    monkeypatch.delenv(ENVIRONMENT_SECRET_NAMES_ENV, raising=False)
+    monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", "from-env")
 
-    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
+    create_app(load_config(EXAMPLE), session_factory, secrets=secrets)
 
-    assert app.state.secret_from_state_file.get("AUTOPOSTER_WEBHOOK_SECRET", False) is True
-    assert app.state.secret_from_state_file.get("AUTOPOSTER_RADARR_APIKEY", False) is True
-    assert app.state.secret_from_state_file.get("AUTOPOSTER_PLEX_TOKEN", False) is False
-
-
-def test_an_empty_marker_is_not_a_name(secrets, monkeypatch):
-    """`"".split(",")` is `[""]`, which would otherwise put an empty-string key
-    in the map -- harmless here and a trap for the next reader."""
-    monkeypatch.setenv(STATE_FILE_NAMES_ENV, "")
-
-    app = create_app(load_config(EXAMPLE), session_factory=None, secrets=secrets)
-
-    assert app.state.secret_from_state_file == {}
+    assert secret_sources([])["AUTOPOSTER_WEBHOOK_SECRET"] == "environment"
 
 
 async def test_a_plex_less_app_boots_and_serves_status(session_factory):

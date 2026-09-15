@@ -97,7 +97,7 @@ function config(overrides: Record<string, unknown> = {}) {
     version: "cfg-1",
     plex: { url: "http://plex:32400" },
     playlists: { enabled: true },
-    overridden_paths: ["plex.url"],
+    restart_paths: [],
     frozen_paths: {},
     redacted_paths: [],
     keep_sentinel: "***KEEP***",
@@ -108,7 +108,6 @@ function config(overrides: Record<string, unknown> = {}) {
 function overriddenConfig(entries: unknown[] = STORED_ENTRIES) {
   return config({
     playlists: { enabled: true, definitions: entries },
-    overridden_paths: ["plex.url", "playlists.definitions"],
   });
 }
 

@@ -96,7 +96,7 @@ async def test_present_libraries_reads_the_server_and_refresh_walks_the_registry
     assert await presence.present_libraries(jf) == {"Movies"}
 
     # Read first (no database), stamped after: the full pass does the asking
-    # before it opens its transaction (review I3).
+    # before it opens its transaction.
     present = await presence.read_presence(Servers({"jellyfin": jf}))
     assert present == {"jellyfin": {"Movies"}}
     outcomes = await presence.refresh_presence(session, present)
