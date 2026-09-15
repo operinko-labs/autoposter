@@ -38,6 +38,7 @@ from autoposter.api.secret_rotation import router as secret_rotation_router
 from autoposter.api.secrets_api import router as secrets_api_router
 from autoposter.api.servers import router as servers_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
+from autoposter.api.system import RESTART_IN_PROGRESS
 from autoposter.api.system import router as system_router
 from autoposter.api.testing import router as testing_router
 from autoposter.api.version import router as version_router
@@ -1368,7 +1369,19 @@ async def _run_plex_writing_mode(request: Request, mode, apply: bool) -> dict:
     # Safe without a lock of its own: nothing is awaited between the check and
     # the acquire, so no other task can take the lock in between.
     if lock.locked():
-        raise HTTPException(status_code=409, detail=MODE_BUSY_DETAIL)
+        # Whose lock it is decides the sentence. The restart route takes this
+        # same lock and keeps it until the process is replaced, so an operator
+        # who pressed Restart and then Confirm would otherwise be told another
+        # artwork mode is running -- a claim about a mode that does not exist,
+        # when the truth is the thing they themselves just pressed.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                RESTART_IN_PROGRESS
+                if request.app.state.restart_in_flight
+                else MODE_BUSY_DETAIL
+            ),
+        )
     async with lock:
         pause = request.app.state.worker_pause
         with pause.paused():
@@ -2319,10 +2332,16 @@ async def _persist_and_swap(
         # Both kinds of frozen path go on it. They are reported apart in the
         # response because they land at different moments -- the lifespan's
         # merge reaches one and not the other -- but a restart is what applies
-        # either, and the page's notice asks one question.
+        # either, and the page's notice asks one question. Each is measured
+        # against the generation that SETTLED it, which is why there are two:
+        # the merge is what the lifespan's `booted_config` records, while an
+        # inert setting was read off the document `create_app` was handed
+        # (`object_config`), and on a delta-conversion boot -- or one whose
+        # store read timed out -- those two differ in exactly this setting.
         booted = request.app.state.booted_config
+        constructed = request.app.state.object_config
         meta = with_restart_paths(
-            meta, _restart_required(booted, after) + _inert_changes(booted, after)
+            meta, _restart_required(booted, after) + _inert_changes(constructed, after)
         )
         await write_store(session, document, meta)
         session.add(

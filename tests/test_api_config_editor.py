@@ -785,8 +785,9 @@ async def test_a_frozen_save_is_remembered_across_a_reload(
 async def test_two_frozen_saves_both_stay_on_the_list(
     client, auth_headers, seeded_store
 ):
-    """A union, not a replacement: the second save must not erase the first
-    save's claim on the same restart."""
+    """Both paths differ from the booted generation, so a replacement keeps
+    both: the second save's set is computed from the same place the first
+    save's was and carries the first save's path as well as its own."""
     seed = (await client.get("/api/config", headers=auth_headers)).json()
     document = _settings_of(seed)
     document["workers"] = document["workers"] + 1
@@ -887,6 +888,47 @@ async def test_an_inert_save_goes_on_the_list_too(client, auth_headers):
     assert (await client.get("/api/config", headers=auth_headers)).json()[
         "restart_paths"
     ] == ["api_docs_enabled"]
+
+
+async def test_an_inert_change_is_measured_against_the_constructed_generation(
+    app, client, auth_headers
+):
+    """The one setting on the list that a merge never settles.
+
+    ``api_docs_enabled`` is read when the application OBJECT is built, from
+    the document ``create_app`` was handed -- and on the one-time
+    delta-conversion boot, or on any boot whose bounded store read timed out,
+    that document is the mounted file while the generation the lifespan then
+    merges and records as ``booted_config`` is file-plus-overrides. Measured
+    against the merged one, the save that really does turn the docs on comes
+    back "nothing waiting", and the operator's only remedy is the one thing
+    nothing tells them to do.
+
+    A boot of exactly that shape below: the object was built with the docs
+    off, and the merge that ran after it had them on.
+    """
+    app.state.booted_config = app.state.booted_config.model_copy(
+        update={"api_docs_enabled": True}
+    )
+
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"api_docs_enabled": True}},
+    )
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == ["api_docs_enabled"], (
+        "the running application object has the docs off and the stored "
+        "document now asks for them on; only a restart closes that gap"
+    )
+
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"api_docs_enabled": False}},
+    )
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == [], "back to what this application object was built with, so nothing waits"
 
 
 async def test_a_restore_puts_its_frozen_changes_on_the_list(

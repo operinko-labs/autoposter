@@ -642,6 +642,17 @@ def create_app(
     # exactly what it was handed here, so the attribute is always the truth
     # and never absent.
     app.state.booted_config = config
+    # The generation this application OBJECT was constructed from, and the one
+    # the inert settings above were settled from a few lines up. Never
+    # rebound: the lifespan replaces `booted_config` with the merged
+    # generation, and the two are not always the same document -- a
+    # delta-conversion boot builds this one from the mounted file alone, and a
+    # boot whose bounded store read timed out falls back to the file for the
+    # whole life of the process (`main._boot_config`). Measuring an inert
+    # change against the merged generation on either of those would answer
+    # "nothing to restart for" about the one setting that has nothing BUT a
+    # restart, so the editor measures it against this.
+    app.state.object_config = config
     # A placeholder boot instant -- Python-clock, because create_app is
     # synchronous and cannot await the database read that fixes it. /api/status
     # compares a scheduled job's last_started_at (a Postgres-stamped column,
