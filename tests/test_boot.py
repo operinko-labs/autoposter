@@ -30,10 +30,13 @@ from autoposter import boot
 from autoposter.config import loader as loader_module
 from autoposter.config import state as state_module
 from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
     STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
     Secrets,
     missing_hard_secret_names,
     resolve_secret_values,
+    secret_sources,
 )
 from autoposter.db import base as db_base
 
@@ -77,10 +80,21 @@ def clean_secret_environment(monkeypatch, tmp_path):
     records no undo entry for a name that was absent when the test began, so
     a boot test would otherwise leak a credential into every test after it.
     """
-    # The boot marker joins the save/restore list for the reason the docstring
-    # above gives: `boot.main` assigns it into `os.environ` directly, ahead of
-    # `_export`, so a boot test would otherwise leak it into every test after.
-    names = (*HARD, *SOFT, "AUTOPOSTER_CONFIG", STATE_FILE_NAMES_ENV)
+    # All three boot markers join the save/restore list for the reason the
+    # docstring above gives: `boot.main` assigns them into `os.environ`
+    # directly, ahead of `_export`, so a boot test would otherwise leak them
+    # into every test after -- and `secret_sources` reads them. The
+    # environment one leaks hardest, because `boot.main` skips computing it
+    # when it is already there: a leftover would then decide what the NEXT
+    # boot test publishes, not merely what a later test reads.
+    names = (
+        *HARD,
+        *SOFT,
+        "AUTOPOSTER_CONFIG",
+        STATE_FILE_NAMES_ENV,
+        STORED_SECRET_NAMES_ENV,
+        ENVIRONMENT_SECRET_NAMES_ENV,
+    )
     saved = {name: os.environ[name] for name in names if name in os.environ}
     for name in names:
         monkeypatch.delenv(name, raising=False)
@@ -117,7 +131,7 @@ def _must_not_run(*args, **kwargs):
     raise AssertionError("this boot must not migrate, exec, or open a database")
 
 
-# --- precedence: environment first, state file second -----------------------
+# --- precedence: stored, then the state file, then the environment ----------
 
 
 def test_a_hard_secret_missing_from_the_environment_is_read_from_the_state_file(monkeypatch):
@@ -129,11 +143,19 @@ def test_a_hard_secret_missing_from_the_environment_is_read_from_the_state_file(
     assert secrets.database_url == "from-file"
 
 
-def test_the_environment_wins_over_the_state_file(monkeypatch):
+def test_the_state_file_wins_over_the_environment(monkeypatch):
+    """Spec section 3's order, which reverses these two layers.
+
+    What an operator sets from the UI or the wizard must not be shadowed by a
+    variable they cannot see from the page they set it on. No deployment that
+    predates this can observe the swap: the wizard writes to the file only the
+    names the environment did not resolve, so exactly one of the two layers
+    answers any given name and the order between them is unobservable.
+    """
     _write_state_secrets({name: "from-file" for name in HARD})
     monkeypatch.setenv("AUTOPOSTER_PLEX_TOKEN", "from-env")
 
-    assert Secrets.load().plex_token == "from-env"
+    assert Secrets.load().plex_token == "from-file"
 
 
 def test_a_soft_secret_reads_from_the_state_file_too():
@@ -564,11 +586,22 @@ def test_a_configured_boot_execs_the_command_argv_names(monkeypatch):
 
 
 def test_a_configured_boot_with_an_unreachable_database_still_migrates(monkeypatch):
+    """Boot DOES open an engine now -- it reads the stored secrets through one
+    -- and must not be blocked by a database that does not answer. What it
+    still must not do is make the boot DECISION from it: the migration and the
+    exec happen exactly as they did when postgres was never consulted at all.
+    """
     for name in HARD[1:]:
         monkeypatch.setenv(name, "x")
     monkeypatch.setenv("AUTOPOSTER_DATABASE_URL", FAKE_DB_URL)
     _write_state_config()
-    monkeypatch.setattr(db_base, "make_engine", _must_not_run)
+    opened: list[str] = []
+
+    def unreachable(url):
+        opened.append(url)
+        raise OSError(113, "No route to host")
+
+    monkeypatch.setattr(db_base, "make_engine", unreachable)
     monkeypatch.setattr(boot.uvicorn, "run", _must_not_run)
     order: list[str] = []
     monkeypatch.setattr(boot, "_migrate", lambda: order.append("migrate"))
@@ -577,6 +610,9 @@ def test_a_configured_boot_with_an_unreachable_database_still_migrates(monkeypat
     boot.main([])
 
     assert order == ["migrate", "execv"]
+    # Twice, because the store is read twice: the secrets, then the document.
+    # Both answered nothing and neither stopped the boot, which is the claim.
+    assert opened == [FAKE_DB_URL, FAKE_DB_URL]
 
 
 def test_a_migration_that_fails_exits_instead_of_serving_the_wizard(monkeypatch):
@@ -607,7 +643,11 @@ def test_an_unconfigured_boot_runs_no_migration_and_serves_the_setup_app(monkeyp
     monkeypatch.setitem(
         sys.modules,
         "autoposter.api.setup",
-        SimpleNamespace(build_setup_app=lambda: SimpleNamespace(title="autoposter setup")),
+        SimpleNamespace(
+            build_setup_app=lambda document=None: SimpleNamespace(
+                title="autoposter setup", document=document
+            )
+        ),
     )
     served: list[object] = []
     monkeypatch.setattr(boot, "_migrate", _must_not_run)
@@ -619,6 +659,37 @@ def test_an_unconfigured_boot_runs_no_migration_and_serves_the_setup_app(monkeyp
 
     assert len(served) == 1
     assert served[0].title == "autoposter setup"
+    # What boot read out of the store, handed to the wizard rather than left
+    # for it to go looking for: nothing here, because this boot names no
+    # database at all.
+    assert served[0].document is None
+
+
+def test_the_wizard_is_served_on_the_address_the_environment_names(monkeypatch):
+    """The wizard and the application ask ONE function for their address.
+
+    The wizard ends by execing this module again, so an operator who reached
+    first-start on 9090 has to find the finished application there too -- and
+    would not if only one of the two call sites read the variable.
+    """
+    monkeypatch.setitem(
+        sys.modules,
+        "autoposter.api.setup",
+        SimpleNamespace(build_setup_app=lambda document=None: SimpleNamespace()),
+    )
+    monkeypatch.setenv("AUTOPOSTER_HOST", "127.0.0.1")
+    monkeypatch.setenv("AUTOPOSTER_PORT", "9090")
+    bound: list[dict] = []
+    monkeypatch.setattr(boot, "_migrate", _must_not_run)
+    monkeypatch.setattr(boot.os, "execv", _must_not_run)
+    monkeypatch.setattr(db_base, "make_engine", _must_not_run)
+    monkeypatch.setattr(boot.uvicorn, "run", lambda app, **kwargs: bound.append(kwargs))
+
+    boot.main([])
+
+    assert len(bound) == 1
+    assert bound[0]["host"] == "127.0.0.1"
+    assert bound[0]["port"] == 9090
 
 
 # --- the two entrypoints ----------------------------------------------------
@@ -699,9 +770,13 @@ def test_the_state_directory_is_documented_in_both_places_an_operator_looks():
     assert "First start" in readme
     # The one instruction in that section whose omission fails SILENTLY: the
     # wizard mints AUTOPOSTER_WEBHOOK_SECRET, shows it once, and Sonarr and
-    # Radarr sign with it -- a Secret that supplies a fresh one wins over the
-    # state file, and every webhook then fails verification with nothing said.
+    # Radarr sign with it -- so a migration that puts a fresh one in a Secret
+    # and deletes `secrets.env` leaves every webhook failing verification with
+    # nothing said. Carry the existing value over instead.
     assert "never regenerated" in deploy_readme
+    # The other half, and the one this precedence reversal added: a leftover
+    # `secrets.env` now outranks the Secret for every name it still holds.
+    assert "Delete the file." in deploy_readme
 
 
 def test_the_deploy_readme_no_longer_claims_migrations_always_run():
@@ -724,7 +799,7 @@ def test_the_compose_stack_mounts_a_private_state_volume():
     assert "state" in compose["volumes"]
 
 
-# --- the boot marker: which names came from the STATE FILE ------------------
+# --- the boot markers: which names came from the STORE and the STATE FILE ---
 
 
 def _booted(monkeypatch) -> str:
@@ -753,28 +828,129 @@ def test_a_state_file_boot_publishes_the_names_it_read_from_the_file(monkeypatch
     assert sorted(marker.split(",")) == sorted(HARD)
 
 
+def test_the_stored_marker_is_published_unconditionally_and_empty_here(monkeypatch):
+    """The second marker, and the case every boot in this file is: no database
+    answers, so nothing is stored. It is set to "" rather than left absent for
+    the reason the first one is -- "no name came from there" is an answer, and
+    a missing marker and an empty one must not be two different states for the
+    reader to tell apart."""
+    _write_state_secrets({name: "from-file" for name in HARD})
+
+    _booted(monkeypatch)
+
+    assert os.environ[STORED_SECRET_NAMES_ENV] == ""
+
+
 def test_an_env_configured_boot_publishes_an_empty_marker(monkeypatch):
     """Fail closed, structurally: an env-complete deployment never opens the
-    file at all (`schema.py:76`), so there is nothing for the marker to name
-    and the rotation refuses -- which is the whole point."""
+    file at all (`schema.py`'s short-circuit), so there is nothing for the
+    marker to name and the rotation refuses -- which is the whole point."""
     for name in HARD:
         monkeypatch.setenv(name, "from-env")
 
     assert _booted(monkeypatch) == ""
 
 
-def test_the_environment_wins_name_by_name_in_the_marker_too(monkeypatch):
+def test_a_leftover_state_file_an_env_complete_boot_never_read_is_not_a_source(monkeypatch):
+    """The finished ExternalSecrets migration, end to end through the real
+    boot: `deploy/README.md` used to tell operators they needed to delete
+    nothing under `/state`, so the file is still there and still holds the
+    wizard's webhook secret.
+
+    Boot resolves entirely from the environment, never opens that file, and
+    publishes an empty marker -- and the source map must agree with it. Reading
+    the file itself here would label the name `state file`, allow the Settings
+    page's rotation, write a file the next boot will not read, and leave both
+    *arrs signing with a value the environment shadows."""
+    for name in HARD:
+        monkeypatch.setenv(name, "from-env")
+    _write_state_secrets({"AUTOPOSTER_WEBHOOK_SECRET": "left-behind-by-the-wizard"})
+
+    assert _booted(monkeypatch) == ""
+    assert state_module.secrets_file_path().is_file(), "the leftover is still there"
+    assert resolve_secret_values()["AUTOPOSTER_WEBHOOK_SECRET"] == "from-env"
+    assert secret_sources()["AUTOPOSTER_WEBHOOK_SECRET"] == "environment"
+
+
+def test_the_environment_marker_is_published_before_the_export(monkeypatch):
+    """The third marker, and the only one no later process can recompute.
+    `_export` overwrites `os.environ` for every name a higher layer won, so an
+    assignment on the wrong side of that line would publish "every name this
+    deployment resolved" under the heading "what this deployment's manifest
+    set" -- and a clear would then name a variable nobody wrote.
+
+    The stub is what pins the ORDER: it reads the marker at the moment
+    `_export` is called, which is the only moment at which the two answers
+    still differ. The file supplies the hard names here and the environment
+    supplies one soft name, so "before" and "after" are not the same string.
+    """
+    _write_state_secrets({name: "from-file" for name in HARD})
+    monkeypatch.setenv("AUTOPOSTER_MDBLIST_APIKEY", "from-env")
+    seen = {}
+    exported = boot._export
+
+    def _recording(resolved):
+        seen["marker"] = os.environ.get(ENVIRONMENT_SECRET_NAMES_ENV, "<absent>")
+        exported(resolved)
+
+    monkeypatch.setattr(boot, "_export", _recording)
+
+    _booted(monkeypatch)
+
+    assert seen["marker"] == "AUTOPOSTER_MDBLIST_APIKEY"
+    assert os.environ[ENVIRONMENT_SECRET_NAMES_ENV] == "AUTOPOSTER_MDBLIST_APIKEY"
+
+
+def test_a_second_boot_keeps_the_environment_the_first_one_recorded(monkeypatch):
+    """The wizard's finish and the restart button re-enter `boot.main` through
+    `os.execv`, which hands on the environment `_export` filled. A boot that
+    recomputed this marker there would call every name the previous boot
+    resolved part of this deployment's manifest: a clear would then answer
+    `environment` for a variable that does not exist, promise a restart that
+    restores nothing, and stop refusing the clear of a hard secret that leaves
+    the deployment unable to start."""
+    _write_state_secrets({name: "from-file" for name in HARD})
+    monkeypatch.setenv("AUTOPOSTER_MDBLIST_APIKEY", "from-env")
+
+    _booted(monkeypatch)
+    first = os.environ[ENVIRONMENT_SECRET_NAMES_ENV]
+    _booted(monkeypatch)
+
+    assert first == "AUTOPOSTER_MDBLIST_APIKEY", "the manifest, not the export"
+    assert os.environ[ENVIRONMENT_SECRET_NAMES_ENV] == first
+
+
+def test_a_second_boot_publishes_the_same_state_file_marker(monkeypatch):
+    """The same re-exec, one layer up. A deployment with nothing stored whose
+    file answers every hard name carries all of them in `os.environ` after the
+    first `_export`, so a short-circuit that asked `os.environ` would decide
+    the second boot is env-complete, skip the file, and publish an EMPTY
+    marker. The values would still be the file's and every one of them would
+    be labelled `unset` on the Settings page -- a deployment running perfectly,
+    described as unconfigured, with its operator sent to set variables nothing
+    reads."""
+    _write_state_secrets({name: "from-file" for name in HARD})
+
+    first = _booted(monkeypatch)
+    second = _booted(monkeypatch)
+
+    assert sorted(first.split(",")) == sorted(HARD)
+    assert second == first
+
+
+def test_a_name_the_environment_also_carries_is_on_the_marker_now(monkeypatch):
     """The migration `deploy/README.md:240-243` sends operators through: the
     file and the environment hold the SAME string for the webhook secret. The
     marker follows `resolve_secret_values`' precedence rather than the file's
-    contents, so that name is absent -- which is the case a value comparison
-    gets wrong and this design exists for."""
+    contents, and under spec section 3's order that precedence puts the file
+    ABOVE the environment -- so the file is what answers this name and it
+    belongs on the marker, where the old environment-first rule excluded it."""
     _write_state_secrets({name: "from-file" for name in HARD})
     monkeypatch.setenv("AUTOPOSTER_WEBHOOK_SECRET", "from-file")
 
     marker = _booted(monkeypatch)
 
-    assert "AUTOPOSTER_WEBHOOK_SECRET" not in marker.split(",")
+    assert "AUTOPOSTER_WEBHOOK_SECRET" in marker.split(",")
     assert "AUTOPOSTER_PLEX_TOKEN" in marker.split(",")
 
 

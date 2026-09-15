@@ -35,8 +35,11 @@ from autoposter.api.manual import router as manual_router
 from autoposter.api.mismatches import router as mismatches_router
 from autoposter.api.playlists import router as playlists_router
 from autoposter.api.secret_rotation import router as secret_rotation_router
+from autoposter.api.secrets_api import router as secrets_api_router
 from autoposter.api.servers import router as servers_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
+from autoposter.api.system import RESTART_IN_PROGRESS
+from autoposter.api.system import router as system_router
 from autoposter.api.testing import router as testing_router
 from autoposter.api.version import router as version_router
 from autoposter.api.stats import router as stats_router
@@ -78,9 +81,11 @@ from autoposter.config.overrides import (
     load_overrides_document,
     load_store,
     merge_overrides,
+    restart_paths,
     store_contents,
     store_row,
     unknown_key_paths,
+    with_restart_paths,
     without_migrated_sections,
     write_store,
 )
@@ -283,6 +288,13 @@ router.include_router(item_overrides_router)
 # is the substance of it.
 router.include_router(secret_rotation_router)
 
+# The stored secrets (spec section 3): which names this service reads, where
+# each one's running value comes from, and the set/clear behind the Settings
+# page's buttons. Its own module because it is the one surface that WRITES a
+# credential into this deployment's own store, and the rule that makes it safe
+# -- names and sources leave here, values never do -- is the substance of it.
+router.include_router(secrets_api_router)
+
 # The operator's own overlay images and font faces, as files (roadmap row 55).
 # Its own module because these are the only handlers here that WRITE a
 # request-named filesystem path, and the four refusals that make that safe --
@@ -295,6 +307,13 @@ router.include_router(files_router)
 # button shows, and that translation is the whole of what it does -- every
 # rule about what a catch-up may do lives in catchup.py.
 router.include_router(servers_router)
+
+# The restart button: the one endpoint here whose success is the end of this
+# process. Its own module because the three refusals that make an exec safe --
+# a run this process is holding, a mode mid-write to a media server, and a
+# deployment of several workers behind one port -- are the substance of it,
+# and because the exec itself is the wizard's, called rather than copied.
+router.include_router(system_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
@@ -1350,7 +1369,19 @@ async def _run_plex_writing_mode(request: Request, mode, apply: bool) -> dict:
     # Safe without a lock of its own: nothing is awaited between the check and
     # the acquire, so no other task can take the lock in between.
     if lock.locked():
-        raise HTTPException(status_code=409, detail=MODE_BUSY_DETAIL)
+        # Whose lock it is decides the sentence. The restart route takes this
+        # same lock and keeps it until the process is replaced, so an operator
+        # who pressed Restart and then Confirm would otherwise be told another
+        # artwork mode is running -- a claim about a mode that does not exist,
+        # when the truth is the thing they themselves just pressed.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                RESTART_IN_PROGRESS
+                if request.app.state.restart_in_flight
+                else MODE_BUSY_DETAIL
+            ),
+        )
     async with lock:
         pause = request.app.state.worker_pause
         with pause.paused():
@@ -1632,10 +1663,11 @@ async def get_config(
     already owns.
 
     Carries eight things the editor needs beyond the values themselves.
-    ``restart_paths`` is the settings a save changed that the running process
-    has not picked up, read off the store's own row so the notice outlives the
-    page that caused it -- empty until something writes it there, and served
-    from here so the editor has one shape to render from.
+    ``restart_paths`` is the frozen settings saved since this process booted
+    that still differ from what it is running, read off the store's own row so
+    the notice outlives the page that caused it and reaches the next admin to
+    open the page. Every save rewrites it and the next boot empties it, so it
+    is empty exactly when a restart would change nothing.
     ``frozen_paths`` maps each restart-only
     path to the reason a live swap cannot reach it (see config/live.py) --
     sent as data so the editor can flag a field without duplicating this
@@ -1727,7 +1759,7 @@ async def get_config(
     # exactly the invariant a stale-write check needs, because a page that
     # seeded from this response holds this token for what it seeded from.
     body["overrides_revision"] = document_revision(document)
-    body["restart_paths"] = list(meta.get("restart_paths") or [])
+    body["restart_paths"] = restart_paths(meta)
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
     body["redacted_paths"] = redacted_here
     body["keep_sentinel"] = KEEP_SENTINEL
@@ -1815,11 +1847,12 @@ def _changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
 
 def _restart_required(before: Config, after: Config) -> list[str]:
     """Which of the changed paths a generation swap does not reach, minus the
-    ones a restart does not reach either.
+    ones the lifespan's own merge never revisits.
 
     Those -- currently just ``api_docs_enabled`` -- are reported separately by
-    ``_inert_changes``, so this list stays a promise the editor can keep:
-    every path in it, restarting really does apply.
+    ``_inert_changes``, which says the same thing about them in the words that
+    setting needs. This list stays what it says it is: paths a restart applies
+    from the overrides the lifespan merges.
     """
     changed = _changed_paths(before.model_dump(mode="json"), after.model_dump(mode="json"))
     return sorted(
@@ -1828,8 +1861,9 @@ def _restart_required(before: Config, after: Config) -> list[str]:
 
 
 def _inert_changes(before: Config, after: Config) -> list[str]:
-    """Changed paths that no restart can apply either -- only editing the
-    mounted config file reaches them (``config.live.INERT_SECTIONS``)."""
+    """Changed paths that no swap reaches at all: they are read once, when the
+    application object is built, so the next restart is what applies them
+    (``config.live.INERT_SECTIONS``)."""
     changed = _changed_paths(before.model_dump(mode="json"), after.model_dump(mode="json"))
     return sorted(path for path in changed if is_inert(path))
 
@@ -2197,10 +2231,12 @@ async def _persist_and_swap(
     and ``swap_config``, requests keep being served by the old generation until
     restart, at which point ``load_effective_config`` reads the persisted
     overrides back off the database and starts on the new one -- correct by
-    design, not by luck. ``api_docs_enabled`` is the one exception: a restart
-    re-reads the database overrides but not the mounted file, so it lands back
-    exactly where the file left it -- which is why it is reported in ``inert``
-    below rather than ``restart_required``.
+    design, not by luck. ``api_docs_enabled`` takes a different road to the
+    same place: ``swap_config`` cannot touch it at all, because the docs routes
+    were built into the application object, and the restart that does apply it
+    reads the STORED DOCUMENT rather than the merged overrides
+    (``main._boot_config``) -- which is why it is reported in ``inert`` below
+    rather than ``restart_required``.
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:
@@ -2273,10 +2309,40 @@ async def _persist_and_swap(
         # over, which is the one thing the file-less deployment does not have.
         #
         # The rest of the metadata is written through verbatim. A save is about
-        # the document; the restart list that shares this column is not its to
-        # throw away.
+        # the document; the format that shares this column is not its to
+        # change.
         if whole_document:
             meta = {**meta, "format": STORE_FORMAT}
+        restart_required = _restart_required(before, after)
+        inert = _inert_changes(before, after)
+        # The restart list, in the SAME transaction as the write that earned
+        # it. A list committed without its document -- or the reverse -- would
+        # either tell an operator to restart for a change that is not stored,
+        # or silently drop the one promise the editor makes about a frozen
+        # setting. The metadata read under the lock above is what this writes
+        # back, so there is no second read and no second write.
+        #
+        # Measured against what this process BOOTED on rather than against the
+        # generation the previous save swapped in. The question the list
+        # answers is "would a restart change anything?", and a setting edited
+        # and then put back has the same answer as one never touched. The boot
+        # empties the list, so everything already on it was measured from the
+        # same place and the set computed here is the whole of it.
+        #
+        # Both kinds of frozen path go on it. They are reported apart in the
+        # response because they land at different moments -- the lifespan's
+        # merge reaches one and not the other -- but a restart is what applies
+        # either, and the page's notice asks one question. Each is measured
+        # against the generation that SETTLED it, which is why there are two:
+        # the merge is what the lifespan's `booted_config` records, while an
+        # inert setting was read off the document `create_app` was handed
+        # (`object_config`), and on a delta-conversion boot -- or one whose
+        # store read timed out -- those two differ in exactly this setting.
+        booted = request.app.state.booted_config
+        constructed = request.app.state.object_config
+        meta = with_restart_paths(
+            meta, _restart_required(booted, after) + _inert_changes(constructed, after)
+        )
         await write_store(session, document, meta)
         session.add(
             EventLog(
@@ -2301,8 +2367,6 @@ async def _persist_and_swap(
         )
         await session.commit()
 
-    restart_required = _restart_required(before, after)
-    inert = _inert_changes(before, after)
     swap_config(request.app, after)
     return {
         "version_before": before.version,

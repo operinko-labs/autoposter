@@ -60,12 +60,16 @@ backup behind it, not as something to roll back.
 ## First-start setup
 
 A deployment is CONFIGURED when both of two things are true: every hard
-credential resolves (the process environment first, the state file second;
-an empty environment value counts as absent on both sides) **and** a config
-document is readable (the `AUTOPOSTER_CONFIG` path when it exists, the state
-directory's `autoposter.yaml` otherwise). The database is not part of that
-decision — see "Database" above. **Every GitOps/ExternalSecrets deployment
-resolves both halves and is unaffected by anything in this section.**
+credential resolves (the stored row first, the state file second, the process
+environment third; an empty value counts as absent on every layer) **and** a
+config document is readable (the `AUTOPOSTER_CONFIG` path when it exists, the
+state directory's `autoposter.yaml` otherwise). The database is not part of
+that decision — see "Database" above; it is read once for the stored secrets,
+and a database that does not answer simply leaves that layer empty rather than
+stopping the boot. **Every GitOps/ExternalSecrets deployment resolves both
+halves and is unaffected by anything in this section** — provided nothing is
+left behind under `/state`, which is the one thing that changed and is covered
+under "Precedence" below.
 
 Short of that, there are two outcomes, and only one of them is a wizard:
 
@@ -296,6 +300,18 @@ returned 200.
 |---|---|---|
 | `secrets.env` | 0600 | `AUTOPOSTER_*=value` lines, exactly the names "Secrets" below lists |
 | `autoposter.yaml` | 0600 | the config document, read only when `AUTOPOSTER_CONFIG` does not resolve one |
+| `secret.key` | 0600 | the key the `secrets` table's values are encrypted with, generated on the first secret stored from the Settings page |
+
+**Back `secret.key` up with the volume, and understand what it is not.** The
+key never enters the database: a database dump holds every stored secret as
+ciphertext this file is the only thing that can open. Lose the file — a
+recreated PVC, a volume restored without it, a container filesystem where a
+volume failed to mount — and every secret stored from the Settings page must
+be **re-entered**, not recovered. The service still starts: each unreadable row
+is skipped with a warning naming the variable, and the name reports as
+whatever the next source down supplies. Copying the file to a second place is
+copying the credentials themselves, so treat it exactly as you treat
+`secrets.env`.
 
 The directory is 0700 and must not be one of the NFS shares Kometa and
 Posterizarr also mount (see "Volumes" below) — these are credentials, and
@@ -303,18 +319,29 @@ putting them on a shared mount is a disclosure decision rather than a storage
 one. Writes are atomic (temp file in the same directory, `fsync`,
 `os.replace`), so a reader always sees a whole file, never a partial one.
 
-**Precedence, in one line: the environment wins.** A name set in the
-environment is used even when the file also carries it, so adding an
-ExternalSecret later takes effect at the next restart with no need to edit or
-delete anything under `/state` for the five hard names themselves — with one
-exception among them: `AUTOPOSTER_WEBHOOK_SECRET` must be **carried over from
+**Precedence, in one line: the stored row, then `secrets.env`, then the
+environment.** A name the Settings page has stored wins over both; a name
+`secrets.env` carries wins over the environment.
+
+**This reverses the old rule, and the consequence for an ExternalSecrets
+migration is the one thing to get right: delete `secrets.env` in the same
+change that hands these names to the environment.** A leftover file now
+outranks the Secret for every name it still holds, including
+`AUTOPOSTER_DATABASE_URL` and `AUTOPOSTER_WEBHOOK_SECRET`, and nothing warns
+you — the deployment simply keeps running on the values the wizard wrote while
+the manifest says otherwise. A deployment whose hard names all resolve from the
+environment and which has stored nothing does not open the file at all, so the
+leftover is harmless until the first secret is stored from the Settings page;
+storing one makes the file live again at the next restart. Do not rely on that
+window. Delete the file.
+
+The webhook secret has one more rule of its own: it must be **carried over from
 `secrets.env`, never regenerated**. The wizard mints it, shows it exactly once
 and it is the value Sonarr and Radarr were given; a fresh one in the Secret
-wins over the file, and every webhook then fails verification silently until
-both applications are updated. Copy the existing line out of `secrets.env`
-into the Secret. It is not free for the SOFT names the wizard writes either:
-once all five hard names resolve from the environment, `resolve_secret_values`
-never opens `secrets.env` again, for any name. A deployment the wizard configured, whose
+would leave every webhook failing verification silently until both applications
+are updated. Copy the existing line out of `secrets.env` into the Secret before
+you delete the file. The same carry-over applies to every SOFT name the wizard
+wrote: a deployment the wizard configured, whose
 hard names are later handed to an ExternalSecret, must carry every soft name
 the wizard wrote into the environment (or the Secret) in that same change:
 `AUTOPOSTER_ADMIN_PASSWORD_HASH` from step 1, the media-server credential the
@@ -337,13 +364,26 @@ hand in two other applications. It shows the new value once and never again, so
 have somewhere to paste it before pressing the button. Afterwards each *arr's
 own **Test** button succeeds, which is a confirmation the wizard could not give.
 
-On a deployment whose environment carries `AUTOPOSTER_WEBHOOK_SECRET` — every
-shape this section's ExternalSecrets migration produces, and every
-`envFrom: secretRef` Kubernetes deployment — **that action refuses**, naming
-the variable. It is not being cautious: the environment is read before the
-state file at every boot, so a write to `secrets.env` there would be undone by
-the next restart while both *arrs held the new value. Set the new value in the
-environment and roll the deployment, exactly as for every other credential.
+On a deployment where `AUTOPOSTER_WEBHOOK_SECRET` is answered by the
+environment — every `envFrom: secretRef` Kubernetes deployment, and every
+finished ExternalSecrets migration whether or not `secrets.env` is still on the
+volume — **that action refuses**, naming the variable. Set the new value where
+it is set and roll the deployment, exactly as for every other credential.
+
+Once every hard name resolves from the environment, a leftover `secrets.env` is
+not read at all, so it answers nothing and the refusal stands even though the
+file still holds a copy of the secret. The refusal is also a policy and not
+only a mechanism: your manifest is what sets that variable, and a button on a
+web page that could quietly overrule it from a file the manifest does not
+mention would stop the manifest being the truth about this deployment without
+anyone having edited it.
+
+**Mid-migration is the one case where the page does rotate it.** While the
+environment does not yet carry every hard name, `secrets.env` is still read and
+still outranks the environment for the names it holds — so a webhook secret in
+both is answered by the file, and the Settings page rotates it there. That is
+the reversal above applied to this one action, and it is deliberate. Finish the
+migration and delete the file, and the refusal takes over.
 
 ### Kubernetes
 
@@ -555,14 +595,15 @@ Practical consequences:
   so two pods never run at once — not even for the seconds a rolling update
   would give them — and every pod re-reads the persisted overrides at boot
   before anything is built from them.
-- `api_docs_enabled` is the one exception a restart does NOT fix: it must
-  be set in the ConfigMap. FastAPI decides whether `/docs`, `/redoc` and
-  `/openapi.json` exist when the application object is built, and that
-  happens before the pod has read a single override, so an override on it
-  is inert at every boot. The editor says as much in its own reason text.
-  To close the docs on a pod whose ConfigMap has them on, edit the
-  ConfigMap (or set `AUTOPOSTER_CONFIG` at a file that has them off) and
-  restart — a database override will not do it.
+- `api_docs_enabled` is the one exception a *swap* never reaches, not even
+  in part: FastAPI decides whether `/docs`, `/redoc` and `/openapi.json`
+  exist when the application object is built, and that happens before the
+  pod has merged a single override. It takes effect at the next restart
+  instead, because the object is built from the stored document — so a save
+  followed by a restart closes the docs on a pod whose ConfigMap has them
+  on, and so does editing the ConfigMap (or pointing `AUTOPOSTER_CONFIG` at
+  a file that has them off) and restarting. The editor says as much in its
+  own reason text.
 - An invalid save changes nothing — the merged result is validated whole
   before anything is persisted or applied, and errors come back
   field-labelled.
@@ -3568,6 +3609,39 @@ four categories:
 
 The app listens on port `8080` — point the Kubernetes Service, the probes
 (`/healthz`) and these webhook URLs at it.
+
+`AUTOPOSTER_HOST` and `AUTOPOSTER_PORT` override that address (defaults
+`0.0.0.0` and `8080`), and `.env.example` carries the same two names for the
+Compose path. They are read from the environment rather than compiled in
+because the Settings page's Restart button replaces the process with a fresh
+boot, and the new process has to come back on the address the operator reached
+it on; the environment survives the exec, so it does — and the first-start
+wizard binds the same address, so a manual install keeps its port from its very
+first screen. Setting the port is only half the move: nothing propagates it, so
+the Service, **both** probes, the webhook URLs above and the Compose port
+mapping have to be changed by hand to the same number. A value that is not a
+port number — a typo, or a number outside 1–65535 — is ignored with a warning
+and the default is used, rather than killing a boot that would then have no UI
+left to fix it from. In the development Compose stack the `api` command pins
+`--port 8080` itself, so the two variables there change nothing until the first
+Restart — which is why `.env.example` ships them commented out.
+
+The Restart button replaces this process and refuses in three cases, and one of
+them is opt-in. It refuses when `WEB_CONCURRENCY` or `UVICORN_WORKERS` is set
+above `1`, because one worker re-execing itself would leave the deployment half
+old and half new — and those two variables are the *only* thing it looks at, so
+a deployment that runs several workers by any other means (`uvicorn --workers 4`
+typed on a command line sets neither) must set one of them for the refusal to
+fire at all. Run one worker per process, or declare the count. It also refuses
+while a run that lives in this process is in flight — a full pass, a scheduled
+job — but **not** during a catch-up: a catch-up's state is rows in the database
+and its drain resumes on the other side of the boot, so restarting interrupts
+nothing and an operator with a day-long backlog would otherwise never be able to
+apply a setting. Finally, an *orphaned* open run row — one left `running` by a
+process that was killed mid-pass, which nothing reconciles except the next pass
+of that same job — keeps refusing until it is older than the full pass's own
+timeout horizon, 24 hours, after which it is ignored. Either wait it out or
+close the row.
 
 Configure Radarr and Sonarr with a webhook notification pointing at this
 service's webhook URL (`/webhook/radarr` and `/webhook/sonarr` respectively),

@@ -8,6 +8,7 @@ And one event that happens once per deployment: a row written before the store
 held whole documents is converted into one, with the delta it used to be kept
 as a snapshot.
 """
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -18,9 +19,11 @@ from sqlalchemy.dialects.postgresql import insert
 from autoposter.config.overrides import (
     MIGRATE_REASON,
     STORE_FORMAT,
+    clear_restart_paths,
     load_effective_config,
     load_store,
     migrate_delta_to_document,
+    restart_paths,
     seed_store,
     store_contents,
     store_meta,
@@ -99,7 +102,7 @@ async def test_a_store_with_no_file_loads(session_factory, tmp_path):
 async def test_write_store_keeps_one_row(session_factory, config_file):
     async with session_factory() as session:
         await load_effective_config(config_file, session)
-        await write_store(session, _document(), store_meta(restart_paths=["jellyfin"]))
+        await write_store(session, _document(), store_meta(restart_list=["jellyfin"]))
         await session.commit()
     async with session_factory() as session:
         rows = (await session.execute(select(ConfigOverride))).scalars().all()
@@ -212,6 +215,126 @@ async def test_a_row_whose_document_is_empty_keeps_its_metadata_through_a_seed(
         document, meta = await load_store(session)
     assert document == _document()
     assert meta == kept
+
+
+# --- forgetting the restart list ---
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_restart_list_keeps_the_rest_of_the_metadata(session_factory):
+    """The format above all. A clear that wrote a fresh metadata column would
+    relabel a whole document as a delta, and the next boot on a deployment
+    that has no configuration file would go looking for one to merge this
+    document over and refuse to start -- with the editor that could repair the
+    row sitting behind the application that will not start.
+
+    The third key is a stand-in for whatever a later version writes beside
+    these two: a clear is about one key and has no business with the rest.
+    """
+    async with session_factory() as session:
+        await write_store(
+            session,
+            _document(),
+            {"format": STORE_FORMAT, "restart_paths": ["workers"], "seeded_from": "file"},
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        await clear_restart_paths(session)
+        await session.commit()
+
+    async with session_factory() as session:
+        _stored, meta = await load_store(session)
+    assert meta == {"format": STORE_FORMAT, "seeded_from": "file"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "document",
+    [
+        {**_document(), "version_check": {"project": "operinko-labs"}},
+        ["not", "an", "object"],
+    ],
+    ids=["a-section-that-left-the-schema", "a-hand-edited-non-object"],
+)
+async def test_clearing_the_restart_list_does_not_touch_the_document(
+    session_factory, document
+):
+    """One column, and the document is neither read nor written.
+
+    Reading it would strip the sections that have left the schema, and writing
+    that strip back is a change to the configuration with no snapshot and no
+    audit row behind it -- the only such write there would be. Reading it
+    would also refuse outright on a row someone edited into something that is
+    not a JSON object, which would turn the boot's own housekeeping into the
+    thing that stops the boot.
+    """
+    async with session_factory() as session:
+        await write_store(session, document, store_meta(restart_list=["workers"]))
+        await session.commit()
+
+    async with session_factory() as session:
+        await clear_restart_paths(session)
+        await session.commit()
+
+    async with session_factory() as session:
+        row = await store_row(session, for_update=False)
+    assert row.document == document
+    assert restart_paths(row.meta) == []
+
+
+@pytest.mark.asyncio
+async def test_clearing_an_empty_restart_list_writes_nothing(session_factory):
+    """Every boot calls this; the ordinary one has nothing to forget."""
+    async with session_factory() as session:
+        await write_store(session, _document(), store_meta())
+        await session.commit()
+    async with session_factory() as session:
+        row = await store_row(session, for_update=False)
+        written_at = row.updated_at
+
+    async with session_factory() as session:
+        await clear_restart_paths(session)
+        await session.commit()
+
+    async with session_factory() as session:
+        row = await store_row(session, for_update=False)
+    assert row.updated_at == written_at
+    assert row.meta == store_meta()
+
+
+@pytest.mark.asyncio
+async def test_clearing_an_empty_restart_list_does_not_wait_for_a_save(session_factory):
+    """And it does not queue behind one either.
+
+    Every boot there is calls this and almost every one of them has nothing to
+    forget, so asking for the row lock before discovering that would put a
+    pod's start-up behind whatever transaction a save happens to be in the
+    middle of, with no timeout on the wait. The existence question is asked
+    unlocked first, and only a list that actually needs clearing pays for the
+    lock.
+    """
+    async with session_factory() as session:
+        await write_store(session, _document(), store_meta())
+        await session.commit()
+
+    async with session_factory() as saving:
+        # A save, mid-transaction, holding the row lock this used to ask for
+        # unconditionally.
+        await store_row(saving, for_update=True)
+        async with session_factory() as booting:
+            await asyncio.wait_for(clear_restart_paths(booting), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_clearing_the_restart_list_on_an_empty_store_writes_no_row(session_factory):
+    """The first boot of a fresh deployment reaches this before anything has
+    been stored; inventing a row here would make the store look written."""
+    async with session_factory() as session:
+        await clear_restart_paths(session)
+        await session.commit()
+    async with session_factory() as session:
+        assert await load_store(session) == ({}, {})
 
 
 # --- the one-time conversion of a delta-era row ---
@@ -347,7 +470,7 @@ async def test_a_write_that_lands_while_a_delta_converts_is_not_overwritten(
         async with session_factory() as other:
             await load_effective_config(config_file, other)
             saved = {**_document(), "workers": 4}
-            await write_store(other, saved, store_meta(restart_paths=["plex"]))
+            await write_store(other, saved, store_meta(restart_list=["plex"]))
             await other.commit()
 
         held = await migrate_delta_to_document(converting, _document())
