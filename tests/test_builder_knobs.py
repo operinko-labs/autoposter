@@ -522,7 +522,7 @@ async def test_a_dry_run_lists_the_would_deletes_without_deleting(session):
 
 
 async def test_an_operator_created_blank_survives_the_sweep(session):
-    """Fix round item 3: ``ops/blank`` labels its collection and writes a
+    """``ops/blank`` labels its collection and writes a
     managed row that no definition enumerates -- with
     ``delete_unconfigured: true`` the next pass would otherwise read it as
     exactly the kind of orphan this sweep exists to clean up, and delete what

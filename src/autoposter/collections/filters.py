@@ -1534,7 +1534,7 @@ FILTER_ATTRIBUTES: tuple[FilterAttribute, ...] = (
         "is movie-only: an edition is a movie concept and upstream scopes "
         "the FILTER to movie libraries -- stated as INFERRED, not "
         "transcribed, because `builder.filters_by_type` still has no in-repo "
-        "transcription (phase B review D11, unchanged here); the consequence "
+        "transcription; the consequence "
         "either way is a refusal, since no accessor ships at this tier. The "
         "SEARCH column is the transcribed one and answers both library "
         "types.",

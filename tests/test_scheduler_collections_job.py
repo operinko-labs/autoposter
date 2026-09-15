@@ -276,7 +276,7 @@ async def test_the_pass_failure_detail_never_carries_a_url(session):
 
 
 async def test_a_real_secrets_bundle_reaches_the_reconcile(session, monkeypatch):
-    """Fix round F3: ``sources`` defaults via ``default_factory``
+    """``sources`` defaults via ``default_factory``
     (``BuilderContext.sources``), so a forgotten wiring here would silently
     degrade every source-backed builder to "not configured" -- no error, no
     failed collection, nothing. Pin that the job actually builds and threads

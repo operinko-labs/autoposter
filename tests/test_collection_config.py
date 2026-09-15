@@ -332,7 +332,7 @@ def test_an_expanding_definitions_placeholder_is_not_held_to_the_params_model():
 
 
 def test_a_non_empty_placeholder_params_is_still_held_to_the_params_model():
-    """Fix round F1: the exemption above is narrowed to an *empty* params
+    """The exemption above is narrowed to an *empty* params
     dict, not the whole builder. The engine never reads a placeholder's
     params -- ``expand`` builds its own -- so garbage left there used to load
     clean and stay wrong forever, never even a runtime error. Non-empty

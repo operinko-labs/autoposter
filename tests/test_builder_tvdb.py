@@ -190,7 +190,7 @@ async def test_a_list_needs_exactly_one_of_id_and_slug():
     ],
 )
 async def test_a_slug_that_is_not_a_bare_slug_is_refused(slug):
-    """Fix round, finding 3: ``slug`` was interpolated into the path
+    """``slug`` was interpolated into the path
     unvalidated, so a pasted list URL or a value containing '/', '?', '#'
     changed the request rather than 404ing cleanly. Same one-line pattern as
     MDBList's ``_LIST_REFERENCE``."""
