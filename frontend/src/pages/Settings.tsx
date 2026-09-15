@@ -31,6 +31,7 @@ import { DriftNotice } from "./DriftNotice";
 import { LibraryOverridesPanel } from "./LibraryOverridesPanel";
 import { RestartBanner } from "./RestartBanner";
 import { SecretsPanel } from "./SecretsPanel";
+import { ServersTab } from "./ServersTab";
 import { SettingsAccordion } from "./SettingsAccordion";
 import {
   GENERAL_TAB,
@@ -104,6 +105,17 @@ function labelFor(key: string): string {
   const words = key.replace(/_/g, " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
+
+/** The two sections the Servers tab already shows a card for. The card's own
+ * accordion is called "Plex"; this one holds the leaves that are not on it, so
+ * it says so rather than naming the same server a second time.
+ *
+ * Applied only on the Servers tab, so the rename is tied to the tab the cards
+ * are on rather than to the section name wherever it is later keyed. */
+const SERVERS_TAB_SECTION_TITLE: Record<string, string> = {
+  plex: "More Plex settings",
+  jellyfin: "More Jellyfin settings",
+};
 
 /** The reason a restart is needed for `path`, or undefined if it is live.
  * `frozen_paths` keys are prefixes: `notifications` freezes everything under
@@ -546,7 +558,11 @@ function ConfigSections({
       {sections.map(([key, value]) => (
         <SettingsAccordion
           key={key}
-          title={labelFor(key)}
+          title={
+            tab === "servers"
+              ? (SERVERS_TAB_SECTION_TITLE[key] ?? labelFor(key))
+              : labelFor(key)
+          }
           open={openSection === key}
           onToggle={() => onOpen(openSection === key ? null : key)}
           restartReason={frozenReason(editor.frozen, editor.live, key)}
@@ -1060,7 +1076,34 @@ export function Settings() {
         role="tabpanel"
         aria-labelledby={`settings-tab-${tab}`}
       >
-        {config === null && <p className="muted">Loading…</p>}
+        {/* A read that failed is not a read still running: the error line
+            above says what happened, and a panel that went on saying
+            "Loading…" under it would promise something that is never
+            coming. */}
+        {config === null && error === null && <p className="muted">Loading…</p>}
+        {/* The cards, the Add a server row and the library map. Mounted only
+            once the configuration has been served, because the five
+            server-specific switches the cards show are leaves of that
+            document and a card mounted before it arrived would show every one
+            of them off -- and because the listing this tab reads is a second
+            request, which must not be in flight before the page knows whether
+            its own read succeeded.
+
+            It takes `onChanged` rather than the editor: a server saves on its
+            own, never joining the pending change, so what it needs from the
+            page is the re-read that follows its write. And it takes
+            `pendingEdits` for the reason the restart banner and the two
+            System-tab panels do: `reload` re-seeds this editor from the
+            server, so a write allowed to call it while something is unsaved
+            would throw that edit away with nothing on screen to say so. */}
+        {config !== null && tab === "servers" && (
+          <ServersTab
+            config={config}
+            revision={storedRevision}
+            pendingEdits={dirty}
+            onChanged={reload}
+          />
+        )}
         {config !== null && tab === "libraries" && (
           <LibraryOverridesPanel config={config} editor={editor} />
         )}
