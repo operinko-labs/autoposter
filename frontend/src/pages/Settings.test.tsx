@@ -200,13 +200,13 @@ describe("Settings configuration", () => {
     expect(document.body.textContent).not.toContain(REDACTED);
   });
 
-  it("renders no secrets section at all, and never the marker string", async () => {
+  it("renders the served secrets block on no tab, and never the marker string", async () => {
     stubConfig();
     await renderSettings();
 
-    // The config's own `secrets` block is no longer rendered on any tab: an
+    // The config's own `secrets` block is no longer rendered as a section: an
     // all-redacted read-only panel is a weaker answer than one that can set a
-    // secret. Asserted across all seven rather than on whichever one the test
+    // secret. Asserted across every tab rather than on whichever one the test
     // happened to be looking at.
     for (const tab of [
       "Servers",
@@ -215,11 +215,16 @@ describe("Settings configuration", () => {
       "Collections",
       "Metadata",
       "Integrations",
-      "System",
     ]) {
       await openSettled(tab);
       expect(screen.queryByRole("button", { name: "Secrets" })).toBeNull();
     }
+    // The one accordion of that name is the panel that can set one, and it
+    // lists what its own endpoint answers rather than anything the config
+    // carried -- so not one served key reaches it, open or closed.
+    await openSettled("System", "Secrets");
+    expect(screen.queryByText("secrets.plex_token")).toBeNull();
+    expect(screen.queryByText("Plex token")).toBeNull();
     // And the literal marker never reaches the page as a value.
     expect(document.body.textContent).not.toContain(REDACTED);
   });
@@ -325,13 +330,45 @@ describe("Settings configuration", () => {
     expect(screen.getByText(/3 settings/)).toBeInTheDocument();
   });
 
-  it("carries the webhook secret rotation panel", async () => {
-    stubConfig();
+  it("carries the secrets accordion, with the rotation panel inside it", async () => {
+    // Routed per URL: the accordion lists what `/api/secrets` answers, and a
+    // stub that handed it the config body would leave it with no rows and
+    // this test asserting an empty accordion.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) =>
+        json(
+          path === "/api/secrets"
+            ? {
+                secrets: [
+                  {
+                    name: "AUTOPOSTER_WEBHOOK_SECRET",
+                    source: "stored",
+                    generated: true,
+                  },
+                ],
+              }
+            : CONFIG,
+        ),
+      ),
+    );
     await renderSettings();
     await openSettled("System");
 
+    // The rotation panel is the generated secret's control, so it is reached
+    // the way every other secret is: by opening the one accordion they are
+    // all listed in.
     expect(
-      screen.getByRole("button", { name: /rotate webhook secret/i }),
+      screen.queryByRole("button", { name: /rotate webhook secret/i }),
+    ).toBeNull();
+    const header = screen.getByRole("button", { name: "Secrets" });
+    await act(async () => {
+      fireEvent.click(header);
+    });
+
+    const accordion = header.closest("section") as HTMLElement;
+    expect(
+      within(accordion).getByRole("button", { name: /rotate webhook secret/i }),
     ).toBeInTheDocument();
   });
 });
@@ -774,17 +811,19 @@ describe("Settings editor", () => {
     expect(screen.getByLabelText("workers")).toHaveValue(9);
   });
 
-  it("never makes a secret editable", async () => {
+  it("never makes a served secret editable", async () => {
     stubApi();
     await renderSettings();
     await openSettled("System", "General");
 
-    // Stronger than the read-only panel this replaces: there is no secrets
-    // section on the page at all, so there is nothing that could drift into
-    // an editable field, and no row for one either.
-    expect(screen.queryByRole("heading", { name: "Secrets" })).toBeNull();
+    // Stronger than the read-only panel this replaces: the served `secrets`
+    // block is not part of the tree at all, so there is nothing in it that
+    // could drift into an editable field, and no row for one either. What
+    // sets a secret is the accordion of that name, which never reads the
+    // configuration for a value and is never offered one.
     expect(screen.queryByLabelText("secrets.plex_token")).toBeNull();
     expect(screen.queryByText("Plex token")).toBeNull();
+    expect(screen.queryByDisplayValue(REDACTED)).toBeNull();
   });
 
   it("does not render the provenance keys as configuration", async () => {

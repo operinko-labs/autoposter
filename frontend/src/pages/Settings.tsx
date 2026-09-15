@@ -30,6 +30,7 @@ import { ConfigSafetyPanel } from "./ConfigSafetyPanel";
 import { DriftNotice } from "./DriftNotice";
 import { LibraryOverridesPanel } from "./LibraryOverridesPanel";
 import { RestartBanner } from "./RestartBanner";
+import { SecretsPanel } from "./SecretsPanel";
 import { SettingsAccordion } from "./SettingsAccordion";
 import {
   GENERAL_TAB,
@@ -38,7 +39,6 @@ import {
   useOpenSection,
   type TabId,
 } from "./settingsTabs";
-import { WebhookSecretPanel } from "./WebhookSecretPanel";
 import "./settings.css";
 
 /** The attribution block and its required wording live with the component now
@@ -446,6 +446,23 @@ function ConfigNode({
   );
 }
 
+/** The served descriptions, one string per dotted path.
+ *
+ * Read here rather than inside the tree because the secrets accordion wants
+ * the same map for its own rows, and it is not part of the tree: the two
+ * would otherwise normalise the same field twice and be free to disagree
+ * about what a missing description is. */
+export function describedFields(config: ConfigResponse): Record<string, string> {
+  return isPlainObject(config.field_descriptions)
+    ? Object.fromEntries(
+        Object.entries(config.field_descriptions).map(([key, text]) => [
+          key,
+          String(text),
+        ]),
+      )
+    : {};
+}
+
 /** The key the "General" accordion is remembered under. Not a section name:
  * no config section can be called this, so it can never collide with one. */
 const GENERAL_SECTION = "__general__";
@@ -490,14 +507,7 @@ export function ConfigSections({
   // computed path, a shape with no editor -- has nothing else on it that says
   // anything. That is why this is a prop of its own rather than a field of
   // `Editor`, which such a row deliberately does not get.
-  const descriptions = isPlainObject(config.field_descriptions)
-    ? Object.fromEntries(
-        Object.entries(config.field_descriptions).map(([key, text]) => [
-          key,
-          String(text),
-        ]),
-      )
-    : {};
+  const descriptions = describedFields(config);
   const entries = Object.entries(config).filter(
     ([key]) => !PROVENANCE_KEYS.includes(key),
   );
@@ -1056,9 +1066,17 @@ export function Settings() {
         {config !== null && tab === "system" && (
           <DriftNotice revision={storedRevision} onChanged={reload} />
         )}
-        {/* Not gated on the config load: rotating the webhook secret is how an
-            operator recovers a deployment whose config read is what failed. */}
-        {tab === "system" && <WebhookSecretPanel />}
+        {/* Not gated on the config load: this accordion fetches its own names
+            and sources, and rotating the webhook secret -- which it carries --
+            is how an operator recovers a deployment whose config read is what
+            failed. The descriptions are whatever the served configuration had,
+            and none at all while it is still loading. */}
+        {tab === "system" && (
+          <SecretsPanel
+            descriptions={config === null ? {} : describedFields(config)}
+            onChanged={reload}
+          />
+        )}
         {/* TMDB's and TheTVDB's notices are a licence condition of showing
             their artwork and metadata, so they sit on the tab where that
             lives -- and, for the same reason, they do not wait for a config

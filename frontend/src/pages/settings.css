@@ -89,7 +89,8 @@
 }
 
 .config-value input[type="text"],
-.config-value input[type="number"] {
+.config-value input[type="number"],
+.config-value input[type="password"] {
   min-width: 0;
   /* The widths below are ch-based ideals, not demands: inside the providers
    * list editor a 32ch input overhung the panel's right edge on a phone.
@@ -105,7 +106,8 @@
   font-size: 13px;
 }
 
-.config-value input[type="text"] {
+.config-value input[type="text"],
+.config-value input[type="password"] {
   width: 32ch;
 }
 
