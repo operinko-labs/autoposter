@@ -14,11 +14,12 @@ from pathlib import Path
 
 import yaml
 
+from autoposter import main
+
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
 COMPOSE = REPO / "docker-compose.yml"
 VITE_CONFIG = REPO / "frontend" / "vite.config.ts"
-MAIN = REPO / "src" / "autoposter" / "main.py"
 
 
 def _stages() -> list[str]:
@@ -226,15 +227,15 @@ def test_the_test_service_needs_no_secrets():
 
 
 def _uvicorn_port() -> int:
-    """The port ``main()`` actually binds."""
-    # Non-greedy across anything, because the call is
-    # `uvicorn.run(build(), host=..., port=...)` -- a `[^)]*` would stop at the
-    # closing paren of `build()` and find no port at all.
-    match = re.search(
-        r"uvicorn\.run\(.*?port=(\d+)", MAIN.read_text(encoding="utf-8"), re.DOTALL
-    )
-    assert match, "no `uvicorn.run(..., port=...)` call found in main.py"
-    return int(match.group(1))
+    """The port ``main()`` binds when nothing in the environment says otherwise.
+
+    The value rather than the call site: the port is read from the environment
+    now (``AUTOPOSTER_HOST``/``AUTOPOSTER_PORT``, so a restarted process comes
+    back where the operator reached it), and ``uvicorn.run(..., port=port)``
+    holds no digit to parse. The default is what the dev stack runs on, which
+    is the fact this file is about.
+    """
+    return main.DEFAULT_LISTEN_PORT
 
 
 def test_the_vite_proxy_targets_the_port_the_app_binds():
@@ -275,6 +276,35 @@ def test_the_api_service_fails_closed_without_credentials():
         "the api service does not declare `env_file: .env`, so it would start "
         "without credentials and fail later inside Secrets.from_env()"
     )
+
+
+def test_the_env_example_leaves_the_listen_address_commented_out():
+    """A listen address set for this stack is a trap, not a setting.
+
+    The api service's compose command pins ``uvicorn --host 0.0.0.0 --port
+    8080``, so AUTOPOSTER_PORT does nothing for as long as the process lives --
+    until the Settings page's Restart execs a bare boot, which reads it and
+    binds wherever it says while the stack still publishes 8080. Shipping the
+    two names uncommented made that the default experience, so they ship
+    commented and compose sets neither itself.
+    """
+    lines = (REPO / ".env.example").read_text(encoding="utf-8").splitlines()
+    environment = _service("api").get("environment") or {}
+    for name in ("AUTOPOSTER_HOST", "AUTOPOSTER_PORT"):
+        assert [line for line in lines if line.strip().startswith(f"{name}=")] == [], (
+            f"`.env.example` sets {name} and compose passes that file into the "
+            "api service; the dev command pins --port 8080, so the value takes "
+            "effect only at the first Restart, after which the process binds a "
+            "port the stack does not publish"
+        )
+        assert any(name in line for line in lines), (
+            f"{name} is no longer mentioned in `.env.example`; the commented "
+            "block is what tells an operator the variable exists at all"
+        )
+        assert name not in environment, (
+            f"the api service sets {name} itself, which would override the "
+            "pinned --port in its own command at the next boot"
+        )
 
 
 def test_the_api_service_boots_the_same_way_production_does():

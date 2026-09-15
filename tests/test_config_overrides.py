@@ -209,6 +209,12 @@ def _overrides_warnings(caplog) -> list[str]:
     ]
 
 
+def _strip_warnings(caplog) -> list[str]:
+    """The strip's own warnings, apart from the one-time conversion line every
+    one of these delta-era rows also logs as it becomes a document."""
+    return [line for line in _overrides_warnings(caplog) if "dropping stale" in line]
+
+
 async def test_a_stored_version_check_section_does_not_brick_the_boot(session, caplog):
     """The migration hazard this strip exists for. ``version_check`` was
     live-editable in the settings editor right up to the commit that took its
@@ -232,16 +238,25 @@ async def test_a_stored_version_check_section_does_not_brick_the_boot(session, c
     assert "version_check" not in config.model_dump()
 
 
-async def test_dropping_a_stored_version_check_section_says_so_once(session, caplog):
+async def test_dropping_a_stored_version_check_section_says_so(session, caplog):
     """Silent would be worse than the refusal: an operator whose stored
-    override stopped doing anything is owed the reason, and the way out."""
+    override stopped doing anything is owed the reason, and the way out.
+
+    Exactly three times for this row, on the one boot that converts it, and
+    the three are countable rather than incidental: a row holding nothing but
+    a stale section strips to empty, so the load reads it once, the seed's own
+    locked re-read reads it again before deciding the row is not its to
+    replace, and the conversion reads it a third time under the lock -- which
+    it must, because the delta it converts has to be the one the lock holds.
+    Anything above three is the spam this message must not become."""
     await _store(session, {"version_check": {"project": "operinko-labs"}})
 
     with caplog.at_level(logging.WARNING):
         await load_effective_config(EXAMPLE, session)
 
-    warnings = _overrides_warnings(caplog)
-    assert len(warnings) == 1
+    warnings = _strip_warnings(caplog)
+    assert len(warnings) == 3
+    assert len(set(warnings)) == 1
     assert "dropping stale version_check from stored overrides" in warnings[0]
     assert "takes no configuration now" in warnings[0]
     # Self-healing, and the message has to say so: the editor can no longer
@@ -250,20 +265,26 @@ async def test_dropping_a_stored_version_check_section_says_so_once(session, cap
 
 
 async def test_an_ordinary_stored_document_warns_about_nothing(session, caplog):
-    """The cost every other deployment pays for the strip: none, and no noise."""
+    """The cost every other deployment pays for the strip: none, and no noise.
+
+    The one line this load does write is not the strip's: it is the
+    conversion, said once in the life of a deployment by the boot that turns
+    this delta into a document. Pinned to exactly that one line, so neither
+    message can grow a second copy unnoticed."""
     await _store(session, {"workers": 2})
 
     with caplog.at_level(logging.WARNING):
         config = await load_effective_config(EXAMPLE, session)
 
     assert config.workers == 2
-    assert _overrides_warnings(caplog) == []
+    [warning] = _overrides_warnings(caplog)
+    assert "has been merged into a whole document" in warning
 
 
 async def test_the_stored_document_reader_drops_it_too(session):
-    """Stripped at the read, not at the merge, so ``GET /api/config``'s
-    ``overridden_paths`` cannot mark as overridden a setting the editor no
-    longer renders at all."""
+    """Stripped at the read, not at the merge, so ``GET /api/config`` cannot
+    serve -- and the page cannot then send back, as part of the whole document
+    it round-trips -- a setting the schema no longer has a field for."""
     await _store(session, {"version_check": {"project": "x"}, "workers": 2})
 
     assert await load_overrides_document(session) == {"workers": 2}

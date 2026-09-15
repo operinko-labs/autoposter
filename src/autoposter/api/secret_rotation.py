@@ -16,10 +16,12 @@ state-directory guard below are therefore duplicated from `api/setup.py`'s
 `fastapi.HTTPException` into a module that is deliberately framework-free and
 is imported by `config/schema.py`.
 
-ORDER OF OPERATIONS, and it is load-bearing: write the state file
+ORDER OF OPERATIONS, and it is load-bearing: write the layer that ANSWERS
+this name -- the stored row, or the state file when the file is what answers
 -> rebind `app.state.secrets` -> re-register both *arrs -> report. The write
 is the only step whose failure changes nothing (`write_state_file` is atomic
-and unlinks its partial), so it goes first. Registration goes last because a
+and unlinks its partial; the row is one committed statement), so it goes
+first. Registration goes last because a
 failed one is already a non-raising, fixed-sentence RESULT in this codebase,
 not an error -- and it is reported, never rolled back.
 
@@ -67,7 +69,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from autoposter.api import setup_arr
 from autoposter.api.auth import require_session
 from autoposter.api.setup_checks import CHECK_SYSTEMS
-from autoposter.config.schema import Secrets
+from autoposter.config import secret_store
+from autoposter.config.schema import Secrets, secret_sources
 from autoposter.config.state import merge_secrets_file, state_dir
 from autoposter.db.models import EventLog
 from autoposter.db.models import Session as SessionModel
@@ -87,15 +90,28 @@ ARR_SERVICES = ("radarr", "sonarr")
 # The variable NAME is what an operator must act on, and naming a
 # variable is what `missing_hard_secret_names` and `Secrets.load` already
 # establish as both safe and required to say. No value, no path, no host.
+#
+# A POLICY now, and the sentence says so, because the mechanism it used to
+# describe is gone: the state file outranks the environment, so a rotation
+# written here would WIN at the next boot rather than be undone by it. That is
+# precisely why the refusal stays. The deployment's own manifest is what sets
+# that variable, and a page that could quietly overrule it from a file the
+# manifest does not mention would stop the manifest being the truth about this
+# deployment without anyone having edited it.
 ENV_CONFIGURED_REFUSAL = (
     "this deployment's webhook secret comes from AUTOPOSTER_WEBHOOK_SECRET in "
-    "its environment, which is read before the state file at every boot -- "
-    "rotating it here would be undone by the next restart. Set a new value in "
-    "the environment and roll the deployment."
+    "its environment, which is where its deployment sets it -- rotating it "
+    "here would write a value that quietly overrules that one. Set a new "
+    "value where AUTOPOSTER_WEBHOOK_SECRET is set and roll the deployment."
 )
 ROTATION_IN_PROGRESS = "a webhook secret rotation is already in progress."
 ROTATION_RATE_LIMITED = "too many rotation attempts"
 STATE_DIR_NOT_WRITABLE = "the state directory could not be written"
+#: The store's half of the sentence above, for the arm that writes a row
+#: instead of the file. The CLASS NAME travels with it and nothing else: a
+#: database error's own text carries the DSN, and a key-file one names the
+#: file, neither of which belongs in a response body.
+STORE_REFUSED_THE_WRITE = "the new webhook secret could not be stored"
 
 # The per-service sentences. `{system}` is `CHECK_SYSTEMS[svc].label` and the
 # only thing that varies: no address, no *arr response text, no key.
@@ -140,7 +156,30 @@ async def rotate_webhook_secret(
     # deployment AUTOPOSTER_STATE_DIR is typically unset and `state_dir()` is
     # /state, which does not exist -- so the order here is what keeps the
     # refusal, and not a 503 about a directory, the answer that shape gets.
-    if not app.state.secret_from_state_file.get(WEBHOOK_SECRET_ENV, False):
+    #
+    # The question this guard asks is which source WINS for this name, and
+    # `secret_sources` is the one function that answers it -- in the same
+    # order `resolve_secret_values` resolves in, so the guard and the resolver
+    # cannot drift apart.
+    #
+    # The names of the rows that DECRYPT -- `load_stored_secrets`' keys, in
+    # the same expression `api/secrets_api.py`'s listing uses and taken in the
+    # form that drops its values. `stored` has to mean one thing across this
+    # service: on a lost volume the rows are all still there and none of them
+    # answers, the resolver falls through to the layer beneath, and a guard
+    # that read the row names alone would label this name `stored`, allow the
+    # rotation, and write a file that outranks the manifest -- the one write
+    # this refusal exists to stop. It costs one decrypt per row on an action
+    # an operator takes by hand.
+    #
+    # `secret_sources` is asked with a live session rather than left to read
+    # `boot`'s marker, because a secret cleared from the Settings page since
+    # boot must stop being labelled `stored` the moment it is cleared, not at
+    # the next restart.
+    async with app.state.session_factory() as session:
+        stored = sorted(await secret_store.load_stored_secrets(session))
+    source = secret_sources(stored)[WEBHOOK_SECRET_ENV]
+    if source == "environment":
         raise HTTPException(status_code=400, detail=ENV_CONFIGURED_REFUSAL)
 
     lock = app.state.secret_rotation_lock
@@ -152,24 +191,57 @@ async def rotate_webhook_secret(
     if lock.locked():
         raise HTTPException(status_code=409, detail=ROTATION_IN_PROGRESS)
     async with lock:
-        return await _rotate(request)
+        return await _rotate(request, source)
 
 
-async def _rotate(request: Request) -> dict:
+async def _rotate(request: Request, source: str) -> dict:
+    """``source`` is the layer that ANSWERS this name, and it decides where
+    the new value is written.
+
+    The rotation has to land where the next boot will look, and that is the
+    winning layer rather than the file: with a stored row above it, a value
+    written to ``secrets.env`` is one the next start ignores, so both *arrs
+    would go on signing with a value this service had forgotten -- served
+    once, recoverable nowhere -- and every inbound webhook would fail
+    verification silently. `environment` never reaches here; it is refused
+    above, because there is no layer this process may write that the manifest
+    would not outrank.
+    """
     app = request.app
     minted = secrets_module.token_urlsafe(32)
 
-    try:
-        merge_secrets_file({WEBHOOK_SECRET_ENV: minted})
-    except OSError as exc:
-        # Duplicated from `api/setup.py`'s `_persist` with its reasoning: the
-        # step name only in the log, and the sentence carries the directory an
-        # operator sets, never a file name and never the errno text.
-        logger.error("webhook secret rotation: the state directory refused a write")
-        raise HTTPException(
-            status_code=503,
-            detail=f"{STATE_DIR_NOT_WRITABLE}: {state_dir()} ({type(exc).__name__})",
-        ) from None
+    if source == "stored":
+        try:
+            async with app.state.session_factory() as session:
+                await secret_store.store_secret(session, WEBHOOK_SECRET_ENV, minted)
+                await session.commit()
+        except Exception as exc:
+            # The CLASS NAME, in the log and in the sentence, and nothing
+            # else: the database's own text carries the DSN and the key
+            # file's names the file. Nothing has changed yet at this point --
+            # this is still the first step -- so the refusal leaves a
+            # deployment whose webhook secret is exactly what it was.
+            logger.error(
+                "webhook secret rotation: the store refused the write (%s)",
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=f"{STORE_REFUSED_THE_WRITE} ({type(exc).__name__})",
+            ) from None
+    else:
+        try:
+            merge_secrets_file({WEBHOOK_SECRET_ENV: minted})
+        except OSError as exc:
+            # Duplicated from `api/setup.py`'s `_persist` with its reasoning:
+            # the step name only in the log, and the sentence carries the
+            # directory an operator sets, never a file name and never the
+            # errno text.
+            logger.error("webhook secret rotation: the state directory refused a write")
+            raise HTTPException(
+                status_code=503,
+                detail=f"{STATE_DIR_NOT_WRITABLE}: {state_dir()} ({type(exc).__name__})",
+            ) from None
 
     # Rebound, never mutated -- `config/live.py`'s `swap_config` is the
     # precedent and the argument. Reconstructed through the constructor rather

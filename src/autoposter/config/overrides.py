@@ -1,10 +1,16 @@
-"""The database overrides layer: config deltas deep-merged over the YAML.
+"""The configuration store: the single row that holds the configuration.
 
 The mounted ``autoposter.yaml`` is delivered by Flux from git and is read-only
-in the pod, so the UI's edits cannot go back into it. They live in the
-single-row ``config_overrides`` table instead (``db/models.py``) and are merged
-over the file every time a ``Config`` is built. The file keeps owning the
-defaults; the database owns the deltas.
+in the pod, so the UI's edits cannot go back into it. The configuration lives
+in the single-row ``config_overrides`` table instead (``db/models.py``), and
+what that row holds is what runs: the whole document, validated through the
+same ``build_config`` as a file-only load.
+
+The file seeds an empty store once and is not read at boot again, which is
+what makes it removable -- a deployment whose store is seeded needs no file.
+A row written before the store held whole documents holds a delta instead
+(``STORE_FORMAT``), and is merged over the file exactly as it always was until
+it is converted.
 """
 import hashlib
 import json
@@ -15,9 +21,10 @@ from typing import Union, get_args, get_origin
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.config.loader import build_config, read_config_document
+from autoposter.config.loader import COMPUTED_PATHS, build_config, read_config_document
 from autoposter.config.schema import Config
 from autoposter.db.models import ConfigOverride
 
@@ -308,24 +315,77 @@ def without_migrated_sections(document: dict) -> dict:
     return {key: value for key, value in document.items() if key not in present}
 
 
-async def load_overrides_document(
-    session: AsyncSession, *, for_update: bool = False
-) -> dict:
-    """The stored overrides document, or ``{}`` when there is no row.
+#: The store's own version, kept in the row's ``meta`` and nowhere else.
+#:
+#: 1 -- which is what an absent key means -- is the DELTA the row held while
+#: the mounted file owned the defaults: a partial document merged over it on
+#: every load. 2 is the whole configuration document, which ``build_config``
+#: validates directly and which is what runs.
+STORE_FORMAT = 2
 
-    An empty document is the pre-edit state of every deployment, and merging
-    ``{}`` is the identity, so "no overrides yet" costs nothing beyond one
-    primary-key lookup and behaves exactly like the file alone.
 
-    Migrated sections are stripped here rather than at the merge, because this
-    is the single seam every reader of the stored document comes through: the
-    boot-time merge (``load_effective_config``) that would otherwise refuse to
-    validate, and ``GET /api/config``'s ``overridden_paths``, which would
-    otherwise mark a setting the editor no longer renders as overridden.
+def store_meta(format_: int = STORE_FORMAT, restart_list: list[str] | None = None) -> dict:
+    """The metadata column's value, built in one place.
 
-    ``for_update`` takes a row lock, and only ``_persist_and_swap`` passes it:
-    a reader that locked would serialise ``GET /api/config`` behind every save
-    for no benefit.
+    The restart list is omitted rather than written empty: an absent key and
+    an empty list mean the same thing to every reader, and omitting it keeps
+    the ordinary row to one key.
+
+    The keyword is spelled differently from the ``restart_paths`` reader below
+    on purpose, so that neither name hides the other inside this module.
+    """
+    meta: dict = {"format": format_}
+    if restart_list:
+        meta["restart_paths"] = list(restart_list)
+    return meta
+
+
+def restart_paths(meta: dict) -> list[str]:
+    """The frozen paths waiting for a restart. Sorted, never ``None``.
+
+    An absent key, an empty list and a row with no metadata at all all mean
+    "nothing is waiting", so every reader gets one shape back and none of them
+    has to know which of the three it is looking at.
+    """
+    return sorted(meta.get("restart_paths") or [])
+
+
+def with_restart_paths(meta: dict, paths: list[str]) -> dict:
+    """``meta`` carrying ``paths`` as its restart list, sorted and deduplicated.
+
+    A REPLACEMENT rather than a union, and it has to be. The list is always
+    computed against the generation this process BOOTED on, and every entry
+    already on it was computed against that same generation -- the boot itself
+    empties the list -- so the set handed in here is the whole truth about what
+    a restart would change. A union could only ever keep a path whose value has
+    just been put back to the one that is running, which is a notice asking for
+    a restart that would do nothing. Two saves of two frozen sections still
+    leave both paths, because the second save differs from the boot in both.
+
+    The key is dropped rather than written empty when nothing is waiting,
+    which is what ``store_meta`` writes for the same state.
+    """
+    waiting = sorted(set(paths))
+    if not waiting:
+        return {key: value for key, value in meta.items() if key != "restart_paths"}
+    return {**meta, "restart_paths": waiting}
+
+
+async def store_row(
+    session: AsyncSession, *, for_update: bool
+) -> ConfigOverride | None:
+    """The store's single row, or ``None``, under the lock the caller asked for.
+
+    Split out from ``load_store`` because two writers need the row itself:
+    what a read strips out of the document is not what decides whether the
+    store has ever been written, and "has it ever been written" is the
+    question both the seed and the format stamp turn on. A row holding
+    nothing but sections that left the schema reads as an empty document and
+    is not an empty store.
+
+    ``for_update`` takes a row lock, and only a write path passes it: a reader
+    that locked would serialise ``GET /api/config`` behind every save for no
+    benefit.
 
     When there is no row yet, ``SELECT ... FOR UPDATE`` has nothing to lock, so
     the row lock alone left one hole: two *simultaneous* first-ever saves on a
@@ -341,7 +401,9 @@ async def load_overrides_document(
     committed by the time the second acquires the lock, so the second sees it,
     its ``EMPTY_DOCUMENT_REVISION`` no longer matches, and it gets the same 409
     every other stale writer gets. The row-present path is untouched -- the
-    lock is taken only on a store that has never been written.
+    lock is taken only on a store that has never been written. ``seed_store``
+    leans on the same property for the same reason: two pods booting against
+    one fresh database must not both decide the store is empty.
 
     Two properties this leans on, named because a future change to either would
     reopen the hole silently. The re-read must see a row committed after this
@@ -361,19 +423,33 @@ async def load_overrides_document(
     row = await session.scalar(statement)
     if for_update and row is None:
         # Nothing was locked, because there was nothing to lock. Serialise the
-        # first-ever save on the key instead, then look again: whoever gets
+        # first-ever write on the key instead, then look again: whoever gets
         # here second is now looking at whoever got here first.
-        await session.execute(select(func.pg_advisory_xact_lock(OVERRIDES_INSERT_LOCK_KEY)))
+        await session.execute(
+            select(func.pg_advisory_xact_lock(OVERRIDES_INSERT_LOCK_KEY))
+        )
         row = await session.scalar(statement)
+    return row
+
+
+def _row_document(row: ConfigOverride | None) -> dict:
+    """A row's document, checked, and stripped of sections that left the schema.
+
+    The strip lives here rather than at any later point, because this is the
+    single seam every reader of the stored document comes through: the
+    boot-time load that would otherwise refuse to validate, and
+    ``GET /api/config``, which would otherwise serve a setting the editor no
+    longer renders.
+    """
     if row is None or not row.document:
         return {}
     if not isinstance(row.document, dict):
-        # Only ``PUT /api/config/overrides`` ever writes this column and it
-        # only ever writes an object, so this is unreachable through the
-        # application -- but JSONB will hold a list or a bare scalar quite
-        # happily if someone edits the row by hand, and the merge would then
-        # fail with an AttributeError from three frames down. Say what is
-        # actually wrong instead.
+        # Only the config write path ever writes this column and it only ever
+        # writes an object, so this is unreachable through the application --
+        # but JSONB will hold a list or a bare scalar quite happily if someone
+        # edits the row by hand, and validation would then fail with an
+        # AttributeError from three frames down. Say what is actually wrong
+        # instead.
         raise ValueError(
             "the config_overrides document must be a JSON object, not "
             f"{type(row.document).__name__}"
@@ -381,16 +457,420 @@ async def load_overrides_document(
     return without_migrated_sections(row.document)
 
 
-async def load_effective_config(path: Path, session: AsyncSession) -> Config:
-    """The YAML config with the stored overrides merged over it.
+def store_contents(row: ConfigOverride | None) -> tuple[dict, dict]:
+    """One row's document and metadata, as every reader of the store sees them.
+
+    Taken apart from the read so that a caller holding the row -- because it
+    has to know whether there is one -- does not have to read it twice to
+    learn what it says.
+
+    An existing row keeps its metadata even when its document is empty. The
+    two are not the same fact: the restart list lives in the metadata and
+    outlives whatever the document happens to hold, so answering ``{}`` for it
+    would invite a caller that found no document to throw the list away too.
+    ``_row_document`` already answers ``{}`` for an empty document.
+    """
+    if row is None:
+        return {}, {}
+    meta = row.meta if isinstance(row.meta, dict) else {}
+    return _row_document(row), meta
+
+
+async def load_store(
+    session: AsyncSession, *, for_update: bool = False
+) -> tuple[dict, dict]:
+    """The stored document and its metadata, or ``({}, {})`` when there is no row.
+
+    An empty store is the pre-configuration state of every deployment, and it
+    is the one state that sends the loader looking at the mounted file. A row
+    whose every section has left the schema reads as an empty *document* here
+    and cannot be told apart from no row at all -- a caller that needs the
+    difference asks ``store_row`` for the row instead.
+    """
+    return store_contents(await store_row(session, for_update=for_update))
+
+
+async def load_overrides_document(
+    session: AsyncSession, *, for_update: bool = False
+) -> dict:
+    """The stored document alone, for the readers that want only that.
+
+    ``GET /api/config``, the export, the collection and playlist builders and
+    the write path's read-compare-write all ask this question and have no use
+    for the row's metadata.
+    """
+    document, _meta = await load_store(session, for_update=for_update)
+    return document
+
+
+async def write_store(session: AsyncSession, document: dict, meta: dict) -> None:
+    """The upsert. One row, ``id=1``, enforced by the table's CHECK.
+
+    Not committed here: a caller writes the store as part of a larger
+    transaction -- with a snapshot of what it replaced, or with the emptiness
+    test that chose it -- and a commit in the middle of one of those would be
+    exactly the half-applied write the snapshot exists to prevent.
+    """
+    statement = insert(ConfigOverride).values(
+        id=OVERRIDES_ROW_ID, document=document, meta=meta
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=["id"],
+        set_={"document": document, "meta": meta, "updated_at": func.now()},
+    )
+    await session.execute(statement)
+
+
+async def clear_restart_paths(session: AsyncSession) -> None:
+    """Forget the restart list. Called by the boot, and by nothing else.
+
+    Under the row lock when there is something to clear, because the save path
+    takes the same one and the two must not interleave: a save that added a
+    path between an unlocked read here and the write would have its claim
+    erased by a boot that never applied it.
+
+    The existence question is asked FIRST and without the lock, reading the
+    metadata column alone so that no ORM row is loaded and the locked read
+    below still sees the row as it stands. Almost every boot there is has an
+    empty list, and locking before discovering that would put the boot behind
+    any concurrent save's row lock with no timeout -- a wait nothing here
+    needs, for a row it is about to leave untouched. A list that appears
+    between the two reads is one the very next boot clears.
+
+    The METADATA column only, and the document is neither read nor written.
+    Two reasons, and both are about a write nobody asked for: a read strips
+    the sections that have left the schema, so writing the document back would
+    persist that strip with no snapshot and no audit row behind it; and a
+    hand-edited document that is not a JSON object refuses to be read at all,
+    which would turn the last thing standing between a bad row and a bootable
+    deployment into an error. The rest of the metadata -- the format above
+    all, whose loss would relabel a whole document as a delta -- is kept.
+
+    Not committed here, for ``write_store``'s reason: the caller owns the
+    transaction. Nothing is written when the list is already empty, so the
+    ordinary boot leaves the row untouched.
+    """
+    unlocked = await session.scalar(
+        select(ConfigOverride.meta).where(ConfigOverride.id == OVERRIDES_ROW_ID)
+    )
+    if not restart_paths(unlocked if isinstance(unlocked, dict) else {}):
+        return
+    row = await store_row(session, for_update=True)
+    if row is None:
+        return
+    meta = row.meta if isinstance(row.meta, dict) else {}
+    if not restart_paths(meta):
+        return
+    row.meta = with_restart_paths(meta, [])
+
+
+async def seed_store(session: AsyncSession, document: dict) -> dict:
+    """Write ``document`` as the store, once, and answer what the store holds.
+
+    The emptiness test is taken under the row lock, so two pods starting at the
+    same instant against a fresh database cannot both seed -- the second reads
+    the first's row and gets it back, and validates and runs that one.
+
+    Emptiness is judged on the raw row -- no row at all, or a row holding
+    nothing -- and not on the document a read hands back. A row whose every
+    section has left the schema strips to ``{}`` but is still a store somebody
+    wrote, and its metadata, which is where the restart list lives, is not
+    this function's to replace. Such a row is returned as the ``{}`` it strips
+    to, and the caller routes it the way it routes any other stored document.
+
+    A row can exist and still hold nothing -- a document of literally ``{}``.
+    The seed is right to fill that document in, and the format it writes is
+    the one this seed validates against, but the restart list beside it is
+    still not this function's to throw away.
+
+    This is the one write in this module that takes no snapshot, because there
+    is nothing to snapshot: the store was empty. That is also why it needs no
+    reason string -- a snapshot records what a write displaced, and this one
+    displaces nothing.
+    """
+    row = await store_row(session, for_update=True)
+    if row is not None and row.document:
+        return _row_document(row)
+    _empty, meta = store_contents(row)
+    await write_store(session, document, store_meta(restart_list=restart_paths(meta)))
+    return document
+
+
+#: The ``ConfigOverrideSnapshot.reason`` the one-time delta conversion writes.
+MIGRATE_REASON = "migrate"
+
+#: What a delta-era store with no readable file is told, in one place.
+#:
+#: Two callers refuse that state -- this module at boot and the config write
+#: path -- and an operator who meets one and then the other must not be given
+#: two different accounts of the same unrecoverable store.
+DELTA_WITHOUT_FILE = (
+    "the configuration store holds a delta from before the store became the "
+    "document, and the configuration file it was a delta of cannot be read; "
+    "restore the file and start again"
+)
+
+
+async def migrate_delta_to_document(session: AsyncSession, base: dict | None) -> dict:
+    """Turn a delta-era store into a document, once, and answer what it holds.
+
+    The merge is exactly what the effective configuration was computed to be
+    at every load while the row held a delta: the mounted document with the
+    delta over it. Nothing is recomputed and nothing is dropped, so this
+    deployment runs the configuration it ran yesterday across the boot that
+    converts it.
+
+    The delta is read HERE, from the locked row, rather than taken from the
+    caller that noticed the row was one. The caller's read is not under the
+    lock, so a save committed between the two -- the pod this one is replacing
+    is still serving the editor -- would otherwise be converted away: the
+    merge would carry the delta the caller saw, and the save would be gone
+    from the store with no trace but its own snapshot. What the lock holds is
+    what is converted.
+
+    The SNAPSHOT comes first and carries format 1, which is what makes the
+    conversion undoable: restoring it re-runs the merge the delta described,
+    so an operator who dislikes the result is one restore from the delta they
+    had -- as the store reads it, which is to say stripped of any section that
+    has left the schema, those being unrestorable into a document that
+    validates. A delta with nothing left in it -- ``{}``, because every
+    section it held has left the schema -- snapshots nothing, there being no
+    earlier state to restore to, and converts to the file's own document.
+
+    The row is taken under its LOCK before anything is read for the merge or
+    written, and one that says format 2 by then is returned as it stands
+    rather than converted: somebody else has already done this, and their
+    document is the store. This is a read-modify-write over the row every save
+    also writes, and ``seed_store`` closes the same window on the same row the
+    same way.
+
+    The merged document is validated BEFORE it is written rather than by the
+    caller afterwards. This is the last load that reads the file, so a
+    converted store the schema refuses could never be repaired -- the
+    application would not start, and the editor that could clear the row sits
+    behind the application. Refusing here leaves the delta and the file both
+    standing, which is a state an operator can act on.
+
+    ``base`` is ``None`` when there is no mounted file, and then the delta is
+    refused rather than promoted. A delta is a statement ABOUT a document;
+    without that document, writing it as the whole configuration would
+    silently default every key the file used to carry -- a service that boots
+    and does the wrong thing, which is worse than one that says why it will
+    not.
+    """
+    # Imported here rather than at module scope: config/snapshots.py reads
+    # this module's ``document_paths``, so a top-level import would close a
+    # cycle that neither file can carry.
+    from autoposter.config.snapshots import capture_snapshot
+
+    if base is None:
+        raise ValueError(DELTA_WITHOUT_FILE)
+    row = await store_row(session, for_update=True)
+    meta = row.meta if row is not None and isinstance(row.meta, dict) else {}
+    if meta.get("format") == STORE_FORMAT:
+        # Somebody else got here first. What they wrote is the store. Commit
+        # so the row lock is released now rather than at the end of a
+        # caller's session -- a CLI run holds one for hours.
+        document = _row_document(row)
+        await session.commit()
+        return document
+    delta = _row_document(row)
+    merged = merge_overrides(base, delta)
+    _validated(merged)
+    await capture_snapshot(session, delta, MIGRATE_REASON, format=1)
+    # What the row already said is carried through rather than replaced. Only
+    # the format is this write's to set; the restart list is not its to throw
+    # away.
+    await write_store(session, merged, {**meta, **store_meta()})
+    await session.commit()
+    logger.warning(
+        "the stored configuration was a delta and has been merged into a whole "
+        "document; the previous delta is kept as a config snapshot"
+    )
+    return merged
+
+
+def changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
+    """Dotted paths whose value differs between two documents, both directions.
+
+    Both directions, because a key one document no longer carries has changed
+    just as much as one whose value moved.
+
+    Lifted here from ``api/routes.py::_changed_paths`` so the drift report and
+    the stale-save 409 count the same things; that function now delegates and
+    there is exactly one copy.
+    """
+    changed: list[str] = []
+    for key in set(before) | set(after):
+        where = f"{prefix}.{key}" if prefix else str(key)
+        old, new = before.get(key), after.get(key)
+        if isinstance(old, dict) and isinstance(new, dict):
+            changed.extend(changed_paths(old, new, where))
+        elif old != new:
+            changed.append(where)
+    return changed
+
+
+def _comparable(document: dict) -> dict | None:
+    """The configuration a document DESCRIBES, or ``None`` if it describes none.
+
+    Two documents that mean the same thing are rarely spelled the same way. The
+    mounted YAML is sparse -- it states what its author cared about and lets the
+    schema default the rest -- while what the editor stores is a whole model
+    dump, every key present. Comparing those two raw would report a difference
+    at every setting the file simply does not mention, which is most of them.
+
+    So both sides are built and dumped, and the comparison is between the two
+    effective configurations. Then two kinds of key come back out:
+
+    - ``COMPUTED_PATHS``: derived by this service from the rest of the document
+      (``version``). Neither side owns it, so it cannot be a difference
+      between them -- and a stored document carries it while the file never
+      spells it, which would make it the one permanent difference.
+    - ``secrets``: not a ``Config`` field, so a dump cannot carry one and this
+      pop is belt and braces. It stays because this walk's output is a list of
+      paths served to a page, and the day something named ``secrets`` does
+      become a field is not the day to discover that.
+    """
+    try:
+        dumped = build_config(document).model_dump(mode="json")
+    except (ValueError, TypeError):
+        # TypeError: a YAML file whose top-level key resolves to a non-string
+        # (a bare ``on:``) fails in ``Config(**data)`` before pydantic sees it.
+        # pydantic's ValidationError is a ValueError, and so is every refusal
+        # `Config`'s own validators raise.
+        return None
+    dumped.pop("secrets", None)
+    for path in COMPUTED_PATHS:
+        parts = path.split(".")
+        target = dumped
+        for part in parts[:-1]:
+            target = target.get(part) if isinstance(target, dict) else None
+        if isinstance(target, dict):
+            target.pop(parts[-1], None)
+    return dumped
+
+
+def drift_report(file_document: dict | None, stored: dict) -> dict:
+    """Whether the file on disk still describes what the store describes.
+
+    This is the mounted file's whole remaining job. It is not a source of
+    truth any more -- it seeds an empty store once, and a delta-era row is a
+    statement about it -- so the one thing it can still tell an operator is
+    "the configuration in git is not the configuration that is running".
+
+    Configurations, not documents: see ``_comparable``. A store the page has
+    saved holds a whole model dump of the same configuration the sparse file
+    seeded it with, and reporting that as drift would light the notice on every
+    deployment forever after its first save.
+
+    No file is NOT drift. Removing the ConfigMap once the store is seeded is
+    the end state this design is working towards, and reporting it as a
+    difference would leave a permanent notice on the System tab for having
+    done the right thing.
+
+    An empty store is not drift either, for the same shape of reason running
+    the other way: it is what the file is about to seed, so there is nothing
+    yet for it to disagree with.
+
+    A file that no longer describes a configuration this service can build IS
+    drift, and is reported with no paths. There is no second document to walk,
+    so naming paths is not available -- but "the file and the store agree"
+    would be a false sentence, and the operator wants to know.
+    """
+    if file_document is None:
+        return {"file_present": False, "differs": False, "paths": []}
+    if not stored:
+        return {"file_present": True, "differs": False, "paths": []}
+    file_config = _comparable(file_document)
+    stored_config = _comparable(stored)
+    if file_config is None or stored_config is None:
+        return {"file_present": True, "differs": True, "paths": []}
+    paths = sorted(changed_paths(file_config, stored_config))
+    return {"file_present": True, "differs": bool(paths), "paths": paths}
+
+
+def _read_file_document(path: Path | None) -> dict | None:
+    """The mounted document, or ``None`` when there is no readable file.
+
+    ``None`` and not an exception: a deployment configured from the UI has no
+    mounted file at all, and the caller already has to handle that.
+
+    The three callers are the whole of the file's life: the boot-time seed of
+    an empty store, the delta paths that are statements about this file, and
+    the drift report above. Nothing else in this service reads it.
+    """
+    if path is None:
+        return None
+    try:
+        return read_config_document(Path(path))
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return None
+
+
+def _validated(document: dict) -> Config:
+    """``build_config``, plus the secrets refusal the write path applies.
+
+    The stored document is the configuration now rather than a delta layered
+    over a file, which makes a ``secrets`` key in it something the config API
+    would echo back. ``merge_overrides`` keeps the editor from ever producing
+    one; this is what keeps a hand-edited row -- or a mounted file carrying the
+    key into the seed -- from doing it instead.
+    """
+    _reject_secrets(document)
+    return build_config(document)
+
+
+async def load_effective_config(path: Path | None, session: AsyncSession) -> Config:
+    """The stored configuration document, validated.
+
+    The mounted file is read ONLY when the store is empty, and then only to
+    seed it -- or when the store holds a delta, which is a statement about
+    that file and means nothing without it. After that the file is a drift
+    report and nothing else, which is what makes it removable: a deployment
+    whose store is seeded needs no file.
+
+    ``path`` may be ``None`` or point at nothing -- a deployment configured
+    from the UI has no mounted file. An empty store AND no file is unreachable
+    from a booted application (``boot.is_configured`` refuses it and serves the
+    wizard instead), so it raises rather than inventing a document.
+
+    On the seed path this COMMITS the caller's session, because the seed has
+    to be durable before the configuration it holds is acted on; the one-time
+    conversion of a delta commits for the same reason, and both happen at most
+    once in the life of a deployment. Every other path reads and writes
+    nothing.
 
     Validated whole and versioned through the same ``build_config`` as
-    ``load_config``, so an overridden artwork setting moves ``config.version``
-    exactly as editing the file would, and an overridden scheduler setting
-    leaves it alone.
+    ``load_config``, so a stored artwork setting moves ``config.version``
+    exactly as editing the file would, and a stored scheduler setting leaves it
+    alone.
     """
-    base = read_config_document(path)
-    overrides = await load_overrides_document(session)
-    if not overrides:
-        return build_config(base)
-    return build_config(merge_overrides(base, overrides))
+    document, meta = await load_store(session)
+    if document and meta.get("format") == STORE_FORMAT:
+        return _validated(document)
+    base = _read_file_document(path)
+    if document:
+        return _validated(await migrate_delta_to_document(session, base))
+    if base is None:
+        raise ValueError(
+            "the configuration store is empty and no configuration file was "
+            "found; this deployment has not been configured"
+        )
+    seeded = await seed_store(session, base)
+    if not seeded:
+        # The seed found a row it will not replace: one holding nothing but
+        # sections that left the schema. That is not an empty store, it is a
+        # delta with nothing left in it, so it keeps its metadata and takes
+        # the path every other delta takes -- which merges nothing over the
+        # file and leaves the file's document standing.
+        return _validated(await migrate_delta_to_document(session, base))
+    # Validated before the commit, deliberately: the seed is the last time this
+    # file is read, so a store seeded with a document the schema refuses could
+    # never be repaired -- the application would not start, and the editor that
+    # could clear the row sits behind the application. Refusing here leaves the
+    # store empty and the file editable, which is a state an operator can act
+    # on.
+    config = _validated(seeded)
+    await session.commit()
+    return config

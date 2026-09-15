@@ -297,8 +297,9 @@ class Scheduler:
         # `scheduler.enabled`, while the retention trim only ever runs from
         # inside the (conditionally-registered) cleanup pass -- recording
         # this job's passes would grow the table forever with nothing ever
-        # trimming it. `run_id` stays None for an unrecorded name, which
-        # already skips the `close_run` call below.
+        # trimming it. The set's other name is there for its own reason, which
+        # is written down beside it. `run_id` stays None for an unrecorded
+        # name, which already skips the `close_run` call below.
         run_id: int | None = None
         if job.name not in UNRECORDED:
             try:

@@ -1979,7 +1979,7 @@ async def test_one_permanently_pending_server_does_not_recompose_every_pass(
     # retry pass never saw the population it was written for.
     assert await _jellyfin_horizon() == horizon, "a miss must not defer the row again"
 
-    # Task 8 fix: the row falls through to the same code whether it was
+    # The row falls through to the same code whether it was
     # never resolved or previously ran its budget out and was marked
     # `failed` -- so this re-arm needs `reset_attempts=True` too, or a row
     # that reached `failed` from a real delivery attempt stays over budget
@@ -2083,9 +2083,9 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     assert row.status == "pending" and row.next_attempt_at is not None
     # A re-arm is not an attempt -- nothing was actually tried against
     # jellyfin this pass (no compose, no upload) -- and it is a fresh START:
-    # review I1, the counter goes back to zero rather than staying where the
-    # exhausted row left it, or the first failure after a re-arm would
-    # exhaust the row again (`failed` is itself a counted attempt).
+    # the counter goes back to zero rather than staying where the exhausted
+    # row left it, or the first failure after a re-arm would exhaust the row
+    # again (`failed` is itself a counted attempt).
     assert first_pass_attempts > 0, "the failed delivery did spend budget"
     assert row.attempts == 0
 
@@ -2497,7 +2497,7 @@ async def test_an_absent_row_is_left_alone_by_a_later_write(session, config_with
     """spec §1: a library `presence.apply_presence` has already stamped
     `absent` for this item/server owes it nothing, even if this pass's own
     resolution found the item anyway -- the row must not flip back out of
-    `absent` (Task 3's `presence.py`, `ABSENT_DETAIL`)."""
+    `absent` (`presence.py`, `ABSENT_DETAIL`)."""
     from sqlalchemy import select
     from autoposter import deliveries
     from autoposter.db.models import MetadataWrite
@@ -2526,11 +2526,11 @@ async def test_an_absent_row_is_left_alone_by_a_later_write(session, config_with
 async def test_a_dual_registry_pass_writes_metadata_written_and_pending_per_server(
     session, config_with_badges, monkeypatch,
 ):
-    """Task 4 review I1: the branch matrix above is exercised directly against
-    `apply_metadata`; this proves the same outcomes through the real entry
-    point, `process_item`, on a dual registry -- Plex accepts the write,
-    Jellyfin's `apply_facts` raises -- and that the artwork path (an
-    unrelated seam) still completes for both servers regardless."""
+    """The branch matrix above is exercised directly against `apply_metadata`;
+    this proves the same outcomes through the real entry point, `process_item`,
+    on a dual registry -- Plex accepts the write, Jellyfin's `apply_facts`
+    raises -- and that the artwork path (an unrelated seam) still completes for
+    both servers regardless."""
     config_with_badges.badges.upload_to_jellyfin = True
     config_with_badges.operations.write_to_jellyfin = True
     monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
@@ -2636,8 +2636,8 @@ async def test_the_pipeline_re_arming_a_row_takes_it_out_of_its_catch_up_run(
 async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
     session, monkeypatch,
 ):
-    """Task 4 review I1's second case: the same guard as the direct-call
-    absent test above, now proven through `process_item` -- presence has
+    """The same guard as the direct-call absent test above, now proven through
+    `process_item` -- presence has
     already stamped Jellyfin's row `absent` for this item, and a pass that
     resolves it there anyway (this double still has it in `jf.items`) must
     never call `apply_facts` on Jellyfin or move the row off `absent`."""

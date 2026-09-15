@@ -146,10 +146,16 @@ async def test_a_refused_request_leaves_the_session_usable_for_the_next_one(
 
 
 async def test_the_job_records_a_scheduled_run_through_the_real_scheduler(session_factory):
-    """Proves the pass's runs ARE recorded, not merely that the job exists:
+    """Proves the pass's STATUS is recorded, not merely that the job exists:
     the real ``Scheduler`` over the real job, with the ``scheduled_runs`` row
     read back. The wait is on the behaviour rather than on the clock, the
-    shape ``tests/test_scheduler_core.py`` uses (roadmap row 119)."""
+    shape ``tests/test_scheduler_core.py`` uses (roadmap row 119).
+
+    The run HISTORY is the other half, and it is deliberately empty: this pass
+    is a look, and the catch-up it hands work to owns the row that says work is
+    in flight. Everything that reads the history to answer "is this process
+    busy" -- the restart guard among them -- would otherwise be told yes once a
+    minute forever, on a deployment doing nothing at all."""
     job = _job(ConfigHolder(_config()))
 
     stop = asyncio.Event()
@@ -172,3 +178,7 @@ async def test_the_job_records_a_scheduled_run_through_the_real_scheduler(sessio
     assert row.name == "catch_up_drain"
     assert row.last_status == "ok"
     assert row.last_detail == "catch-up: nothing in flight"
+
+    async with session_factory() as check:
+        history = (await check.execute(select(Run))).scalars().all()
+    assert history == [], "the drain's ticks opened run-history rows"

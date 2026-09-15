@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 STATE_DIR_ENV = "AUTOPOSTER_STATE_DIR"
 DEFAULT_STATE_DIR = Path("/state")
 SECRETS_FILE_NAME = "secrets.env"
+#: The key the stored secrets are encrypted with. In the state directory and
+#: NEVER in the database: a database dump must not be a credential dump, which
+#: is the whole point of encrypting them (spec section 3).
+SECRET_KEY_FILE_NAME = "secret.key"
 CONFIG_FILE_NAME = "autoposter.yaml"
 
 # Set by this module on every write rather than trusted from the mount: a
@@ -207,6 +211,19 @@ def _tighten_directory(directory: Path) -> None:
         logger.warning("cannot set 0700 on the state directory: %s", directory)
 
 
+def prepare_state_directory(directory: Path) -> None:
+    """``directory``, created if it is not there and 0700 if it may be.
+
+    The pair every writer under the state directory needs, so that a file
+    created by any other means than ``write_state_file`` below -- the stored-
+    secret key claims its own path with ``O_EXCL`` -- still lands in a
+    directory this module has tightened rather than in whatever the umask
+    gave the first ``mkdir``.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    _tighten_directory(directory)
+
+
 def write_state_file(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` atomically, 0600, in a 0700 directory.
 
@@ -222,8 +239,7 @@ def write_state_file(path: Path, text: str) -> None:
     spelled out.
     """
     directory = path.parent
-    directory.mkdir(parents=True, exist_ok=True)
-    _tighten_directory(directory)
+    prepare_state_directory(directory)
     handle, temp_name = tempfile.mkstemp(dir=directory, prefix=".autoposter-", suffix=".partial")
     temp_path = Path(temp_name)
     try:

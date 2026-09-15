@@ -24,6 +24,7 @@ reason.
 
 import asyncio
 import logging
+import os
 
 import httpx
 import pytest
@@ -32,6 +33,11 @@ import pytest_asyncio
 from autoposter import boot
 from autoposter.api import setup as setup_api
 from autoposter.api import setup_plex
+from autoposter.config.schema import (
+    ENVIRONMENT_SECRET_NAMES_ENV,
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
+)
 
 # The autouse env isolation, the hard-name tuple, the two token helpers and the
 # three the finish test below needs are the wizard suite's, imported rather than
@@ -47,6 +53,24 @@ from test_api_setup import (  # noqa: F401
     _headers,
     _NOT_PASTED,
     isolated_state,
+)
+
+
+@pytest.fixture
+def database_url():
+    """The database this pytest process owns.
+
+    The finish step CONNECTS now -- it writes the staged credentials into the
+    secrets table -- so a walk that goes through it has to name a database that
+    answers, where before a well-formed unreachable one was enough.
+    """
+    return os.environ["AUTOPOSTER_TEST_DATABASE_URL"]
+
+
+BOOT_MARKERS = (
+    STATE_FILE_NAMES_ENV,
+    STORED_SECRET_NAMES_ENV,
+    ENVIRONMENT_SECRET_NAMES_ENV,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -394,13 +418,20 @@ async def test_boot_clamps_httpx_before_this_flow_can_make_a_request(monkeypatch
     """The second line of defence, pinned because nothing pinned it before.
 
     `setup_plex`'s own filter is the first, and the test above proves it. This
-    is `boot.main`'s process-wide clamp (boot.py:151), which covers every other
+    is `boot.main`'s process-wide clamp (boot.py:441), which covers every other
     httpx caller in the process -- and which no test asserted until this row
     put a PIN id in a url: deleting the line would have left every suite green.
     """
     logging.getLogger("httpx").setLevel(logging.INFO)
     for name in HARD:
         monkeypatch.setenv(name, "x")
+    # `boot.main` assigns its three name markers into `os.environ` itself, and
+    # monkeypatch records no undo for a name this test never touched -- so
+    # without these they would outlive it and decide a source label in every
+    # later test in the same worker. Setting each to what it already holds is
+    # what registers that undo.
+    for marker in BOOT_MARKERS:
+        monkeypatch.setenv(marker, os.environ.get(marker, ""))
     monkeypatch.setenv("AUTOPOSTER_CONFIG", str(tmp_path / "absent.yaml"))
     monkeypatch.setattr(boot, "_migrate", _must_not_run)
     monkeypatch.setattr(boot.uvicorn, "run", _must_not_run)
@@ -770,7 +801,7 @@ async def test_the_libraries_route_reads_with_the_token_typed_beside_the_address
 
 
 async def test_the_manual_path_reaches_the_document_and_then_finish(
-    setup_client, setup_state, monkeypatch
+    setup_client, setup_state, monkeypatch, database_url
 ):
     """The other half: arriving manually reaches the SAME configuration submit,
     and the wizard can then be finished.
@@ -783,6 +814,10 @@ async def test_the_manual_path_reaches_the_document_and_then_finish(
     ways to arrive at it.
     """
     _install(monkeypatch, authorised=True)
+    # The suite's database is built from the models rather than by the
+    # migrations, so the upgrade the finish step runs for itself is stubbed;
+    # `tests/test_api_setup.py` is where the migration itself is pinned.
+    monkeypatch.setattr(setup_api, "_migrate_for_the_store", lambda database: True)
     monkeypatch.setattr(setup_api, "database_answers", _answering(True))
     monkeypatch.setattr(setup_api.os, "execv", lambda path, argv: None)
     token = await _authenticate(setup_client)
@@ -805,7 +840,7 @@ async def test_the_manual_path_reaches_the_document_and_then_finish(
     assert progress.json()["config_source"] == "staged"
 
     await setup_client.post(
-        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=_headers(token)
+        "/api/setup/database", json={"url": database_url}, headers=_headers(token)
     )
     await setup_client.post(
         "/api/setup/providers",

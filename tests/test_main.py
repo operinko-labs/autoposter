@@ -281,3 +281,30 @@ async def test_build_keeps_httpx_request_urls_out_of_the_log(caplog):
     assert response.status_code == 200  # the request really happened
     assert URL_TOKEN not in caplog.text
     assert TOKEN_URL not in caplog.text
+
+
+def test_main_serves_on_the_address_the_environment_names(monkeypatch):
+    """The other half of ``listen_address``: the helper is only a promise until
+    the server it configures is the one that reads it.
+
+    A restart re-executes boot, boot re-executes this entrypoint, and the
+    environment travels across both execs -- so an install reached on 9090 is
+    still on 9090 afterwards only if THIS call site asks. Nothing else covers
+    ``main()``.
+    """
+    monkeypatch.setenv("AUTOPOSTER_HOST", "127.0.0.1")
+    monkeypatch.setenv("AUTOPOSTER_PORT", "9090")
+    served: list[dict] = []
+    monkeypatch.setattr(main_module, "build", lambda: "the application")
+    monkeypatch.setattr(
+        main_module.uvicorn, "run", lambda app, **kwargs: served.append({"app": app, **kwargs})
+    )
+
+    main_module.main()
+
+    assert served == [{
+        "app": "the application",
+        "host": "127.0.0.1",
+        "port": 9090,
+        "timeout_graceful_shutdown": 10,
+    }]

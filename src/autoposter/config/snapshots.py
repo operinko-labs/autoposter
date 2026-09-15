@@ -13,7 +13,7 @@ snapshot of. See ``api/routes._persist_and_swap``.
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.config.overrides import document_paths
+from autoposter.config.overrides import STORE_FORMAT, document_paths
 from autoposter.db.models import ConfigOverrideSnapshot
 
 #: How many previous documents to keep. A module constant rather than a
@@ -23,12 +23,20 @@ from autoposter.db.models import ConfigOverrideSnapshot
 SNAPSHOT_RETENTION = 20
 
 
-async def capture_snapshot(session: AsyncSession, document: dict, reason: str) -> None:
+async def capture_snapshot(
+    session: AsyncSession, document: dict, reason: str, *, format: int = STORE_FORMAT
+) -> None:
     """Record ``document`` as the state a write is about to replace.
 
     Adds to the caller's session and does not commit: the snapshot and the
     write it protects must land together, or the history says something that
     did not happen.
+
+    ``format`` says what the document IS: 2 is a whole configuration document,
+    1 a delta from before the store became the document
+    (``config/overrides.STORE_FORMAT``). Defaulted rather than required so the
+    four callers that snapshot the current store -- save, apply, restore,
+    import -- keep saying what they always said, which is "this is the store".
 
     An empty outgoing document is skipped. There is nothing to restore to, and
     a fresh deployment would otherwise fill the table with empty rows before
@@ -45,6 +53,7 @@ async def capture_snapshot(session: AsyncSession, document: dict, reason: str) -
             document=document,
             path_count=len(document_paths(document)),
             reason=reason,
+            format=format,
         )
     )
     # So the row about to be inserted is inside the keep set and cannot prune
@@ -78,6 +87,7 @@ async def list_snapshots(session: AsyncSession) -> list[dict]:
             ConfigOverrideSnapshot.created_at,
             ConfigOverrideSnapshot.path_count,
             ConfigOverrideSnapshot.reason,
+            ConfigOverrideSnapshot.format,
         ).order_by(ConfigOverrideSnapshot.id.desc())
     )
     return [
@@ -86,13 +96,18 @@ async def list_snapshots(session: AsyncSession) -> list[dict]:
             "created_at": row.created_at.isoformat(),
             "path_count": row.path_count,
             "reason": row.reason,
+            "format": row.format,
         }
         for row in result
     ]
 
 
-async def load_snapshot(session: AsyncSession, snapshot_id: int) -> dict:
-    """One snapshot's stored document, exactly as it was captured.
+async def load_snapshot(session: AsyncSession, snapshot_id: int) -> tuple[dict, int]:
+    """One kept document and what it IS: (document, format).
+
+    The format travels with the document rather than being looked up by the
+    caller, because the two are one fact and a caller that fetched them apart
+    would eventually restore a delta as a document.
 
     Unredacted, because both callers need it that way for opposite reasons: the
     restore has to write the real ``notifications.url`` back, and the single-
@@ -105,4 +120,4 @@ async def load_snapshot(session: AsyncSession, snapshot_id: int) -> dict:
     row = await session.get(ConfigOverrideSnapshot, snapshot_id)
     if row is None:
         raise LookupError(f"no config snapshot {snapshot_id}")
-    return dict(row.document)
+    return dict(row.document), row.format

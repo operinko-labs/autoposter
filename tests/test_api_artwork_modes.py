@@ -23,6 +23,7 @@ from sqlalchemy import select
 from conftest import decodable_png, seed_media_item
 
 from autoposter.api.auth import hash_password
+from autoposter.api.system import RESTART_IN_PROGRESS
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
@@ -559,6 +560,34 @@ async def test_a_second_applied_run_is_told_busy_and_writes_nothing(
     assert first_response.json()["pushed"] == 1
     # Exactly one upload happened, not two.
     assert item.uploaded == [("poster", b"p")]
+
+
+async def test_a_mode_triggered_during_a_restart_is_told_about_the_restart(
+    client, auth_headers, app, wire
+):
+    """The same lock, a different holder, and the sentence has to say which.
+
+    The restart route takes ``mode_lock`` and keeps it until the process is
+    replaced, so an operator who pressed Restart and then Confirm would
+    otherwise be told an artwork mode is writing to a media server -- a claim
+    about a mode that does not exist, when the truth is the button they
+    themselves pressed a moment earlier.
+    """
+    wire({})
+    await app.state.mode_lock.acquire()
+    app.state.restart_in_flight = True
+    try:
+        response = await client.post(
+            "/api/artwork-modes/restore", headers=auth_headers, json={"apply": True}
+        )
+    finally:
+        app.state.restart_in_flight = False
+        app.state.mode_lock.release()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == RESTART_IN_PROGRESS, (
+        "a mode trigger during a restart was told another mode is running"
+    )
 
 
 async def test_dry_run_restore_does_not_pause_the_pool(

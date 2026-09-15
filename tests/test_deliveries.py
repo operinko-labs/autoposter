@@ -656,10 +656,11 @@ async def test_an_uncounted_pending_leaves_the_budget_alone(session):
 
 
 async def test_an_outcome_inside_a_run_keeps_its_scope(session):
-    """The other half of review I4: a row keeps `run_id`/`previous_status`
-    across every retry inside the run that armed it, terminal outcome
-    included -- Phase C's progress counts by run AND status, and its cancel
-    restores `previous_status`. Only `leave_run` clears them."""
+    """The other half of the scoping rule: a row keeps `run_id` and
+    `previous_status` across every retry inside the run that armed it,
+    terminal outcome included -- the progress view counts by run AND status,
+    and its cancel restores `previous_status`. Only `leave_run` clears
+    them."""
     from conftest import seed_media_item
     from autoposter.scheduler.run_history import open_run
 

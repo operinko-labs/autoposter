@@ -534,10 +534,10 @@ async def test_a_full_pass_never_rebuilds_the_jellyfin_item_index(
 async def test_a_reappearing_library_is_re_armed_through_the_endpoint(
     client, auth_headers, session
 ):
-    """Task 5's deferred minor: "flipped back to `pending` when the library
-    reappears" is one of the branch's binding constraints and was proven only
-    at the `apply_presence` unit level. Two posts through the real endpoint,
-    with the double's libraries changing in between."""
+    """A library that reappears must flip its rows back to `pending` -- a
+    binding constraint of the presence rules, and one proven only at the
+    `apply_presence` unit level. Two posts through the real endpoint, with the
+    double's libraries changing in between."""
     from autoposter.render import pipeline
     from autoposter.servers.registry import Servers
     from conftest import seed_media_item

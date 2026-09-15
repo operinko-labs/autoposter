@@ -125,7 +125,7 @@ const CATALOG = {
 const CONFIG = {
   version: "cfg-1",
   collections: { enabled: true, presets: [] },
-  overridden_paths: [],
+  restart_paths: [],
   frozen_paths: {},
   redacted_paths: [],
   keep_sentinel: "***KEEP***",

@@ -10,6 +10,7 @@ import {
   hasPath,
   isPlainObject,
   keepContract,
+  PROVENANCE_KEYS,
   readPath,
   revisionFromConfig,
   saveBody,
@@ -94,22 +95,6 @@ function labelFor(key: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/** Keys the enriched GET adds that are provenance, not configuration.
- * Rendering them as sections would offer the operator an edit the API is
- * bound to reject. */
-const PROVENANCE_KEYS = [
-  "overridden_paths",
-  "frozen_paths",
-  "redacted_paths",
-  "keep_sentinel",
-  "field_descriptions",
-  "computed_paths",
-  "live_paths",
-  // The eighth: the seed's own content hash. Rendering it would offer an
-  // editable "Overrides revision" row the API forbids as an unknown key.
-  "overrides_revision",
-];
-
 /** The reason a restart is needed for `path`, or undefined if it is live.
  * `frozen_paths` keys are prefixes: `notifications` freezes everything under
  * it. `live` wins over all of them -- a path the server reads per use is live
@@ -136,7 +121,19 @@ function frozenReason(
  * how the secrets panel stays read-only. */
 export interface Editor {
   document: OverridesDocument;
-  overridden: string[];
+  /** The document as the server last served it. The pending one holds the
+   * whole configuration, so "is this row carried by the document" no longer
+   * distinguishes anything -- every row is. What a row still needs to know is
+   * whether IT was changed, which is these two disagreeing at its path.
+   *
+   * That per-path comparison is `!==`, so for a list- or object-valued row it
+   * is reference equality, and it is only correct because of an invariant
+   * `adopt` holds: it seeds this and the pending document from the SAME
+   * object, and `withPath` rebuilds only the spine down to the path it
+   * changes, leaving every sibling reference shared. An `adopt` that built
+   * the two documents separately -- two parses of the same response, say --
+   * would make every non-scalar row read as edited at mount. */
+  saved: OverridesDocument;
   frozen: Record<string, string>;
   /** Paths this service derives rather than the operator setting, and paths a
    * frozen prefix covers but which are read per use. Both come from the
@@ -149,7 +146,13 @@ export interface Editor {
   sentinel: string;
   errors: Record<string, string>;
   setValue: (path: string, value: unknown) => void;
+  /** Take one row out of the document, so whatever would supply it in the
+   * document's absence does -- the library matrix's "inherit". */
   clear: (path: string) => void;
+  /** Put one row back to the value the server served for it, which is what an
+   * emptied box means: the operator wiped a field mid-edit, not asked for the
+   * setting to go away. */
+  revert: (path: string) => void;
 }
 
 function ScalarValue({ value }: { value: unknown }) {
@@ -289,7 +292,7 @@ function Field({
         value={typeof current === "number" ? String(current) : ""}
         onChange={(event) => {
           const raw = event.target.value;
-          if (raw === "") editor.clear(path);
+          if (raw === "") editor.revert(path);
           else editor.setValue(path, Number(raw));
         }}
       />
@@ -337,7 +340,9 @@ function ConfigRow({
   // mechanism the secrets panel already uses.
   const rowEditor =
     editor !== null && editor.computed.includes(path) ? null : editor;
-  const edited = rowEditor !== null && hasPath(rowEditor.document, path);
+  const edited =
+    rowEditor !== null &&
+    readPath(rowEditor.document, path) !== readPath(rowEditor.saved, path);
   const pending =
     edited && rowEditor !== null ? readPath(rowEditor.document, path) : value;
   const isRedacted = rowEditor !== null && rowEditor.redacted.includes(path);
@@ -371,19 +376,6 @@ function ConfigRow({
           editor={rowEditor}
           title={isRedacted ? REDACTED_EDIT_NOTE : undefined}
         />
-        {rowEditor !== null && rowEditor.overridden.includes(path) && (
-          <>
-            <span className="config-pill overridden">overridden</span>
-            <button
-              type="button"
-              className="link-button"
-              aria-label={`Clear override for ${path}`}
-              onClick={() => rowEditor.clear(path)}
-            >
-              Clear
-            </button>
-          </>
-        )}
         {restart !== undefined && (
           <span className="config-pill restart" title={restart}>
             restart to apply
@@ -472,8 +464,11 @@ function ConfigSections({
         ]),
       )
     : {};
+  // `secrets` is on that list and is the one key this page still renders: the
+  // panel below shows it read-only, and what the list means is "never send
+  // this back", which is the document's rule rather than the page's.
   const entries = Object.entries(config).filter(
-    ([key]) => !PROVENANCE_KEYS.includes(key),
+    ([key]) => key === "secrets" || !PROVENANCE_KEYS.includes(key),
   );
   const general = entries.filter(([, value]) => !isPlainObject(value));
   const sections = entries
@@ -637,11 +632,7 @@ export function Settings() {
   const keep = config === null ? { paths: [], sentinel: "" } : keepContract(config);
   const editor: Editor = {
     document: pendingDocument,
-    overridden: Array.isArray(config?.overridden_paths)
-      ? config.overridden_paths.filter(
-          (path): path is string => typeof path === "string",
-        )
-      : [],
+    saved: savedDocument,
     redacted: keep.paths,
     sentinel: keep.sentinel,
     frozen: isPlainObject(config?.frozen_paths)
@@ -671,10 +662,24 @@ export function Settings() {
       setPendingDocument((current) => withPath(current, path, value));
     },
     // Clearing removes the key. It never writes null -- see the document
-    // helpers above.
+    // helpers in api/overrides.ts.
     clear: (path) => {
       setPreview(null);
       setPendingDocument((current) => withoutPath(current, path));
+    },
+    // Reverting puts the served value back, and drops the key outright when
+    // the response carried none -- which is the only thing it could mean
+    // there. Not the same operation as clearing: the document holds the whole
+    // configuration, so dropping a key an emptied box was showing would ask
+    // for the schema's default rather than undo a half-finished edit.
+    revert: (path) => {
+      setPreview(null);
+      const served = readPath(savedDocument, path);
+      setPendingDocument((current) =>
+        served === undefined
+          ? withoutPath(current, path)
+          : withPath(current, path, served),
+      );
     },
   };
 
