@@ -2234,9 +2234,13 @@ async def test_a_retry_composes_from_the_identity_server_and_leaves_the_fingerpr
 async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
     session, config_with_badges, monkeypatch,
 ):
-    """The other half of retrying via the identity server: if the identity server cannot be resolved this pass,
-    the retry must WAIT rather than deliver overlay-less bytes. The row keeps
-    its normal horizon and is reported still pending; nothing is uploaded."""
+    """The other half of retrying via the identity server: if the identity
+    server is unreachable this pass, the retry must WAIT rather than deliver
+    overlay-less bytes. The row keeps its normal horizon and is reported still
+    pending; nothing is uploaded, and the wait costs the row nothing. An
+    identity server that answers "I do not have it" waits too, but on the
+    attempts budget, and composes without the identity once that is spent
+    (tests/test_deliveries.py)."""
     from datetime import datetime, timezone
 
     from autoposter import deliveries
@@ -2254,9 +2258,9 @@ async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
         session, config_with_badges, None, servers, [], INTENT,
     )
     poster = next(r for r in renders if r.art_kind == "poster")
-    # Jellyfin can see it now; Plex -- the identity -- cannot.
+    # Jellyfin can see it now; Plex -- the identity -- is down.
     jf.items[INTENT.dedupe_key] = fake_resolved("jellyfin", "j1", file_path="/jf/m.mkv")
-    plex.not_found.add(INTENT.dedupe_key)
+    plex.raise_on_resolve = httpx.ConnectError("plex is down")
     # Ten minutes in the past, not `retry_in=0`: this machine's container
     # clock steps backwards a few seconds at a time, and a horizon stamped at
     # exactly "now" can land after the `now` the pass below reads.
