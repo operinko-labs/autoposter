@@ -54,7 +54,7 @@ from autoposter.api.auth import (
     session_for_token,
     verify_password,
 )
-from autoposter.config.descriptions import FIELD_DESCRIPTIONS
+from autoposter.config.descriptions import FIELD_DESCRIPTIONS, FIELD_TYPES
 from autoposter.config.impact import affected_items, count_affected, count_collection_posters
 from autoposter.config.live import (
     FROZEN_SECTIONS,
@@ -1691,6 +1691,14 @@ async def get_config(
     of the objects inside a list, which this editor cannot edit yet (roadmap
     row 138). ``[]`` is a marker in that map only -- no endpoint here accepts
     a path containing it.
+    ``field_types`` is keyed on exactly the same paths and says what each one
+    HOLDS -- ``boolean``, ``integer``, ``number``, ``string``, ``string_list``
+    or ``object``. The served value answers that for a setting that has one,
+    and cannot for a setting that is unset: an optional setting arrives as
+    ``null``, which is a value of no type, so an editor picking its control
+    from the value alone offers no control at all and the setting cannot be
+    set from the page. The schema is where that answer lives, so this is the
+    schema's own, walked once (``config/descriptions.py``).
     ``computed_paths`` and ``live_paths`` are the last two, and both exist so
     the editor never contradicts this service about a path it already knows
     the answer for. The first names the values this process derives rather
@@ -1764,6 +1772,7 @@ async def get_config(
     body["redacted_paths"] = redacted_here
     body["keep_sentinel"] = KEEP_SENTINEL
     body["field_descriptions"] = dict(FIELD_DESCRIPTIONS)
+    body["field_types"] = dict(FIELD_TYPES)
     body["computed_paths"] = list(COMPUTED_PATHS)
     body["live_paths"] = sorted(LIVE_EXCEPTIONS)
     return body

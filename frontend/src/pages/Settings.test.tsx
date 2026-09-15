@@ -28,9 +28,17 @@ const REDACTED = "***REDACTED***";
  * never seen. */
 const CONFIG = {
   workers: 5,
-  plex: { url: "http://plex:32400", excluded_libraries: ["Muskarit", "Photos"] },
+  plex: {
+    url: "http://plex:32400",
+    excluded_libraries: ["Muskarit", "Photos"],
+    resolve_max_attempts: 10,
+  },
   badges: { enabled: true, upload_to_plex: false },
   notifications: { enabled: false, url: "" },
+  // The scalar list the generic renderer is checked against. `plex`'s own
+  // exclusions used to play that part and cannot any more: the server card
+  // owns that leaf, so no generic row is rendered for it.
+  providers: { order: ["tmdb", "fanart"] },
   artwork: { use_logo: true, poster: { text: { font: "Comfortaa-Medium.ttf" } } },
   secrets: { plex_token: REDACTED, tmdb_api_key: REDACTED },
 };
@@ -161,21 +169,21 @@ describe("Settings configuration", () => {
     expect(
       screen.getByRole("heading", { name: "More Plex settings" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Excluded libraries")).toBeInTheDocument();
+    expect(screen.getByText("Resolve max attempts")).toBeInTheDocument();
     // The values are editable fields now rather than text, so they are read
     // off the widgets -- the row labels above are still plain text.
-    expect(screen.getByLabelText("plex.excluded_libraries[0]")).toHaveValue(
-      "Muskarit",
-    );
-    expect(screen.getByLabelText("plex.excluded_libraries[1]")).toHaveValue(
-      "Photos",
-    );
-    expect(screen.getByLabelText("plex.url")).toHaveValue("http://plex:32400");
+    expect(screen.getByLabelText("plex.resolve_max_attempts")).toHaveValue(10);
     // Asserted here, with a section open and its rows on screen, rather than
     // only at the end: a dump would appear inside an accordion body, so a
     // check run over a page of closed headers proves nothing.
     expect(document.querySelector("pre")).toBeNull();
     expect(document.body.textContent).not.toContain("{");
+
+    // A scalar list is one row of boxes, one box per entry.
+    openSection("Artwork", "Providers");
+    expect(screen.getByText("Order")).toBeInTheDocument();
+    expect(screen.getByLabelText("providers.order[0]")).toHaveValue("tmdb");
+    expect(screen.getByLabelText("providers.order[1]")).toHaveValue("fanart");
 
     openSection("Artwork", "Badges");
     expect(screen.getByRole("heading", { name: "Badges" })).toBeInTheDocument();
@@ -468,19 +476,28 @@ const EDITOR_CONFIG = {
     url: "http://plex:32400",
     excluded_libraries: ["Muskarit", "Photos"],
     resolve_max_attempts: 10,
+    liveness_interval_seconds: 60,
   },
   badges: { enabled: true },
+  // A string leaf and a list leaf under a frozen prefix, on a section no
+  // server card owns: `plex.url` and `plex.excluded_libraries` used to be the
+  // fixture's text field and list, and the card owns both now, so no generic
+  // row is rendered for either.
+  notifications: { url: "https://hooks.example/run" },
+  providers: { order: ["tmdb", "fanart"] },
   artwork: { poster: { text: { min_point_size: 20 } } },
   secrets: { plex_token: REDACTED },
   restart_paths: [] as string[],
   frozen_paths: {
     workers: "the worker pool is sized once, at startup",
     plex: "the Plex client is built once at startup",
+    notifications: "the notifier is built once at startup",
+    providers: "the provider clients are built once at startup",
   },
   field_descriptions: {
     workers: "How many render workers run in parallel.",
     version: "The hash of every setting that changes what a render produces.",
-    "plex.url": "The base URL of the Plex server this service manages.",
+    "notifications.url": "Where each run-completion event is POSTed.",
     "plex.resolve_max_attempts": "How many times a failed Plex lookup is retried.",
     "secrets.plex_token": "The Plex authentication token this service connects with.",
   },
@@ -498,12 +515,18 @@ const EDITOR_CONFIG = {
 const SEEDED_DOCUMENT = {
   version: "abc123",
   workers: 5,
+  // `url` and `excluded_libraries` are carried by the document even though no
+  // generic row renders them: the card owns where they are edited, not
+  // whether they are part of the configuration the page sends back.
   plex: {
     url: "http://plex:32400",
     excluded_libraries: ["Muskarit", "Photos"],
     resolve_max_attempts: 10,
+    liveness_interval_seconds: 60,
   },
   badges: { enabled: true },
+  notifications: { url: "https://hooks.example/run" },
+  providers: { order: ["tmdb", "fanart"] },
   artwork: { poster: { text: { min_point_size: 20 } } },
 };
 
@@ -735,20 +758,24 @@ describe("Settings editor", () => {
   it("lands a 422 inline at the field its path names", async () => {
     stubApi({
       put: json(
-        { detail: [{ path: "plex.url", message: "Input should be a valid URL" }] },
+        {
+          detail: [
+            { path: "notifications.url", message: "Input should be a valid URL" },
+          ],
+        },
         422,
       ),
     });
     await renderSettings();
-    openSection("Servers", "More Plex settings");
+    openSection("Integrations", "Notifications");
 
-    fireEvent.change(screen.getByLabelText("plex.url"), {
+    fireEvent.change(screen.getByLabelText("notifications.url"), {
       target: { value: "not a url" },
     });
     await save();
 
     expect(
-      within(rowOf(screen.getByLabelText("plex.url"))).getByText(
+      within(rowOf(screen.getByLabelText("notifications.url"))).getByText(
         "Input should be a valid URL",
       ),
     ).toBeInTheDocument();
@@ -765,7 +792,7 @@ describe("Settings editor", () => {
         {
           detail: [
             {
-              loc: ["body", "document", "plex", "url"],
+              loc: ["body", "document", "notifications", "url"],
               msg: "Input should be a valid URL",
               type: "url_parsing",
             },
@@ -775,15 +802,15 @@ describe("Settings editor", () => {
       ),
     });
     await renderSettings();
-    openSection("Servers", "More Plex settings");
+    openSection("Integrations", "Notifications");
 
-    fireEvent.change(screen.getByLabelText("plex.url"), {
+    fireEvent.change(screen.getByLabelText("notifications.url"), {
       target: { value: "not a url" },
     });
     await save();
 
     expect(
-      within(rowOf(screen.getByLabelText("plex.url"))).getByText(
+      within(rowOf(screen.getByLabelText("notifications.url"))).getByText(
         "Input should be a valid URL",
       ),
     ).toBeInTheDocument();
@@ -879,11 +906,13 @@ describe("Settings editor", () => {
         .queryByText("restart to apply"),
     ).toBeNull();
     // A sibling under the same frozen prefix still says it.
-    fireEvent.change(screen.getByLabelText("plex.url"), {
-      target: { value: "http://plex:32401" },
+    fireEvent.change(screen.getByLabelText("plex.liveness_interval_seconds"), {
+      target: { value: "30" },
     });
     expect(
-      within(rowOf(screen.getByLabelText("plex.url"))).getByText("restart to apply"),
+      within(rowOf(screen.getByLabelText("plex.liveness_interval_seconds"))).getByText(
+        "restart to apply",
+      ),
     ).toBeInTheDocument();
   });
 
@@ -943,11 +972,10 @@ describe("Settings editor", () => {
     expect(screen.getByLabelText("badges.enabled")).toHaveAttribute("type", "checkbox");
     await openSettled("System", "General");
     expect(screen.getByLabelText("workers")).toHaveAttribute("type", "number");
-    // Awaited: coming BACK to Servers mounts its cards again, and the listing
-    // they read would otherwise land after this test has ended.
-    await openSettled("Servers", "More Plex settings");
-    expect(screen.getByLabelText("plex.url")).toHaveAttribute("type", "text");
-    expect(screen.getByLabelText("plex.excluded_libraries[0]")).toHaveAttribute(
+    openSection("Integrations", "Notifications");
+    expect(screen.getByLabelText("notifications.url")).toHaveAttribute("type", "text");
+    openSection("Artwork", "Providers");
+    expect(screen.getByLabelText("providers.order[0]")).toHaveAttribute(
       "type",
       "text",
     );
@@ -956,14 +984,14 @@ describe("Settings editor", () => {
   it("edits a string list as a whole list at its own path", async () => {
     const fetchMock = stubApi();
     await renderSettings();
-    openSection("Servers", "More Plex settings");
+    openSection("Artwork", "Providers");
 
-    fireEvent.click(screen.getByRole("button", { name: "Add to plex.excluded_libraries" }));
-    fireEvent.change(screen.getByLabelText("plex.excluded_libraries[2]"), {
-      target: { value: "Anime" },
+    fireEvent.click(screen.getByRole("button", { name: "Add to providers.order" }));
+    fireEvent.change(screen.getByLabelText("providers.order[2]"), {
+      target: { value: "tvdb" },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: "Remove plex.excluded_libraries[0]" }),
+      screen.getByRole("button", { name: "Remove providers.order[0]" }),
     );
     await save();
 
@@ -972,7 +1000,7 @@ describe("Settings editor", () => {
     expect(putDocument(fetchMock)).toEqual({
       document: {
         ...SEEDED_DOCUMENT,
-        plex: { ...SEEDED_DOCUMENT.plex, excluded_libraries: ["Photos", "Anime"] },
+        providers: { order: ["fanart", "tvdb"] },
       },
     });
   });
@@ -1015,29 +1043,22 @@ describe("Settings editor", () => {
   });
 
   it("marks a field under a frozen prefix, not only a frozen path itself", async () => {
-    // `frozen_paths` keys are prefixes: `plex` freezes everything beneath it.
-    // A page that only matched the key exactly would tell an operator that
-    // `plex.url` applies live, which it does not.
-    stubApi({
-      config: {
-        ...EDITOR_CONFIG,
-        frozen_paths: {
-          ...EDITOR_CONFIG.frozen_paths,
-          plex: "the Plex client is built once at startup",
-        },
-      },
-    });
+    // `frozen_paths` keys are prefixes: the fixture freezes `notifications`,
+    // and the field edited below is a leaf beneath it rather than the key
+    // itself. A page that only matched the key exactly would tell an operator
+    // that `notifications.url` applies live, which it does not.
+    stubApi();
     await renderSettings();
-    openSection("Servers", "More Plex settings");
+    openSection("Integrations", "Notifications");
 
-    fireEvent.change(screen.getByLabelText("plex.url"), {
-      target: { value: "http://plex:32401" },
+    fireEvent.change(screen.getByLabelText("notifications.url"), {
+      target: { value: "https://hooks.example/other" },
     });
 
-    const marker = within(rowOf(screen.getByLabelText("plex.url"))).getByText(
+    const marker = within(rowOf(screen.getByLabelText("notifications.url"))).getByText(
       "restart to apply",
     );
-    expect(marker).toHaveAttribute("title", "the Plex client is built once at startup");
+    expect(marker).toHaveAttribute("title", "the notifier is built once at startup");
   });
 
   it("surfaces a save that failed for a reason that is not a field error", async () => {
@@ -1588,21 +1609,25 @@ describe("Settings preview", () => {
     stubEditor({
       responses: {
         "/api/config/preview": json(
-          { detail: [{ path: "plex.url", message: "Input should be a valid URL" }] },
+          {
+            detail: [
+              { path: "notifications.url", message: "Input should be a valid URL" },
+            ],
+          },
           422,
         ),
       },
     });
     await renderSettings();
-    openSection("Servers", "More Plex settings");
+    openSection("Integrations", "Notifications");
 
-    fireEvent.change(screen.getByLabelText("plex.url"), {
+    fireEvent.change(screen.getByLabelText("notifications.url"), {
       target: { value: "not a url" },
     });
     await click("Preview impact");
 
     expect(
-      within(rowOf(screen.getByLabelText("plex.url"))).getByText(
+      within(rowOf(screen.getByLabelText("notifications.url"))).getByText(
         "Input should be a valid URL",
       ),
     ).toBeInTheDocument();
@@ -2318,10 +2343,9 @@ describe("Settings tabs", () => {
     expect(
       screen.getByRole("heading", { name: "Per-library overrides" }),
     ).toBeInTheDocument();
-    // The generic tree for the same section sits under it. The matrix reports
-    // a per-library list or mapping cell it cannot edit, and the tree is
-    // where that edit lives -- so both belong on this tab, together.
-    expect(screen.getByRole("button", { name: "Libraries" })).toBeInTheDocument();
+    // And it is the section's only home: the generic tree used to render a
+    // second accordion over the same `libraries` map beside it.
+    expect(screen.queryByRole("button", { name: "Libraries" })).toBeNull();
 
     for (const tab of [
       "Servers",
@@ -2390,5 +2414,288 @@ describe("Settings tabs", () => {
     expect(body.document.collections).toEqual({ enabled: true });
     expect(body.expected_revision).toBe("r1");
     expect(body.document.secrets).toBeUndefined();
+  });
+});
+
+/** A setting nobody has set is served as `null`, which is a value of no type.
+ *
+ * The page used to pick a row's control from the served value alone, so those
+ * rows got no control at all -- they read "(not set)" and stayed that way,
+ * which on Metadata, Artwork and Collections is most of the page. The server
+ * serves the schema's own kind for every path (`field_types`), and these pin
+ * that a row with a kind and no value is a row the operator can set.
+ */
+describe("Settings editor, unset values", () => {
+  const UNSET = {
+    workers: 5,
+    operations: {
+      enabled: null,
+      imdb_refresh_hours: null,
+      genre_source: null,
+      ignore_labels: null,
+      field_verbs: null,
+      // A list of objects that nobody has added an entry to. Empty, so its
+      // own value says as little as a `null` does -- the kind is what keeps
+      // it read-only instead of offering a string entry the API would refuse.
+      definitions: [] as unknown[],
+      // Served with no kind of its own: an older deployment, or a shape the
+      // schema walk answers `object` for and this fixture leaves out
+      // entirely. Either way the page must not guess a control for it.
+      unknown_setting: null,
+    },
+    restart_paths: [] as string[],
+    frozen_paths: {},
+    computed_paths: [] as string[],
+    live_paths: [] as string[],
+    field_descriptions: {},
+    field_types: {
+      "operations.enabled": "boolean",
+      "operations.imdb_refresh_hours": "integer",
+      "operations.genre_source": "string",
+      "operations.ignore_labels": "string_list",
+      "operations.field_verbs": "object",
+      "operations.definitions": "object",
+    },
+  };
+
+  it("renders the control the served kind names, for a value that names none", async () => {
+    stubApi({ config: UNSET });
+    await renderSettings();
+    openSection("Metadata", "Operations");
+
+    // A `bool | None` keeps its third state: the schema distinguishes "says
+    // nothing" from "says no", so the control has to be able to say all
+    // three.
+    const tristate = screen.getByLabelText("operations.enabled");
+    expect(tristate.tagName).toBe("SELECT");
+    expect(tristate).toHaveValue("inherit");
+    expect(screen.getByLabelText("operations.imdb_refresh_hours")).toHaveAttribute(
+      "type",
+      "number",
+    );
+    expect(screen.getByLabelText("operations.imdb_refresh_hours")).toHaveValue(null);
+    expect(screen.getByLabelText("operations.genre_source")).toHaveAttribute(
+      "type",
+      "text",
+    );
+    expect(screen.getByLabelText("operations.genre_source")).toHaveValue("");
+    expect(
+      screen.getByRole("button", { name: "Add to operations.ignore_labels" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers no list editor for an empty list the schema calls an object", async () => {
+    // `[].every(...)` is vacuously true, so an empty list of objects read as
+    // a list of strings and offered an "Add" button whose entry is a string
+    // -- a save the API is bound to refuse.
+    stubApi({ config: UNSET });
+    await renderSettings();
+    openSection("Metadata", "Operations");
+
+    expect(
+      screen.queryByRole("button", { name: "Add to operations.definitions" }),
+    ).toBeNull();
+    expect(within(rowOf(screen.getByText("Definitions"))).getByText("(none)"))
+      .toBeInTheDocument();
+  });
+
+  it("carries the typed value at the row's own path", async () => {
+    const fetchMock = stubApi({ config: UNSET });
+    await renderSettings();
+    openSection("Metadata", "Operations");
+
+    fireEvent.change(screen.getByLabelText("operations.enabled"), {
+      target: { value: "on" },
+    });
+    fireEvent.change(screen.getByLabelText("operations.imdb_refresh_hours"), {
+      target: { value: "6" },
+    });
+    fireEvent.change(screen.getByLabelText("operations.genre_source"), {
+      target: { value: "tmdb" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add to operations.ignore_labels" }),
+    );
+    fireEvent.change(screen.getByLabelText("operations.ignore_labels[0]"), {
+      target: { value: "Keep" },
+    });
+    await save();
+
+    expect(putDocument(fetchMock)).toEqual({
+      document: {
+        workers: 5,
+        operations: {
+          enabled: true,
+          imdb_refresh_hours: 6,
+          genre_source: "tmdb",
+          ignore_labels: ["Keep"],
+          field_verbs: null,
+          definitions: [],
+          unknown_setting: null,
+        },
+      },
+    });
+  });
+
+  it("says off as a value, and keeps the way back to saying nothing", async () => {
+    // The two halves of the third state. "off" is a value the operator chose
+    // and is stored as `false`, not collapsed back into unset; "inherit" puts
+    // the served `null` back, which a checkbox could never express -- the
+    // schema keeps "says nothing" and "says no" apart on purpose.
+    const fetchMock = stubApi({ config: UNSET });
+    await renderSettings();
+    openSection("Metadata", "Operations");
+
+    const tristate = screen.getByLabelText("operations.enabled");
+    fireEvent.change(tristate, { target: { value: "on" } });
+    fireEvent.change(tristate, { target: { value: "off" } });
+    expect(tristate).toHaveValue("off");
+    expect(
+      screen.getByRole("heading", { name: "Pending changes" }),
+    ).toBeInTheDocument();
+    await save();
+
+    const body = putDocument(fetchMock) as {
+      document: { operations: Record<string, unknown> };
+    };
+    expect(body.document.operations.enabled).toBe(false);
+
+    fireEvent.change(screen.getByLabelText("operations.enabled"), {
+      target: { value: "on" },
+    });
+    fireEvent.change(screen.getByLabelText("operations.enabled"), {
+      target: { value: "inherit" },
+    });
+    expect(screen.getByLabelText("operations.enabled")).toHaveValue("inherit");
+    expect(screen.queryByRole("heading", { name: "Pending changes" })).toBeNull();
+  });
+
+  it("keeps the checkbox for a boolean that already has a value", async () => {
+    // The three-state control is for the rows whose stored answer is
+    // "nothing". A setting that says yes or no is a two-state setting, and a
+    // third option on it would offer a state it does not have.
+    stubApi();
+    await renderSettings();
+    openSection("Artwork", "Badges");
+
+    expect(screen.getByLabelText("badges.enabled")).toHaveAttribute(
+      "type",
+      "checkbox",
+    );
+    expect(screen.getByLabelText("badges.enabled")).toBeChecked();
+  });
+
+  it("leaves a leaf whose kind it was never told read-only", async () => {
+    stubApi({ config: UNSET });
+    await renderSettings();
+    openSection("Metadata", "Operations");
+
+    const row = rowOf(screen.getByText("Unknown setting"));
+    expect(within(row).getByText("(not set)")).toBeInTheDocument();
+    expect(within(row).queryByRole("textbox")).toBeNull();
+    expect(within(row).queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByLabelText("operations.unknown_setting")).toBeNull();
+    // `object` is a kind the page is told and still renders read-only: a
+    // mapping has no single control, and guessing one would be worse than
+    // saying so.
+    expect(screen.queryByLabelText("operations.field_verbs")).toBeNull();
+  });
+});
+
+/** The leaves a server card owns, and the section that used to show them a
+ * second time. */
+describe("Settings, card-owned leaves", () => {
+  const SERVERS = {
+    ...CONFIG,
+    jellyfin: {
+      url: "http://jellyfin:8096",
+      excluded_libraries: ["Home Videos"],
+      library_map: { Muskarit: "Movies" },
+      liveness_interval_seconds: 60,
+    },
+  };
+
+  it("keeps a server's address, exclusions and library map out of the generic section", async () => {
+    stubConfig(SERVERS);
+    await renderSettings();
+    await openSettled("Servers", "More Jellyfin settings");
+
+    const section = screen
+      .getByRole("button", { name: "More Jellyfin settings" })
+      .closest("section") as HTMLElement;
+
+    // The map panel on this tab is the library map's home, and the card is
+    // the address's and the exclusions' -- so none of the three is a row
+    // here, where a second copy would disagree with the one that saved.
+    expect(
+      within(section).queryByRole("heading", { name: "Library map" }),
+    ).toBeNull();
+    expect(within(section).queryByLabelText("jellyfin.url")).toBeNull();
+    expect(within(section).queryByText("Url")).toBeNull();
+    expect(within(section).queryByText("Excluded libraries")).toBeNull();
+    expect(
+      within(section).queryByLabelText("jellyfin.excluded_libraries[0]"),
+    ).toBeNull();
+
+    // What the card does not own is still here, and still editable.
+    expect(
+      within(section).getByLabelText("jellyfin.liveness_interval_seconds"),
+    ).toHaveValue(60);
+  });
+
+  it("applies the same to the other server's section", async () => {
+    stubConfig(SERVERS);
+    await renderSettings();
+    await openSettled("Servers", "More Plex settings");
+
+    const section = screen
+      .getByRole("button", { name: "More Plex settings" })
+      .closest("section") as HTMLElement;
+
+    expect(within(section).queryByLabelText("plex.url")).toBeNull();
+    expect(within(section).queryByLabelText("plex.excluded_libraries[0]")).toBeNull();
+    expect(within(section).getByLabelText("plex.resolve_max_attempts")).toHaveValue(
+      10,
+    );
+  });
+});
+
+/** The per-library override map has one home, and it is the matrix. */
+describe("Settings, the libraries section", () => {
+  const WITH_MATRIX = {
+    ...CONFIG,
+    collections: { libraries: ["Movies", "Shows"] },
+    field_descriptions: {
+      "libraries.{}.badges.enabled": "Whether this library gets badges.",
+    },
+  };
+
+  it("renders no generic accordion for a deployment that overrides nothing", async () => {
+    // The map is empty, and an accordion over it was an empty accordion --
+    // beside the matrix, which says the same nothing in a way an operator can
+    // act on.
+    stubConfig({ ...WITH_MATRIX, libraries: {} });
+    await renderSettings();
+    openSection("Libraries");
+
+    expect(
+      screen.getByRole("heading", { name: "Per-library overrides" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Libraries" })).toBeNull();
+  });
+
+  it("names a library once when it does override something", async () => {
+    stubConfig({
+      ...WITH_MATRIX,
+      libraries: { Movies: { badges: { enabled: false } } },
+    });
+    await renderSettings();
+    openSection("Libraries");
+
+    // Once: the matrix's own column. The generic tree used to put the same
+    // library under a second heading, with a differently shaped editor under
+    // that, on the same tab.
+    expect(screen.getAllByText("Movies")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Libraries" })).toBeNull();
   });
 });

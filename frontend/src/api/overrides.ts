@@ -118,6 +118,7 @@ export const PROVENANCE_KEYS = [
   "redacted_paths",
   "keep_sentinel",
   "field_descriptions",
+  "field_types",
   "computed_paths",
   "live_paths",
   "overrides_revision",

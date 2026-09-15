@@ -31,6 +31,7 @@ from autoposter.config.descriptions import (
     _mapping_model_of,
     _model_of,
     build_field_descriptions,
+    build_field_types,
 )
 from autoposter.config.schema import Config, Secrets
 
@@ -222,3 +223,105 @@ def test_every_model_holding_field_uses_a_shape_the_walk_covers():
         "fields whose model is buried in an unsupported container shape: "
         f"{offenders}"
     )
+
+
+# --- what each field HOLDS (the kind map) ---
+
+
+def test_the_kind_map_covers_exactly_the_paths_the_descriptions_do():
+    """Two walks, one set of paths.
+
+    The page reads them together -- a row's hover text from one, its control
+    from the other -- so a path in one and not the other is a row that either
+    documents a setting it cannot edit or edits one it cannot document. The
+    two walks are separate functions on purpose (``_walk_types``' docstring
+    says why), and this is the guard that keeps that separation honest.
+    """
+    assert set(build_field_types()) == set(build_field_descriptions())
+
+
+def test_a_field_carries_the_kind_its_annotation_declares():
+    """The four shapes an unset row has to be able to render, each pinned
+    against a real field of the schema rather than a throwaway model: a
+    ``bool``, an ``int``, a ``str``, a ``list[str]`` and a mapping."""
+    kinds = build_field_types()
+
+    assert kinds["badges.enabled"] == "boolean"
+    assert kinds["plex.resolve_max_attempts"] == "integer"
+    assert kinds["plex.url"] == "string"
+    assert kinds["plex.excluded_libraries"] == "string_list"
+    # A mapping of strings is an object: it has no single control, and the
+    # page renders it read-only rather than guessing one.
+    assert kinds["jellyfin.library_map"] == "object"
+    # A submodel is an object too -- it is a section heading, not a row.
+    assert kinds["plex"] == "object"
+    # A closed set of words is a string, not an object. All seven of these
+    # are `Literal[...] | None` and default to unset, so `object` here was
+    # `(not set)` and no control on the tab they all live on.
+    assert kinds["operations.genres_source"] == "string"
+    assert kinds["operations.user_rating_source"] == "string"
+    assert kinds["libraries.{}.operations.original_title_source"] == "string"
+
+
+def test_an_optional_scalar_carries_the_kind_under_the_optional():
+    """The defect this map exists for: ``X | None`` is a wrapper, not a kind.
+
+    A field whose value is unset is served as ``null``, so the page has only
+    this map to go on -- and an optional string answering ``object`` here
+    would leave exactly the rows the operator cannot set today with no
+    control, which is the bug wearing a different hat.
+    """
+    kinds = build_field_types()
+    checked, wrong = 0, []
+    for path, kind in kinds.items():
+        field = _field_at(path)
+        if field is None or not _is_optional_scalar(field.annotation):
+            continue
+        checked += 1
+        if kind == "object":
+            wrong.append(path)
+    assert checked > 0, "the schema has no optional scalar to check"
+    assert wrong == [], (
+        "an optional scalar is a scalar; these answer 'object' and would "
+        f"render with no control when unset: {wrong}"
+    )
+
+
+def _is_optional_scalar(annotation) -> bool:
+    """``X | None`` where X is a kind the page has a control for.
+
+    A ``Literal`` of strings counts, and the omission was what let the walk
+    answer ``object`` for the seven metadata sources while this test reported
+    green over the exact defect it is named for: every one of them is
+    ``Literal[...] | None``, so every one of them was skipped here.
+    """
+    from types import UnionType
+    from typing import Literal, Union, get_origin
+
+    if get_origin(annotation) not in (Union, UnionType):
+        return False
+    present = [arg for arg in get_args(annotation) if arg is not type(None)]
+    if len(present) != 1:
+        return False
+    if get_origin(present[0]) is Literal:
+        return all(isinstance(arg, str) for arg in get_args(present[0]))
+    return present[0] in (bool, int, float, str)
+
+
+def _field_at(path: str):
+    """The model field a dotted path addresses, or ``None`` for a path with a
+    ``[]``/``{}`` marker in it or a head this walk does not resolve."""
+    model: type[BaseModel] | None = Secrets if path.startswith("secrets.") else Config
+    segments = path.split(".")
+    if path.startswith("secrets."):
+        segments = segments[1:]
+    field = None
+    for segment in segments:
+        if segment in ("{}", "") or segment.endswith("[]") or model is None:
+            return None
+        if segment not in model.model_fields:
+            return None
+        field = model.model_fields[segment]
+        nested = _nested_models(field.annotation)
+        model = nested[0][0] if nested else None
+    return field
