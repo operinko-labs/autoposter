@@ -47,11 +47,12 @@ class PlexHealth:
 
     async def check_liveness(self) -> None:
         """Poll the configured Plex server. Updates ``healthy`` and logs transitions."""
-        # ``error`` is what ``last_error`` holds -- a field nothing serves
-        # today, kept class-name-only so it is safe to serve later: an httpx
-        # error's str() embeds the request URL. ``logged`` carries the message
-        # too, for the transition WARNING below only (the pod log is the
-        # trusted sink, roadmap row 207).
+        # ``error`` is what ``last_error`` holds, and a Servers card SERVES it
+        # (api/servers.py's ``_health``). It stays a status marker or an
+        # exception CLASS name for exactly that reason: an httpx error's str()
+        # embeds the request URL, and this value now leaves the process.
+        # ``logged`` carries the message too, for the transition WARNING below
+        # only (the pod log is the trusted sink, roadmap row 207).
         error: str | None = None
         logged: str | None = None
         try:

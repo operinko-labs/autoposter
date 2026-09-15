@@ -37,8 +37,14 @@ NO_SERVER_CONFIGURED = "no media server is configured"
 
 def missing_server_setup(document: dict | None, resolved: Mapping[str, str]) -> list[str]:
     """Why the deployment has no usable media server, as sentences naming
-    variables and never values. Empty means at least one server has both an
-    address and a credential."""
+    variables and never values.
+
+    Empty means at least one server is configured and EVERY configured server
+    has a credential. A second configured server without one is reported here
+    like the first, not excused by the first being complete -- and because
+    ``boot`` turns any problem in this list into setup mode, that is the whole
+    of why an API that configures a server must refuse to leave one in that
+    shape."""
     document = document or {}
     configured = [name for name in ("plex", "jellyfin") if (document.get(name) or {}).get("url")]
     if not configured:
