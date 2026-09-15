@@ -2637,6 +2637,14 @@ async def restore_config_snapshot(
             raise HTTPException(
                 status_code=422, detail=[_error("secrets", str(exc))]
             ) from exc
+        # For ``migrate_delta_to_document``'s reason, and it has to come after
+        # the merge: the snapshot above has been stripped, the mounted file
+        # underneath it has not, so a setting that left the schema re-enters
+        # from the file's side -- on exactly the deployment this strip is for,
+        # whose file is how the keys reached the store to begin with. Leaves
+        # only, so a ``version_check:`` section the file names is still
+        # refused rather than dropped.
+        candidate = without_migrated_settings(candidate, drop_sections=False)
 
     document, after, whole = await _validated_generation(
         request, candidate, check_empty_leaves=not is_delta

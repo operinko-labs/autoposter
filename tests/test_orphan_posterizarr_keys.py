@@ -56,6 +56,12 @@ PRE_ROW_219_PER_KIND = {
 }
 PRE_ROW_219_WHOLESALE = "386ea7cf4844f52e"
 
+# The four art kinds as ``ArtworkConfig`` held them at f8a74403. A LITERAL,
+# not ``RENDER_ART_KINDS``: a kind added later never carried
+# ``min_width``/``min_height``, and naming it in ``MIGRATED_SETTINGS`` would
+# make the store's read seam swallow a key that should be refused by name.
+KINDS_AT_THE_REMOVAL = ("poster", "season_poster", "background", "title_card")
+
 # The four keys, as (model, field name) and as the dotted paths an operator
 # would have written them at.
 REMOVED_FIELDS = [
@@ -125,12 +131,27 @@ def test_every_position_the_four_keys_lived_at_is_a_stale_stored_path():
     it has to name every position the schema once accepted these four at, and
     ``TitleCardConfig`` and ``SeasonPosterConfig`` subclassing
     ``ArtKindConfig`` is what makes that all four art kinds rather than two.
+
+    Against ``KINDS_AT_THE_REMOVAL`` and not against ``RENDER_ART_KINDS``,
+    which is the whole point of that literal: a kind added later never carried
+    the two ``min_*`` keys, so an assertion that went red when one was added
+    would invite the repair of naming it in ``MIGRATED_SETTINGS`` -- and the
+    read seam would then silently swallow a pair of keys that were never
+    settings and that ``unknown_key_paths`` should be refusing by name.
     """
     expected = {"providers.favourite", "providers.tmdb_vote_sorting"}
-    for art_kind in RENDER_ART_KINDS:
+    for art_kind in KINDS_AT_THE_REMOVAL:
         expected |= {f"artwork.{art_kind}.min_width", f"artwork.{art_kind}.min_height"}
 
     assert set(MIGRATED_SETTINGS) == expected
+
+
+def test_the_kinds_that_carried_the_keys_are_still_the_render_art_kinds():
+    """The signal the literal above gives up, kept separately and pointing the
+    other way: a kind RENAMED out from under the record leaves a stale path in
+    ``MIGRATED_SETTINGS`` that can never match anything again, and this says
+    so. A kind ADDED is not a failure here, which is exactly the difference."""
+    assert set(KINDS_AT_THE_REMOVAL) <= set(RENDER_ART_KINDS)
 
 
 def test_removing_the_two_min_keys_moved_every_render_fingerprint():

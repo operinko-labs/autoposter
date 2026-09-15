@@ -375,8 +375,10 @@ def without_migrated_settings(document: dict, *, drop_sections: bool = True) -> 
     exactly where it is, so the write path can answer 422 naming it rather
     than storing an override that silently does nothing.
 
-    ``drop_sections=False`` is for a document that came out of the mounted
-    FILE, and it is the asymmetry the section comment above ``MIGRATED_SECTIONS``
+    ``drop_sections=False`` is for a document the store is about to be SEEDED
+    from -- the file at ``seed_store``, the file underneath a delta at
+    ``migrate_delta_to_document`` and at the snapshot restore's delta arm --
+    and it is the asymmetry the section comment above ``MIGRATED_SECTIONS``
     states: a ``version_check:`` block in a git-owned YAML is an
     operator-actionable error and being told to delete it is the point, so it
     must reach the validator rather than be quietly dropped on the way into the
@@ -385,6 +387,12 @@ def without_migrated_settings(document: dict, *, drop_sections: bool = True) -> 
     an unknown key and a file naming one has always loaded clean -- so carrying
     one into the store would turn a key that meant nothing into a key that
     blocks every save.
+
+    The drift Import (``api/routes.py``'s ``import_config_file``) hands over a
+    mounted-file document at the default and so drops such a section rather
+    than refusing it. That is deliberate and predates this keyword: an import
+    is an operator asking for the file's content explicitly, one action at a
+    time, rather than a load the deployment has no say in.
 
     Returns the same object when there is nothing to drop, so the ordinary
     deployment -- every one whose store carries none of this -- pays a
@@ -408,7 +416,14 @@ def without_migrated_settings(document: dict, *, drop_sections: bool = True) -> 
         )
     stripped = {key: value for key, value in document.items() if key not in sections}
     for parts in leaves:
-        stripped = _without_leaf(stripped, parts)
+        # Asked again against the document in hand rather than trusting the
+        # list above, which was computed against the document that arrived. An
+        # earlier drop can take a shared ancestor with it when that drop
+        # empties it, and re-asking costs a walk of a path already known to be
+        # short while the alternative is an unstated ordering invariant
+        # between the entries of ``MIGRATED_SETTINGS``.
+        if _holds_leaf(stripped, parts):
+            stripped = _without_leaf(stripped, parts)
     return stripped
 
 
@@ -477,8 +492,8 @@ async def store_row(
     what a read strips out of the document is not what decides whether the
     store has ever been written, and "has it ever been written" is the
     question both the seed and the format stamp turn on. A row holding
-    nothing but sections that left the schema reads as an empty document and
-    is not an empty store.
+    nothing but sections or settings that left the schema reads as an empty
+    document and is not an empty store.
 
     ``for_update`` takes a row lock, and only a write path passes it: a reader
     that locked would serialise ``GET /api/config`` behind every save for no
@@ -580,9 +595,9 @@ async def load_store(
 
     An empty store is the pre-configuration state of every deployment, and it
     is the one state that sends the loader looking at the mounted file. A row
-    whose every section has left the schema reads as an empty *document* here
-    and cannot be told apart from no row at all -- a caller that needs the
-    difference asks ``store_row`` for the row instead.
+    whose every section and setting has left the schema reads as an empty
+    *document* here and cannot be told apart from no row at all -- a caller
+    that needs the difference asks ``store_row`` for the row instead.
     """
     return store_contents(await store_row(session, for_update=for_update))
 
@@ -670,10 +685,11 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
 
     Emptiness is judged on the raw row -- no row at all, or a row holding
     nothing -- and not on the document a read hands back. A row whose every
-    section has left the schema strips to ``{}`` but is still a store somebody
-    wrote, and its metadata, which is where the restart list lives, is not
-    this function's to replace. Such a row is returned as the ``{}`` it strips
-    to, and the caller routes it the way it routes any other stored document.
+    section and setting has left the schema strips to ``{}`` but is still a
+    store somebody wrote, and its metadata, which is where the restart list
+    lives, is not this function's to replace. Such a row is returned as the
+    ``{}`` it strips to, and the caller routes it the way it routes any other
+    stored document.
 
     A row can exist and still hold nothing -- a document of literally ``{}``.
     The seed is right to fill that document in, and the format it writes is
@@ -977,10 +993,10 @@ async def load_effective_config(path: Path | None, session: AsyncSession) -> Con
     seeded = await seed_store(session, base)
     if not seeded:
         # The seed found a row it will not replace: one holding nothing but
-        # sections that left the schema. That is not an empty store, it is a
-        # delta with nothing left in it, so it keeps its metadata and takes
-        # the path every other delta takes -- which merges nothing over the
-        # file and leaves the file's document standing.
+        # sections or settings that left the schema. That is not an empty
+        # store, it is a delta with nothing left in it, so it keeps its
+        # metadata and takes the path every other delta takes -- which merges
+        # nothing over the file and leaves the file's document standing.
         return _validated(await migrate_delta_to_document(session, base))
     # Validated before the commit, deliberately: the seed is the last time this
     # file is read, so a store seeded with a document the schema refuses could
