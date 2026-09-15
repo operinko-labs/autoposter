@@ -8,6 +8,7 @@ import { ApiError, apiFetch } from "../api/client";
 import {
   documentFromConfig,
   fieldErrors,
+  RESTART_NOTE,
   revisionFromConfig,
   saveBody,
   STALE_SAVE_NOTE,
@@ -538,9 +539,7 @@ export function CatalogPanel() {
           </p>
           <p className="muted">{APPLIES_NOTE}</p>
           {result.restart_required.length > 0 && (
-            <p className="muted">
-              {`Needs a restart: ${result.restart_required.join(", ")}.`}
-            </p>
+            <p className="muted">{RESTART_NOTE}</p>
           )}
         </div>
       )}

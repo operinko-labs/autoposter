@@ -16,7 +16,8 @@
   font-size: 13px;
 }
 
-.config-node > .config-row:last-child {
+.config-node > .config-row:last-child,
+.settings-accordion-body > .config-row:last-child {
   border-bottom: none;
 }
 
@@ -89,7 +90,8 @@
 }
 
 .config-value input[type="text"],
-.config-value input[type="number"] {
+.config-value input[type="number"],
+.config-value input[type="password"] {
   min-width: 0;
   /* The widths below are ch-based ideals, not demands: inside the providers
    * list editor a 32ch input overhung the panel's right edge on a phone.
@@ -105,7 +107,8 @@
   font-size: 13px;
 }
 
-.config-value input[type="text"] {
+.config-value input[type="text"],
+.config-value input[type="password"] {
   width: 32ch;
 }
 
@@ -126,11 +129,22 @@
   font-size: 12px;
 }
 
+.config-result,
 .config-pending {
   margin-top: 16px;
 }
 
-.config-document {
+/* .config-saved and its siblings carry a top margin for sitting under
+   something else inside a panel. Here one of them leads the panel. */
+.config-result > :first-child {
+  margin-top: 0;
+}
+
+/* One line per changed path: the path, then what it moves from and to. The
+   two columns hold their own width so a run of changes reads as a column of
+   paths rather than as ragged prose. */
+.config-diff {
+  list-style: none;
   max-height: 40vh;
   overflow: auto;
   margin: 0 0 10px;
@@ -139,6 +153,23 @@
   border-radius: 4px;
   background: var(--surface);
   font-size: 12px;
+}
+
+.config-diff li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.config-diff-path {
+  flex: 0 0 220px;
+  color: var(--text-muted);
+}
+
+.config-diff-values {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .config-impact {
@@ -175,12 +206,6 @@
   font-size: 12px;
 }
 
-.config-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .config-saved,
 .config-queued,
 .config-restart,
@@ -189,9 +214,58 @@
   font-size: 13px;
 }
 
+/* Two readers left: the preview panel's pair of sentences, and the restart
+   banner's own line, which takes the colour from here and overrides the margin
+   set above. Nothing else on the page says "a restart is involved" in this
+   colour, so dropping either sentence means checking whether this rule still
+   has a reader rather than assuming it does. */
 .config-restart,
 .config-inert {
   color: var(--warn);
+}
+
+/* Sits above the tab strip, so it is the first thing on the page when a
+   restart is waiting and takes no room at all when one is not. The warn
+   border is what separates it from the ordinary panels below it without a
+   second background colour. */
+.settings-restart-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  border-color: var(--warn);
+}
+
+/* Takes the width and lets the button hold the right edge, until the row is
+   too narrow for both -- then the button wraps under the sentence rather than
+   squeezing it into a column of single words. */
+.settings-restart-banner-text {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+
+.settings-restart-banner p {
+  margin: 0;
+}
+
+.settings-restart-banner p + p {
+  margin-top: 6px;
+}
+
+.config-drift-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.config-drift-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .config-safety-list {
@@ -249,6 +323,17 @@
   .config-list-item {
     max-width: 100%;
   }
+
+  /* Same reason as .config-row: a 220px path column leaves nothing for the
+     values beside it. */
+  .config-diff li {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .config-diff-path {
+    flex: 0 0 auto;
+  }
 }
 
 /* Roadmap row 92's matrix. Wide by construction -- one column per library --
@@ -288,4 +373,107 @@
 .library-cell-note {
   font-size: 0.85em;
   margin-left: 0.4rem;
+}
+
+/* The tab bar. Wraps rather than scrolls: seven labels fit two rows on a
+   phone, and a row that scrolls sideways hides the tabs an operator has not
+   thought to look for. */
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+  padding: 6px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  background: var(--surface-hover);
+  color: inherit;
+}
+
+.settings-tab.current {
+  border-bottom-color: var(--accent);
+  color: inherit;
+}
+
+/* Pinned to the bottom of the viewport so the four commits stay reachable
+   from anywhere in a long tab, which is the whole point of one pending
+   change shared across all of them. */
+.settings-pending-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  font-size: 13px;
+}
+
+.settings-pending-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-accordion {
+  margin-top: 16px;
+}
+
+.settings-accordion-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.settings-accordion-header button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* The chevron points at the closed state's affordance -- "this opens" -- and
+   turns to point at the open state's -- "this closes" -- rather than adding a
+   second boolean class that could disagree with aria-expanded. */
+.settings-accordion-chevron {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: currentColor;
+  transition: transform 0.15s ease;
+}
+
+.settings-accordion-header button[aria-expanded="true"] .settings-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.settings-accordion-body {
+  margin-top: 12px;
 }

@@ -14,13 +14,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, apiFetch } from "../api/client";
-import { fieldErrors, STALE_SAVE_NOTE } from "../api/overrides";
+import { refusalMessage, STALE_SAVE_NOTE } from "../api/overrides";
 import type {
   ConfigExport,
   ConfigPreviewResponse,
   ConfigSaveResponse,
   ConfigSnapshot,
 } from "../api/types";
+import { PENDING_EDITS_NOTE } from "./RestartBanner";
 
 /** Said where the decision is made, because the endpoint deliberately does not
  * redact: a redacted backup would write the bare notification host back over
@@ -29,17 +30,6 @@ import type {
 export const EXPORT_WARNING =
   "The backup file contains your settings in full, including the notification URL. " +
   "Keep it somewhere you would keep a password.";
-
-function refusal(caught: unknown): string {
-  if (caught instanceof ApiError && caught.status === 422) {
-    const errors = fieldErrors(caught.detail);
-    const messages = Object.entries(errors).map(([path, message]) =>
-      path === "" || path === "document" ? message : `${path}: ${message}`,
-    );
-    if (messages.length > 0) return messages.join("; ");
-  }
-  return (caught as Error).message;
-}
 
 function describe(snapshot: ConfigSnapshot): string {
   const when = new Date(snapshot.created_at);
@@ -58,12 +48,19 @@ interface PendingImport {
 
 export function ConfigSafetyPanel({
   revision,
+  pendingEdits = false,
   onChanged,
 }: {
   /** The revision the settings page seeded from. Sent with every write here
    * for the same reason it is sent with a save: a restore composed against a
    * page that has gone stale is the same lost update. */
   revision: string | null;
+  /** Whether the editor is holding an edit nobody has stored. A restore and an
+   * import both replace the whole stored document and then re-seed the page
+   * from it, which would throw the typing away without saying so -- the same
+   * rule, and the same sentence, as the restart button and the drift notice's
+   * import. */
+  pendingEdits?: boolean;
   /** Re-read `/api/config` and re-adopt. Provenance is the server's to report
    * after a restore exactly as it is after a save. */
   onChanged: () => Promise<void>;
@@ -123,7 +120,7 @@ export function ConfigSafetyPanel({
           if (live.current) setError((reread as Error).message);
         }
       } else {
-        setError(refusal(caught));
+        setError(refusalMessage(caught));
       }
     } finally {
       if (live.current) {
@@ -225,6 +222,10 @@ export function ConfigSafetyPanel({
 
       {error !== null && <p className="page-error">{error}</p>}
       {note !== null && <p className="config-saved">{note}</p>}
+      {/* Above the controls it refuses rather than beside one of them: it
+          applies to the restore of any previous version and to the import
+          alike, and one sentence per button would be three copies of it. */}
+      {pendingEdits && <p className="muted">{PENDING_EDITS_NOTE}</p>}
 
       <label className="config-safety-confirm">
         <input
@@ -248,7 +249,11 @@ export function ConfigSafetyPanel({
           {snapshots.map((snapshot) => (
             <li key={snapshot.id}>
               <span>{describe(snapshot)}</span>
-              <button type="button" disabled={busy} onClick={() => void restore(snapshot.id)}>
+              <button
+                type="button"
+                disabled={busy || pendingEdits}
+                onClick={() => void restore(snapshot.id)}
+              >
                 Restore
               </button>
             </li>
@@ -279,7 +284,7 @@ export function ConfigSafetyPanel({
         id="config-import-file"
         type="file"
         accept="application/json,.json"
-        disabled={busy}
+        disabled={busy || pendingEdits}
         onChange={(event) => {
           void choose(event.target.files?.[0]);
           // Reset so picking the same file again fires another change event.
@@ -295,7 +300,11 @@ export function ConfigSafetyPanel({
                 : "Nothing in it needs a restart."
             }`}
           </p>
-          <button type="button" disabled={busy} onClick={() => void importPending()}>
+          <button
+            type="button"
+            disabled={busy || pendingEdits}
+            onClick={() => void importPending()}
+          >
             Import these settings
           </button>
         </>

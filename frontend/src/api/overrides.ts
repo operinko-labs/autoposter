@@ -22,6 +22,7 @@
  *     the API validates like any other, and a null-valued setting is almost
  *     always invalid -- so a control that wrote null could not clear.
  */
+import { ApiError } from "./client";
 import type { ConfigResponse, OverridesDocument } from "./types";
 
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -200,6 +201,40 @@ export function fieldErrors(detail: unknown): Record<string, string> {
   return errors;
 }
 
+/** The sentence to show for a refused write, whatever shape it arrived in.
+ *
+ * Three shapes reach a page that writes the configuration, and only one of
+ * them survives `errorBody`'s flattening as a sentence:
+ *
+ *   - a list -- the drop cap (`detail: [{path, message}]`) and every 422 the
+ *     validator produces. `errorBody` reports `request failed with 422` for
+ *     those, so a page reading `Error.message` would replace "send confirm:
+ *     true to do it deliberately" with a status code, hiding the one sentence
+ *     that says what to do next;
+ *   - an object -- the stale-revision 409 (`{message, current_revision,
+ *     changed_paths}`), which has the same problem;
+ *   - a plain string, which `errorBody` already promotes to the message.
+ *
+ * Shared rather than written per panel for the reason the rest of this module
+ * is shared: the panel that got it wrong would be the one whose refusal
+ * mattered most. */
+export function refusalMessage(caught: unknown): string {
+  if (caught instanceof ApiError) {
+    const messages = Object.entries(fieldErrors(caught.detail)).map(
+      ([path, message]) =>
+        // `document` is the whole body rather than a field the operator can
+        // look at, so naming it would be noise in front of the sentence.
+        path === "" || path === "document" ? message : `${path}: ${message}`,
+    );
+    if (messages.length > 0) return messages.join("; ");
+    if (typeof caught.detail === "string") return caught.detail;
+    if (isPlainObject(caught.detail) && typeof caught.detail.message === "string") {
+      return caught.detail.message;
+    }
+  }
+  return (caught as Error).message;
+}
+
 /** The revision the server served with this seed, or null when it served none.
  *
  * Null rather than a throw for a response that predates the field: an older
@@ -238,3 +273,16 @@ export const STALE_SAVE_NOTE =
   "These settings were changed somewhere else while this page was open, so " +
   "nothing was saved. The page now shows the current settings — make your " +
   "change again.";
+
+/** What a panel says when its save changed something a restart applies.
+ *
+ * A pointer, never a second list. What a save response reports is its own
+ * difference against the generation the process is running; what the settings
+ * page's banner renders is the store's list, measured against what the process
+ * booted on and emptied by the boot that settles it. The two disagree the
+ * first time a setting is edited and put back, and only one of them is beside
+ * the button that does something about it. Shared here for the reason every
+ * other sentence in this module is: four panels saying it four ways is four
+ * chances for one of them to go stale. */
+export const RESTART_NOTE =
+  "Settings that need a restart are listed in the banner on the Settings page.";

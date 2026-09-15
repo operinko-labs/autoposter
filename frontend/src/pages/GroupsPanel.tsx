@@ -8,6 +8,7 @@ import {
   documentFromConfig,
   fieldErrors,
   hasPath,
+  RESTART_NOTE,
   revisionFromConfig,
   saveBody,
   STALE_SAVE_NOTE,
@@ -453,9 +454,7 @@ export function GroupsPanel() {
         <div className="groups-saved" role="status">
           <p>{`Saved. Config ${result.version_before} → ${result.version_after}.`}</p>
           {result.restart_required.length > 0 && (
-            <p className="muted">
-              {`Needs a restart: ${result.restart_required.join(", ")}.`}
-            </p>
+            <p className="muted">{RESTART_NOTE}</p>
           )}
         </div>
       )}

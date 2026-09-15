@@ -2702,6 +2702,14 @@ async def config_drift(
     is ``null`` on a deployment that has no mounted file, which is also the one
     case that reports no drift at all (``drift_report``).
 
+    The file's own document is NOT served. It can carry a notification URL with
+    a push token in it, and this route is a background read with no operator
+    intent behind it -- the export's identical bytes are a pressed button with a
+    warning attached. What is served instead is ``file_revision``, a content
+    hash of the same document: enough for the notice to say "import the file I
+    was describing" through ``POST /api/config/drift/import``, and nothing a
+    reader can turn back into a setting. It is ``null`` when there is no file.
+
     The file is read off the event loop: it is a mounted file on a possibly
     slow volume and this route is polled by an open page.
     """
@@ -2709,7 +2717,93 @@ async def config_drift(
     file_document = await asyncio.to_thread(_read_file_document, path)
     async with request.app.state.session_factory() as session:
         stored = await load_overrides_document(session)
-    return {**drift_report(file_document, stored), "path": str(path) if path else None}
+    return {
+        **drift_report(file_document, stored),
+        "path": str(path) if path else None,
+        "file_revision": (
+            None if file_document is None else document_revision(file_document)
+        ),
+    }
+
+
+#: Why an import of the mounted file cannot go ahead. Said once, here, so the
+#: route and the tests that pin it cannot drift apart.
+NO_FILE_TO_IMPORT = (
+    "there is no configuration file on this deployment, so there is nothing to "
+    "import; the stored settings are the only ones"
+)
+FILE_CHANGED_REFUSAL = (
+    "the configuration file changed while this page was open, so nothing was "
+    "imported; open the page again to see what it says now"
+)
+
+
+class ConfigDriftImportBody(BaseModel):
+    """Import the mounted file. No document, on purpose.
+
+    The client names no document at all: it asks for *the file*, and the server
+    reads it. That is what keeps the file's contents off the wire in both
+    directions, and it is why this is a route of its own rather than a second
+    arm of ``ConfigImportBody`` -- that model's ``document`` is required for a
+    documented reason (see its docstring), and making it optional again to
+    admit a "read the file yourself" flag would reopen the hole it closed.
+
+    ``expected_revision`` is the store's, exactly as every other write sends it.
+    ``expected_file_revision`` is the FILE's, as the drift report last served
+    it: the two reads of the file are a GET and a POST apart, and without this
+    an import could store a version of the file the operator was never shown.
+    Optional, because a caller that never read the report has nothing to claim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: str | None = None
+    expected_file_revision: str | None = None
+    confirm: bool = False
+
+
+@router.post("/config/drift/import")
+async def import_config_file(
+    body: ConfigDriftImportBody,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Store the mounted configuration file as the configuration.
+
+    The drift notice's Import. Everything after the read is
+    ``import_config_overrides``: the same ``without_migrated_sections``, the
+    same ``_validated_generation``, the same ``_persist_and_swap`` with the
+    same drop cap, pre-write snapshot and revision check, under the same
+    ``import`` reason. There is no import-only write path here and there must
+    not be one -- an import is the largest *drop* this service can be asked
+    for, which is exactly why it goes through the guards rather than past them.
+    """
+    path = request.app.state.config_path
+    file_document = await asyncio.to_thread(_read_file_document, path)
+    if file_document is None:
+        # 409 rather than 404: the request is about this deployment's state,
+        # not about a missing address, and the state can change under a page
+        # that read the report while a file was still mounted.
+        raise HTTPException(status_code=409, detail=NO_FILE_TO_IMPORT)
+    if body.expected_file_revision is not None:
+        if body.expected_file_revision != document_revision(file_document):
+            # Never retried with the new revision: what the operator agreed to
+            # import was the document the notice described, and a file that has
+            # moved since is a different one.
+            raise HTTPException(status_code=409, detail=FILE_CHANGED_REFUSAL)
+
+    document, after, whole = await _validated_generation(
+        request, without_migrated_sections(file_document)
+    )
+    return await _persist_and_swap(
+        request,
+        document,
+        after,
+        whole_document=whole,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+        reason="import",
+    )
 
 
 @router.get("/config/overrides/export")

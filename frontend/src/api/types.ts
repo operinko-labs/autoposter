@@ -796,11 +796,12 @@ export type ConfigResponse = Record<string, unknown>;
 export type OverridesDocument = Record<string, unknown>;
 
 /** PUT /api/config/overrides. `restart_required` lists the dotted paths the
- * running process cannot pick up without one. `inert` lists paths a restart
- * cannot pick up *either* -- currently just `api_docs_enabled`, which FastAPI
- * bakes into the application object before any override is read, so only
- * editing the mounted config file moves it. Kept out of `restart_required`
- * so that list stays a promise the page can keep. Optional/absent reads as
+ * running process cannot pick up without one. `inert` lists paths no swap
+ * reaches even in part -- currently just `api_docs_enabled`, which FastAPI
+ * bakes into the application object before any override is read, so only a
+ * restart moves it, and the restart reads the stored document rather than
+ * the merged overrides. Kept out of `restart_required` so that list stays a
+ * promise the page can keep. Optional/absent reads as
  * empty, so a response from before this field existed still renders. */
 export interface ConfigSaveResponse {
   version_before: string;
@@ -885,6 +886,23 @@ export interface ConfigExport {
   autoposter_overrides: number;
   exported_at: string;
   document: OverridesDocument;
+}
+
+/** GET /api/config/drift: whether the mounted configuration file still agrees
+ * with the store, which is the file's whole remaining job.
+ *
+ * The file's own document is NOT served: it can carry a notification URL with
+ * a token in it, and this is a background read with no operator intent behind
+ * it. `file_revision` is a content hash of that document, which is what
+ * `POST /api/config/drift/import` takes to confirm that the file it is about
+ * to read on the server is still the one this report described. Null when
+ * there is no file. */
+export interface DriftResponse {
+  file_present: boolean;
+  differs: boolean;
+  paths: string[];
+  path: string | null;
+  file_revision: string | null;
 }
 
 /** POST /api/config/apply: the PUT's own response plus what it enqueued.
