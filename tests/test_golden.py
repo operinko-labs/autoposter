@@ -17,7 +17,11 @@ actually contains. Testing the text path here would prove nothing about the
 18,008 assets already on disk.
 
 This asserts **byte-identical** output, not merely similar output: the
-sequence reproduces the real asset as an identical 843,045-byte JPEG.
+sequence reproduces the real asset's 843,045-byte JPEG identically in every
+segment but one. The JPEG comment is the exception, on purpose: Posterizarr
+stamps "created with posterizarr" and greps its own assets for it, so this
+service stamps its own name instead and the comparison below looks past the
+comment segment alone. Every pixel and every other byte still has to match.
 
 That requires a **Q16-HDRI** ImageMagick build, which is what the runtime image
 ships and what production runs. HDRI changes internal pixel maths, so a Q16
@@ -77,6 +81,35 @@ def _rmse(a: Path, b: Path) -> float:
     return float(text.split("(")[1].split(")")[0])
 
 
+def _without_jpeg_comment(data: bytes) -> bytes:
+    """``data`` with every JPEG COM segment (marker 0xFFFE) removed.
+
+    Walks the marker segments before the scan data; the entropy-coded stream
+    after SOS is left untouched. Anything that is not a well-formed marker
+    walk is returned as it is, so a malformed file fails the comparison
+    rather than passing it by accident.
+    """
+    if data[:2] != bytes([0xFF, 0xD8]):
+        return data
+    out = bytearray(data[:2])
+    i = 2
+    while i + 4 <= len(data) and data[i] == 0xFF:
+        marker = data[i + 1]
+        if marker == 0xDA:  # start of scan: the rest is the coded stream
+            break
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            out += data[i:i + 2]
+            i += 2
+            continue
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        segment = data[i:i + 2 + length]
+        if marker != 0xFE:
+            out += segment
+        i += 2 + length
+    out += data[i:]
+    return bytes(out)
+
+
 def _identify(path: Path, fmt: str) -> str:
     result = subprocess.run(
         ["magick", "identify", "-format", fmt, str(path)],
@@ -129,12 +162,13 @@ def test_poster_matches_the_production_asset(tmp_path):
         "the compositing pipeline has drifted from what the existing library "
         "was built with"
     )
-    assert working.read_bytes() == expected.read_bytes(), (
-        "pixels match but the encoded bytes differ — check the ImageMagick build"
-    )
+    assert _without_jpeg_comment(working.read_bytes()) == _without_jpeg_comment(
+        expected.read_bytes()
+    ), "pixels match but the encoded bytes differ — check the ImageMagick build"
     assert _identify(working, "%wx%h") == _identify(expected, "%wx%h")
+    # The production asset is Posterizarr's; ours carries this service's name.
     assert _identify(expected, "%[comment]") == "created with posterizarr"
-    assert _identify(working, "%[comment]") == "created with posterizarr"
+    assert _identify(working, "%[comment]") == "created with autoposter"
 
 
 def test_rendered_poster_has_the_production_dimensions(tmp_path):
