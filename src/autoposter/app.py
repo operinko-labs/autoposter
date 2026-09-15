@@ -25,7 +25,7 @@ from autoposter.catchup import servers_never_seen, servers_with_delivery_enabled
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
-from autoposter.config.overrides import load_effective_config
+from autoposter.config.overrides import clear_restart_paths, load_effective_config
 from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
@@ -128,6 +128,21 @@ def create_app(
         # lifespan already assumes of the schema.
         async with session_factory() as session:
             swap_config(app, await load_effective_config(app.state.config_path, session))
+            # What this process actually came up on, kept for the life of the
+            # process: the editor answers "does this still need a restart?" by
+            # comparing a saved generation against THIS one, not against
+            # whatever the last save swapped in -- a setting put back to the
+            # booted value needs nothing.
+            app.state.booted_config = app.state.config
+            # And every path the restart list was asking for has just been
+            # applied, whatever restarted this process -- the Settings
+            # button, a container restart, a crash, the wizard's own exec.
+            # The list is a statement about a running process, so the boot is
+            # what ends it; a notice that outlives what it asks for is worse
+            # than no notice at all. Committed with the row lock held for the
+            # few statements it takes, before anything else in the boot.
+            await clear_restart_paths(session)
+            await session.commit()
             # The single-clock fix for /api/status's derived job status (see
             # api/snapshots.py._run_status): last_started_at is stamped by
             # Postgres's own now() (scheduler/core.py's claim_due), so the
@@ -621,6 +636,12 @@ def create_app(
     # object the holder now holds. The two are never allowed to diverge.
     app.state.config_holder = ConfigHolder(config)
     app.state.config = config
+    # The generation this process booted on. The lifespan replaces it with the
+    # one it loads from the store, which is what a deployment runs; an
+    # application whose lifespan never runs -- every test's -- booted on
+    # exactly what it was handed here, so the attribute is always the truth
+    # and never absent.
+    app.state.booted_config = config
     # A placeholder boot instant -- Python-clock, because create_app is
     # synchronous and cannot await the database read that fixes it. /api/status
     # compares a scheduled job's last_started_at (a Postgres-stamped column,

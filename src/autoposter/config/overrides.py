@@ -324,23 +324,24 @@ def without_migrated_sections(document: dict) -> dict:
 STORE_FORMAT = 2
 
 
-def store_meta(
-    format_: int = STORE_FORMAT, restart_paths: list[str] | None = None
-) -> dict:
+def store_meta(format_: int = STORE_FORMAT, restart_list: list[str] | None = None) -> dict:
     """The metadata column's value, built in one place.
 
-    ``restart_paths`` is omitted rather than written empty: an absent key and
+    The restart list is omitted rather than written empty: an absent key and
     an empty list mean the same thing to every reader, and omitting it keeps
     the ordinary row to one key.
+
+    The keyword is spelled differently from the ``restart_paths`` reader below
+    on purpose, so that neither name hides the other inside this module.
     """
     meta: dict = {"format": format_}
-    if restart_paths:
-        meta["restart_paths"] = list(restart_paths)
+    if restart_list:
+        meta["restart_paths"] = list(restart_list)
     return meta
 
 
 def restart_paths(meta: dict) -> list[str]:
-    """The frozen paths saved since the last restart. Sorted, never ``None``.
+    """The frozen paths waiting for a restart. Sorted, never ``None``.
 
     An absent key, an empty list and a row with no metadata at all all mean
     "nothing is waiting", so every reader gets one shape back and none of them
@@ -350,19 +351,24 @@ def restart_paths(meta: dict) -> list[str]:
 
 
 def with_restart_paths(meta: dict, paths: list[str]) -> dict:
-    """``meta`` with ``paths`` added to its restart list.
+    """``meta`` carrying ``paths`` as its restart list, sorted and deduplicated.
 
-    A UNION, not a replacement: two saves of two frozen sections both wait for
-    the same restart, and the second must not erase the first's claim. Sorted,
-    so the page's banner and this list cannot disagree about order.
+    A REPLACEMENT rather than a union, and it has to be. The list is always
+    computed against the generation this process BOOTED on, and every entry
+    already on it was computed against that same generation -- the boot itself
+    empties the list -- so the set handed in here is the whole truth about what
+    a restart would change. A union could only ever keep a path whose value has
+    just been put back to the one that is running, which is a notice asking for
+    a restart that would do nothing. Two saves of two frozen sections still
+    leave both paths, because the second save differs from the boot in both.
 
     The key is dropped rather than written empty when nothing is waiting,
     which is what ``store_meta`` writes for the same state.
     """
-    merged = sorted(set(restart_paths(meta)) | set(paths))
-    if not merged:
+    waiting = sorted(set(paths))
+    if not waiting:
         return {key: value for key, value in meta.items() if key != "restart_paths"}
-    return {**meta, "restart_paths": merged}
+    return {**meta, "restart_paths": waiting}
 
 
 async def store_row(
@@ -516,25 +522,33 @@ async def write_store(session: AsyncSession, document: dict, meta: dict) -> None
 
 
 async def clear_restart_paths(session: AsyncSession) -> None:
-    """Forget the restart list. Called by the restart, and by nothing else.
+    """Forget the restart list. Called by the boot, and by nothing else.
 
     Under the row lock, because the save path takes the same one and the two
     must not interleave: a save that added a path between an unlocked read
-    here and the write would have its claim erased by a restart that never
+    here and the write would have its claim erased by a boot that never
     applied it.
 
-    Not committed here, for ``write_store``'s reason -- the caller owns the
+    The METADATA column only, and the document is neither read nor written.
+    Two reasons, and both are about a write nobody asked for: a read strips
+    the sections that have left the schema, so writing the document back would
+    persist that strip with no snapshot and no audit row behind it; and a
+    hand-edited document that is not a JSON object refuses to be read at all,
+    which would turn the last thing standing between a bad row and a bootable
+    deployment into an error. The rest of the metadata -- the format above
+    all, whose loss would relabel a whole document as a delta -- is kept.
+
+    Not committed here, for ``write_store``'s reason: the caller owns the
     transaction. Nothing is written when the list is already empty, so the
-    common restart touches no row at all.
+    ordinary boot leaves the row untouched.
     """
-    document, meta = await load_store(session, for_update=True)
+    row = await store_row(session, for_update=True)
+    if row is None:
+        return
+    meta = row.meta if isinstance(row.meta, dict) else {}
     if not restart_paths(meta):
         return
-    await write_store(
-        session,
-        document,
-        {key: value for key, value in meta.items() if key != "restart_paths"},
-    )
+    row.meta = with_restart_paths(meta, [])
 
 
 async def seed_store(session: AsyncSession, document: dict) -> dict:
@@ -565,9 +579,7 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
     if row is not None and row.document:
         return _row_document(row)
     _empty, meta = store_contents(row)
-    await write_store(
-        session, document, store_meta(restart_paths=meta.get("restart_paths"))
-    )
+    await write_store(session, document, store_meta(restart_list=restart_paths(meta)))
     return document
 
 

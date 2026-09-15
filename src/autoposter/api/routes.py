@@ -1650,10 +1650,11 @@ async def get_config(
     already owns.
 
     Carries eight things the editor needs beyond the values themselves.
-    ``restart_paths`` is the settings a save changed that the running process
-    has not picked up, read off the store's own row so the notice outlives the
-    page that caused it -- empty until something writes it there, and served
-    from here so the editor has one shape to render from.
+    ``restart_paths`` is the frozen settings saved since this process booted
+    that still differ from what it is running, read off the store's own row so
+    the notice outlives the page that caused it and reaches the next admin to
+    open the page. Every save rewrites it and the next boot empties it, so it
+    is empty exactly when a restart would change nothing.
     ``frozen_paths`` maps each restart-only
     path to the reason a live swap cannot reach it (see config/live.py) --
     sent as data so the editor can flag a field without duplicating this
@@ -2295,8 +2296,8 @@ async def _persist_and_swap(
         # over, which is the one thing the file-less deployment does not have.
         #
         # The rest of the metadata is written through verbatim. A save is about
-        # the document; the restart list that shares this column is not its to
-        # throw away.
+        # the document; the format that shares this column is not its to
+        # change.
         if whole_document:
             meta = {**meta, "format": STORE_FORMAT}
         restart_required = _restart_required(before, after)
@@ -2305,14 +2306,24 @@ async def _persist_and_swap(
         # it. A list committed without its document -- or the reverse -- would
         # either tell an operator to restart for a change that is not stored,
         # or silently drop the one promise the editor makes about a frozen
-        # setting. The metadata read under the lock above is what this adds to,
-        # so there is no second read and no second write.
+        # setting. The metadata read under the lock above is what this writes
+        # back, so there is no second read and no second write.
         #
-        # Both lists go on it. They are reported apart because they land at
-        # different moments -- the lifespan's merge reaches one and not the
-        # other -- but a restart is what applies either, and the page's notice
-        # asks one question.
-        meta = with_restart_paths(meta, restart_required + inert)
+        # Measured against what this process BOOTED on rather than against the
+        # generation the previous save swapped in. The question the list
+        # answers is "would a restart change anything?", and a setting edited
+        # and then put back has the same answer as one never touched. The boot
+        # empties the list, so everything already on it was measured from the
+        # same place and the set computed here is the whole of it.
+        #
+        # Both kinds of frozen path go on it. They are reported apart in the
+        # response because they land at different moments -- the lifespan's
+        # merge reaches one and not the other -- but a restart is what applies
+        # either, and the page's notice asks one question.
+        booted = request.app.state.booted_config
+        meta = with_restart_paths(
+            meta, _restart_required(booted, after) + _inert_changes(booted, after)
+        )
         await write_store(session, document, meta)
         session.add(
             EventLog(

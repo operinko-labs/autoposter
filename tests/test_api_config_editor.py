@@ -39,7 +39,6 @@ from autoposter.config.overrides import (
     EMPTY_DOCUMENT_REVISION,
     OVERRIDES_INSERT_LOCK_KEY,
     STORE_FORMAT,
-    clear_restart_paths,
     load_effective_config,
     load_store,
     merge_overrides,
@@ -810,21 +809,70 @@ async def test_two_frozen_saves_both_stay_on_the_list(
     assert reloaded["restart_paths"] == ["scheduler.poll_seconds", "workers"]
 
 
-async def test_a_live_save_adds_nothing_to_the_list(
+async def test_a_live_save_neither_adds_to_the_list_nor_forgets_it(
     client, auth_headers, seeded_store
 ):
+    """A live save changes nothing a restart would apply -- and it must not
+    drop the claim an earlier frozen save left standing either, which is the
+    one thing a list rewritten on every save could get wrong."""
     seed = (await client.get("/api/config", headers=auth_headers)).json()
     document = _settings_of(seed)
-    document["artwork"]["title_card"]["season_label"] = "Kausi"
-    saved = await client.put(
+    document["workers"] = document["workers"] + 1
+    frozen = await client.put(
         "/api/config/overrides",
         json={"document": document, "expected_revision": seed["overrides_revision"]},
         headers=auth_headers,
     )
-    assert saved.status_code == 200, saved.text
+    assert frozen.status_code == 200, frozen.text
+
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["artwork"]["title_card"]["season_label"] = "Kausi"
+    live = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert live.status_code == 200, live.text
+    assert live.json()["restart_required"] == []
     assert (await client.get("/api/config", headers=auth_headers)).json()[
         "restart_paths"
-    ] == []
+    ] == ["workers"]
+
+
+async def test_a_frozen_setting_put_back_comes_off_the_list(
+    client, auth_headers, seeded_store
+):
+    """The list answers one question -- would a restart change anything? -- so
+    a setting edited and then set back to the value this process booted on has
+    to come off it. Measured against the previous save instead, the path would
+    go on a second time and nothing would ever take it off again."""
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    booted_workers = seed["workers"]
+    document = _settings_of(seed)
+    document["workers"] = booted_workers + 1
+    away = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert away.status_code == 200, away.text
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == ["workers"]
+
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["workers"] = booted_workers
+    back = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert back.status_code == 200, back.text
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == [], "the banner would ask for a restart that would change nothing"
 
 
 async def test_an_inert_save_goes_on_the_list_too(client, auth_headers):
@@ -841,38 +889,45 @@ async def test_an_inert_save_goes_on_the_list_too(client, auth_headers):
     ] == ["api_docs_enabled"]
 
 
-async def test_a_restore_adds_its_frozen_changes_to_the_list(
-    client, auth_headers, session_factory, seeded_store
+async def test_a_restore_puts_its_frozen_changes_on_the_list(
+    client, auth_headers, seeded_store
 ):
-    """A restore is a save: it goes through ``_persist_and_swap`` like any
-    other write, so the frozen paths it puts BACK wait for the same restart the
-    ones it undoes did."""
+    """A restore is a save: it goes through the same write, so a frozen
+    setting it brings back waits for a restart exactly as one typed into the
+    page does. Recovery is the moment an operator most needs to be told.
+
+    Set away and then back first, so the store holds a snapshot that differs
+    from the running configuration and the list is empty to start from.
+    """
     seed = (await client.get("/api/config", headers=auth_headers)).json()
+    booted_workers = seed["workers"]
     document = _settings_of(seed)
-    document["workers"] = document["workers"] + 1
-    saved = await client.put(
+    document["workers"] = booted_workers + 1
+    away = await client.put(
         "/api/config/overrides",
         json={"document": document, "expected_revision": seed["overrides_revision"]},
         headers=auth_headers,
     )
-    assert saved.status_code == 200, saved.text
-    snapshots = (await client.get("/api/config/snapshots", headers=auth_headers)).json()
-    # Forget the list the way the restart route does, so what the restore puts
-    # on it is what this test reads.
-    async with session_factory() as session:
-        await clear_restart_paths(session)
-        await session.commit()
+    assert away.status_code == 200, away.text
+
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["workers"] = booted_workers
+    back = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert back.status_code == 200, back.text
     assert (await client.get("/api/config", headers=auth_headers)).json()[
         "restart_paths"
-    ] == []
+    ] == [], "precondition: nothing is waiting for a restart"
 
+    # Newest first, so this is the document the revert above displaced.
+    snapshots = (await client.get("/api/config/snapshots", headers=auth_headers)).json()
     response = await client.post(
-        # The seeded store is the mounted file verbatim and the save above sent
-        # the whole document back with every default spelled out, so putting
-        # the file's own document back reads as a large drop. Deliberate, and
-        # beside the point of this test.
         f"/api/config/snapshots/{snapshots[0]['id']}/restore",
-        json={"confirm": True}, headers=auth_headers,
+        json={}, headers=auth_headers,
     )
     assert response.status_code == 200, response.text
     assert (await client.get("/api/config", headers=auth_headers)).json()[
@@ -2478,9 +2533,13 @@ async def test_a_delta_store_with_no_mounted_file_is_refused_not_crashed(
 async def test_a_save_keeps_the_metadata_it_did_not_write(
     client, auth_headers, session, file_document
 ):
-    """The restart list lives in the same column as the format. A save adds
-    the frozen paths it changed to that list and takes nothing off it: the
-    earlier save's claim on the same restart is not this one's to drop."""
+    """The restart list lives in the same column as the format, and the format
+    is not a save's to change.
+
+    The list is: every save rewrites it with the frozen paths that still
+    differ from what this process booted on, so the seeded ``plex`` -- a path
+    the running configuration matches -- does not survive a save, and the
+    ``workers`` this one changes takes its place."""
     await session.execute(
         insert(ConfigOverride).values(
             id=1,
@@ -2499,7 +2558,7 @@ async def test_a_save_keeps_the_metadata_it_did_not_write(
     session.expire_all()
     row = (await session.execute(select(ConfigOverride))).scalar_one()
     assert row.document == saved
-    assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["plex", "workers"]}
+    assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["workers"]}
 
     snapshot = (
         await session.execute(

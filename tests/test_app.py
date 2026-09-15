@@ -16,7 +16,14 @@ from autoposter.app import _build_mdblist, _build_providers, _handle_intent, cre
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import build_config, load_config, read_config_document
-from autoposter.config.overrides import OVERRIDES_ROW_ID
+from autoposter.config.overrides import (
+    OVERRIDES_ROW_ID,
+    STORE_FORMAT,
+    load_store,
+    restart_paths,
+    store_meta,
+    write_store,
+)
 from autoposter.config import state as state_module
 from autoposter.config.schema import (
     ENVIRONMENT_SECRET_NAMES_ENV,
@@ -217,6 +224,50 @@ async def test_the_lifespan_boots_on_the_effective_config_not_the_file_alone(
             "the worker pool was sized from the file config, so the overrides "
             f"swap happens after its consumers read it ({started!r})"
         )
+
+
+async def test_the_lifespan_forgets_the_restart_list(
+    session_factory, secrets, stubbed_background_services
+):
+    """Whatever restarted this process, it came up on the configuration the
+    store held -- so every path the list was waiting for has just been applied.
+
+    The button is only one of the ways a process is replaced; a container
+    restart, a crash-restart and the wizard's own exec all run this same
+    boot, and a notice that outlives what it asks for is worse than no notice
+    at all.
+
+    The row is written delta-era on purpose: that shape sends the boot through
+    the one-time conversion, which is the longest road the list has to survive
+    before anything clears it.
+    """
+    file_config = load_config(EXAMPLE)
+    overridden = file_config.workers + 7
+    async with session_factory() as writing:
+        await write_store(
+            writing,
+            {"workers": overridden},
+            store_meta(format_=1, restart_list=["workers"]),
+        )
+        await writing.commit()
+
+    app = _background_app(file_config, session_factory, secrets)
+    async with app.router.lifespan_context(app):
+        await asyncio.sleep(0)
+        assert app.state.booted_config.workers == overridden, (
+            "precondition: the lifespan booted on the stored generation"
+        )
+
+    async with session_factory() as reading:
+        _document, meta = await load_store(reading)
+    assert restart_paths(meta) == [], (
+        "the banner would ask for a restart that has already happened, and "
+        "keep asking until the operator saved another frozen setting"
+    )
+    assert meta["format"] == STORE_FORMAT, (
+        "the clear took the format with it: the next boot would go looking "
+        "for a file to merge this whole document over"
+    )
 
 
 async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(

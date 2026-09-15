@@ -22,7 +22,12 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
-from autoposter.config.overrides import load_store, store_meta, write_store
+from autoposter.config.overrides import (
+    load_store,
+    restart_paths,
+    store_meta,
+    write_store,
+)
 from autoposter.config.schema import Secrets
 from autoposter.db.models import Run, ScheduledRun
 from autoposter.main import listen_address
@@ -389,40 +394,85 @@ def test_the_listen_address_travels_through_the_environment(monkeypatch):
     )
 
 
-async def test_a_restart_clears_the_list(client, auth_headers, session_factory, no_exec):
-    """This process is the only one that knows the restart happened: the one
-    that replaces it starts from the store and cannot tell a list that has just
-    been satisfied from one that is still waiting."""
+async def _seed_restart_list(session_factory) -> None:
+    """A store with one path waiting for a restart."""
     async with session_factory() as session:
-        document, _meta = await load_store(session)
-        await write_store(
-            session, document or {"workers": 2}, store_meta(restart_paths=["workers"])
-        )
+        await write_store(session, {"workers": 2}, store_meta(restart_list=["workers"]))
         await session.commit()
+
+
+async def _stored_restart_paths(session_factory) -> list[str]:
+    async with session_factory() as session:
+        _document, meta = await load_store(session)
+    return restart_paths(meta)
+
+
+async def test_the_route_does_not_touch_the_list(
+    client, auth_headers, session_factory, no_exec
+):
+    """The list is forgotten by the BOOT, not by the button.
+
+    A restart asked for here is only one of the ways this process can be
+    replaced -- a container restart, a crash, the wizard's own exec are the
+    others -- and all of them run the same boot, which builds the running
+    configuration from the very row the list lives on. Clearing here would
+    cover one of those four and would also have to be undone every time the
+    exec did not happen.
+    """
+    await _seed_restart_list(session_factory)
 
     response = await client.post("/api/system/restart", headers=auth_headers)
     assert response.status_code == 200, response.text
     assert no_exec == [1]
 
-    async with session_factory() as session:
-        _document, meta = await load_store(session)
-    assert meta.get("restart_paths") in (None, [])
+    assert await _stored_restart_paths(session_factory) == ["workers"]
 
 
-async def test_a_refused_restart_leaves_the_list_alone(
-    client, auth_headers, session_factory, monkeypatch, no_exec
+async def test_a_restart_whose_exec_fails_leaves_the_list_standing(
+    client, auth_headers, session_factory, monkeypatch, caplog
 ):
-    """Nothing was restarted, so nothing has been applied and the operator
-    still has the same thing to do."""
-    async with session_factory() as session:
-        await write_store(session, {"workers": 2}, store_meta(restart_paths=["workers"]))
-        await session.commit()
-    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    """Nothing was replaced, so nothing has been applied: the process that
+    could not exec is still running the configuration the operator wants
+    changed, and the notice has to say so."""
+
+    def _fail() -> None:
+        raise OSError("argument list too long")
+
+    monkeypatch.setattr(system, "_exec_boot", _fail)
+    await _seed_restart_list(session_factory)
+
+    with caplog.at_level(logging.ERROR):
+        response = await client.post("/api/system/restart", headers=auth_headers)
+    assert response.status_code == 200, "the answer was already written"
+
+    assert await _stored_restart_paths(session_factory) == ["workers"]
+
+
+@pytest.mark.parametrize(
+    "guard", ["multiple-workers", "a-run-in-flight", "the-mode-lock"]
+)
+async def test_a_refused_restart_leaves_the_list_alone(
+    client, auth_headers, app, session_factory, monkeypatch, no_exec, guard
+):
+    """Every guard, not just the outermost one.
+
+    A refusal means nothing was restarted, so nothing has been applied and the
+    operator still has the same thing to do -- and the mode-lock refusal, the
+    one an operator actually meets while an artwork mode is writing, is the
+    one that sits closest to everything the route does on its way out.
+    """
+    await _seed_restart_list(session_factory)
+    if guard == "multiple-workers":
+        monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    elif guard == "a-run-in-flight":
+        async with session_factory() as session:
+            session.add(Run(kind="full_pass", name="full_pass", status="running"))
+            await session.commit()
+    else:
+        await app.state.mode_lock.acquire()
 
     response = await client.post("/api/system/restart", headers=auth_headers)
-    assert response.status_code == 409
+    assert response.status_code == 409, response.text
     assert no_exec == []
 
-    async with session_factory() as session:
-        _document, meta = await load_store(session)
-    assert meta["restart_paths"] == ["workers"]
+    assert await _stored_restart_paths(session_factory) == ["workers"]
