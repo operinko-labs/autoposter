@@ -55,11 +55,19 @@ beforeEach(() => {
 });
 
 /** The config fetch resolves on the next microtask, so rendering without
- * awaiting leaves a state update outside act(). */
+ * awaiting leaves a state update outside act().
+ *
+ * Twice, because the mount is now two reads deep: the config read mounts the
+ * Servers tab (the tab the page opens on), which reads the server listing,
+ * and that second answer lands a tick after the first act has stopped
+ * draining. An update arriving after the test that started it has ended is a
+ * leak, not a warning -- this file shares one jsdom window across every test
+ * in it. */
 async function renderSettings() {
   await act(async () => {
     render(<Settings />);
   });
+  await act(async () => {});
 }
 
 /** The page is a tab bar of collapsed accordions, so reaching a field takes
@@ -926,7 +934,9 @@ describe("Settings editor", () => {
     expect(screen.getByLabelText("badges.enabled")).toHaveAttribute("type", "checkbox");
     await openSettled("System", "General");
     expect(screen.getByLabelText("workers")).toHaveAttribute("type", "number");
-    openSection("Servers", "Plex");
+    // Awaited: coming BACK to Servers mounts its cards again, and the listing
+    // they read would otherwise land after this test has ended.
+    await openSettled("Servers", "Plex");
     expect(screen.getByLabelText("plex.url")).toHaveAttribute("type", "text");
     expect(screen.getByLabelText("plex.excluded_libraries[0]")).toHaveAttribute(
       "type",
@@ -2036,6 +2046,41 @@ describe("Settings tabs", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Integrations" }));
     expect(screen.getByRole("button", { name: "Radarr" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Collections" })).not.toBeInTheDocument();
+  });
+
+  it("puts the server cards on the Servers tab, outside the pending change", async () => {
+    // A configuration with no `plex` section of its own, so the only thing
+    // named "Plex" on the tab is the card's own accordion.
+    stubByUrl(
+      {
+        "/api/servers": {
+          servers: [
+            {
+              name: "plex",
+              configured: true,
+              url: "http://plex:32400",
+              excluded_libraries: [],
+              credential_source: "stored",
+              restart_pending: false,
+              health: { ok: true, detail: null, checked_at: null },
+            },
+          ],
+        },
+      },
+      { workers: 5, badges: { upload_to_plex: false }, overrides_revision: "rev-1" },
+    );
+    await renderSettings();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Plex" }));
+    });
+    expect(screen.getByLabelText("Plex address")).toHaveValue("http://plex:32400");
+
+    // A card saves on its own and never joins the page's pending change, so
+    // nothing done inside one raises the sticky bar -- not even a switch that
+    // is an ordinary setting elsewhere on the page.
+    fireEvent.click(screen.getByLabelText("Upload badged artwork to Plex"));
+    expect(screen.queryByText(/Unsaved changes on:/)).toBeNull();
   });
 
   it("collapses every section until one is opened", async () => {

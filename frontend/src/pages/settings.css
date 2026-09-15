@@ -481,14 +481,16 @@
 /* One server's card, inside the Servers tab's accordion. The accordion is the
    panel, so the card adds no box of its own: a second bordered surface inside
    it would be a fourth level of visual nesting where the page allows three
-   (tab, accordion, row). What is left is the heading -- an h3, because the
-   accordion's own title is the h2 above it -- which carries the connection
-   pill beside the server's name. */
-.server-card h3 {
+   (tab, accordion, row). It carries no heading either -- the accordion's own
+   title names the server -- so what is left at the top of the card is the row
+   of pills: the connection state, and the restart pill when this deployment
+   is still running on what it started with. */
+.server-card-pills {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+  margin: 0 0 8px;
 }
 
 /* The two tick-lists: the libraries this server manages, and its own

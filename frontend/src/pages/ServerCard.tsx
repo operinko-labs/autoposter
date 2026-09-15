@@ -379,11 +379,10 @@ export function ServerCard({
     // accordion, which is the panel, and a second bordered box inside it
     // would be a fourth level of visual nesting where the page allows three.
     <section className="server-card">
-      {/* An h3: the tab wraps this card in an accordion whose own title is an
-          h2, so a second h2 here would be a heading nested inside a sibling
-          of itself and the outline would flatten. */}
-      <h3>
-        {label}
+      {/* The pills, and no heading of its own: the accordion this card sits
+          inside is titled with the server's name, so a heading here would name
+          the same server a second time one line below the first. */}
+      <p className="server-card-pills">
         <span className={pill.className}>{pill.text}</span>
         {server.restart_pending && (
           <span
@@ -393,7 +392,7 @@ export function ServerCard({
             restart to apply
           </span>
         )}
-      </h3>
+      </p>
       {error !== null && <p className="page-error">{error}</p>}
       {note !== null && <p className="config-saved">{note}</p>}
       {!server.configured && (

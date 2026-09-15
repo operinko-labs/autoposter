@@ -31,6 +31,7 @@ import { DriftNotice } from "./DriftNotice";
 import { LibraryOverridesPanel } from "./LibraryOverridesPanel";
 import { RestartBanner } from "./RestartBanner";
 import { SecretsPanel } from "./SecretsPanel";
+import { ServersTab } from "./ServersTab";
 import { SettingsAccordion } from "./SettingsAccordion";
 import {
   GENERAL_TAB,
@@ -1061,6 +1062,24 @@ export function Settings() {
         aria-labelledby={`settings-tab-${tab}`}
       >
         {config === null && <p className="muted">Loading…</p>}
+        {/* The cards, the Add a server row and the library map. Mounted only
+            once the configuration has been served, because the five
+            server-specific switches the cards show are leaves of that
+            document and a card mounted before it arrived would show every one
+            of them off -- and because the listing this tab reads is a second
+            request, which must not be in flight before the page knows whether
+            its own read succeeded.
+
+            It takes `onChanged` rather than the editor: a server saves on its
+            own, never joining the pending change, so what it needs from the
+            page is the re-read that follows its write. */}
+        {config !== null && tab === "servers" && (
+          <ServersTab
+            config={config}
+            revision={storedRevision}
+            onChanged={reload}
+          />
+        )}
         {config !== null && tab === "libraries" && (
           <LibraryOverridesPanel config={config} editor={editor} />
         )}
