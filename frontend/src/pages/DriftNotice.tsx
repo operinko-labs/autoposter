@@ -6,13 +6,19 @@
  * having done the right thing would be worse than no notice.
  *
  * Import and Export go through the endpoints that already exist, drop cap,
- * confirm and pre-write snapshot included. There is no import-only path here
- * and there must not be one.
+ * confirm and pre-write snapshot included. There is no import-only write path
+ * here and there must not be one.
+ *
+ * The file's contents never reach this component. Import asks the SERVER to
+ * read the mounted file; what travels is a content hash of the document the
+ * report described, so an operator agrees to import the version they were
+ * shown without a notification token crossing the wire to say so.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { ApiError, apiFetch } from "../api/client";
-import type { ConfigExport, DriftResponse } from "../api/types";
+import { apiFetch } from "../api/client";
+import { refusalMessage } from "../api/overrides";
+import type { ConfigExport, ConfigSaveResponse, DriftResponse } from "../api/types";
 import { EXPORT_WARNING } from "./ConfigSafetyPanel";
 
 /** The design's own sentence, verbatim. */
@@ -46,9 +52,14 @@ export function DriftNotice({
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const [download, setDownload] = useState<{ href: string; name: string } | null>(
     null,
   );
+  // Held in a ref as well as in state so the unmount cleanup below can revoke
+  // the last URL without re-running -- an effect that depended on `download`
+  // would revoke the URL the render it ran after had just handed to the link.
+  const objectUrl = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,25 +77,25 @@ export function DriftNotice({
     };
   }, []);
 
-  if (drift === null || !drift.file_present || !drift.differs) return null;
-  // Served by the route that just reported the difference, so the import
-  // sends the very document that was compared -- there is no second read of
-  // the file and no chance of importing a different one. A response that
-  // carries none leaves the button disabled rather than posting an empty
-  // document, which the drop cap would read as "clear everything".
-  const fileDocument = drift.document ?? null;
+  useEffect(
+    () => () => {
+      // The blob outlives the component otherwise: nothing else holds the
+      // object it names, and the tab keeps it until it is closed.
+      if (objectUrl.current !== null) URL.revokeObjectURL(objectUrl.current);
+    },
+    [],
+  );
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError(null);
+    setNote(null);
     try {
       await action();
     } catch (caught) {
-      setError(
-        caught instanceof ApiError && typeof caught.detail === "string"
-          ? caught.detail
-          : (caught as Error).message,
-      );
+      // The server's own sentence, whatever shape it arrived in -- the drop
+      // cap's is the one that says what to do next.
+      setError(refusalMessage(caught));
     } finally {
       setBusy(false);
       // A tick made for this press does not carry over to the next one, win
@@ -94,21 +105,24 @@ export function DriftNotice({
   }
 
   async function importFile() {
-    if (fileDocument === null) return;
+    const fileRevision = drift?.file_revision ?? null;
     await run(async () => {
-      // The envelope the export writes, because the import endpoint reads
-      // that shape and no other.
-      await apiFetch("/api/config/overrides/import", {
+      const saved = await apiFetch<ConfigSaveResponse>("/api/config/drift/import", {
         method: "POST",
         body: JSON.stringify({
-          autoposter_overrides: 1,
-          document: fileDocument,
           confirm,
           ...(revision === null ? {} : { expected_revision: revision }),
+          ...(fileRevision === null ? {} : { expected_file_revision: fileRevision }),
         }),
       });
       await onChanged();
       setDrift(await apiFetch<DriftResponse>("/api/config/drift"));
+      // Said only once both re-reads have happened, for the reason the backup
+      // panel gives: before that it is a claim about settings this component
+      // has not seen.
+      setNote(
+        `Imported the file. Config ${saved.version_before} → ${saved.version_after}.`,
+      );
     });
   }
 
@@ -125,12 +139,25 @@ export function DriftNotice({
       // The previous download's URL has served its purpose the moment a new
       // one replaces it; only the object it names would otherwise outlive the
       // click that made it.
-      if (download !== null) URL.revokeObjectURL(download.href);
+      if (objectUrl.current !== null) URL.revokeObjectURL(objectUrl.current);
+      objectUrl.current = URL.createObjectURL(blob);
       setDownload({
-        href: URL.createObjectURL(blob),
+        href: objectUrl.current,
         name: `autoposter-overrides-${stamp}.json`,
       });
     });
+  }
+
+  if (drift === null) return null;
+  if (!drift.file_present || !drift.differs) {
+    // An import that succeeded is the one way this section has anything to say
+    // about a file that no longer differs -- and it is the only acknowledgement
+    // the operator gets, since everything else here has just gone away.
+    return note === null ? null : (
+      <section className="panel config-drift" role="status">
+        <p className="config-saved">{note}</p>
+      </section>
+    );
   }
 
   return (
@@ -148,9 +175,9 @@ export function DriftNotice({
       </p>
       {drift.path !== null && <p className="muted mono">{drift.path}</p>}
       <p className="muted">{IMPORT_NOTE}</p>
-      <p className="config-safety-warning">{EXPORT_WARNING}</p>
 
       {error !== null && <p className="page-error">{error}</p>}
+      {note !== null && <p className="config-saved">{note}</p>}
 
       <label className="config-drift-confirm">
         <input
@@ -162,11 +189,7 @@ export function DriftNotice({
       </label>
 
       <div className="config-drift-actions">
-        <button
-          type="button"
-          disabled={busy || fileDocument === null}
-          onClick={() => void importFile()}
-        >
+        <button type="button" disabled={busy} onClick={() => void importFile()}>
           Import the file
         </button>
         <button type="button" disabled={busy} onClick={() => void exportStore()}>
@@ -174,15 +197,22 @@ export function DriftNotice({
         </button>
       </div>
 
+      {/* Attached to the link rather than standing on its own: the backup
+          panel below carries the same sentence, and two paragraphs of
+          identical text on one screen is one too many. Here it sits where it
+          is about to matter, beside the file. */}
       {download !== null && (
-        <a
-          className="config-safety-download"
-          data-testid="drift-export-link"
-          href={download.href}
-          download={download.name}
-        >
-          {`Save ${download.name}`}
-        </a>
+        <>
+          <p className="config-safety-warning">{EXPORT_WARNING}</p>
+          <a
+            className="config-safety-download"
+            data-testid="drift-export-link"
+            href={download.href}
+            download={download.name}
+          >
+            {`Save ${download.name}`}
+          </a>
+        </>
       )}
     </section>
   );

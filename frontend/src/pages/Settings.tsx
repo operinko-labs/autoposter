@@ -984,7 +984,11 @@ export function Settings() {
           caused it. One mount rather than a second copy inside the System
           panel: two banners on one screen, each with its own Restart button,
           is two answers to a question with one. */}
-      <RestartBanner paths={restartPaths} onRestarted={reload} />
+      <RestartBanner
+        paths={restartPaths}
+        pendingEdits={dirty}
+        onRestarted={reload}
+      />
 
       {/* Replaced by the pending bar the moment there is an edit, which says
           the same thing about a change that exists. */}

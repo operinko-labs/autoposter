@@ -61,6 +61,22 @@ describe("RestartBanner", () => {
     ).toBeInTheDocument();
   });
 
+  it("refuses the press while the editor is holding an unsaved edit", () => {
+    // The re-read that follows a restart re-seeds the editor, so the press
+    // would throw the typing away without saying so -- and the sentence above
+    // the button invites the reading that the unsaved edit is one of the
+    // things the restart is about to apply. It is not: a restart reads the
+    // store, and nothing unsaved is in it.
+    const seen = stubRestart({ restarting: true });
+    render(<RestartBanner paths={["workers"]} pendingEdits onRestarted={() => {}} />);
+
+    expect(screen.getByRole("button", { name: "Restart now" })).toBeDisabled();
+    expect(
+      screen.getByText(/Save or discard the changes below first/),
+    ).toBeInTheDocument();
+    expect(seen).toEqual([]);
+  });
+
   it("posts the restart and tells the parent", async () => {
     const seen = stubRestart({ restarting: true });
     const restarted: boolean[] = [];

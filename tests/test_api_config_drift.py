@@ -17,12 +17,14 @@ import pytest_asyncio
 import yaml
 from httpx import ASGITransport, AsyncClient
 
+from autoposter.api import routes
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import build_config
 from autoposter.config.overrides import (
     STORE_FORMAT,
     document_paths,
+    document_revision,
     load_effective_config,
     load_store,
     seed_store,
@@ -81,13 +83,20 @@ async def auth_headers(client):
 
 
 @pytest.mark.asyncio
-async def test_a_seeded_store_matching_its_file_reports_no_drift(client, auth_headers):
+async def test_a_seeded_store_matching_its_file_reports_no_drift(
+    client, auth_headers, config_file
+):
     body = (await client.get("/api/config/drift", headers=auth_headers)).json()
     assert body["file_present"] is True
     assert body["differs"] is False
     assert body["paths"] == []
-    # Nothing to import, so nothing is served to import with.
-    assert body["document"] is None
+    # The file's own document never crosses the wire: it can carry a push
+    # token, and this route is read by an open page with no operator intent
+    # behind it. A content hash is what the import needs and all it gets.
+    assert "document" not in body
+    assert body["file_revision"] == document_revision(
+        yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    )
 
 
 @pytest.mark.asyncio
@@ -101,10 +110,10 @@ async def test_an_edited_file_reports_the_paths_that_differ(
     body = (await client.get("/api/config/drift", headers=auth_headers)).json()
     assert body["differs"] is True
     assert body["paths"] == ["workers"]
-    # The document this comparison was made against, so the notice's Import
-    # posts back what it described rather than whatever a second read of the
-    # file would find.
-    assert body["document"] == document
+    assert "document" not in body
+    # The hash of the document this comparison was made against, so the import
+    # can be refused if the file moves between the two reads.
+    assert body["file_revision"] == document_revision(document)
 
 
 @pytest.mark.asyncio
@@ -145,6 +154,131 @@ async def test_no_file_is_not_drift(client, auth_headers, config_file):
 @pytest.mark.asyncio
 async def test_the_drift_route_needs_a_session(client):
     assert (await client.get("/api/config/drift")).status_code == 401
+
+
+# --- importing the file -----------------------------------------------------
+#
+# The notice's Import names no document: it asks for the file, and the server
+# reads it. Everything after that read is the ordinary import path, which is
+# what these tests are really pinning -- the drop cap especially, because an
+# import is the largest drop this service can be asked for.
+
+
+async def _edit_the_file(config_file: Path, **changes) -> dict:
+    document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    document.update(changes)
+    config_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+    return document
+
+
+@pytest.mark.asyncio
+async def test_importing_the_file_stores_it(
+    client, auth_headers, config_file, session_factory
+):
+    document = await _edit_the_file(config_file, workers=9)
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+
+    response = await client.post(
+        "/api/config/drift/import",
+        headers=auth_headers,
+        json={"expected_revision": served["overrides_revision"], "confirm": False},
+    )
+
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        stored, _meta = await load_store(session)
+    assert stored["workers"] == 9
+    # And the report the notice re-reads now says the two agree.
+    after = (await client.get("/api/config/drift", headers=auth_headers)).json()
+    assert after["differs"] is False
+    assert document["workers"] == 9
+
+
+@pytest.mark.asyncio
+async def test_importing_a_file_that_drops_settings_needs_the_confirm(
+    client, auth_headers, config_file
+):
+    """The drop cap is the whole reason the notice has a tick. The store holds
+    the whole configuration, so a file that has stopped mentioning a couple of
+    sections drops every setting under them -- fourteen leaves here, well past
+    the cap of three."""
+    document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    del document["badges"]
+    del document["notifications"]
+    config_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+
+    refused = await client.post(
+        "/api/config/drift/import",
+        headers=auth_headers,
+        json={"expected_revision": served["overrides_revision"], "confirm": False},
+    )
+    assert refused.status_code == 422
+    assert "send confirm: true" in refused.json()["detail"][0]["message"]
+
+    allowed = await client.post(
+        "/api/config/drift/import",
+        headers=auth_headers,
+        json={"expected_revision": served["overrides_revision"], "confirm": True},
+    )
+    assert allowed.status_code == 200, allowed.text
+
+
+@pytest.mark.asyncio
+async def test_importing_refuses_a_file_that_moved_since_the_report(
+    client, auth_headers, config_file
+):
+    """What the operator agreed to import was the document the notice
+    described. A file edited between the GET and the POST is a different one,
+    and importing it would store something they were never shown."""
+    await _edit_the_file(config_file, workers=9)
+    report = (await client.get("/api/config/drift", headers=auth_headers)).json()
+    served = (await client.get("/api/config", headers=auth_headers)).json()
+    await _edit_the_file(config_file, workers=11)
+
+    response = await client.post(
+        "/api/config/drift/import",
+        headers=auth_headers,
+        json={
+            "expected_revision": served["overrides_revision"],
+            "expected_file_revision": report["file_revision"],
+            "confirm": True,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == routes.FILE_CHANGED_REFUSAL
+
+
+@pytest.mark.asyncio
+async def test_importing_with_no_file_is_refused(client, auth_headers, config_file):
+    config_file.unlink()
+
+    response = await client.post(
+        "/api/config/drift/import", headers=auth_headers, json={"confirm": True}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == routes.NO_FILE_TO_IMPORT
+
+
+@pytest.mark.asyncio
+async def test_the_import_route_names_no_document(client, auth_headers):
+    """The point of the route: a client cannot hand this endpoint a document,
+    so there is no arm where one is written without having been read off the
+    deployment's own file."""
+    response = await client.post(
+        "/api/config/drift/import",
+        headers=auth_headers,
+        json={"confirm": True, "document": {"workers": 9}},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_the_import_route_needs_a_session(client):
+    assert (await client.post("/api/config/drift/import", json={})).status_code == 401
 
 
 @pytest.mark.asyncio

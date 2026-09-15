@@ -891,16 +891,18 @@ export interface ConfigExport {
 /** GET /api/config/drift: whether the mounted configuration file still agrees
  * with the store, which is the file's whole remaining job.
  *
- * `document` is the FILE's document when it differs from the store, so the
- * notice's Import can post it back through the ordinary import endpoint
- * without a second read of the file. Null when there is no difference, which
- * is also when there is nothing to import. */
+ * The file's own document is NOT served: it can carry a notification URL with
+ * a token in it, and this is a background read with no operator intent behind
+ * it. `file_revision` is a content hash of that document, which is what
+ * `POST /api/config/drift/import` takes to confirm that the file it is about
+ * to read on the server is still the one this report described. Null when
+ * there is no file. */
 export interface DriftResponse {
   file_present: boolean;
   differs: boolean;
   paths: string[];
   path: string | null;
-  document: OverridesDocument | null;
+  file_revision: string | null;
 }
 
 /** POST /api/config/apply: the PUT's own response plus what it enqueued.

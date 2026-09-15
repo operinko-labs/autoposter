@@ -18,7 +18,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
-import { STALE_SAVE_NOTE } from "../api/overrides";
+import { RESTART_NOTE, STALE_SAVE_NOTE } from "../api/overrides";
 import { CatalogPanel } from "./CatalogPanel";
 
 /** The server always lists ten categories, in its own order -- `franchises` is
@@ -447,6 +447,28 @@ describe("saving the picker's choices", () => {
     expect(saved).toHaveTextContent("cfg-1");
     expect(saved).toHaveTextContent("cfg-2");
     expect(saved).toHaveTextContent(/next reconcile/i);
+  });
+
+  it("points at the settings page's banner instead of listing the restart itself", async () => {
+    // A save response's `restart_required` is that write's difference against
+    // the running generation; the banner renders the store's list, measured
+    // against what the process booted on. Two lists disagree the first time a
+    // setting is edited and put back, and only one of them has the button.
+    await renderPanel({
+      save: () =>
+        json({
+          version_before: "cfg-1",
+          version_after: "cfg-2",
+          restart_required: ["workers"],
+        }),
+    });
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Cannes Film Festival/ }));
+    await save();
+
+    const saved = await screen.findByRole("status");
+    expect(saved).toHaveTextContent(RESTART_NOTE);
+    expect(saved).not.toHaveTextContent("workers");
   });
 
   it("says the config preview reports no artwork impact here by design", async () => {

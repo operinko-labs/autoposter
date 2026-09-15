@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
 import { STALE_SAVE_NOTE } from "../api/overrides";
+import { DRIFT_NOTICE } from "./DriftNotice";
 import {
   IMPACT_CAVEAT,
   REDACTED_EDIT_NOTE,
@@ -410,6 +411,26 @@ function stubApi({
   return fetchMock;
 }
 
+/** `stubApi`, but able to answer an endpoint the page reads BESIDES the
+ * config. Every GET this file's other helpers make is answered with the config
+ * body, which is exactly why the drift notice renders nothing in all of them:
+ * `file_present` is `undefined`. A test about a panel with its own endpoint has
+ * to route by URL or it is testing the stub. */
+function stubByUrl(
+  responses: Record<string, unknown>,
+  config: unknown = { ...EDITOR_CONFIG, overrides_revision: "rev-1" },
+  post: Response = json({ version_before: "abc123", version_after: "def456" }),
+) {
+  const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+    if ((init?.method ?? "GET") !== "GET") return Promise.resolve(post.clone());
+    return Promise.resolve(
+      Object.hasOwn(responses, input) ? json(responses[input]) : json(config),
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 /** The body of the one PUT the page sent. */
 function putDocument(fetchMock: ReturnType<typeof stubApi>): unknown {
   const calls = fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT");
@@ -529,6 +550,58 @@ describe("Settings editor", () => {
     expect(
       banner.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("will not restart while the editor is holding an unsaved edit", async () => {
+    // The press would re-seed the editor from the server and take the typing
+    // with it. The pending bar below offers both ways out.
+    stubApi({ config: { ...EDITOR_CONFIG, restart_paths: ["workers"] } });
+    await renderSettings();
+    await openSettled("System", "General");
+
+    expect(screen.getByRole("button", { name: "Restart now" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
+
+    expect(screen.getByRole("button", { name: "Restart now" })).toBeDisabled();
+    expect(
+      screen.getByText(/Save or discard the changes below first/),
+    ).toBeInTheDocument();
+  });
+
+  it("puts the drift notice on the System tab and nowhere else", async () => {
+    // Routed by URL rather than answering every GET with the config: the
+    // notice reads a different endpoint, and a stub that answered it with the
+    // config would render nothing here whatever the page did with it.
+    const fetchMock = stubByUrl({
+      "/api/config/drift": {
+        file_present: true,
+        differs: true,
+        paths: ["workers"],
+        path: "/config/autoposter.yaml",
+        file_revision: "file-rev-1",
+      },
+    });
+    await renderSettings();
+
+    expect(screen.queryByText(DRIFT_NOTICE)).toBeNull();
+    await openSettled("System");
+    expect(screen.getByText(DRIFT_NOTICE)).toBeInTheDocument();
+
+    // And it is wired to the page: the import carries the revision the page
+    // seeded from, and the page re-reads afterwards.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import the file" }));
+    });
+    const posted = fetchMock.mock.calls.filter(
+      ([input, init]) =>
+        input === "/api/config/drift/import" && init?.method === "POST",
+    );
+    expect(posted).toHaveLength(1);
+    expect(JSON.parse(String(posted[0][1]?.body))).toEqual({
+      confirm: false,
+      expected_revision: "rev-1",
+      expected_file_revision: "file-rev-1",
+    });
   });
 
   it("lands a 422 inline at the field its path names", async () => {

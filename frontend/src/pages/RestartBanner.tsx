@@ -17,11 +17,28 @@ import { useState } from "react";
 
 import { ApiError, apiFetch } from "../api/client";
 
+/** Why an unsaved edit blocks the button rather than surviving it.
+ *
+ * Two things go wrong otherwise, and the second is worse than the first. The
+ * re-read that follows a restart re-seeds the editor from the server, which
+ * silently throws the typing away; and the sentence above the button says the
+ * settings that are waiting take effect at the next restart, which invites the
+ * reading that the edit on screen is one of them. It is not -- nothing
+ * unsaved is in the store, and a restart reads the store. Refusing the press
+ * says both of those things at once, and the pending bar is already on screen
+ * with the two ways out of it. */
+const PENDING_EDITS_NOTE =
+  "Save or discard the changes below first — a restart applies the stored " +
+  "settings, and anything unsaved would be lost.";
+
 export function RestartBanner({
   paths,
+  pendingEdits = false,
   onRestarted,
 }: {
   paths: string[];
+  /** Whether the editor is holding an edit nobody has stored. */
+  pendingEdits?: boolean;
   /** Re-read `/api/config`. The list this banner renders is the server's, so
    * the only way it goes away is the server saying it has. */
   onRestarted: () => Promise<void> | void;
@@ -71,9 +88,14 @@ export function RestartBanner({
             back.
           </p>
         )}
+        {pendingEdits && <p className="muted">{PENDING_EDITS_NOTE}</p>}
         {refusal !== null && <p className="page-error">{refusal}</p>}
       </div>
-      <button type="button" onClick={() => void restart()} disabled={busy}>
+      <button
+        type="button"
+        onClick={() => void restart()}
+        disabled={busy || pendingEdits}
+      >
         {busy ? "Restarting…" : refusal === null ? "Restart now" : "Try again"}
       </button>
     </section>

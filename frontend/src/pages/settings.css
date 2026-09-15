@@ -211,6 +211,11 @@
   font-size: 13px;
 }
 
+/* Two readers left: the preview panel's pair of sentences, and the restart
+   banner's own line, which takes the colour from here and overrides the margin
+   set above. Nothing else on the page says "a restart is involved" in this
+   colour, so dropping either sentence means checking whether this rule still
+   has a reader rather than assuming it does. */
 .config-restart,
 .config-inert {
   color: var(--warn);

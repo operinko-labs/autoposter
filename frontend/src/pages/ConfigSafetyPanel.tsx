@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, apiFetch } from "../api/client";
-import { fieldErrors, STALE_SAVE_NOTE } from "../api/overrides";
+import { refusalMessage, STALE_SAVE_NOTE } from "../api/overrides";
 import type {
   ConfigExport,
   ConfigPreviewResponse,
@@ -29,17 +29,6 @@ import type {
 export const EXPORT_WARNING =
   "The backup file contains your settings in full, including the notification URL. " +
   "Keep it somewhere you would keep a password.";
-
-function refusal(caught: unknown): string {
-  if (caught instanceof ApiError && caught.status === 422) {
-    const errors = fieldErrors(caught.detail);
-    const messages = Object.entries(errors).map(([path, message]) =>
-      path === "" || path === "document" ? message : `${path}: ${message}`,
-    );
-    if (messages.length > 0) return messages.join("; ");
-  }
-  return (caught as Error).message;
-}
 
 function describe(snapshot: ConfigSnapshot): string {
   const when = new Date(snapshot.created_at);
@@ -123,7 +112,7 @@ export function ConfigSafetyPanel({
           if (live.current) setError((reread as Error).message);
         }
       } else {
-        setError(refusal(caught));
+        setError(refusalMessage(caught));
       }
     } finally {
       if (live.current) {
