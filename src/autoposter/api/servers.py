@@ -17,6 +17,37 @@ header explains why at length, and the reasoning is unchanged by the caller
 being authenticated: a session is a credential for THIS service, not permission
 to have it post another service's credential to an arbitrary host.
 
+TWO GENERATIONS OF CONFIG, and which one answers which question. A save
+hot-swaps ``app.state.config`` without a restart (``config/live.swap_config``),
+so "the address this deployment is configured with" and "the address this
+deployment already sends this credential to" stop being the same string the
+moment an operator edits the field. The LISTING reads the swapped generation,
+because the card must show what is saved. The PROBE reads
+``app.state.booted_config`` -- the generation the media-server clients and the
+liveness pollers were actually built from -- because that, and only that, is
+where the held credential already goes. Without the split, a saved address plus
+an empty check body is a two-request way to post this deployment's Plex token
+to any host, with no restart and with the token otherwise unreadable through
+the API. An operator who has just typed a new address is served by the typed
+branch, which is what the typed branch is for, and the restart is what moves
+the booted generation.
+
+Both addresses go through ``setup.py``'s guard before anything is sent, the
+stored one included: ``PlexConfig.url`` and ``JellyfinConfig.url`` are bare
+``str`` fields with no validator, so a document can carry userinfo, a query
+string or a non-http scheme that the typed path would refuse -- and the guard
+also strips the trailing slash the fixed paths are appended to.
+
+WHAT THE GUARD IS NOT. It is an address-SHAPE guard, not a destination guard:
+``api/setup_checks.py``'s bound is that the probe is a compiled-in table of
+paths and headers, bounded, non-following and class-name-only in what it
+reports -- never that the HOST is somewhere sensible. A session holder can
+therefore still learn, one typed address at a time, whether a port inside the
+pod's network answers, and unlike the wizard's rate-limited setup token nothing
+here meters that. It is written down rather than closed because the caller is
+an authenticated administrator of this service and the answer is one boolean
+per request; it is not written down as safe.
+
 Everything served here is a name, an address the operator already typed, a
 boolean, a timestamp or one of the fixed sentences below. No credential, ever.
 
@@ -94,16 +125,16 @@ def _known(name: str) -> None:
         raise HTTPException(status_code=404, detail=NOT_A_SERVER)
 
 
-def _block(request: Request, name: str):
-    """This server's section of the config in force, or ``None``.
+def _block(config, name: str):
+    """This server's section of ``config``, or ``None``.
 
-    ``app.state.config`` rather than the overrides row: the swap rebinds that
-    attribute (``config/live.swap_config``), so a card reads the generation the
-    rest of the service is actually running on, merged file-plus-store, rather
-    than the store's half of it. ``SERVER_NAMES`` are the section names, which
-    is why the lookup is an attribute of the same spelling.
+    The generation is the CALLER's choice and the header says why there are
+    two of them. Neither is the overrides row: a merged generation is what the
+    rest of the service reads, and the row is only half of one.
+    ``SERVER_NAMES`` are the section names, which is why the lookup is an
+    attribute of the same spelling.
     """
-    return getattr(request.app.state.config, name, None)
+    return getattr(config, name, None)
 
 
 def _stored_credential(request: Request, name: str) -> str:
@@ -122,6 +153,11 @@ def _resolve_target(request: Request, name: str, body: ProbeBody) -> tuple[str, 
 
     The whole of the typed-address rule, in one place, so the check route and
     the libraries route cannot enforce different halves of it.
+
+    The stored address is the BOOTED generation's, for the reason the header
+    gives, and it goes through the same guard a typed one does: a document is
+    not a validated address, and the refusal names the field rather than the
+    value whichever of the two it came from.
     """
     if body.url:
         if not body.credential_value:
@@ -132,16 +168,16 @@ def _resolve_target(request: Request, name: str, body: ProbeBody) -> tuple[str, 
             _require_http_url(body.url, PUBLIC_URL_NOT_AN_ADDRESS),
             body.credential_value,
         )
-    block = _block(request, name)
+    block = _block(request.app.state.booted_config, name)
     url = getattr(block, "url", "") or ""
     if not url:
         # An unconfigured server: there is nothing stored to check, and the
-        # card's first save is what gives it an address.
+        # card's first save plus a restart is what gives it an address.
         raise HTTPException(status_code=400, detail=NEEDS_AN_ADDRESS)
     credential = body.credential_value or _stored_credential(request, name)
     if not credential:
         raise HTTPException(status_code=400, detail=NEEDS_A_CREDENTIAL)
-    return url, credential
+    return _require_http_url(url, PUBLIC_URL_NOT_AN_ADDRESS), credential
 
 
 def _health(request: Request, name: str) -> dict:
@@ -195,7 +231,9 @@ async def list_servers(
     sources = secret_sources(readable)
     servers = []
     for name in probe.SERVER_NAMES:
-        block = _block(request, name)
+        # The SWAPPED generation: the card shows what is saved, which is the
+        # one question a save answers immediately.
+        block = _block(request.app.state.config, name)
         url = getattr(block, "url", "") or ""
         servers.append(
             {
@@ -249,11 +287,27 @@ async def libraries(
     time the tab is opened.
     """
     _known(name)
+    label = setup_checks.CHECK_SYSTEMS[name].label
     url, credential = _resolve_target(request, name, body)
     try:
         found = await probe.list_libraries(
             name, url, credential, transport=_transport()
         )
+    except httpx.HTTPStatusError as exc:
+        # A status the read refused to work with, classified the way the check
+        # route classifies the same status, so "Check connection" and "Reload
+        # libraries" cannot tell an operator two different things about one
+        # server: 401/403 is a credential the server rejected, and any other
+        # status is the number and never the service's text.
+        status = exc.response.status_code
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                probe.REFUSED.format(system=label)
+                if status in setup_checks.REFUSING_STATUSES
+                else probe.UNREACHABLE.format(system=label, failure=f"HTTPStatus{status}")
+            ),
+        ) from None
     except Exception as exc:
         # The probe answers a library list or raises; the check route's own
         # vocabulary is what says so, with the exception CLASS and never its
@@ -261,8 +315,7 @@ async def libraries(
         raise HTTPException(
             status_code=502,
             detail=probe.UNREACHABLE.format(
-                system=setup_checks.CHECK_SYSTEMS[name].label,
-                failure=type(exc).__name__,
+                system=label, failure=type(exc).__name__
             ),
         ) from None
     return {

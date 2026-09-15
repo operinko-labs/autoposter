@@ -76,6 +76,13 @@ CHECK_TIMEOUT_SECONDS = 5.0
 # bound list that would otherwise be absent rather than argued.
 CHECK_BODY_LIMIT_BYTES = 64 * 1024
 
+# The statuses that mean "the server answered and would not take this
+# credential", as opposed to "the server did not answer". One tuple because two
+# surfaces classify the same status: the probe below, and the Servers tab's
+# live library read, which has to tell an operator the same thing about one
+# server whichever of its two buttons they pressed.
+REFUSING_STATUSES: tuple[int, ...] = (401, 403)
+
 # What Jellyfin records as this client's version on the device it lists for the
 # API key. The wizard has no running application to ask, and the field is
 # cosmetic -- the token half of the header is what authenticates -- so it says
@@ -304,7 +311,7 @@ async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) 
     async with client.stream(
         check.method, url, headers=headers, params=params or None, json=json_body
     ) as response:
-        if response.status_code in (401, 403):
+        if response.status_code in REFUSING_STATUSES:
             return CheckOutcome(ok=False, refused=True, failure=None)
         if not response.is_success:
             # A status is a number, not the service's text.
@@ -358,5 +365,11 @@ async def run_check(
         # The CLASS NAME and nothing else, on every arm. httpx embeds the full
         # URL in its own messages, and a URL here can carry a query-string key.
         # The log line names the SYSTEM only -- api/setup.py's step-name rule.
-        logger.info("first-start setup: a connection check did not succeed (%s)", system)
+        #
+        # And it names no SURFACE: the wizard was the only caller when this was
+        # written, and the Servers tab now makes the same call on a running
+        # deployment, where an operator reading the pod log after pressing
+        # "Check connection" would have been told their running service was in
+        # first-start setup.
+        logger.info("a connection check did not succeed (%s)", system)
         return CheckOutcome(ok=False, refused=False, failure=type(exc).__name__)
