@@ -64,6 +64,20 @@ one module whose subject they are. What is left here is the translation: a
 server NAME into a document section, a switch table, and the two refusals that
 are about a button rather than about a document.
 
+WHY THE REVISION IS REQUIRED ON BOTH WRITES. A card sends one server's fields,
+but what is STORED is the whole configuration document, so a write here reads
+that document, edits one section of it and puts all of it back. The read is in
+its own session, OUTSIDE the row lock ``_persist_and_swap`` takes to commit --
+and it has to be, because the candidate has to exist before it can be
+validated. Anything an operator changed on the Settings page inside that window
+sits in the document this route read as it was BEFORE their save, and writing
+it back would revert it with no error and an audit row that reads like any
+other save. The drop cap does not fire below four dropped paths, and a removal
+normally carries ``confirm``, which turns even that off. ``expected_revision``
+is what makes that race a 409 instead, so it is not optional here the way it is
+on the settings body: the page always has the revision it was served, and a
+caller that cannot produce one is exactly the caller this refusal is for.
+
 The catch-up and retry-failed buttons own no logic of their own --
 ``catchup.py`` does -- and their whole job is turning a ``CatchUpRefused`` into
 a 409 whose ``detail`` is the sentence the button shows, so the operator reads
@@ -156,6 +170,29 @@ def _block(config, name: str):
     attribute of the same spelling.
     """
     return getattr(config, name, None)
+
+
+def _restart_pending(request: Request, name: str) -> bool:
+    """Whether this server's saved section is one the process has not read.
+
+    The WHOLE section, not its address. ``plex`` and ``jellyfin`` are frozen
+    wholesale (``config/live.FROZEN_SECTIONS``), so the exclusions, the
+    Jellyfin thumb switch and the library map are exactly as unapplied as the
+    address is -- they land on ``meta["restart_paths"]`` and in
+    ``GET /api/config``'s ``restart_paths``, which feeds the page-wide banner.
+    A card pill computed from the address alone would read "nothing pending"
+    beside a banner saying the opposite, about the same save.
+
+    ``None`` on either side is a difference: a server saved onto a deployment
+    that booted without one is pending, and so is one removed from a
+    deployment that booted with it -- the process still holds that client.
+    """
+    saved, booted = _block(request.app.state.config, name), _block(
+        request.app.state.booted_config, name
+    )
+    if saved is None or booted is None:
+        return saved is not booted
+    return saved.model_dump(mode="json") != booted.model_dump(mode="json")
 
 
 def _stored_credential(request: Request, name: str) -> str:
@@ -266,7 +303,6 @@ async def list_servers(
         # one question a save answers immediately.
         block = _block(request.app.state.config, name)
         url = getattr(block, "url", "") or ""
-        booted = _block(request.app.state.booted_config, name)
         servers.append(
             {
                 "name": name,
@@ -274,7 +310,7 @@ async def list_servers(
                 "url": url or None,
                 "excluded_libraries": list(getattr(block, "excluded_libraries", []) or []),
                 "credential_source": sources[probe.SERVER_CREDENTIAL[name]],
-                "restart_pending": url != (getattr(booted, "url", "") or ""),
+                "restart_pending": _restart_pending(request, name),
                 "health": _health(request, name),
             }
         )
@@ -395,6 +431,11 @@ class ServerBody(BaseModel):
     address, credential and exclusions belong together (spec §5). The revision
     and the confirm flag are the settings page's, unchanged, because this write
     goes through the settings page's own write path.
+
+    ``expected_revision`` is REQUIRED here where the settings page's own body
+    allows it to be omitted, for the reason the module header gives: this
+    route's document is read outside the row lock, so the revision is the only
+    thing standing between a concurrent settings save and a silent revert.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -402,14 +443,16 @@ class ServerBody(BaseModel):
     url: str
     excluded_libraries: list[str] = []
     switches: dict[str, bool] = {}
-    expected_revision: str | None = None
+    expected_revision: str
     confirm: bool = False
 
 
 class ServerRemovalBody(BaseModel):
+    """A card's removal. Required revision, for ``ServerBody``'s reason."""
+
     model_config = ConfigDict(extra="forbid")
 
-    expected_revision: str | None = None
+    expected_revision: str
     confirm: bool = False
 
 
@@ -455,6 +498,55 @@ def _with_path(document: dict, path: str, value: object) -> dict:
     return {
         **document,
         head: _with_path(child if isinstance(child, dict) else {}, rest, value),
+    }
+
+
+def _library_without_server(block: dict, name: str) -> dict:
+    """One library's block with its own override of a removed server's two
+    switches turned off, if it states either.
+
+    Built key by key rather than through ``_with_path``: a library name is
+    DATA -- a Plex string free to carry a dot -- and splitting one into path
+    segments would write into a section nobody named. Only a switch the
+    library ALREADY states is touched; adding the key to every library would
+    turn an override nobody wrote into an override the editor then shows.
+    """
+    rebuilt = dict(block)
+    for section, switch in (
+        ("badges", f"upload_to_{name}"),
+        ("operations", f"write_to_{name}"),
+    ):
+        stated = rebuilt.get(section)
+        if isinstance(stated, dict) and switch in stated:
+            rebuilt[section] = {**stated, switch: False}
+    return rebuilt
+
+
+def _without_server(document: dict, name: str) -> dict:
+    """``document`` with this server's section gone and every switch that still
+    points at it turned off, global and per-library alike.
+
+    The per-library half is not decoration: ``libraries.<lib>.badges`` and
+    ``libraries.<lib>.operations`` are merged OVER the global sections, so a
+    ``true`` there beats the ``false`` written here and that library would keep
+    delivering to a server this deployment no longer configures.
+    """
+    candidate = {key: value for key, value in document.items() if key != name}
+    for path in (f"badges.upload_to_{name}", f"operations.write_to_{name}"):
+        candidate = _with_path(candidate, path, False)
+    libraries = candidate.get("libraries")
+    if not isinstance(libraries, dict):
+        return candidate
+    return {
+        **candidate,
+        "libraries": {
+            library: (
+                _library_without_server(block, name)
+                if isinstance(block, dict)
+                else block
+            )
+            for library, block in libraries.items()
+        },
     }
 
 
@@ -559,8 +651,8 @@ async def save_server(
 @router.delete("/servers/{name}")
 async def remove_server(
     name: str,
+    body: ServerRemovalBody,
     request: Request,
-    body: ServerRemovalBody | None = None,
     _: SessionModel = Depends(require_session),
 ) -> dict:
     """Drop this server's block and clear its stored credential (spec §5).
@@ -573,30 +665,41 @@ async def remove_server(
 
     The block goes, and with it everything that lived in it -- for Jellyfin
     that is ``replace_thumb_with_backdrop`` and ``library_map``, which are
-    settings ABOUT a server this deployment no longer has. The two switches
-    that live elsewhere are turned off by name, because nothing else would:
-    ``badges.upload_to_<name>`` and ``operations.write_to_<name>`` would
-    otherwise stay true and describe uploads to a server that is gone.
+    settings ABOUT a server this deployment no longer has. Every switch that
+    lives somewhere else is turned off by name, because nothing else would:
+    the two global ones and, per library that states one, the per-library
+    override of the same switch. A ``true`` in a library's own block beats a
+    global ``false``, so leaving those would have one library still delivering
+    to a server the deployment no longer has -- for as long as the frozen
+    section keeps the client alive, which is until the restart.
 
-    The credential is cleared AFTER the document write commits. The other order
-    leaves a window where the block still names a server whose credential is
-    gone, which ``missing_server_setup`` reads as "not configured" -- a boot in
-    that window would serve the wizard.
+    The credential is cleared BEFORE the document write. A clear is idempotent
+    and a credential lost to a write that then fails is recoverable -- the
+    operator types it again -- while the other order's failure is silent: a
+    committed removal whose credential row survives, ready to be adopted by
+    the next deployment that re-adds the server without being asked for one.
+    Which makes the clear part of the write rather than a step beside it, so a
+    clear that fails answers its own error with nothing written.
+
+    ``reason="remove"`` rather than the default, because the pre-write snapshot
+    and the audit row are the one durable record that a server was removed, and
+    a row labelled "save" does not say that to anyone reading it later.
     """
     _known(name)
-    body = body or ServerRemovalBody()
     document, whole_store = await _stored(request)
     if not whole_store:
         raise HTTPException(status_code=409, detail=DELTA_STORE_CANNOT_REMOVE)
     if _configured(document, request.app.state.config) == [name]:
         raise HTTPException(status_code=409, detail=LAST_SERVER)
 
-    candidate = {key: value for key, value in document.items() if key != name}
-    for path in (f"badges.upload_to_{name}", f"operations.write_to_{name}"):
-        candidate = _with_path(candidate, path, False)
+    candidate = _without_server(document, name)
 
+    # Everything that can refuse this document refuses it here, before the
+    # credential is touched: `_validated_generation` persists nothing, so a
+    # 422 leaves both the document and the credential exactly as they were.
     validated_generation, persist_and_swap = _config_write()
     validated, after, whole = await validated_generation(request, candidate)
+    await clear_stored_secret(probe.SERVER_CREDENTIAL[name], request, None)
     result = await persist_and_swap(
         request,
         validated,
@@ -604,8 +707,8 @@ async def remove_server(
         whole_document=whole,
         expected_revision=body.expected_revision,
         confirm=body.confirm,
+        reason="remove",
     )
-    await clear_stored_secret(probe.SERVER_CREDENTIAL[name], request, None)
     logger.info("a media server was removed from the configuration (%s)", name)
     return result
 
@@ -644,10 +747,22 @@ async def clear_server_credential(
     now supplies the value rather than a fixed word: clearing a stored token on
     a deployment whose environment also sets one answers ``environment``, and
     the card must say so instead of claiming the server has no credential.
+
+    ``restart_required`` is the delegate's too, and it is passed through rather
+    than dropped because the card is the ONLY surface a server credential has.
+    It is true exactly when the layer taking over is one this process can no
+    longer read -- ``boot._export`` overwrote the environment's entry with the
+    row just removed, so the deployment's own value comes back at the next
+    start and not before. Answering the source without it would have the card
+    name a layer whose value is not yet the one in force.
     """
     _known(name)
     answer = await clear_stored_secret(probe.SERVER_CREDENTIAL[name], request, None)
-    return {"name": name, "credential_source": answer["source"]}
+    return {
+        "name": name,
+        "credential_source": answer["source"],
+        "restart_required": answer["restart_required"],
+    }
 
 
 class CatchUpBody(BaseModel):
