@@ -625,23 +625,29 @@ async def test_a_path_mismatch_on_the_identity_server_fails_rather_than_waiting_
     assert row.status == "failed" and row.detail == "error: PathMismatch"
 
 
-async def test_an_identity_server_that_no_longer_has_the_item_composes_without_it(
+async def test_an_identity_server_without_the_item_composes_without_it_once_the_budget_is_spent(
     session, config_with_badges, monkeypatch, caplog,
 ):
-    """An `ItemNotFound` from the identity server is a stale ref, not a
-    server that is momentarily unreachable: no retry will ever resolve it,
-    and waiting left a Jellyfin delivery `pending` forever on a Plex that had
-    nothing to say (the operator's `waits on plex (error: ItemNotFound)`).
-    The delivery lands instead, composed the way the full pass composes an
-    item with no Plex ref -- `server=None, ref=None`, so the
+    """Plex raises a bare `ItemNotFound` both for an item it has lost and for
+    one it has not finished scanning, so an identity miss is a WAIT -- but a
+    bounded one. It spends the row's budget like any other wait; once that is
+    gone the ref really is stale, and the Jellyfin delivery lands rather than
+    waiting forever on a Plex with nothing to say (the operator's
+    `waits on plex (error: ItemNotFound)`). It is composed the way the full
+    pass composes an item with no Plex ref -- `server=None, ref=None`, so the
     resolution/format overlays are dropped."""
     from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
     from autoposter.servers.registry import Servers
 
+    config_with_badges.scheduler.delivery_attempts = 2
     render = await _render(session)
-    # Ten minutes in the past rather than `retry_in=0` -- see the note in the
-    # path-mismatch test above on this machine's container clock.
-    await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=-600)
+    # Uncounted, so the two passes below are attempts 1 and 2 of the budget
+    # rather than 2 and 3 of it. Ten minutes in the past rather than
+    # `retry_in=0` -- see the note in the path-mismatch test above on this
+    # machine's container clock.
+    await deliveries.record(
+        session, render.id, "jellyfin", "pending", retry_in=-600, count_attempt=False,
+    )
     await session.commit()
 
     plex = FakeMediaServer(name="plex")
@@ -654,34 +660,59 @@ async def test_an_identity_server_that_no_longer_has_the_item_composes_without_i
 
     async def fake_compose(session, config, render, item, **kwargs):
         composed_with.update(kwargs)
+        # The fingerprint these bytes were composed under -- the column a
+        # later catch-up reads to decide whether jellyfin is behind.
+        kwargs["out"]["fingerprint"] = "fp-no-plex"
         return b"badged"
 
     monkeypatch.setattr(pipeline, "compose_badged_bytes", fake_compose, raising=False)
+    servers = Servers({"plex": plex, "jellyfin": jf})
 
     with caplog.at_level(logging.INFO, logger="autoposter.deliveries"):
-        summary = await deliveries.retry_pending_deliveries(
-            session, Servers({"plex": plex, "jellyfin": jf}), config_with_badges,
-            now=datetime.now(timezone.utc),
+        waited = await deliveries.retry_pending_deliveries(
+            session, servers, config_with_badges, now=datetime.now(timezone.utc),
         )
 
-    assert summary == (
+        # A Plex still scanning gets the whole budget: nothing is delivered
+        # yet, and the attempt is COUNTED -- which is what ends the wait.
+        assert waited == (
+            "pending deliveries: 1 due, 0 done, 1 still pending, 0 failed, 0 skipped; "
+            "jellyfin: 1 due, 0 uploaded, 0 written, 1 pending, 0 failed, 0 skipped"
+        )
+        assert jf.uploads == [], "a scan Plex has not finished is still worth waiting for"
+        # Column-only select -- see the note in test_server_removed_from_config_
+        # fails_the_delivery on why a full-entity select would read stale.
+        row = (await session.execute(
+            select(RenderDelivery.status, RenderDelivery.attempts, RenderDelivery.detail)
+        )).one()
+        assert row.status == "pending" and row.attempts == 1
+        assert row.detail == "error: ItemNotFound"
+        assert [r for r in caplog.records if r.levelno == logging.INFO] == []
+
+        landed = await deliveries.retry_pending_deliveries(
+            session, servers, config_with_badges,
+            now=datetime.now(timezone.utc) + timedelta(hours=12),
+        )
+
+    assert landed == (
         "pending deliveries: 1 due, 1 done, 0 still pending, 0 failed, 0 skipped; "
         "jellyfin: 1 due, 1 uploaded, 0 written, 0 pending, 0 failed, 0 skipped"
     )
     assert jf.uploads and jf.uploads[0][0].native_id == "j1"
     # The whole point: no identity, so the overlays that need one are dropped
-    # rather than the delivery being held back for them.
+    # rather than the delivery being held back for them forever.
     assert composed_with["server"] is None and composed_with["ref"] is None
-    # Column-only select -- see the note in test_server_removed_from_config_
-    # fails_the_delivery on why a full-entity select would read stale.
-    row = (await session.execute(select(RenderDelivery.status, RenderDelivery.detail))).one()
-    assert row.status == "uploaded"
+    row = (await session.execute(
+        select(RenderDelivery.status, RenderDelivery.fingerprint)
+    )).one()
+    assert row.status == "uploaded" and row.fingerprint == "fp-no-plex"
     said = [
         r.getMessage() for r in caplog.records
         if r.name == "autoposter.deliveries" and r.levelno == logging.INFO
     ]
     assert said == [
-        "delivery to jellyfin composes without plex's media info: it no longer has the item"
+        "delivery to jellyfin composes without plex's media info: "
+        "it does not have the item after 2 tries"
     ]
 
 

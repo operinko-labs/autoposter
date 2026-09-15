@@ -616,20 +616,42 @@ async def retry_pending_deliveries(
                         _tally(delivery.server, "failed")
                         await rollup(session, render.id)
                         continue
-                    except ItemNotFound:
-                        # The identity server no longer holds this item -- a
-                        # stale ref, which no retry resolves, so waiting on it
-                        # left a delivery owed to ANOTHER server pending
-                        # forever against a server that has nothing to say.
-                        # `identity_item` stays `None`, which is exactly the
+                    except ItemNotFound as exc:
+                        # "It does not have the item" is not "it never will":
+                        # Plex raises a bare `ItemNotFound` for a file it has
+                        # not scanned yet and for one whose media parts it is
+                        # still analysing (`plex/client.py` says so in its own
+                        # words), and this row is pending precisely because
+                        # the same new file is working its way through both
+                        # servers' scans. So this is a WAIT, and a counted one:
+                        # spec §2's "nothing retries forever" bounds it with
+                        # the attempts budget -- exactly the delivery server's
+                        # own transport arm three blocks above -- rather than
+                        # by abandoning the identity on the first miss.
+                        attempts = await record(
+                            session, render.id, delivery.server, "pending",
+                            detail=failure_detail(exc), retry_in=RETRY_SECONDS,
+                        )
+                        if attempts < max_attempts:
+                            still_pending += 1
+                            _tally(delivery.server, "pending")
+                            await rollup(session, render.id)
+                            continue
+                        # Budget spent: a scan gap would have healed by now, so
+                        # the ref really is stale, and waiting past this point
+                        # is the unbounded wait §2 rules out -- a delivery owed
+                        # to ANOTHER server held forever against a server that
+                        # has nothing to say. Fall through with `identity_item`
+                        # still `None`, which is exactly the
                         # `server=None, ref=None` the compose below already
                         # passes for an item with no Plex ref: the
                         # resolution/format overlays drop out and the delivery
-                        # lands. Correcting the ref itself belongs to the full
-                        # pass, which is what writes refs.
+                        # lands. Retiring the ref itself is the prune pass's
+                        # own work.
                         logger.info(
-                            "delivery to %s composes without %s's media info: it no longer has the item",
-                            delivery.server, identity_name,
+                            "delivery to %s composes without %s's media info: "
+                            "it does not have the item after %s tries",
+                            delivery.server, identity_name, attempts,
                         )
                     except Exception as exc:
                         # Never deliver overlay-less bytes: not being able to

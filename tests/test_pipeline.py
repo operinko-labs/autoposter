@@ -2237,9 +2237,10 @@ async def test_a_retry_waits_when_the_identity_server_cannot_be_sampled(
     """The other half of retrying via the identity server: if the identity
     server is unreachable this pass, the retry must WAIT rather than deliver
     overlay-less bytes. The row keeps its normal horizon and is reported still
-    pending; nothing is uploaded. An identity server that answers "I do not
-    have it" is the other story -- a stale ref no retry resolves, which
-    composes without it (tests/test_deliveries.py)."""
+    pending; nothing is uploaded, and the wait costs the row nothing. An
+    identity server that answers "I do not have it" waits too, but on the
+    attempts budget, and composes without the identity once that is spent
+    (tests/test_deliveries.py)."""
     from datetime import datetime, timezone
 
     from autoposter import deliveries
