@@ -28,6 +28,14 @@ import type {
 import { ProviderAttribution } from "../ProviderAttribution";
 import { ConfigSafetyPanel } from "./ConfigSafetyPanel";
 import { LibraryOverridesPanel } from "./LibraryOverridesPanel";
+import { SettingsAccordion } from "./SettingsAccordion";
+import {
+  GENERAL_TAB,
+  TABS,
+  tabForSection,
+  useOpenSection,
+  type TabId,
+} from "./settingsTabs";
 import { WebhookSecretPanel } from "./WebhookSecretPanel";
 import "./settings.css";
 
@@ -436,26 +444,45 @@ function ConfigNode({
   );
 }
 
-/** One titled panel per top-level object, in the server's own key order --
- * which is the config model's declaration order, the same order the example
- * YAML documents. Two documented exceptions to pure shape-driven rendering:
- * top-level scalars (assets_root, workers, ...) have no section of their own,
- * so they are gathered into a leading "General" panel; and `secrets` is
- * pinned last -- the server already appends it last, but an all-redacted
- * panel drifting into the middle of the page on a server refactor would be a
- * regression worth defending against here. */
-function ConfigSections({
+/** The key the "General" accordion is remembered under. Not a section name:
+ * no config section can be called this, so it can never collide with one. */
+const GENERAL_SECTION = "__general__";
+
+/** The sections of ONE tab, each in its own accordion.
+ *
+ * Shape-driven still: nothing here names a config field, and a section the
+ * server grows appears without a frontend change -- on System, which is what
+ * `tabForSection`'s fallback is for.
+ *
+ * Two documented departures from pure shape. The top-level scalars have no
+ * section of their own, so they are gathered into a "General" accordion on
+ * System; and `secrets` is not rendered from the config at all any more,
+ * because an all-redacted read-only block is a weaker answer than the panel
+ * that can actually set one.
+ *
+ * `libraries` is NOT a third omission: it is rendered here like every other
+ * section, on the Libraries tab under the per-library matrix. The matrix is
+ * the only thing that can say a cell is unset and follows the global, but it
+ * is also the only thing that cannot edit one -- a per-library list or
+ * mapping is a cell the matrix reports and this tree edits, and dropping the
+ * tree would take that edit away with it. */
+export function ConfigSections({
   config,
   editor,
+  tab,
+  openSection,
+  onOpen,
 }: {
   config: ConfigResponse;
   editor: Editor;
+  tab: TabId;
+  openSection: string | null;
+  onOpen: (section: string | null) => void;
 }) {
-  // Descriptions reach every row, including the secrets panel's -- those
-  // render `***REDACTED***` and nothing else, so the description is the only
-  // thing on the row that says anything. That is why this is a prop of its own
-  // rather than a field of `Editor`, which the secrets panel deliberately does
-  // not get.
+  // Descriptions reach every row, and a row with no editable widget -- a
+  // computed path, a shape with no editor -- has nothing else on it that says
+  // anything. That is why this is a prop of its own rather than a field of
+  // `Editor`, which such a row deliberately does not get.
   const descriptions = isPlainObject(config.field_descriptions)
     ? Object.fromEntries(
         Object.entries(config.field_descriptions).map(([key, text]) => [
@@ -464,46 +491,51 @@ function ConfigSections({
         ]),
       )
     : {};
-  // `secrets` is on that list and is the one key this page still renders: the
-  // panel below shows it read-only, and what the list means is "never send
-  // this back", which is the document's rule rather than the page's.
   const entries = Object.entries(config).filter(
-    ([key]) => key === "secrets" || !PROVENANCE_KEYS.includes(key),
+    ([key]) => !PROVENANCE_KEYS.includes(key),
   );
   const general = entries.filter(([, value]) => !isPlainObject(value));
-  const sections = entries
-    .filter((entry): entry is [string, Record<string, unknown>] =>
-      isPlainObject(entry[1]),
-    )
-    // Array.prototype.sort is stable, so everything but `secrets` keeps the
-    // server's order.
-    .sort(([a], [b]) => Number(a === "secrets") - Number(b === "secrets"));
+  const sections = entries.filter(
+    (entry): entry is [string, Record<string, unknown>] =>
+      isPlainObject(entry[1]) && tabForSection(entry[0]) === tab,
+  );
 
   return (
     <>
-      {general.length > 0 && (
-        <section className="panel config-section">
-          <h2>General</h2>
+      {/* No restart pill on General. `frozen_paths` keys are real paths, and
+          this accordion is a bag of unrelated top-level scalars -- one reason
+          pinned to its header would be wrong for every row it did not come
+          from. The rows inside still carry their own pills when edited. */}
+      {tab === GENERAL_TAB && general.length > 0 && (
+        <SettingsAccordion
+          title="General"
+          open={openSection === GENERAL_SECTION}
+          onToggle={() =>
+            onOpen(openSection === GENERAL_SECTION ? null : GENERAL_SECTION)
+          }
+        >
           <ConfigNode
             value={Object.fromEntries(general)}
             editor={editor}
             descriptions={descriptions}
           />
-        </section>
+        </SettingsAccordion>
       )}
       {sections.map(([key, value]) => (
-        <section className="panel config-section" key={key}>
-          <h2>{labelFor(key)}</h2>
-          {/* Secrets are environment-only and the API refuses a document
-              carrying one at any depth, so the panel gets no editor at all
-              rather than disabled inputs. */}
+        <SettingsAccordion
+          key={key}
+          title={labelFor(key)}
+          open={openSection === key}
+          onToggle={() => onOpen(openSection === key ? null : key)}
+          restartReason={frozenReason(editor.frozen, editor.live, key)}
+        >
           <ConfigNode
             value={value}
             path={key}
-            editor={key === "secrets" ? null : editor}
+            editor={editor}
             descriptions={descriptions}
           />
-        </section>
+        </SettingsAccordion>
       ))}
     </>
   );
@@ -578,10 +610,141 @@ function ImpactReport({
   );
 }
 
+/** One changed path: what the server holds for it, and what is pending. */
+export interface PendingChange {
+  path: string;
+  before: unknown;
+  after: unknown;
+}
+
+/** The paths this edit changes, in the served key order.
+ *
+ * The pending document is the WHOLE configuration, so the panel that used to
+ * render it as a JSON dump was showing the operator every setting the service
+ * has in order to tell them about one. What they need before committing is
+ * the difference, and only the difference. */
+export function changedPaths(
+  pending: OverridesDocument,
+  saved: OverridesDocument,
+): PendingChange[] {
+  const rows: PendingChange[] = [];
+  const walk = (after: unknown, before: unknown, path: string) => {
+    if (isPlainObject(after) && isPlainObject(before)) {
+      for (const key of new Set([
+        ...Object.keys(after),
+        ...Object.keys(before),
+      ])) {
+        walk(after[key], before[key], path === "" ? key : `${path}.${key}`);
+      }
+      return;
+    }
+    // Structural comparison, so a list rebuilt element by element is unchanged
+    // if it ends up the same list. A whole section that appeared or vanished
+    // reports as one row rather than a row per leaf -- it is one decision.
+    if (JSON.stringify(after) === JSON.stringify(before)) return;
+    rows.push({ path, before, after });
+  };
+  walk(pending, saved, "");
+  return rows;
+}
+
+/** A value as one side of a diff line.
+ *
+ * The keep sentinel is shown as itself. At a redacted path it is genuinely
+ * what the document carries, and substituting the served rendering would put
+ * a push token's bare host on screen as the value about to be replaced. */
+function diffValue(value: unknown): string {
+  if (value === undefined) return "(not set)";
+  if (typeof value === "boolean") return value ? "on" : "off";
+  if (value === "") return "(empty)";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function PendingDiff({ changes }: { changes: PendingChange[] }) {
+  return (
+    <ul className="config-diff">
+      {changes.map((change) => (
+        <li key={change.path}>
+          <code className="config-diff-path">{change.path}</code>
+          <span className="config-diff-values">
+            {`${diffValue(change.before)} → ${diffValue(change.after)}`}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Which tabs hold something unsaved. What the sticky bar names, so an
+ * operator who edited two tabs and forgot one is told which. */
+export function tabsWithPendingEdits(
+  pending: OverridesDocument,
+  saved: OverridesDocument,
+): TabId[] {
+  const keys = new Set([...Object.keys(pending), ...Object.keys(saved)]);
+  const changed = new Set<TabId>();
+  for (const key of keys) {
+    if (JSON.stringify(pending[key]) === JSON.stringify(saved[key])) continue;
+    changed.add(tabForSection(key));
+  }
+  return TABS.map((entry) => entry.id).filter((id) => changed.has(id));
+}
+
 /** Which action is in flight, if any. One value rather than three booleans:
  * the three are mutually exclusive and every button is disabled for all of
  * them, so two of three booleans would only ever be a way to disagree. */
 type Action = "preview" | "save" | "apply";
+
+/** The sticky bar: what is unsaved, where, and the four things to do with it.
+ *
+ * It names the tabs rather than the paths because the paths are already on
+ * screen, in the panel above it; what the bar adds is the edit the operator
+ * left behind on a tab they are no longer looking at. */
+export function PendingBar({
+  tabsWithEdits,
+  busy,
+  onDiscard,
+  onPreview,
+  onSave,
+  onApply,
+}: {
+  tabsWithEdits: TabId[];
+  busy: Action | null;
+  onDiscard: () => void;
+  onPreview: () => void;
+  onSave: () => void;
+  onApply: () => void;
+}) {
+  const names = tabsWithEdits
+    .map((id) => TABS.find((entry) => entry.id === id)?.label ?? id)
+    .join(", ");
+  return (
+    <div
+      className="settings-pending-bar"
+      role="region"
+      aria-label="Unsaved changes"
+    >
+      <span className="settings-pending-bar-note">
+        {`Unsaved changes on: ${names}`}
+      </span>
+      <div className="settings-pending-bar-actions">
+        <button type="button" onClick={onDiscard} disabled={busy !== null}>
+          Discard
+        </button>
+        <button type="button" onClick={onPreview} disabled={busy !== null}>
+          Preview impact
+        </button>
+        <button type="button" onClick={onSave} disabled={busy !== null}>
+          Save
+        </button>
+        <button type="button" onClick={onApply} disabled={busy !== null}>
+          Save and re-render
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export function Settings() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -606,6 +769,11 @@ export function Settings() {
   // and a stale save is followed by a re-seed that makes the pending panel
   // disappear. The operator would be told nothing at all.
   const [staleNote, setStaleNote] = useState<string | null>(null);
+  // Which tab is showing, and which of its sections is unfolded. The open
+  // section is remembered per browser and per tab, so moving between tabs
+  // does not unfold the whole page.
+  const [tab, setTab] = useState<TabId>("servers");
+  const [openSection, setOpenSection] = useOpenSection(tab);
 
   const adopt = useCallback((response: ConfigResponse) => {
     const stored = documentFromConfig(response);
@@ -614,6 +782,10 @@ export function Settings() {
     setPendingDocument(stored);
     setStoredRevision(revisionFromConfig(response));
   }, []);
+
+  const reload = useCallback(async () => {
+    adopt(await apiFetch<ConfigResponse>("/api/config"));
+  }, [adopt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -683,8 +855,20 @@ export function Settings() {
     },
   };
 
-  const pending = JSON.stringify(pendingDocument, null, 2);
-  const dirty = pending !== JSON.stringify(savedDocument, null, 2);
+  const changes = changedPaths(pendingDocument, savedDocument);
+  const dirty = changes.length > 0;
+
+  /** Throw the pending edit away and go back to what the server holds.
+   *
+   * Everything the edit produced goes with it: a preview counts a document
+   * that no longer exists, and the field errors and the save error were both
+   * reported against it. */
+  function discard() {
+    setPendingDocument(savedDocument);
+    setPreview(null);
+    setErrors({});
+    setSaveError(null);
+  }
 
   /** The three actions, which differ only in the request they send.
    *
@@ -763,71 +947,100 @@ export function Settings() {
       </div>
 
       {error !== null && <p className="page-error">{error}</p>}
+      {/* Deliberately outside the pending panel: a stale save is followed by a
+          re-seed that makes that panel disappear, taking the explanation with
+          it. */}
+      {staleNote !== null && <p className="page-error">{staleNote}</p>}
 
-      <section className="panel attribution">
-        <ProviderAttribution />
-      </section>
+      <div
+        className="settings-tabs"
+        role="tablist"
+        aria-label="Settings sections"
+      >
+        {TABS.map((entry) => (
+          <button
+            key={entry.id}
+            id={`settings-tab-${entry.id}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === entry.id}
+            className={tab === entry.id ? "settings-tab current" : "settings-tab"}
+            onClick={() => setTab(entry.id)}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </div>
 
-      <section className="panel">
-        <h2>Running configuration</h2>
-        <p className="muted config-note">
-          Edit a field and save to store it as an override. Overrides are kept
-          by this service and merged over the deployed configuration file;
-          clearing one hands the setting back to that file. Secrets are
-          redacted by the server, never sent to this page, and never editable
-          here.
-        </p>
+      <div role="tabpanel" aria-labelledby={`settings-tab-${tab}`}>
         {config === null && <p className="muted">Loading…</p>}
-        {staleNote !== null && <p className="page-error">{staleNote}</p>}
-        {result !== null && (
-          <>
-            <p className="config-saved">
-              {`Saved. Render version ${result.version_before} → ${result.version_after}.`}
-            </p>
-            {/* Only an apply reports a queue, and it reports both halves: the
-                skipped items are ones the pending-dedupe arbiter found a job
-                already waiting for, not ones that failed. */}
-            {"queued" in result && (
-              <p className="config-queued">
-                {`Queued ${result.queued} items to re-render, ${result.skipped} already queued.`}
-              </p>
-            )}
-            {result.restart_required.length > 0 && (
-              <p className="config-restart">
-                {`Restart required to apply: ${result.restart_required.join(", ")}`}
-              </p>
-            )}
-            {/* Distinct from restart_required on purpose: these paths are
-                frozen into the running application object itself, so not even
-                a restart reaches them -- only editing the mounted config file
-                does. Folding them into "restart required" would promise an
-                operator a fix that restarting can never deliver. */}
-            {(result.inert ?? []).length > 0 && (
-              <p className="config-inert">
-                {`Has no effect until it changes in the deployed config file: ${(result.inert ?? []).join(", ")}`}
-              </p>
-            )}
-          </>
+        {config !== null && tab === "libraries" && (
+          <LibraryOverridesPanel config={config} editor={editor} />
         )}
-      </section>
+        {config !== null && (
+          <ConfigSections
+            config={config}
+            editor={editor}
+            tab={tab}
+            openSection={openSection}
+            onOpen={setOpenSection}
+          />
+        )}
+        {config !== null && tab === "system" && (
+          <ConfigSafetyPanel revision={storedRevision} onChanged={reload} />
+        )}
+        {/* Not gated on the config load: rotating the webhook secret is how an
+            operator recovers a deployment whose config read is what failed. */}
+        {tab === "system" && <WebhookSecretPanel />}
+        {/* TMDB's and TheTVDB's notices are a licence condition of showing
+            their artwork and metadata, so they sit on the tab where that
+            lives -- and, for the same reason, they do not wait for a config
+            load that may never succeed. */}
+        {tab === "artwork" && (
+          <section className="panel attribution">
+            <ProviderAttribution />
+          </section>
+        )}
+      </div>
 
-      {config !== null && (
-        <ConfigSafetyPanel
-          revision={storedRevision}
-          onChanged={async () => {
-            adopt(await apiFetch<ConfigResponse>("/api/config"));
-          }}
-        />
+      {result !== null && (
+        <section className="panel config-result">
+          <p className="config-saved">
+            {`Saved. Render version ${result.version_before} → ${result.version_after}.`}
+          </p>
+          {/* Only an apply reports a queue, and it reports both halves: the
+              skipped items are ones the pending-dedupe arbiter found a job
+              already waiting for, not ones that failed. */}
+          {"queued" in result && (
+            <p className="config-queued">
+              {`Queued ${result.queued} items to re-render, ${result.skipped} already queued.`}
+            </p>
+          )}
+          {result.restart_required.length > 0 && (
+            <p className="config-restart">
+              {`Restart required to apply: ${result.restart_required.join(", ")}`}
+            </p>
+          )}
+          {/* Distinct from restart_required on purpose: these paths are built
+              into the application object before any override is read, so no
+              swap reaches them even in part. The restart that does apply them
+              reads the stored document, which is why this says restart rather
+              than promising something a reload could deliver. */}
+          {(result.inert ?? []).length > 0 && (
+            <p className="config-inert">
+              {`Takes effect at the next restart: ${(result.inert ?? []).join(", ")}`}
+            </p>
+          )}
+        </section>
       )}
-
-      <WebhookSecretPanel />
 
       {dirty && (
         <section className="panel config-pending">
           <h2>Pending changes</h2>
-          {/* The document itself, because it is what will be stored and what
-              every error below is reported against. */}
-          <pre className="config-document">{pending}</pre>
+          {/* The difference, not the document. The document is the whole
+              configuration, so rendering it would bury one edit in several
+              hundred unchanged settings. */}
+          <PendingDiff changes={changes} />
           {saveError !== null && <p className="page-error">{saveError}</p>}
           {/* An error naming a path that is not in the document has no field
               to sit at -- a malformed body reports at the body itself. It is
@@ -853,50 +1066,33 @@ export function Settings() {
               )}
               {(preview.inert ?? []).length > 0 && (
                 <p className="config-inert">
-                  {`Has no effect until it changes in the deployed config file: ${(preview.inert ?? []).join(", ")}`}
+                  {`Takes effect at the next restart: ${(preview.inert ?? []).join(", ")}`}
                 </p>
               )}
             </>
           )}
           {/* The two commits differ in what happens to the artwork, not in
-              what gets stored, and that is the whole of the choice being
-              offered here. */}
+              what gets stored, and that is the whole of the choice the bar
+              below is offering. */}
           <p className="muted config-actions-note">
-            Save only stores the change and leaves the artwork alone — the
-            drift sweep and the full pass pick the new fingerprints up in their
-            own time. Apply now stores it and queues the affected items
+            Save stores the change and leaves the artwork alone — the drift
+            sweep and the full pass pick the new fingerprints up in their own
+            time. Save and re-render stores it and queues the affected items
             straight away.
           </p>
-          <div className="config-actions">
-            <button
-              type="button"
-              onClick={() => void submit("preview")}
-              disabled={busy !== null}
-            >
-              Preview
-            </button>
-            <button
-              type="button"
-              onClick={() => void submit("save")}
-              disabled={busy !== null}
-            >
-              Save only
-            </button>
-            <button
-              type="button"
-              onClick={() => void submit("apply")}
-              disabled={busy !== null}
-            >
-              Apply now
-            </button>
-          </div>
         </section>
       )}
 
-      {config !== null && (
-        <LibraryOverridesPanel config={config} editor={editor} />
+      {dirty && (
+        <PendingBar
+          tabsWithEdits={tabsWithPendingEdits(pendingDocument, savedDocument)}
+          busy={busy}
+          onDiscard={discard}
+          onPreview={() => void submit("preview")}
+          onSave={() => void submit("save")}
+          onApply={() => void submit("apply")}
+        />
       )}
-      {config !== null && <ConfigSections config={config} editor={editor} />}
     </>
   );
 }

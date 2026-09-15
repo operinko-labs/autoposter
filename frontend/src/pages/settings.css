@@ -126,11 +126,22 @@
   font-size: 12px;
 }
 
+.config-result,
 .config-pending {
   margin-top: 16px;
 }
 
-.config-document {
+/* .config-saved and its siblings carry a top margin for sitting under
+   something else inside a panel. Here one of them leads the panel. */
+.config-result > :first-child {
+  margin-top: 0;
+}
+
+/* One line per changed path: the path, then what it moves from and to. The
+   two columns hold their own width so a run of changes reads as a column of
+   paths rather than as ragged prose. */
+.config-diff {
+  list-style: none;
   max-height: 40vh;
   overflow: auto;
   margin: 0 0 10px;
@@ -139,6 +150,23 @@
   border-radius: 4px;
   background: var(--surface);
   font-size: 12px;
+}
+
+.config-diff li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 3px 0;
+}
+
+.config-diff-path {
+  flex: 0 0 220px;
+  color: var(--text-muted);
+}
+
+.config-diff-values {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .config-impact {
@@ -173,12 +201,6 @@
 .config-actions-note {
   margin: 0 0 10px;
   font-size: 12px;
-}
-
-.config-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 .config-saved,
@@ -249,6 +271,17 @@
   .config-list-item {
     max-width: 100%;
   }
+
+  /* Same reason as .config-row: a 220px path column leaves nothing for the
+     values beside it. */
+  .config-diff li {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .config-diff-path {
+    flex: 0 0 auto;
+  }
 }
 
 /* Roadmap row 92's matrix. Wide by construction -- one column per library --
@@ -288,6 +321,65 @@
 .library-cell-note {
   font-size: 0.85em;
   margin-left: 0.4rem;
+}
+
+/* The tab bar. Wraps rather than scrolls: seven labels fit two rows on a
+   phone, and a row that scrolls sideways hides the tabs an operator has not
+   thought to look for. */
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+  padding: 6px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  background: var(--surface-hover);
+  color: inherit;
+}
+
+.settings-tab.current {
+  border-bottom-color: var(--accent);
+  color: inherit;
+}
+
+/* Pinned to the bottom of the viewport so the four commits stay reachable
+   from anywhere in a long tab, which is the whole point of one pending
+   change shared across all of them. */
+.settings-pending-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  font-size: 13px;
+}
+
+.settings-pending-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .settings-accordion {

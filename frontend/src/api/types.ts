@@ -796,11 +796,12 @@ export type ConfigResponse = Record<string, unknown>;
 export type OverridesDocument = Record<string, unknown>;
 
 /** PUT /api/config/overrides. `restart_required` lists the dotted paths the
- * running process cannot pick up without one. `inert` lists paths a restart
- * cannot pick up *either* -- currently just `api_docs_enabled`, which FastAPI
- * bakes into the application object before any override is read, so only
- * editing the mounted config file moves it. Kept out of `restart_required`
- * so that list stays a promise the page can keep. Optional/absent reads as
+ * running process cannot pick up without one. `inert` lists paths no swap
+ * reaches even in part -- currently just `api_docs_enabled`, which FastAPI
+ * bakes into the application object before any override is read, so only a
+ * restart moves it, and the restart reads the stored document rather than
+ * the merged overrides. Kept out of `restart_required` so that list stays a
+ * promise the page can keep. Optional/absent reads as
  * empty, so a response from before this field existed still renders. */
 export interface ConfigSaveResponse {
   version_before: string;

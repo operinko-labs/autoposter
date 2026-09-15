@@ -10,7 +10,8 @@
  *
  * It writes through the page's own `Editor` rather than fetching anything,
  * and that is the decision everything else falls out of. One pending
- * document, so Preview / Save only / Apply now all carry these edits. The
+ * document, so the page's one pending bar -- Preview impact, Save, Save and
+ * re-render -- carries these edits along with every other tab's. The
  * document helpers, so setting writes exactly one dotted path and clearing
  * DELETES it -- `withoutPath` prunes an emptied branch, so a library row can
  * never be left behind as the `{}` the API refuses. The page's revision
@@ -170,7 +171,7 @@ export function LibraryOverridesPanel({
     <section className="panel config-section library-overrides">
       <h2>Per-library overrides</h2>
       <p className="muted config-note">
-        Each library uses the settings above unless it says otherwise here.
+        Each library uses the global setting unless it says otherwise here.
         Choosing <strong>inherit</strong> removes the setting from this
         library rather than copying today&apos;s value into it, so a later
         change to the deployed configuration still reaches it. This panel
@@ -180,7 +181,7 @@ export function LibraryOverridesPanel({
       <p className="muted config-note">
         List and mapping settings (ignore lists, overlay families, the genre
         and content-rating mappers, field verbs) are shown here but edited in
-        the section below, once the library has a value for them.
+        the Libraries section below, once the library has a value for them.
       </p>
       <div className="library-overrides-scroll">
         <table className="library-overrides-table">
