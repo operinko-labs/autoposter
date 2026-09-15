@@ -649,8 +649,8 @@ Practical consequences:
 - **Restart now** is `POST /api/system/restart`, and it re-executes boot the
   way the first-start wizard's finish step does — an `os.execv` of
   `python -m autoposter.boot`, same PID, no supervisor. It refuses in three
-  cases: when `WEB_CONCURRENCY` or `UVICORN_WORKERS` declares more than one
-  worker on the port; while a run that lives in this process is in flight (a
+  cases: when the process is declared to run more than one worker on the port
+  (the two variables it reads are named under "Radarr / Sonarr webhooks"); while a run that lives in this process is in flight (a
   full pass, a scheduled job — **not** a catch-up, whose state is rows in the
   database and whose drain resumes on the other side of the boot); and while
   the process-wide mode lock is held, which answers one of two sentences —
@@ -3836,7 +3836,6 @@ to a media server, or a restart is already under way from an earlier press. That
 guard is asked last on purpose — it is the only one that has to still be true at
 the instant of the exec, and the only one this process can hold true by taking
 the lock and keeping it.
-
 The run guard has a ceiling of its own: an *orphaned* open run row — one left
 `running` by a process that was killed mid-pass, which nothing reconciles except
 the next pass of that same job — keeps refusing until it is older than the full
