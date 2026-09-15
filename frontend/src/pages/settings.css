@@ -477,3 +477,58 @@
 .settings-accordion-body {
   margin-top: 12px;
 }
+
+/* One server's card, inside the Servers tab's accordion. The accordion is the
+   panel, so the card adds no box of its own: a second bordered surface inside
+   it would be a fourth level of visual nesting where the page allows three
+   (tab, accordion, row). What is left is the heading, which carries the
+   connection pill beside the server's name. */
+.server-card h2 {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The managed-library tick-list. The legend is the label, and the fieldset's
+   own border is dropped for the reason the card has no panel. */
+.server-libraries {
+  margin: 12px 0;
+  padding: 0;
+  border: none;
+}
+
+.server-libraries legend {
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.server-libraries label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 13px;
+}
+
+/* A card's own buttons: it saves as a unit rather than joining the page's
+   pending change, so its actions sit with its fields instead of in the
+   sticky bar. */
+.config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* A removal's confirmation: the sentence and its two buttons on one wrapping
+   line, the shape .config-drift-confirm already uses for the same question. */
+.config-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
