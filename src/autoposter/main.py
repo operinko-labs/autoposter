@@ -111,28 +111,38 @@ LISTEN_HOST_ENV = "AUTOPOSTER_HOST"
 LISTEN_PORT_ENV = "AUTOPOSTER_PORT"
 DEFAULT_LISTEN_HOST = "0.0.0.0"
 DEFAULT_LISTEN_PORT = 8080
+#: The largest number a TCP port can be. Above it -- and at zero, which asks
+#: the kernel for an arbitrary port nothing could then be told about -- the
+#: value is treated as the typo it is.
+MAXIMUM_PORT = 65535
 
 
 def listen_address() -> tuple[str, int]:
     """``(host, port)``, from the environment, with the shipped defaults.
 
-    A port that is not an integer falls back to the default with a WARNING
-    rather than crashing the boot: the alternative is a deployment that will
-    not start over a typo in an optional variable, with no UI left to fix it.
+    A port that is not an integer, or is an integer no socket can be bound to,
+    falls back to the default with a WARNING rather than crashing the boot: the
+    alternative is a deployment that will not start over a typo in an optional
+    variable, with no UI left to fix it. The range check is half of that
+    promise -- ``65536`` parses perfectly and then fails at bind, which is the
+    same dead deployment by a later route.
     """
     host = os.environ.get(LISTEN_HOST_ENV) or DEFAULT_LISTEN_HOST
     raw = os.environ.get(LISTEN_PORT_ENV) or ""
     if not raw:
         return host, DEFAULT_LISTEN_PORT
     try:
-        return host, int(raw)
+        port = int(raw)
     except ValueError:
+        port = 0
+    if not 1 <= port <= MAXIMUM_PORT:
         logger.warning(
             "%s is not a port number; listening on %d",
             LISTEN_PORT_ENV,
             DEFAULT_LISTEN_PORT,
         )
         return host, DEFAULT_LISTEN_PORT
+    return host, port
 
 
 def build() -> FastAPI:

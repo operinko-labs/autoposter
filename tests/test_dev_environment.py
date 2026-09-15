@@ -14,11 +14,12 @@ from pathlib import Path
 
 import yaml
 
+from autoposter import main
+
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO / "Dockerfile"
 COMPOSE = REPO / "docker-compose.yml"
 VITE_CONFIG = REPO / "frontend" / "vite.config.ts"
-MAIN = REPO / "src" / "autoposter" / "main.py"
 
 
 def _stages() -> list[str]:
@@ -226,15 +227,15 @@ def test_the_test_service_needs_no_secrets():
 
 
 def _uvicorn_port() -> int:
-    """The port ``main()`` actually binds."""
-    # Non-greedy across anything, because the call is
-    # `uvicorn.run(build(), host=..., port=...)` -- a `[^)]*` would stop at the
-    # closing paren of `build()` and find no port at all.
-    match = re.search(
-        r"uvicorn\.run\(.*?port=(\d+)", MAIN.read_text(encoding="utf-8"), re.DOTALL
-    )
-    assert match, "no `uvicorn.run(..., port=...)` call found in main.py"
-    return int(match.group(1))
+    """The port ``main()`` binds when nothing in the environment says otherwise.
+
+    The value rather than the call site: the port is read from the environment
+    now (``AUTOPOSTER_HOST``/``AUTOPOSTER_PORT``, so a restarted process comes
+    back where the operator reached it), and ``uvicorn.run(..., port=port)``
+    holds no digit to parse. The default is what the dev stack runs on, which
+    is the fact this file is about.
+    """
+    return main.DEFAULT_LISTEN_PORT
 
 
 def test_the_vite_proxy_targets_the_port_the_app_binds():

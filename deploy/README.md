@@ -3610,6 +3610,20 @@ four categories:
 The app listens on port `8080` — point the Kubernetes Service, the probes
 (`/healthz`) and these webhook URLs at it.
 
+`AUTOPOSTER_HOST` and `AUTOPOSTER_PORT` override that address (defaults
+`0.0.0.0` and `8080`), and `.env.example` carries the same two names for the
+Compose path. They are read from the environment rather than compiled in
+because the Settings page's Restart button replaces the process with a fresh
+boot, and the new process has to come back on the address the operator reached
+it on; the environment survives the exec, so it does — and the first-start
+wizard binds the same address, so a manual install keeps its port from its very
+first screen. Setting the port is only half the move: nothing propagates it, so
+the Service, **both** probes, the webhook URLs above and the Compose port
+mapping have to be changed by hand to the same number. A value that is not a
+port number — a typo, or a number outside 1–65535 — is ignored with a warning
+and the default is used, rather than killing a boot that would then have no UI
+left to fix it from.
+
 Configure Radarr and Sonarr with a webhook notification pointing at this
 service's webhook URL (`/webhook/radarr` and `/webhook/sonarr` respectively),
 with a custom header `X-Autoposter-Token` set to the same value as
