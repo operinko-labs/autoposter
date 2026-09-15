@@ -8,17 +8,23 @@
  * naming a library nothing carries would leave every item in it permanently
  * pending. A name typed by hand cannot be checked against anything, so there
  * is no field here to type one into -- every name on this panel came from a
- * server's own listing.
+ * server's own listing, THE STORED MAP INCLUDED: a stored pair naming a folder
+ * Jellyfin no longer lists is dropped at seeding and said out loud, because a
+ * row the dropdown cannot display is a row the panel would otherwise submit
+ * behind the operator's back and have refused.
  *
  * SAME-NAMED LIBRARIES PAIR THEMSELVES. A row whose two names match is shown
  * as paired and the server drops it from what it stores, so the panel sends
  * every row it shows and the server decides which of them are worth keeping.
- * A map that comes out empty leaves no key behind at all.
+ * A map that comes out empty leaves no key behind at all. The one exception is
+ * a folder another row's stored pair has already claimed: the index resolves
+ * that folder to the other Plex library, so this row is genuinely unpaired and
+ * is seeded that way.
  *
  * ONE JELLYFIN LIBRARY, ONE PLEX LIBRARY. The server refuses a second claim on
  * a folder, and this panel takes the option off the other rows' dropdowns so
  * the refusal is something an operator can only reach by racing themselves --
- * the server's sentence is still rendered if it arrives.
+ * the server's sentence is still rendered if it arrives anyway.
  *
  * THE READS ARE INDEPENDENT OF EACH OTHER. A server that refuses its listing
  * puts its own sentence on the panel and leaves the rest of it working, rather
@@ -50,8 +56,9 @@ interface MapProblem {
 /** The refused rows in a 422, or an empty list for a refusal of another shape.
  *
  * An entry without a `library` is left out rather than guessed at: the request
- * validator's own 422 has no such field, and it is about the body rather than
- * about a row, so it goes to `refusalMessage` with everything else. */
+ * validator's own 422 has no such field, and neither has the store's drop cap,
+ * and both are about the body rather than about a row -- so they go to
+ * `refusalMessage` with everything else. */
 function mapProblems(caught: unknown): MapProblem[] {
   if (!(caught instanceof ApiError) || caught.status !== 422) return [];
   if (!Array.isArray(caught.detail)) return [];
@@ -64,6 +71,26 @@ function mapProblems(caught: unknown): MapProblem[] {
     rows.push({ library: entry.library, message: entry.message });
   }
   return rows;
+}
+
+/** Whether this refusal is the store's drop cap, which asks to be overruled.
+ *
+ * Every pair is a document path of its own, so an operator clearing four rows
+ * of a real map crosses the cap and is refused with a sentence naming an
+ * action -- and, without the tick box this turns on, an action this panel
+ * could not perform. Recognised by the sentence rather than by a code of its
+ * own because the store has none: it is a 422 about `document`, the same shape
+ * the request validator's is, and only the instruction tells them apart. */
+function asksToBeOverruled(caught: unknown): boolean {
+  if (!(caught instanceof ApiError) || caught.status !== 422) return false;
+  if (!Array.isArray(caught.detail)) return false;
+  return caught.detail.some(
+    (entry) =>
+      isPlainObject(entry) &&
+      entry.path === "document" &&
+      typeof entry.message === "string" &&
+      entry.message.includes("confirm: true"),
+  );
 }
 
 /** The stored map inside a served configuration.
@@ -103,10 +130,13 @@ export function LibraryMapPanel({
   const [plex, setPlex] = useState<LibraryRow[] | null>(null);
   const [jellyfin, setJellyfin] = useState<LibraryRow[]>([]);
   const [pairs, setPairs] = useState<Record<string, string>>({});
+  const [dropped, setDropped] = useState<string[]>([]);
   const [readError, setReadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [problems, setProblems] = useState<MapProblem[]>([]);
   const [note, setNote] = useState<string | null>(null);
+  const [overrule, setOverrule] = useState(false);
+  const [asked, setAsked] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // Read when the section is opened rather than at mount: three requests, two
@@ -115,6 +145,21 @@ export function LibraryMapPanel({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
+    // Everything the last opening left behind goes first, the rows included. A
+    // success note standing over freshly-read rows claims a save that is no
+    // longer what the screen shows, and per-row refusals outlive the values
+    // that earned them; putting the rows back to "not read yet" is also what
+    // puts the loading line back while these three are in flight.
+    setPlex(null);
+    setJellyfin([]);
+    setPairs({});
+    setDropped([]);
+    setReadError(null);
+    setError(null);
+    setProblems([]);
+    setNote(null);
+    setOverrule(false);
+    setAsked(false);
     const failures: string[] = [];
     // Each read is settled on its own, so one server's refusal does not take
     // the other server's listing and the stored map down with it.
@@ -136,19 +181,47 @@ export function LibraryMapPanel({
       if (cancelled) return;
       const stored = storedMap(config);
       const jellyfinNames = new Set(jellyfinRows.map((row) => row.name));
+      // Folders the stored map has already given to a Plex library. A second
+      // row cannot have one: the index resolves a folder to exactly one Plex
+      // library, so the row that did not get it is unpaired however its name
+      // reads.
+      const claimedByStored = new Set(Object.values(stored));
+      const seeded: Record<string, string> = {};
+      const lost: string[] = [];
+      for (const row of plexRows) {
+        const pair = stored[row.name];
+        if (pair !== undefined) {
+          if (jellyfinNames.has(pair)) {
+            seeded[row.name] = pair;
+          } else {
+            // Dropped rather than carried: the dropdown has no option for it,
+            // so a row that kept it would read as unpaired and submit the
+            // vanished name anyway -- and be refused for naming a library
+            // Jellyfin does not list. An ordinary rename lands here, and that
+            // is the repair this panel is for, so it is said rather than
+            // quietly fixed.
+            seeded[row.name] = "";
+            lost.push(
+              `${row.name} was paired with a Jellyfin library called ${pair}, ` +
+                "which Jellyfin no longer lists, so this row is now unpaired.",
+            );
+          }
+          continue;
+        }
+        // A row with no stored pair shows its OWN name when Jellyfin lists one
+        // by that name: that is the pairing, and showing it as "not paired"
+        // would invite a fix for something that is not broken. Unless another
+        // row's stored pair already holds that folder, in which case this row
+        // really is unpaired.
+        seeded[row.name] =
+          jellyfinNames.has(row.name) && !claimedByStored.has(row.name)
+            ? row.name
+            : "";
+      }
       setPlex(plexRows);
       setJellyfin(jellyfinRows);
-      // A row with no stored pair shows its OWN name when Jellyfin lists one
-      // by that name: that is the pairing, and showing it as "not paired"
-      // would invite an operator to fix something that is not broken.
-      setPairs(
-        Object.fromEntries(
-          plexRows.map((row) => [
-            row.name,
-            stored[row.name] ?? (jellyfinNames.has(row.name) ? row.name : ""),
-          ]),
-        ),
-      );
+      setPairs(seeded);
+      setDropped(lost);
       setReadError(failures.length === 0 ? null : failures.join(" "));
     })();
     return () => {
@@ -162,6 +235,7 @@ export function LibraryMapPanel({
     setError(null);
     setProblems([]);
     setNote(null);
+    setAsked(false);
     try {
       // Only the rows that name a Jellyfin library. An unpaired row is the
       // absence of a pair, and the route stores the whole map it is sent, so
@@ -169,7 +243,7 @@ export function LibraryMapPanel({
       const filled = Object.fromEntries(
         Object.entries(pairs).filter(([, value]) => value !== ""),
       );
-      await saveLibraryMap(filled, revision);
+      await saveLibraryMap(filled, revision, overrule);
       await onChanged();
       // The map's leaf paths do land on the restart list: the Jellyfin client
       // and its library index are built once at startup from the stored map,
@@ -179,12 +253,18 @@ export function LibraryMapPanel({
       const refused = mapProblems(caught);
       if (refused.length > 0) setProblems(refused);
       else setError(refusalMessage(caught));
+      setAsked(asksToBeOverruled(caught));
     } finally {
+      // Dropped whether the save landed or was refused, the way the two other
+      // panels offering this tick do it: it authorises the press that was
+      // made, never the next one.
+      setOverrule(false);
       setBusy(false);
     }
   }
 
   const writable = revision !== null;
+  const read = plex !== null;
   /** The Jellyfin libraries some OTHER row has already claimed. */
   function claimedBesides(plexName: string): Set<string> {
     const claimed = new Set<string>();
@@ -199,11 +279,16 @@ export function LibraryMapPanel({
       <p className="muted config-note">
         Pair each Plex library with the Jellyfin library that holds the same
         items. Libraries called the same thing on both servers pair themselves,
-        so those rows are not stored. Every name here comes from the servers&apos;
-        own listings, and each Jellyfin library can be paired with one Plex
-        library.
+        so those rows are not stored and cannot be cleared. Every name here
+        comes from the servers&apos; own listings, and each Jellyfin library can
+        be paired with one Plex library.
       </p>
       {readError !== null && <p className="page-error">{readError}</p>}
+      {dropped.map((sentence) => (
+        <p className="muted config-note" key={sentence}>
+          {sentence}
+        </p>
+      ))}
       {error !== null && <p className="page-error">{error}</p>}
       {problems.map((problem) => (
         <p
@@ -212,14 +297,15 @@ export function LibraryMapPanel({
         >{`${problem.library}: ${problem.message}`}</p>
       ))}
       {note !== null && <p className="config-saved">{note}</p>}
-      {plex === null && <p className="muted">Loading…</p>}
+      {!read && <p className="muted">Loading…</p>}
       {/* Only when the read itself succeeded: an empty list after a refused
           read is this panel's fallback rather than Plex's answer, and saying
           Plex listed nothing would be putting words in its mouth. */}
-      {plex !== null && plex.length === 0 && readError === null && (
+      {read && plex.length === 0 && readError === null && (
         <p className="muted">Plex listed no libraries, so there is nothing to pair.</p>
       )}
       {(plex ?? []).map((row) => {
+        const value = pairs[row.name] ?? "";
         const claimed = claimedBesides(row.name);
         return (
           <div className="config-row" key={row.id}>
@@ -227,7 +313,7 @@ export function LibraryMapPanel({
             <span className="config-value">
               <select
                 aria-label={row.name}
-                value={pairs[row.name] ?? ""}
+                value={value}
                 disabled={busy}
                 onChange={(event) =>
                   setPairs((current) => ({
@@ -243,8 +329,11 @@ export function LibraryMapPanel({
                     value={option.name}
                     // Taken by another row. The server refuses a second claim
                     // on one folder, and a dropdown that offered the choice
-                    // would be offering a refusal.
-                    disabled={claimed.has(option.name)}
+                    // would be offering a refusal. This row's OWN value is
+                    // never taken from it, or a stored map that pairs one
+                    // folder twice would grey out the selection showing in the
+                    // box and leave no way back to it.
+                    disabled={claimed.has(option.name) && option.name !== value}
                   >
                     {option.name}
                   </option>
@@ -253,7 +342,11 @@ export function LibraryMapPanel({
               <button
                 type="button"
                 aria-label={`Clear ${row.name}`}
-                disabled={busy || (pairs[row.name] ?? "") === ""}
+                // A same-named row cannot be cleared: the two servers pair it
+                // whether the map says so or not, so clearing it would look
+                // like an action and come back at the next read. The note
+                // above says why.
+                disabled={busy || value === "" || value === row.name}
                 onClick={() =>
                   setPairs((current) => ({ ...current, [row.name]: "" }))
                 }
@@ -264,8 +357,24 @@ export function LibraryMapPanel({
           </div>
         );
       })}
+      {/* Offered only once the store has refused for this reason, so the
+          ordinary save stays one press and this one is deliberate. */}
+      {asked && (
+        <label className="config-confirm">
+          <input
+            type="checkbox"
+            checked={overrule}
+            onChange={(event) => setOverrule(event.target.checked)}
+          />
+          Allow this to remove settings I have saved
+        </label>
+      )}
       <div className="config-actions">
-        <button type="button" disabled={busy || !writable} onClick={() => void save()}>
+        <button
+          type="button"
+          disabled={busy || !writable || !read}
+          onClick={() => void save()}
+        >
           Save the map
         </button>
       </div>
