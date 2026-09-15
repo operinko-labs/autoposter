@@ -255,6 +255,12 @@ def test_a_field_carries_the_kind_its_annotation_declares():
     assert kinds["jellyfin.library_map"] == "object"
     # A submodel is an object too -- it is a section heading, not a row.
     assert kinds["plex"] == "object"
+    # A closed set of words is a string, not an object. All seven of these
+    # are `Literal[...] | None` and default to unset, so `object` here was
+    # `(not set)` and no control on the tab they all live on.
+    assert kinds["operations.genres_source"] == "string"
+    assert kinds["operations.user_rating_source"] == "string"
+    assert kinds["libraries.{}.operations.original_title_source"] == "string"
 
 
 def test_an_optional_scalar_carries_the_kind_under_the_optional():
@@ -282,14 +288,24 @@ def test_an_optional_scalar_carries_the_kind_under_the_optional():
 
 
 def _is_optional_scalar(annotation) -> bool:
-    """``X | None`` where X is one of the four kinds with a control."""
+    """``X | None`` where X is a kind the page has a control for.
+
+    A ``Literal`` of strings counts, and the omission was what let the walk
+    answer ``object`` for the seven metadata sources while this test reported
+    green over the exact defect it is named for: every one of them is
+    ``Literal[...] | None``, so every one of them was skipped here.
+    """
     from types import UnionType
-    from typing import Union, get_origin
+    from typing import Literal, Union, get_origin
 
     if get_origin(annotation) not in (Union, UnionType):
         return False
     present = [arg for arg in get_args(annotation) if arg is not type(None)]
-    return len(present) == 1 and present[0] in (bool, int, float, str)
+    if len(present) != 1:
+        return False
+    if get_origin(present[0]) is Literal:
+        return all(isinstance(arg, str) for arg in get_args(present[0]))
+    return present[0] in (bool, int, float, str)
 
 
 def _field_at(path: str):

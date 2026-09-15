@@ -44,7 +44,7 @@ setting on the page was one the operator could not set, which is the whole
 reason this second walk is here. The schema knows, and this is how it says so.
 """
 from types import UnionType
-from typing import Annotated, Union, get_args, get_origin
+from typing import Annotated, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -149,9 +149,20 @@ def _kind_of(annotation) -> str:
     ``Optional[X]``, ``X | None`` and ``Annotated[X, ...]`` are wrappers, not
     kinds: an optional string is a string, and it is precisely the optional
     fields whose served value is ``null`` that this walk exists for.
+
+    A ``Literal`` of strings answers ``string``. It is a closed set of words
+    and a control that offered the words would be better, but the seven
+    ``Literal[...] | None`` sources on the metadata side (``genres_source``
+    and its siblings) are unset by default and served as ``null``, so
+    ``object`` here is the difference between a text box and no control at
+    all -- and the per-library matrix has always given the same fields a text
+    box, which made the global the only one of the two that could not be set.
     """
     if get_origin(annotation) is Annotated:
         return _kind_of(get_args(annotation)[0])
+    if get_origin(annotation) is Literal:
+        args = get_args(annotation)
+        return "string" if all(isinstance(arg, str) for arg in args) else "object"
     if get_origin(annotation) in (Union, UnionType):
         present = [arg for arg in get_args(annotation) if arg is not type(None)]
         return _kind_of(present[0]) if len(present) == 1 else "object"
