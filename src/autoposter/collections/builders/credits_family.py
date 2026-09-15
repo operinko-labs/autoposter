@@ -467,7 +467,7 @@ class CreditsFamilyBuilder:
             return actions + ["%r built nothing: %s" % (definition.title, why)]
 
         # The narrowing between the cap and the built family, reported rather
-        # than left to be inferred from a short list (review F13).
+        # than left to be inferred from a short list.
         if len(titled) < len(capped):
             actions.append(
                 "%r: %d of the %d most-credited %s(s) built no collection "
