@@ -570,7 +570,8 @@ def main(argv: list[str] | None = None) -> None:
         # locals would dump every partially-resolved plaintext credential this
         # deployment does already have. `stored` holds the same plaintext one
         # layer up and goes with it.
-        del resolved, stored
+        # `secrets_read.values` is that same dict under a third name.
+        del resolved, stored, secrets_read
         # The stored document goes with it, for the reason the export above
         # gives about the stored secrets: the wizard has no database session
         # of its own, and one that could not see the store would offer the
@@ -590,7 +591,8 @@ def main(argv: list[str] | None = None) -> None:
     # any traceback renderer that prints locals (pytest --tb=long, an error
     # reporter added later) would otherwise dump all fourteen of them, and
     # `stored` holds the same plaintext one layer up.
-    del resolved, stored
+    # `secrets_read.values` is that same dict under a third name.
+    del resolved, stored, secrets_read
     _migrate()
     if command:
         os.execvp(command[0], command)
