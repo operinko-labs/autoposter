@@ -5,15 +5,16 @@ reachable -- and it has to refuse the three shapes where restarting would
 destroy work or be a lie.
 """
 import asyncio
+import logging
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from autoposter.api import setup as setup_api
 from autoposter.api import system
@@ -139,13 +140,14 @@ async def test_an_orphaned_run_row_does_not_wedge_the_button(
     turning the scheduler off and restarting, is exactly what it refuses.
     Past the horizon a run could plausibly still be alive, it is treated as
     the wreckage it is.
+
+    Aged in SQL, because the guard compares against the DATABASE clock and
+    this container's own runs ahead of and behind it.
     """
     async with session_factory() as session:
         session.add(Run(
             kind="scheduled", name="collections", status="running",
-            started_at=datetime.now(UTC) - timedelta(
-                seconds=system.ORPHAN_RUN_SECONDS + 3600
-            ),
+            started_at=func.now() - timedelta(seconds=system.ORPHAN_RUN_SECONDS + 3600),
         ))
         await session.commit()
     response = await client.post("/api/system/restart", headers=auth_headers)
@@ -160,12 +162,30 @@ async def test_a_run_inside_the_horizon_still_refuses(
     async with session_factory() as session:
         session.add(Run(
             kind="full_pass", name="full_pass", status="running",
-            started_at=datetime.now(UTC) - timedelta(hours=1),
+            started_at=func.now() - timedelta(hours=1),
         ))
         await session.commit()
     response = await client.post("/api/system/restart", headers=auth_headers)
     assert response.status_code == 409
     assert no_exec == []
+
+
+async def test_a_row_left_by_a_job_that_no_longer_records_does_not_refuse(
+    client, auth_headers, session_factory, no_exec
+):
+    """The upgrade case, closed by name rather than by waiting a day.
+
+    The catch-up drain's ticks record nothing now, so the sweep that would have
+    reconciled a row it left behind never runs again -- an open row written by
+    an older process would otherwise refuse every restart until it aged past
+    the horizon. Planted FRESH, so only the name can be what excuses it.
+    """
+    async with session_factory() as session:
+        session.add(Run(kind="scheduled", name="catch_up_drain", status="running"))
+        await session.commit()
+    response = await client.post("/api/system/restart", headers=auth_headers)
+    assert response.status_code == 200, response.json()
+    assert no_exec == [1]
 
 
 async def test_a_catch_up_in_flight_does_not_refuse_a_restart(
@@ -223,14 +243,50 @@ async def test_two_restarts_at_once_produce_one_exec(
 ):
     """The same window, seen from the other side: the loser is refused rather
     than both execing, because the winner holds the lock from the moment it
-    stops awaiting."""
+    stops awaiting -- and it is told what actually happened, not that some
+    artwork mode it never started is writing to a media server."""
     first, second = await asyncio.gather(
         client.post("/api/system/restart", headers=auth_headers),
         client.post("/api/system/restart", headers=auth_headers),
     )
 
-    assert sorted([first.status_code, second.status_code]) == [200, 409]
+    codes = sorted([first.status_code, second.status_code])
+    assert codes == [200, 409]
+    refused = first if first.status_code == 409 else second
+    assert refused.json()["detail"] == system.RESTART_IN_PROGRESS
     assert no_exec == [1]
+
+
+async def test_a_failed_exec_hands_the_lock_back(client, auth_headers, app, monkeypatch, caplog):
+    """``os.execv`` normally never returns -- but it can fail, and a live
+    process holding a lock it took on its way out would refuse every artwork
+    and metadata mode for the rest of its life.
+
+    The class name reaches the log and nothing else does: the failures this
+    call has are about the environment block the credentials travel in.
+    """
+    class Boom(Exception):
+        pass
+
+    def _fail() -> None:
+        raise Boom("a message with an oversized value in it")
+
+    monkeypatch.setattr(system, "_exec_boot", _fail)
+
+    with caplog.at_level(logging.ERROR):
+        response = await client.post("/api/system/restart", headers=auth_headers)
+
+    assert response.status_code == 200, "the answer was already written"
+    assert not app.state.mode_lock.locked(), "a failed exec kept the mode lock"
+    assert app.state.restart_in_flight is False
+    assert "Boom" in caplog.text
+    assert "oversized value" not in caplog.text
+
+    # And the button still works afterwards, which is the point of releasing.
+    monkeypatch.setattr(system, "_exec_boot", lambda: None)
+    assert (
+        await client.post("/api/system/restart", headers=auth_headers)
+    ).status_code == 200
 
 
 async def test_a_restart_is_refused_on_a_multi_worker_process(

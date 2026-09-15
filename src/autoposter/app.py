@@ -684,6 +684,13 @@ def create_app(
     # at once. Created here for the same reason the fence is: every application
     # must have one for the trigger endpoint to reach.
     app.state.mode_lock = asyncio.Lock()
+    # Who holds the lock above, when it is not a mode. The restart route takes
+    # it and keeps it, because the process is meant to be replaced moments
+    # later -- so without this flag a second click would be told an artwork
+    # mode is writing to a media server, which is a lie about the operator's
+    # own previous press. Created here for the reason the lock is: every
+    # application must have one for the route to read.
+    app.state.restart_in_flight = False
     # Per process, so every worker pod limits its own callers -- see
     # LoginRateLimiter.
     app.state.login_rate_limiter = LoginRateLimiter()

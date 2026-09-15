@@ -39,7 +39,7 @@ from autoposter.api.auth import require_session
 from autoposter.catchup import CATCH_UP_KIND
 from autoposter.db.models import Run
 from autoposter.db.models import Session as SessionModel
-from autoposter.scheduler.run_history import FULL_PASS_CEILING_SECONDS
+from autoposter.scheduler.run_history import FULL_PASS_CEILING_SECONDS, UNRECORDED
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,14 @@ IGNORED_RUN_KINDS = (CATCH_UP_KIND,)
 #: plausibly still be alive.
 ORPHAN_RUN_SECONDS = FULL_PASS_CEILING_SECONDS
 
+#: Job names whose passes record no run history at all, so an open row under
+#: one of them describes nothing that is happening. Today's code writes none;
+#: an older one did, and nothing will ever close what it left behind -- the
+#: sweep that reconciles a stale row runs inside the very pass that no longer
+#: opens one. Read from the scheduler's own set rather than restated, so a
+#: name added there is covered here by the same edit.
+IGNORED_RUN_NAMES = tuple(sorted(UNRECORDED))
+
 RUN_IN_FLIGHT = (
     "a {kind} run is in progress ({name}); restarting now would interrupt it"
 )
@@ -71,6 +79,7 @@ MODE_IN_FLIGHT = (
     "an artwork or metadata mode is running on this instance and is writing to "
     "a media server; restarting now would interrupt it"
 )
+RESTART_IN_PROGRESS = "a restart is already under way"
 MULTIPLE_WORKERS = (
     "this process is one of several workers sharing a port, so restarting it "
     "would leave the others running the old configuration; restart the "
@@ -107,6 +116,33 @@ def _exec_boot() -> None:
     exec_boot()
 
 
+def _exec_or_release(app) -> None:
+    """Run the exec, and hand everything back if it does not happen.
+
+    ``os.execv`` normally never returns, but it has two documented ways to fail
+    in this service (``config/secret_store.py``): an oversized stored value
+    makes the argument block E2BIG, and a NUL byte in one raises ``ValueError``
+    before the call. Either leaves a live process holding a lock it took on the
+    understanding it was about to disappear, with every artwork and metadata
+    mode refused for the rest of its life. Releasing costs nothing when the
+    exec does work -- that line is never reached.
+
+    The CLASS NAME only, and nothing else: the exception's own message on these
+    paths is about the environment block this process publishes its credentials
+    into, and no part of that may reach a log.
+    """
+    try:
+        _exec_boot()
+    except Exception as exc:
+        app.state.restart_in_flight = False
+        app.state.mode_lock.release()
+        logger.error(
+            "the restart could not replace this process (%s); nothing was "
+            "restarted and this process continues",
+            type(exc).__name__,
+        )
+
+
 @router.post("/system/restart")
 async def restart(
     request: Request, _: SessionModel = Depends(require_session)
@@ -136,6 +172,7 @@ async def restart(
             .where(
                 Run.finished_at.is_(None),
                 Run.kind.not_in(IGNORED_RUN_KINDS),
+                Run.name.not_in(IGNORED_RUN_NAMES),
                 Run.started_at >= func.now() - timedelta(seconds=ORPHAN_RUN_SECONDS),
             )
             .order_by(Run.started_at.desc())
@@ -149,13 +186,25 @@ async def restart(
     # Safe without a lock of its own, and the reason this guard is last:
     # nothing is awaited between the check and the acquire, so no mode can take
     # the lock in between -- `api/routes.py`'s own trigger relies on the same
-    # fact. Taken and never released, because the next statement but one
-    # replaces this process image; a mode arriving after this line meets a held
+    # fact. Held for the rest of this process's life, which is meant to be the
+    # few milliseconds to the exec; a mode arriving after this line meets a held
     # lock and is refused, which is the outcome the guard exists for.
     if lock.locked():
-        raise HTTPException(status_code=409, detail=MODE_IN_FLIGHT)
+        # Whose lock it is decides the sentence. A second click is the common
+        # one, and telling that operator a mode is writing to a media server
+        # would be a lie about their own previous press.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                RESTART_IN_PROGRESS
+                if request.app.state.restart_in_flight
+                else MODE_IN_FLIGHT
+            ),
+        )
     await lock.acquire()
+    request.app.state.restart_in_flight = True
     logger.warning("a restart was requested from the Settings page")
     return JSONResponse(
-        content={"restarting": True}, background=BackgroundTask(_exec_boot)
+        content={"restarting": True},
+        background=BackgroundTask(_exec_or_release, request.app),
     )
