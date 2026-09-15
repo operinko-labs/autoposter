@@ -523,3 +523,87 @@ async def test_the_item_sort_positions_migration_is_reversible():
             await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
         finally:
             await maint.close()
+
+
+async def test_the_jobs_state_widening_is_reversible():
+    """`b3d91f7c05ea`, up -> down -> up on a scratch database.
+
+    This one carries LOGIC, not just a schema move: narrowing
+    `varchar(24) -> varchar(16)` rewrites the table and errors outright on any
+    row whose state does not fit, so the downgrade has to rewrite
+    `done_with_warnings` rows to `done` FIRST. A downgrade that lost that
+    UPDATE would look identical to a correct one until somebody rolled back a
+    deploy with such a row in the table -- and `alembic check` cannot catch it
+    either: it compares the models against a database already at head and
+    never runs a downgrade at all, so nothing it reports says whether one
+    would survive the rows it would find.
+    """
+    if not await _postgres_reachable():
+        _unreachable_postgres()
+
+    before = "a3f7e15c92b8"
+    suffix = "_jobstate"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
+        await maint.execute(f'CREATE DATABASE "{SCRATCH_DB_NAME}{suffix}"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, SCRATCH_DB_NAME + suffix)
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    async def _with_conn(body):
+        conn = await asyncpg.connect(
+            url.replace("postgresql+asyncpg", "postgresql"), timeout=5
+        )
+        try:
+            return await body(conn)
+        finally:
+            await conn.close()
+
+    async def width(conn):
+        return await conn.fetchval(
+            "SELECT character_maximum_length FROM information_schema.columns "
+            "WHERE table_name = 'jobs' AND column_name = 'state'"
+        )
+
+    async def seed(conn):
+        await conn.execute(
+            "INSERT INTO jobs (kind, payload, state, attempts, run_after, "
+            "created_at, updated_at) VALUES ('process_item', '{}', "
+            "'done_with_warnings', 1, now(), now(), now())"
+        )
+
+    async def states(conn):
+        return [r["state"] for r in await conn.fetch("SELECT state FROM jobs")]
+
+    try:
+        up = alembic("upgrade", "head")
+        assert up.returncode == 0, up.stdout + up.stderr
+        assert await _with_conn(width) == 24, "upgrade to head did not widen jobs.state"
+        await _with_conn(seed)
+
+        down = alembic("downgrade", before)
+        assert down.returncode == 0, down.stdout + down.stderr
+        assert await _with_conn(states) == ["done"], (
+            "the downgrade did not rewrite the row before narrowing the column"
+        )
+        assert await _with_conn(width) == 16, "the downgrade left jobs.state widened"
+
+        again = alembic("upgrade", "head")
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert await _with_conn(width) == 24, "the second upgrade did not widen jobs.state"
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
+        finally:
+            await maint.close()

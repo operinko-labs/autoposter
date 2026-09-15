@@ -1299,3 +1299,41 @@ async def test_an_undismissed_unscored_row_is_still_counted_by_the_header_and_th
     press = (await client.post("/api/actions/backfill", headers=auth_headers)).json()
 
     assert press["selected"] == 1
+
+
+# --- GET /api/actions/job-warnings -------------------------------------------
+
+
+async def test_the_action_center_lists_jobs_that_finished_with_warnings(
+    client, auth_headers, session
+):
+    """spec §4: a systematic failure shows on the first pass as a growing count."""
+    from autoposter.queue.jobs import complete, enqueue
+
+    for index in range(3):
+        job_id = await enqueue(
+            session, "process_item",
+            {"title": f"Movie {index}", "kind": "movie"}, dedupe_key=f"warn-{index}",
+        )
+        await complete(
+            session, job_id, warnings="jellyfin: metadata failed (status: HTTPStatusError 400)",
+        )
+
+    body = (await client.get(
+        "/api/actions/job-warnings", headers=auth_headers, params={"limit": 2}
+    )).json()
+
+    assert body["total"] == 3
+    assert len(body["jobs"]) == 2
+    row = body["jobs"][0]
+    assert row["reason"] == "jellyfin: metadata failed (status: HTTPStatusError 400)"
+    assert row["title"] == "Movie 2" and row["item_kind"] == "movie"
+    # The payload is never echoed wholesale -- the four naming fields only.
+    assert set(row) == {
+        "id", "kind", "attempts", "reason", "updated_at",
+        "title", "item_kind", "season_number", "episode_number",
+    }
+
+
+async def test_job_warnings_requires_a_session(client):
+    assert (await client.get("/api/actions/job-warnings")).status_code == 401

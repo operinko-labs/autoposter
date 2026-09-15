@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import hashlib
+import logging
 from pathlib import Path
 
 import httpx
@@ -9,7 +10,9 @@ from conftest import decodable_png
 from sqlalchemy import select, update
 
 from autoposter.config.loader import load_config, render_version_for
-from autoposter.db.models import MediaItem, MediaItemServerRef, Render, RenderDelivery
+from autoposter.db.models import (
+    MediaItem, MediaItemServerRef, MetadataWrite, Render, RenderDelivery,
+)
 from autoposter.db.refs import item_id_for
 from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.facts.models import GatheredFacts
@@ -1424,7 +1427,7 @@ async def test_a_transport_error_from_one_server_resolve_does_not_abort_the_othe
 async def test_metadata_fan_out_reaches_every_resolved_server_with_its_own_ref(
     session, monkeypatch,
 ):
-    """apply_metadata's write loop must reach EVERY resolved
+    """apply_metadata's write loop (ruling 4) must reach EVERY resolved
     server, each with its OWN ref -- and one server's exempting label must
     never leak into another server's own exemption check."""
     config = load_config(EXAMPLE)
@@ -1976,7 +1979,7 @@ async def test_one_permanently_pending_server_does_not_recompose_every_pass(
     # retry pass never saw the population it was written for.
     assert await _jellyfin_horizon() == horizon, "a miss must not defer the row again"
 
-    # Task 8 fix: the row falls through to the same code whether it was
+    # The row falls through to the same code whether it was
     # never resolved or previously ran its budget out and was marked
     # `failed` -- so this re-arm needs `reset_attempts=True` too, or a row
     # that reached `failed` from a real delivery attempt stays over budget
@@ -2080,9 +2083,9 @@ async def test_a_failed_delivery_is_rearmed_once_per_pass_without_recomposing(
     assert row.status == "pending" and row.next_attempt_at is not None
     # A re-arm is not an attempt -- nothing was actually tried against
     # jellyfin this pass (no compose, no upload) -- and it is a fresh START:
-    # the counter goes back to zero rather than staying where the
-    # exhausted row left it, or the first failure after a re-arm would
-    # exhaust the row again (`failed` is itself a counted attempt).
+    # the counter goes back to zero rather than staying where the exhausted
+    # row left it, or the first failure after a re-arm would exhaust the row
+    # again (`failed` is itself a counted attempt).
     assert first_pass_attempts > 0, "the failed delivery did spend budget"
     assert row.attempts == 0
 
@@ -2328,7 +2331,7 @@ async def test_a_failed_metadata_write_is_recorded_pending_with_its_class_name(
 async def test_the_full_pass_re_arms_an_exhausted_metadata_row_with_its_whole_budget(
     session, config_with_badges, monkeypatch
 ):
-    """`_write`'s own write-failure record is `metadata_writes`'
+    """Review I1: `_write`'s own write-failure record is `metadata_writes`'
     only door out of `failed`, and it did not reset the budget -- so from the
     first exhaustion onward the row's effective budget was 1, not 8. Spec §2
     promises a row re-armed by a full pass (or a catch-up) the whole budget.
@@ -2494,7 +2497,7 @@ async def test_an_absent_row_is_left_alone_by_a_later_write(session, config_with
     """spec §1: a library `presence.apply_presence` has already stamped
     `absent` for this item/server owes it nothing, even if this pass's own
     resolution found the item anyway -- the row must not flip back out of
-    `absent` (Task 3's `presence.py`, `ABSENT_DETAIL`)."""
+    `absent` (`presence.py`, `ABSENT_DETAIL`)."""
     from sqlalchemy import select
     from autoposter import deliveries
     from autoposter.db.models import MetadataWrite
@@ -2523,11 +2526,11 @@ async def test_an_absent_row_is_left_alone_by_a_later_write(session, config_with
 async def test_a_dual_registry_pass_writes_metadata_written_and_pending_per_server(
     session, config_with_badges, monkeypatch,
 ):
-    """The branch matrix above is exercised directly against
-    `apply_metadata`; this proves the same outcomes through the real entry
-    point, `process_item`, on a dual registry -- Plex accepts the write,
-    Jellyfin's `apply_facts` raises -- and that the artwork path (an
-    unrelated seam) still completes for both servers regardless."""
+    """The branch matrix above is exercised directly against `apply_metadata`;
+    this proves the same outcomes through the real entry point, `process_item`,
+    on a dual registry -- Plex accepts the write, Jellyfin's `apply_facts`
+    raises -- and that the artwork path (an unrelated seam) still completes for
+    both servers regardless."""
     config_with_badges.badges.upload_to_jellyfin = True
     config_with_badges.operations.write_to_jellyfin = True
     monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
@@ -2559,7 +2562,7 @@ async def test_a_dual_registry_pass_writes_metadata_written_and_pending_per_serv
 async def test_the_pipeline_re_arming_a_row_takes_it_out_of_its_catch_up_run(
     session, config_with_badges, monkeypatch,
 ):
-    """`run_id`/`previous_status` were never named by the outcome
+    """Review I4: `run_id`/`previous_status` were never named by the outcome
     writers, so a row armed by catch-up run 5 kept `run_id=5` for the rest of
     its life -- including after the ordinary pipeline re-armed it weeks later.
     Phase C's run-scoped progress and its cancel would then act on rows that
@@ -2633,8 +2636,8 @@ async def test_the_pipeline_re_arming_a_row_takes_it_out_of_its_catch_up_run(
 async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
     session, monkeypatch,
 ):
-    """The same guard as the direct-call
-    absent test above, now proven through `process_item` -- presence has
+    """The same guard as the direct-call absent test above, now proven through
+    `process_item` -- presence has
     already stamped Jellyfin's row `absent` for this item, and a pass that
     resolves it there anyway (this double still has it in `jf.items`) must
     never call `apply_facts` on Jellyfin or move the row off `absent`."""
@@ -2673,7 +2676,7 @@ async def test_a_process_item_pass_leaves_an_absent_jellyfin_row_untouched(
 
 
 async def test_an_absent_server_is_never_asked_to_resolve(session, monkeypatch):
-    """The guards in `apply_metadata` and `deliver`
+    """Phase A review ruling 2: the guards in `apply_metadata` and `deliver`
     keep an `absent` ROW right, but the pass still spent a resolve request on
     that server for every item, every pass -- on a library the server does not
     carry at all. The absent set is read once, before the fan-out, off the
@@ -2720,7 +2723,7 @@ async def test_an_absent_server_is_never_asked_to_resolve(session, monkeypatch):
 async def test_a_second_pass_leaves_an_absent_jellyfin_artwork_row_untouched(
     session, config_with_badges, monkeypatch,
 ):
-    """The artwork half of the same rule, with the badge gate ON.
+    """The artwork half of the same rule, with the badge gate ON (review T1).
 
     The metadata test above runs with `badges.enabled = False`, so `deliver`
     returns at its first guard and only the metadata guard is proven. Here
@@ -2836,3 +2839,207 @@ async def test_an_absent_only_deliver_does_no_rollup_and_no_commit(
         select(RenderDelivery.status, RenderDelivery.detail)
     )).one()
     assert row.status == "absent" and row.detail == ABSENT_DETAIL
+
+
+async def test_process_item_reports_a_failed_metadata_write_as_a_warning(
+    session, config_with_badges, monkeypatch,
+):
+    """Spec §4, through the real entry point: a metadata write that fails
+    hands the caller the sentence its job finishes `done_with_warnings` on."""
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers()
+    response = httpx.Response(400, request=httpx.Request("POST", "https://jf.internal/Items/j1"))
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.HTTPStatusError("bad", request=response.request, response=response)
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == ["jellyfin: metadata pending (status: HTTPStatusError 400)"]
+    assert len(plex.facts_written) == 1, "the server that settled is not in the sentence"
+
+
+async def test_a_later_refusal_cannot_discard_the_rows_the_sentence_names(
+    session, config_with_badges, monkeypatch,
+):
+    """`apply_metadata` only flushes its `metadata_writes` rows, and the
+    refusal branch below rolls back before `render_artifact` has committed
+    anything at all -- so an unsettled row written moments earlier vanished
+    with it, the sentence found nothing left to name, and the job finished
+    plain `done` while the operator was owed exactly the warning spec §4
+    exists for."""
+    from autoposter.render.artwork_fetch import SourceRefused
+
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers()
+    response = httpx.Response(400, request=httpx.Request("POST", "https://jf.internal/Items/j1"))
+
+    async def boom(ref, facts, operations=None, parental_categories=None, overrides=None):
+        raise httpx.HTTPStatusError("bad", request=response.request, response=response)
+
+    monkeypatch.setattr(jf, "apply_facts", boom)
+
+    async def refuse_the_poster(session, config, http, item, art_kind, providers, **kwargs):
+        if art_kind != "poster":
+            return await _fake_render_artifact(
+                session, config, http, item, art_kind, providers, **kwargs
+            )
+        # The real `render_artifact` flushes its own render-row upsert before
+        # it can refuse, which is what makes the handler's rollback matter.
+        media_item = await pipeline_module._upsert_media_item(session, item)
+        await pipeline_module._get_or_create_render(session, media_item, art_kind, "/tmp/p.jpg")
+        raise SourceRefused("the poster source refused")
+
+    monkeypatch.setattr(pipeline_module, "render_artifact", refuse_the_poster)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == ["jellyfin: metadata pending (status: HTTPStatusError 400)"]
+    assert dict((await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status)
+    )).all()) == {"plex": "written", "jellyfin": "pending"}
+
+
+async def test_process_item_reports_nothing_when_every_server_settled(
+    session, config_with_badges, monkeypatch,
+):
+    """The other half: both tables settle on both servers, so the job that
+    ran this item finishes plain `done`."""
+    config_with_badges.badges.upload_to_jellyfin = True
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers()
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == []
+    # The vacuity guard: an empty list means "every row settled" only once
+    # there are rows. A pass that wrote none would assert the same thing.
+    assert {
+        (d.server, d.status)
+        for d in (await session.execute(select(RenderDelivery))).scalars()
+    } == {("plex", "uploaded"), ("jellyfin", "uploaded")}
+    assert dict((await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status)
+    )).all()) == {"plex": "written", "jellyfin": "written"}
+
+
+async def test_a_badge_stage_failure_stays_contained_with_warnings_asked_for(
+    session, config_with_badges, monkeypatch, caplog,
+):
+    """The badge stage's own `except` rolls the session back, which EXPIRES
+    every object it tracks -- `media_item` included. Reading an ORM attribute
+    after it, outside an awaited call, is a lazy refresh that raises
+    `MissingGreenlet`, and that escapes `process_item` into the worker's
+    generic failure branch: a contained badge failure became a charged
+    attempt and eventually a parked job, losing the containment this block
+    exists for. The artwork is already on disk either way."""
+    config_with_badges.badges.enabled = True
+    config_with_badges.badges.upload_to_plex = True
+    servers, plex, jf = _two_servers()
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    async def dirty_then_boom(session_, config, render, media_item, **_kwargs):
+        # Dirtying first is what makes the rollback expire objects rather than
+        # being a no-op on a clean session.
+        session_.add(MediaItem(identity_key="dirt", library="Movies", kind="movie", title="D"))
+        await session_.flush()
+        raise RuntimeError("badge stage blew up")
+
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", dirty_then_boom)
+
+    warnings: list[str] = []
+    with caplog.at_level(logging.WARNING, logger="autoposter.render.pipeline"):
+        await pipeline_module.process_item(
+            session, config_with_badges, None, servers, [], INTENT, warnings=warnings,
+        )
+
+    assert any("badge stage failed" in r.message for r in caplog.records)
+
+
+async def test_process_item_reports_a_server_that_never_resolved(
+    session, config_with_badges, monkeypatch,
+):
+    """Badges off, so a missed server leaves no `pending` delivery row and no
+    metadata row at all -- the deployment shape where the old code finished
+    plain `done` and said nothing about a server that has never seen the
+    item."""
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers(jelly_has=False)
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == ["jellyfin: not found"]
+    # The vacuity guard for the premise: no row names jellyfin at all, which
+    # is why the miss had to be carried separately.
+    assert (await session.execute(select(RenderDelivery))).all() == []
+    assert dict((await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status)
+    )).all()) == {"plex": "written"}
+
+
+async def test_process_item_never_reports_a_miss_on_an_absent_library(
+    session, config_with_badges, monkeypatch,
+):
+    """Spec §1: a server whose row says it does not carry this item's library
+    "is never resolved there, and is never retried", so it is owed nothing
+    and must not be named. A webhook intent carries no refs, so the resolve
+    loop's own absent check has nothing to key off yet and asks the server
+    anyway -- the sentence has to make the subtraction itself."""
+    from autoposter import deliveries as deliveries_module
+    from autoposter.servers.presence import ABSENT_DETAIL
+
+    config_with_badges.badges.enabled = False
+    config_with_badges.operations.enabled = True
+    config_with_badges.operations.write_to_plex = True
+    config_with_badges.operations.write_to_jellyfin = True
+    servers, plex, jf = _two_servers(jelly_has=False)
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    seeded = await pipeline_module._upsert_media_item(
+        session, fake_resolved("plex", "p1", file_path="/plex/m.mkv"),
+    )
+    await deliveries_module.record_metadata(
+        session, seeded.id, "jellyfin", "absent", detail=ABSENT_DETAIL,
+    )
+    await session.commit()
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(), warnings=warnings,
+    )
+
+    assert warnings == []

@@ -27,16 +27,32 @@ from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from autoposter.api.auth import hash_password
-from autoposter.api.routes import KEEP_SENTINEL, _render_affecting
+from autoposter.api.routes import (
+    KEEP_SENTINEL,
+    STORE_CONVERTED_REFUSAL,
+    _render_affecting,
+)
 from autoposter.app import create_app
 from autoposter.config.loader import build_config, read_config_document, render_version_for
 from autoposter.config.overrides import (
+    DELTA_WITHOUT_FILE,
     EMPTY_DOCUMENT_REVISION,
     OVERRIDES_INSERT_LOCK_KEY,
+    STORE_FORMAT,
+    load_effective_config,
+    load_store,
     merge_overrides,
+    seed_store,
 )
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ConfigOverride, EventLog, Job, ManagedCollection, Render
+from autoposter.db.models import (
+    ConfigOverride,
+    ConfigOverrideSnapshot,
+    EventLog,
+    Job,
+    ManagedCollection,
+    Render,
+)
 from autoposter.plex.client import ResolvedItem
 from autoposter.queue.jobs import enqueue
 from autoposter.render.pipeline import compute_fingerprint, gather_fingerprint_inputs
@@ -102,6 +118,25 @@ async def auth_headers(client):
 
 
 TEXT_EDIT = {"artwork": {"title_card": {"season_label": "Kausi"}}}
+
+
+@pytest.fixture
+def file_document(config_file) -> dict:
+    """The mounted file's document: the whole configuration, which is also
+    exactly what a seeded store holds."""
+    return yaml.safe_load(config_file.read_text(encoding="utf-8"))
+
+
+def _whole(base: dict, patch: dict) -> dict:
+    """``patch`` over a whole configuration document.
+
+    A store that says it holds the whole configuration validates what arrives
+    on its own, without the mounted file under it -- so a body carrying only
+    the leaves a test cares about would be refused for every required setting
+    it left out, and no page can produce one either. Tests that set up such a
+    store build their documents through here.
+    """
+    return merge_overrides(base, patch)
 
 
 async def _seed_library(session, config) -> None:
@@ -203,18 +238,28 @@ async def test_the_editor_endpoints_require_a_session(client, method, path):
 # --- GET /api/config enrichment ---
 
 
-async def test_get_config_reports_which_paths_are_overridden(client, auth_headers):
+async def test_get_config_serves_a_saved_value_rather_than_marking_it(
+    client, auth_headers
+):
+    """The response carries no provenance any more, and it does not need to:
+    the stored document IS the configuration, so the answer to "what is this
+    set to" is the value on the row and nothing beside it."""
     await client.put(
         "/api/config/overrides", headers=auth_headers,
         json={"document": {"workers": 9, **TEXT_EDIT}},
     )
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == ["artwork.title_card.season_label", "workers"]
+    assert "overridden_paths" not in body
+    assert body["workers"] == 9
+    assert body["artwork"]["title_card"]["season_label"] == "Kausi"
 
 
-async def test_get_config_reports_no_overridden_paths_before_any_edit(client, auth_headers):
+async def test_get_config_carries_an_empty_restart_list_by_default(client, auth_headers):
+    """``restart_paths`` comes off the store's own metadata, so a store nobody
+    has written a restart list into serves an empty one rather than no key --
+    the page renders one shape whatever the row says."""
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == []
+    assert body["restart_paths"] == []
 
 
 async def test_get_config_carries_the_frozen_paths_and_their_reasons(client, auth_headers):
@@ -247,7 +292,7 @@ def _leaf_paths(body: dict, prefix: str = "") -> list[str]:
 
 
 PROVENANCE_KEYS = {
-    "overridden_paths",
+    "restart_paths",
     "frozen_paths",
     "redacted_paths",
     "keep_sentinel",
@@ -283,11 +328,11 @@ async def test_provenance_keys_names_exactly_the_keys_the_response_adds(app, cli
     )
 
 
-def test_the_settings_pages_provenance_keys_match_the_python_set():
+def test_the_frontends_provenance_keys_match_the_python_set():
     """The half a Python-only guard cannot reach: the row's own symptom
     ("renders as an editable field") is a FRONTEND symptom, and
-    ``Settings.tsx:475`` filters the rendered sections by its own copy of this
-    set.
+    ``api/overrides.ts`` filters both the rendered sections and the document
+    every page saves by its own copy of this set.
 
     Reads the source file as text and regexes out the string literals rather
     than parsing TypeScript, so the pin survives reformatting -- the idiom
@@ -295,21 +340,26 @@ def test_the_settings_pages_provenance_keys_match_the_python_set():
     ``ActionCenter.tsx``'s ``ART_KINDS``.
 
     One difference from that idiom, and it is load-bearing: the array's own
-    comment contains a quoted phrase ("Overrides revision"), so ``//`` line
-    comments are stripped before the literals are read. Without that the
-    comment's words would join the set and this test would pass on a broken
-    array.
+    comments may contain quoted phrases, so ``//`` line comments are stripped
+    before the literals are read. Without that the comment's words would join
+    the set and this test would pass on a broken array.
+
+    ``secrets`` is the one key on the TypeScript side that is not on this one,
+    and it is not an oversight either way: it is not a provenance key the
+    handler adds on top of the settings (this set's subject), it is the
+    separate ``Secrets`` model -- and the document a page sends must drop it
+    all the same, because ``merge_overrides`` refuses the key outright.
     """
     import re
 
     frontend = (
-        Path(__file__).parent.parent / "frontend" / "src" / "pages" / "Settings.tsx"
+        Path(__file__).parent.parent / "frontend" / "src" / "api" / "overrides.ts"
     ).read_text(encoding="utf-8")
     match = re.search(r"const PROVENANCE_KEYS = \[([^\]]*)\];", frontend)
-    assert match is not None, "Settings.tsx no longer declares a const PROVENANCE_KEYS = [...]"
+    assert match is not None, "api/overrides.ts no longer declares a const PROVENANCE_KEYS = [...]"
     literals = set(re.findall(r'"([^"]*)"', re.sub(r"//[^\n]*", "", match.group(1))))
 
-    assert literals == PROVENANCE_KEYS
+    assert literals == PROVENANCE_KEYS | {"secrets"}
 
 
 def _wildcarded(path: str) -> str:
@@ -423,7 +473,10 @@ async def test_a_rejected_document_changes_nothing(client, auth_headers, session
     assert app.state.config.version == before, "the running generation was swapped"
     assert app.state.config_holder.current.version == before
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == []
+    # The example config's value, not the -1 the refused document asked for.
+    # Read off the response rather than off `app.state.config`, which is what
+    # the response was dumped from and so cannot disagree with it.
+    assert body["workers"] == 5
 
 
 async def test_an_unknown_key_is_a_422_at_full_depth(client, auth_headers, session):
@@ -600,7 +653,7 @@ async def test_omitting_a_key_reverts_it_to_the_file(client, auth_headers, app):
     )
     assert app.state.config.workers == 5, "the example config's value did not come back"
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == []
+    assert body["workers"] == 5, "the served config still shows the cleared value"
 
 
 # --- saving ---
@@ -664,11 +717,12 @@ async def test_api_docs_enabled_is_reported_as_inert_not_restart_required(
     client, auth_headers
 ):
     """``api_docs_enabled`` is frozen (FastAPI builds the docs routes into the
-    application object before the overrides are read), but unlike every other
-    frozen path a restart does not fix it either -- only editing the mounted
-    file does. Folding it into ``restart_required`` would tell the operator a
-    restart will apply a change it never can; it belongs in ``inert``
-    instead."""
+    application object before the overrides are read), and unlike every other
+    frozen path not even the lifespan's own merge reaches it: it is settled
+    before a single override is read. ``restart_required`` is the paths that
+    merge applies, so this one is reported beside it rather than in it -- two
+    lists because they land at two moments, not because one of them is
+    hopeless. The restart list on the row carries both."""
     response = await client.put(
         "/api/config/overrides", headers=auth_headers,
         json={"document": {"api_docs_enabled": True}},
@@ -676,6 +730,251 @@ async def test_api_docs_enabled_is_reported_as_inert_not_restart_required(
     body = response.json()
     assert "api_docs_enabled" not in body["restart_required"]
     assert body["inert"] == ["api_docs_enabled"]
+
+
+def _settings_of(body: dict) -> dict:
+    """The editable settings out of a ``GET /api/config`` response.
+
+    Everything the response adds on top of the configuration, plus the secrets
+    it redacts wholesale -- which ``merge_overrides`` refuses outright -- comes
+    back off, leaving the document a save sends.
+    """
+    return {
+        key: value
+        for key, value in body.items()
+        if key not in PROVENANCE_KEYS and key != "secrets"
+    }
+
+
+@pytest_asyncio.fixture
+async def seeded_store(session_factory, config_file):
+    """The store as the first boot leaves it: the whole configuration.
+
+    The tests below send the document back the way the settings page does --
+    whole, every key it was served -- and that is only a legal save against a
+    store already holding a whole document. A delta-era store would refuse it,
+    and rightly: ``{}`` spelled in the mounted file is an unset optional
+    section, not an override of one.
+    """
+    async with session_factory() as session:
+        await seed_store(session, read_config_document(config_file))
+        await session.commit()
+
+
+async def test_a_frozen_save_is_remembered_across_a_reload(
+    client, auth_headers, seeded_store
+):
+    """The restart list is kept in the document's metadata, so it survives a
+    reload and shows to another admin -- the notice outlives the page that
+    caused it."""
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["workers"] = document["workers"] + 1
+    response = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["restart_required"] == ["workers"]
+
+    reloaded = (await client.get("/api/config", headers=auth_headers)).json()
+    assert reloaded["restart_paths"] == ["workers"]
+
+
+async def test_two_frozen_saves_both_stay_on_the_list(
+    client, auth_headers, seeded_store
+):
+    """Both paths differ from the booted generation, so a replacement keeps
+    both: the second save's set is computed from the same place the first
+    save's was and carries the first save's path as well as its own."""
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["workers"] = document["workers"] + 1
+    first = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert first.status_code == 200, first.text
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["scheduler"]["poll_seconds"] = document["scheduler"]["poll_seconds"] + 1
+    second = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert second.status_code == 200, second.text
+    reloaded = (await client.get("/api/config", headers=auth_headers)).json()
+    assert reloaded["restart_paths"] == ["scheduler.poll_seconds", "workers"]
+
+
+async def test_a_live_save_neither_adds_to_the_list_nor_forgets_it(
+    client, auth_headers, seeded_store
+):
+    """A live save changes nothing a restart would apply -- and it must not
+    drop the claim an earlier frozen save left standing either, which is the
+    one thing a list rewritten on every save could get wrong."""
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["workers"] = document["workers"] + 1
+    frozen = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert frozen.status_code == 200, frozen.text
+
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["artwork"]["title_card"]["season_label"] = "Kausi"
+    live = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert live.status_code == 200, live.text
+    assert live.json()["restart_required"] == []
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == ["workers"]
+
+
+async def test_a_frozen_setting_put_back_comes_off_the_list(
+    client, auth_headers, seeded_store
+):
+    """The list answers one question -- would a restart change anything? -- so
+    a setting edited and then set back to the value this process booted on has
+    to come off it. Measured against the previous save instead, the path would
+    go on a second time and nothing would ever take it off again."""
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    booted_workers = seed["workers"]
+    document = _settings_of(seed)
+    document["workers"] = booted_workers + 1
+    away = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert away.status_code == 200, away.text
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == ["workers"]
+
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["workers"] = booted_workers
+    back = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert back.status_code == 200, back.text
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == [], "the banner would ask for a restart that would change nothing"
+
+
+async def test_an_inert_save_goes_on_the_list_too(client, auth_headers):
+    """It is reported apart from ``restart_required`` because it lands at a
+    different moment of the boot, but a restart is what applies it -- the boot
+    builds the application object from the stored document -- so an operator
+    who changed it has exactly one thing to do, and the list has to say so."""
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"api_docs_enabled": True}},
+    )
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == ["api_docs_enabled"]
+
+
+async def test_an_inert_change_is_measured_against_the_constructed_generation(
+    app, client, auth_headers
+):
+    """The one setting on the list that a merge never settles.
+
+    ``api_docs_enabled`` is read when the application OBJECT is built, from
+    the document ``create_app`` was handed -- and on the one-time
+    delta-conversion boot, or on any boot whose bounded store read timed out,
+    that document is the mounted file while the generation the lifespan then
+    merges and records as ``booted_config`` is file-plus-overrides. Measured
+    against the merged one, the save that really does turn the docs on comes
+    back "nothing waiting", and the operator's only remedy is the one thing
+    nothing tells them to do.
+
+    A boot of exactly that shape below: the object was built with the docs
+    off, and the merge that ran after it had them on.
+    """
+    app.state.booted_config = app.state.booted_config.model_copy(
+        update={"api_docs_enabled": True}
+    )
+
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"api_docs_enabled": True}},
+    )
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == ["api_docs_enabled"], (
+        "the running application object has the docs off and the stored "
+        "document now asks for them on; only a restart closes that gap"
+    )
+
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"api_docs_enabled": False}},
+    )
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == [], "back to what this application object was built with, so nothing waits"
+
+
+async def test_a_restore_puts_its_frozen_changes_on_the_list(
+    client, auth_headers, seeded_store
+):
+    """A restore is a save: it goes through the same write, so a frozen
+    setting it brings back waits for a restart exactly as one typed into the
+    page does. Recovery is the moment an operator most needs to be told.
+
+    Set away and then back first, so the store holds a snapshot that differs
+    from the running configuration and the list is empty to start from.
+    """
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    booted_workers = seed["workers"]
+    document = _settings_of(seed)
+    document["workers"] = booted_workers + 1
+    away = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert away.status_code == 200, away.text
+
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    document = _settings_of(seed)
+    document["workers"] = booted_workers
+    back = await client.put(
+        "/api/config/overrides",
+        json={"document": document, "expected_revision": seed["overrides_revision"]},
+        headers=auth_headers,
+    )
+    assert back.status_code == 200, back.text
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == [], "precondition: nothing is waiting for a restart"
+
+    # Newest first, so this is the document the revert above displaced.
+    snapshots = (await client.get("/api/config/snapshots", headers=auth_headers)).json()
+    response = await client.post(
+        f"/api/config/snapshots/{snapshots[0]['id']}/restore",
+        json={}, headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert (await client.get("/api/config", headers=auth_headers)).json()[
+        "restart_paths"
+    ] == ["workers"]
 
 
 async def test_a_save_writes_one_audit_event_carrying_no_settings(
@@ -978,25 +1277,26 @@ def _seed_document(body: dict) -> dict:
     Mirrored here rather than imagined, because the corruption this section
     guards against is a property of that seeding meeting this response. Kept
     in step with the TypeScript by hand -- there is one rule and it is two
-    lines long: an overridden path contributes its served value, unless the
-    response says the value was redacted, in which case it contributes the
-    sentinel.
+    lines long: the whole served configuration minus the keys that are not
+    settings, and the sentinel wherever the response says the value it served
+    was redacted.
     """
-    redacted = body.get("redacted_paths", [])
     sentinel = body.get("keep_sentinel")
-    document: dict = {}
-    for path in body["overridden_paths"]:
-        if path in redacted and isinstance(sentinel, str):
-            value = sentinel
-        else:
-            value = body
-            for part in path.split("."):
-                value = value[part]
-        target = document
+    document = deepcopy(
+        {key: value for key, value in body.items() if key not in PROVENANCE_KEYS | {"secrets"}}
+    )
+    if not isinstance(sentinel, str):
+        return document
+    for path in body.get("redacted_paths", []):
         parts = path.split(".")
+        target = document
         for part in parts[:-1]:
-            target = target.setdefault(part, {})
-        target[parts[-1]] = value
+            if not isinstance(target, dict) or part not in target:
+                target = None
+                break
+            target = target[part]
+        if isinstance(target, dict) and parts[-1] in target:
+            target[parts[-1]] = sentinel
     return document
 
 
@@ -1004,7 +1304,7 @@ WEBHOOK_URL = "https://kuma.example.com/api/push/s3cr3tPushToken?status=up"
 
 
 async def test_an_unrelated_save_does_not_destroy_a_redacted_override(
-    client, auth_headers, session, app
+    client, auth_headers, session, app, file_document
 ):
     """The corruption repro, end to end and with no mocking.
 
@@ -1014,10 +1314,23 @@ async def test_an_unrelated_save_does_not_destroy_a_redacted_override(
     the sentinel this stores `kuma.example.com` -- a valid string for a
     `str`-typed field, so nothing anywhere reports a problem -- and the push
     token is unrecoverable from the service.
+
+    The store is seeded first, because the seam this guards is the page's:
+    what a page sends is the whole configuration, which only a store that
+    holds one ever receives.
     """
+    async with app.state.session_factory() as setup:
+        await seed_store(setup, file_document)
+        await setup.commit()
+
     await client.put(
         "/api/config/overrides", headers=auth_headers,
-        json={"document": {"notifications": {"enabled": True, "url": WEBHOOK_URL}}},
+        json={
+            "document": _whole(
+                file_document,
+                {"notifications": {"enabled": True, "url": WEBHOOK_URL}},
+            )
+        },
     )
     assert app.state.config.notifications.url == WEBHOOK_URL
 
@@ -1059,10 +1372,26 @@ async def test_the_sentinel_never_reaches_storage_or_the_running_config(
 async def test_get_config_advertises_what_it_redacted_and_the_marker_to_send_back(
     client, auth_headers
 ):
+    """What THIS body withheld, not what the endpoint withholds in general.
+
+    A client cannot re-derive the list from the served values: the reduction
+    answers `""` both for a stored URL it can find no host in and for a setting
+    that was never set, so from outside the two are the same string. The list
+    is collected as the redaction happens, and it moves when the setting does.
+    """
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["redacted_paths"] == ["notifications.url"]
+    assert body["redacted_paths"] == [], "nothing is stored at that path yet"
     assert body["keep_sentinel"] == KEEP_SENTINEL
     assert body["keep_sentinel"], "a client with no marker cannot keep anything"
+
+    await client.put(
+        "/api/config/overrides", headers=auth_headers,
+        json={"document": {"notifications": {"url": WEBHOOK_URL}}},
+    )
+
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["redacted_paths"] == ["notifications.url"]
+    assert body["notifications"]["url"] != WEBHOOK_URL, "and it really was reduced"
 
 
 async def test_the_sentinel_at_a_path_that_was_never_redacted_is_a_422(
@@ -1322,7 +1651,7 @@ async def test_a_token_bearing_smart_url_override_is_refused_with_a_token_free_b
     async with session_factory() as session:
         assert (await session.execute(select(ConfigOverride))).scalars().first() is None
     served = (await client.get("/api/config", headers=auth_headers)).json()
-    assert served["overridden_paths"] == []
+    assert served["collections"]["definitions"] == [], "the refused definition is served"
 
 
 # --- The wholesale-replace law (row 138's editor is built on it) ----------
@@ -1414,16 +1743,15 @@ async def test_the_served_config_round_trips_a_definition_the_editor_reads_back(
     client, auth_headers
 ):
     """What the panel's `documentFromConfig` seeds from. The served
-    `collections.definitions` IS the stored array (an override wins the
-    merge), so an editor seeded from the GET writes back what it was given --
-    every key, at full depth."""
+    `collections.definitions` IS the stored array, so an editor seeded from the
+    GET writes back what it was given -- every key, at full depth."""
     await client.put(
         "/api/config/overrides", json={"document": THREE_DEFINITIONS}, headers=auth_headers
     )
 
     served = (await client.get("/api/config", headers=auth_headers)).json()
 
-    assert "collections.definitions" in served["overridden_paths"]
+    assert len(served["collections"]["definitions"]) == 3
     stored_second = THREE_DEFINITIONS["collections"]["definitions"][1]
     served_second = served["collections"]["definitions"][1]
     for key, value in stored_second.items():
@@ -1669,9 +1997,9 @@ async def test_a_write_that_drops_more_than_the_cap_is_refused(
 ):
     """The drop cap. A normal edit drops 0 or 1 path; the incident dropped 17.
 
-    `document_paths` is exactly the unit `GET /api/config`'s `overridden_paths`
-    reports, so the operator, the API and this refusal all count the same
-    things.
+    `document_paths` counts the leaves the stored document actually sets, and
+    the refusal names those same paths, so the operator and the refusal count
+    the same things.
     """
     await _put_document(client, auth_headers, THE_INCIDENT_DOCUMENT)
 
@@ -1852,8 +2180,8 @@ async def test_the_two_page_stale_save_is_refused_instead_of_clobbering(
     """Page A mounts. Page B saves separator_style. Page A saves again.
 
     Before the fix, page A's second save answered 200 and separator_style was
-    gone -- and not even listed in overridden_paths, so the page had nothing
-    to show the operator. It must now be a 409 that says what happened.
+    gone -- silently, with nothing in the response to show the operator what
+    had just been undone. It must now be a 409 that says what happened.
     """
     # The store as both pages find it: the incident document WITHOUT the
     # separator style, because that is the setting the operator was about to
@@ -2162,3 +2490,415 @@ async def test_the_deployment_url_is_served_as_an_editable_leaf(client, auth_hea
     assert "public_url" in body
     assert body["field_descriptions"]["public_url"].strip() != ""
     assert "public_url" not in body["frozen_paths"]
+
+
+# --- the row's metadata ---
+
+
+async def test_the_stored_format_says_how_the_document_was_validated(
+    client, auth_headers, session
+):
+    """A save against a store with no row is validated by merging over the
+    mounted file -- there is nothing else it could be a statement about -- so
+    the row it inserts is labelled a delta, and the next boot merges it over
+    that same file and lands on the same configuration.
+
+    Labelling it a whole document instead would be the disagreement this pair
+    exists to prevent: the save would run one configuration and the restart
+    after it would try to build another out of a fragment, failing on the
+    first required setting the fragment does not carry.
+
+    An empty store is not reachable from a booted deployment -- boot seeds the
+    store from the file or serves the setup wizard -- so this is the shape of
+    the rule rather than a state an operator can be in.
+    """
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 9}}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.meta.get("format", 1) < STORE_FORMAT
+
+
+async def test_a_first_save_with_no_mounted_file_stores_a_whole_document(
+    client, auth_headers, session, app, file_document, tmp_path
+):
+    """The deployment this store exists to make possible: no mounted file.
+
+    An empty store with nothing underneath it has no document for a save to be
+    a statement ABOUT, so what arrives can only be the configuration itself. It
+    is validated as one and the row is labelled as one, which is what makes the
+    next boot able to load it -- a row labelled a delta would send that boot
+    looking for the file this deployment does not have, and it would refuse to
+    start.
+    """
+    app.state.config_path = tmp_path / "there-is-no-config-here.yaml"
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": file_document}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.meta["format"] == STORE_FORMAT
+
+    rebuilt = await load_effective_config(app.state.config_path, session)
+    assert rebuilt.model_dump(mode="json") == app.state.config.model_dump(mode="json")
+
+
+async def test_a_delta_store_with_no_mounted_file_is_refused_not_crashed(
+    client, auth_headers, session, app, tmp_path
+):
+    """A delta is a statement about a file. Without that file it cannot be
+    merged and it cannot be promoted either -- promoting it would silently
+    default every key the file used to carry. The save says so in the same
+    words the boot loader uses, rather than surfacing a read error as a 500.
+    """
+    app.state.config_path = tmp_path / "there-is-no-config-here.yaml"
+    await session.execute(
+        insert(ConfigOverride).values(id=1, document={"workers": 9}, meta={"format": 1})
+    )
+    await session.commit()
+
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={"document": {"workers": 8}},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"][0]["message"] == DELTA_WITHOUT_FILE
+
+
+async def test_a_save_keeps_the_metadata_it_did_not_write(
+    client, auth_headers, session, file_document
+):
+    """The restart list lives in the same column as the format, and the format
+    is not a save's to change.
+
+    The list is: every save rewrites it with the frozen paths that still
+    differ from what this process booted on, so the seeded ``plex`` -- a path
+    the running configuration matches -- does not survive a save, and the
+    ``workers`` this one changes takes its place."""
+    await session.execute(
+        insert(ConfigOverride).values(
+            id=1,
+            document=_whole(file_document, {"workers": 9}),
+            meta={"format": STORE_FORMAT, "restart_paths": ["plex"]},
+        )
+    )
+    await session.commit()
+
+    saved = _whole(file_document, {"workers": 8})
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": saved}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.document == saved
+    assert row.meta == {"format": STORE_FORMAT, "restart_paths": ["workers"]}
+
+    snapshot = (
+        await session.execute(
+            select(ConfigOverrideSnapshot).order_by(ConfigOverrideSnapshot.id.desc())
+        )
+    ).scalars().first()
+    assert snapshot.format == STORE_FORMAT, "the save was on a whole document"
+
+
+async def test_a_delta_save_is_refused_when_the_row_becomes_a_document_under_it(
+    client, auth_headers, session, session_factory, file_document, monkeypatch
+):
+    """The arm is chosen from an unlocked read; the format can move after it.
+
+    Another process's one-time conversion, or a CLI holding its own session,
+    can turn the row into a whole document between the read that says "this is
+    a delta" and the locked read that writes. What is in hand by then is a
+    fragment -- validated by merging it over the mounted file -- and the row
+    says its contents are the whole configuration. Writing it through would
+    stamp the fragment as whole, and the next boot would hand it to
+    `build_config` alone and die on the first required setting it does not
+    carry, with the editor that could repair the row behind an application that
+    will not start.
+
+    The mirror of the case the format stamp already closes: that one stops a
+    save RAISING the format of a delta; this one stops the format being raised
+    UNDER the save.
+    """
+    from autoposter.api import routes
+
+    await session.execute(
+        insert(ConfigOverride).values(id=1, document={"workers": 9}, meta={"format": 1})
+    )
+    await session.commit()
+
+    converted = _whole(file_document, {"workers": 7})
+    converted_meta = {"format": STORE_FORMAT}
+    validate = routes._validated_generation
+
+    async def convert_between_the_two_reads(*args, **kwargs):
+        result = await validate(*args, **kwargs)
+        async with session_factory() as other:
+            statement = insert(ConfigOverride).values(
+                id=1, document=converted, meta=converted_meta
+            )
+            await other.execute(
+                statement.on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={"document": converted, "meta": converted_meta},
+                )
+            )
+            await other.commit()
+        return result
+
+    monkeypatch.setattr(routes, "_validated_generation", convert_between_the_two_reads)
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 8}}
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["message"] == STORE_CONVERTED_REFUSAL
+
+    # Nothing written: the converted row stands exactly as the other writer
+    # left it, and no snapshot was taken of a write that did not happen.
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.document == converted
+    assert row.meta == converted_meta
+    snapshots = (
+        await session.execute(select(func.count()).select_from(ConfigOverrideSnapshot))
+    ).scalar_one()
+    assert snapshots == 0
+
+
+@pytest.mark.parametrize(
+    ("stale_document", "stale_meta"),
+    [
+        ({"workers": 9}, {}),
+        ({"workers": 9}, {"format": 1}),
+        ({"version_check": {"project": "operinko-labs"}}, {}),
+    ],
+    ids=["delta", "delta-with-an-explicit-format", "only-sections-that-left-the-schema"],
+)
+async def test_a_save_does_not_raise_the_format_of_a_delta(
+    client, auth_headers, session, stale_document, stale_meta
+):
+    """A deployment that has not been converted yet still stores a delta, and
+    the editor still composes one -- from the very paths that delta made
+    overridden. Stamping this document as whole would be a lie the next boot
+    pays for: it would build a configuration out of a fragment and die on the
+    first required setting the fragment does not carry, with the editor that
+    could repair the row sitting behind the application that will not start.
+
+    The third row shape is the one that cannot be told apart by what it says:
+    every section in it has left the schema, so it reads as an empty document
+    and looks exactly like a store that was never written. Whether a row
+    exists is the only question that separates them."""
+    await session.execute(
+        insert(ConfigOverride).values(id=1, document=stale_document, meta=stale_meta)
+    )
+    await session.commit()
+
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": {"workers": 8}}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    # The format alone: the save also puts the frozen path it changed on the
+    # row's restart list, which is the rest of this column's business.
+    assert row.meta.get("format") == stale_meta.get("format"), (
+        "the save relabelled a delta as a whole document"
+    )
+
+    snapshot = (
+        await session.execute(
+            select(ConfigOverrideSnapshot).order_by(ConfigOverrideSnapshot.id.desc())
+        )
+    ).scalars().first()
+    if snapshot is not None:
+        # The third row shape's outgoing document strips to {} -- nothing to
+        # snapshot, and capture_snapshot skips an empty document -- so only
+        # the first two shapes reach this assertion.
+        assert snapshot.format == 1, "the snapshot of the outgoing delta must not be raised"
+
+    # The proof that matters: the next boot still starts, because the delta is
+    # still merged over the mounted file.
+    config = await load_effective_config(EXAMPLE, session)
+    assert config.workers == 8
+
+
+async def test_restoring_a_delta_era_snapshot_re_runs_the_merge(
+    client, auth_headers, app, session_factory, config_file
+):
+    """spec §8: every existing snapshot stays restorable.
+
+    A format-1 snapshot is a DELTA. Restoring it as though it were a document
+    would store `{"workers": 9}` as the whole configuration and fail
+    validation on eight required fields; the restore merges it over the file
+    instead, exactly as the delta era did.
+
+    The store is seeded first, because that is the only state such a snapshot
+    can be restored from: a delta-era store is converted to a whole document by
+    the first boot that reads it, and the format-1 snapshot this restores is
+    what that conversion left behind.
+    """
+    async with session_factory() as session:
+        await seed_store(session, read_config_document(config_file))
+        session.add(
+            ConfigOverrideSnapshot(
+                document={"workers": 9}, path_count=1, reason="migrate", format=1
+            )
+        )
+        await session.commit()
+        snapshot_id = (
+            await session.execute(select(func.max(ConfigOverrideSnapshot.id)))
+        ).scalar_one()
+
+    response = await client.post(
+        f"/api/config/snapshots/{snapshot_id}/restore", json={}, headers=auth_headers
+    )
+    assert response.status_code == 200, response.text
+
+    async with session_factory() as session:
+        document, meta = await load_store(session)
+    assert document["workers"] == 9
+    assert meta["format"] == 2
+    assert "plex" in document, "the restore must produce a whole document"
+
+
+async def test_a_snapshot_reports_which_format_it_is(
+    client, auth_headers, session_factory
+):
+    async with session_factory() as session:
+        session.add(
+            ConfigOverrideSnapshot(
+                document={"workers": 9}, path_count=1, reason="migrate", format=1
+            )
+        )
+        await session.commit()
+
+    listing = await client.get("/api/config/snapshots", headers=auth_headers)
+    assert listing.json()[0]["format"] == 1
+
+
+async def test_restoring_a_delta_keeps_an_empty_object_the_file_spells_out(
+    client, auth_headers, app, session_factory, config_file
+):
+    """The mounted file is free to spell an unset section out as `{}`
+    (``artwork.poster.text.newline_words: {}`` in the example config) -- the
+    same value leaving the key out entirely validates to. The delta-restore
+    merge carries that spelling in from the file verbatim, and it must not be
+    dropped to satisfy the editor's `{}`-leaf guard: that guard exists for a
+    typed-by-hand mistake, not for the file's own way of saying "nothing
+    here", and dropping it would silently change what got restored.
+    """
+    async with session_factory() as session:
+        session.add(
+            ConfigOverrideSnapshot(
+                document={"workers": 9}, path_count=1, reason="migrate", format=1
+            )
+        )
+        await session.commit()
+        snapshot_id = (
+            await session.execute(select(func.max(ConfigOverrideSnapshot.id)))
+        ).scalar_one()
+
+    response = await client.post(
+        f"/api/config/snapshots/{snapshot_id}/restore", json={}, headers=auth_headers
+    )
+    assert response.status_code == 200, response.text
+
+    async with session_factory() as session:
+        document, _meta = await load_store(session)
+    assert document["artwork"]["poster"]["text"]["newline_words"] == {}
+
+
+async def test_a_save_on_a_delta_store_with_an_empty_object_leaf_is_still_refused(
+    client, auth_headers
+):
+    """The `{}`-leaf guard stays on for editor input ON A DELTA STORE -- the
+    only arm it has ever run on, because a delta is where `{}` would be
+    reported as an override of the whole section. A save that hand-carries a
+    `{}` leaf there is refused exactly as it always was."""
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={
+            "document": {
+                "workers": 8,
+                "artwork": {"poster": {"text": {"newline_words": {}}}},
+            }
+        },
+    )
+    assert response.status_code == 422, response.text
+    assert any(
+        item["path"] == "artwork.poster.text.newline_words"
+        for item in response.json()["detail"]
+    )
+
+
+async def test_a_save_on_a_whole_document_store_keeps_an_empty_object_leaf(
+    client, auth_headers, session, file_document
+):
+    """The other arm, which is every seeded deployment, and where the guard is
+    deliberately off.
+
+    In a whole document `{}` is the value the model holds rather than a
+    section a path walk would misreport -- the example file spells
+    `newline_words` exactly that way, so the seed puts it in the store and the
+    page sends it straight back. Refusing it here would refuse every save on
+    every seeded deployment, and dropping it would change what an explicitly
+    empty mapping means.
+    """
+    assert file_document["artwork"]["poster"]["text"]["newline_words"] == {}, (
+        "the fixture no longer carries the leaf this test is about"
+    )
+    await session.execute(
+        insert(ConfigOverride).values(
+            id=1, document=file_document, meta={"format": STORE_FORMAT}
+        )
+    )
+    await session.commit()
+
+    saved = _whole(file_document, {"workers": 8})
+    response = await client.put(
+        "/api/config/overrides", headers=auth_headers, json={"document": saved}
+    )
+    assert response.status_code == 200, response.text
+
+    session.expire_all()
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert row.document["artwork"]["poster"]["text"]["newline_words"] == {}
+
+
+async def test_restoring_a_delta_snapshot_with_a_secrets_key_is_refused(
+    client, auth_headers, session_factory
+):
+    """A corrupted snapshot row carrying a `secrets` key must not resurrect a
+    token into the store on restore -- the delta-merge path refuses it the
+    same way an ordinary save's merge does."""
+    async with session_factory() as session:
+        session.add(
+            ConfigOverrideSnapshot(
+                document={"secrets": {"plex_token": "leaked"}},
+                path_count=1,
+                reason="migrate",
+                format=1,
+            )
+        )
+        await session.commit()
+        snapshot_id = (
+            await session.execute(select(func.max(ConfigOverrideSnapshot.id)))
+        ).scalar_one()
+
+    response = await client.post(
+        f"/api/config/snapshots/{snapshot_id}/restore", json={}, headers=auth_headers
+    )
+    assert response.status_code == 422, response.text

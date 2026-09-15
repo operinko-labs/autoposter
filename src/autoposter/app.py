@@ -1,7 +1,6 @@
 import asyncio
 import functools
 import logging
-import os
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -26,8 +25,8 @@ from autoposter.catchup import servers_never_seen, servers_with_delivery_enabled
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.live import swap_config
 from autoposter.config.loader import DEFAULT_CONFIG_PATH
-from autoposter.config.overrides import load_effective_config
-from autoposter.config.schema import STATE_FILE_NAMES_ENV, Config, Secrets
+from autoposter.config.overrides import clear_restart_paths, load_effective_config
+from autoposter.config.schema import Config, Secrets
 from autoposter.facts import imdb as imdb_module
 from autoposter.facts.imdb import ImdbAutoRefresh
 from autoposter.facts.mdblist import MDBListClient, NullMDBListClient
@@ -129,6 +128,21 @@ def create_app(
         # lifespan already assumes of the schema.
         async with session_factory() as session:
             swap_config(app, await load_effective_config(app.state.config_path, session))
+            # What this process actually came up on, kept for the life of the
+            # process: the editor answers "does this still need a restart?" by
+            # comparing a saved generation against THIS one, not against
+            # whatever the last save swapped in -- a setting put back to the
+            # booted value needs nothing.
+            app.state.booted_config = app.state.config
+            # And every path the restart list was asking for has just been
+            # applied, whatever restarted this process -- the Settings
+            # button, a container restart, a crash, the wizard's own exec.
+            # The list is a statement about a running process, so the boot is
+            # what ends it; a notice that outlives what it asks for is worse
+            # than no notice at all. Committed with the row lock held for the
+            # few statements it takes, before anything else in the boot.
+            await clear_restart_paths(session)
+            await session.commit()
             # The single-clock fix for /api/status's derived job status (see
             # api/snapshots.py._run_status): last_started_at is stamped by
             # Postgres's own now() (scheduler/core.py's claim_due), so the
@@ -333,7 +347,10 @@ def create_app(
         # entries here as they land -- this is the one place that both holds the
         # per-process dependencies a handler needs and can reach app.state.
         async def process_item_handler(session, job):
-            await handler(session, RenderIntent.from_payload(job.payload))
+            # Returned, not awaited and dropped: _handle_intent answers with
+            # the warning sentence (spec §4) the worker completes the job
+            # `done_with_warnings` on, or None for the ordinary success.
+            return await handler(session, RenderIntent.from_payload(job.payload))
 
         handlers = {"process_item": process_item_handler}
         imdb_refresh = ImdbAutoRefresh(
@@ -596,13 +613,14 @@ def create_app(
     # router, so they cannot carry require_session. Off by default; passing
     # openapi_url=None is what actually removes /docs and /redoc too.
     #
-    # Read from the file generation, and only ever from it: this decision is
-    # baked into the FastAPI object itself, which exists before the lifespan
-    # runs and therefore before any override is known. A database override on
-    # api_docs_enabled consequently does nothing, restart or not -- the one
-    # setting in the schema that is genuinely file-only. FROZEN_SECTIONS says
-    # so in the reason the editor renders, and deploy/README.md says so in
-    # the overrides section.
+    # Read from the generation this application OBJECT is constructed from,
+    # and only ever from it: the decision is baked into the FastAPI object,
+    # which exists before the lifespan runs and therefore before any override
+    # is merged. A change to api_docs_enabled consequently does nothing to a
+    # running process -- it takes effect at the next boot, which builds this
+    # object from the stored document (main._boot_config). FROZEN_SECTIONS
+    # says so in the reason the editor renders, and deploy/README.md says so
+    # in the overrides section.
     docs = config.api_docs_enabled
     app = FastAPI(
         title="autoposter",
@@ -618,6 +636,23 @@ def create_app(
     # object the holder now holds. The two are never allowed to diverge.
     app.state.config_holder = ConfigHolder(config)
     app.state.config = config
+    # The generation this process booted on. The lifespan replaces it with the
+    # one it loads from the store, which is what a deployment runs; an
+    # application whose lifespan never runs -- every test's -- booted on
+    # exactly what it was handed here, so the attribute is always the truth
+    # and never absent.
+    app.state.booted_config = config
+    # The generation this application OBJECT was constructed from, and the one
+    # the inert settings above were settled from a few lines up. Never
+    # rebound: the lifespan replaces `booted_config` with the merged
+    # generation, and the two are not always the same document -- a
+    # delta-conversion boot builds this one from the mounted file alone, and a
+    # boot whose bounded store read timed out falls back to the file for the
+    # whole life of the process (`main._boot_config`). Measuring an inert
+    # change against the merged generation on either of those would answer
+    # "nothing to restart for" about the one setting that has nothing BUT a
+    # restart, so the editor measures it against this.
+    app.state.object_config = config
     # A placeholder boot instant -- Python-clock, because create_app is
     # synchronous and cannot await the database read that fixes it. /api/status
     # compares a scheduled job's last_started_at (a Postgres-stamped column,
@@ -645,24 +680,20 @@ def create_app(
     # to the fixture that made it and must not be disposed here.
     app.state.engine = engine
     app.state.secrets = secrets
-    # WHICH of this deployment's secrets came from the state file, as a
-    # per-name boolean -- read with `.get(name, False)`, so a name the marker
-    # does not carry is "not from the file". `boot` publishes the NAMES across
-    # its exec (see `state_file_secret_names`), and this is the only reader.
+    # Nothing is published here about WHICH layer answered each secret. That
+    # was a per-name boolean over `boot`'s state-file marker, and it could only
+    # ever say "the file or not the file" -- one layer of three, decided once
+    # at construction. `config/schema.secret_sources` answers the whole
+    # question instead, from `boot`'s two markers and, where a caller has a
+    # session, the live table; `api/secret_rotation.py` is the reader.
     #
-    # Read from os.environ directly at this construction path, the way the
-    # version stamp the poller below reads is and for the same reason: it is
-    # not a credential, it is a deployment fact, and routing it through Secrets
-    # would make every test app fake a value for it.
+    # An application that never went through `boot` -- every test app, and an
+    # operator running `python -m autoposter.main` -- has neither marker, and
+    # so has nothing stored and reads the state directory for itself. With no
+    # file there that is the refusal, which is the path a test gets for free;
+    # with a file there it is what that file says, which is the only record
+    # such a process has.
     #
-    # FAIL CLOSED. An application that never went through `boot` -- every test
-    # app, and an operator running `python -m autoposter.main` -- has no
-    # marker and answers False for every name, which is the refusal. That
-    # is deliberate: the refusal is the path a test gets for free and the
-    # permission is the one a test has to opt into.
-    app.state.secret_from_state_file = {
-        name: True for name in os.environ.get(STATE_FILE_NAMES_ENV, "").split(",") if name
-    }
     # http=None here -- create_app has no http client yet, only the lifespan
     # builds one -- so this placeholder never actually polls; GET /api/version
     # still has something to read from every test app that never runs the
@@ -685,6 +716,13 @@ def create_app(
     # at once. Created here for the same reason the fence is: every application
     # must have one for the trigger endpoint to reach.
     app.state.mode_lock = asyncio.Lock()
+    # Who holds the lock above, when it is not a mode. The restart route takes
+    # it and keeps it, because the process is meant to be replaced moments
+    # later -- so without this flag a second click would be told an artwork
+    # mode is writing to a media server, which is a lie about the operator's
+    # own previous press. Created here for the reason the lock is: every
+    # application must have one for the route to read.
+    app.state.restart_in_flight = False
     # Per process, so every worker pod limits its own callers -- see
     # LoginRateLimiter.
     app.state.login_rate_limiter = LoginRateLimiter()
@@ -851,7 +889,7 @@ def _build_mdblist(
 async def _handle_intent(
     session, intent, *, config_holder, http, servers, providers, tmdb_facts=None, mdblist=None,
     imdb_parental=None, plex_generated_base=None,
-):
+) -> str | None:
     # Dereferenced once per job, at the top: process_item takes a config per
     # call already, so one read here is all it takes for a config swap to be
     # visible to the very next item a worker picks up. One read rather than
@@ -860,11 +898,13 @@ async def _handle_intent(
     # process_item's fifth positional is the whole registry now:
     # it resolves on every configured server itself, so there is no single
     # server to choose here any more.
+    warnings: list[str] = []
     try:
         await process_item(
             session, config, http, servers, providers, intent,
             tmdb_facts=tmdb_facts, mdblist=mdblist,
             imdb_parental=imdb_parental, plex_generated_base=plex_generated_base,
+            warnings=warnings,
         )
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         # PlexHealth (see plex/health.py) gating run_worker's claiming is now
@@ -901,3 +941,7 @@ async def _handle_intent(
         # normally.
         exc.max_attempts = 1
         raise
+    # One sentence per job, whatever the item's shape: the list holds at most
+    # one entry, and joining is what keeps that an implementation detail of
+    # process_item's out-parameter rather than something this return promises.
+    return "; ".join(warnings) or None

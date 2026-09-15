@@ -264,11 +264,11 @@ class RenderDelivery(Base):
     # How many times this row has been ATTEMPTED and not succeeded. Reset to 0
     # by any terminal-for-now outcome (`uploaded`, `skipped`, `absent`), so the
     # budget is about the current streak of trouble and not about the row's
-    # whole history. `scheduler.delivery_attempts` (Task 8) is the cap.
+    # whole history. `scheduler.delivery_attempts` is the cap.
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     # The badge fingerprint the last successful upload actually delivered.
     # NULL means "never uploaded, or uploaded before this column existed" --
-    # which the catch-up (Task 11) treats as behind, costing one redundant
+    # which the catch-up treats as behind, costing one redundant
     # upload per pre-existing row on the first catch-up and nothing after.
     fingerprint: Mapped[str | None] = mapped_column(String(64))
     # The catch-up run that marked this row due (spec §3). NULL for a row the
@@ -378,7 +378,8 @@ class Job(Base):
     kind: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     dedupe_key: Mapped[str | None] = mapped_column(String(255))
-    # pending | running | deferred | done | failed | parked | dismissed
+    # pending | running | deferred | done | done_with_warnings | failed |
+    # parked | dismissed
     #
     # ``deferred`` is a wait, not a failure: Plex cannot see the item yet, so
     # the job comes back on a long horizon with no attempt cap at all
@@ -386,8 +387,21 @@ class Job(Base):
     # pending once ``run_after`` passes, and it is presented as waiting rather
     # than failed -- the Failures page never sees one. No CHECK constraint
     # governs this column, in the model or in any migration, so the vocabulary
-    # widens here without a schema change.
-    state: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    # widens here without one.
+    #
+    # ``done_with_warnings`` is FINISHED, not failed: the item was processed,
+    # but a server it touched ended the pass still owed something, and
+    # ``last_error`` holds the sentence naming which. The queue never retries
+    # one -- the per-server rows in ``render_deliveries`` and
+    # ``metadata_writes`` carry their own retry.
+    #
+    # The LENGTH is what the vocabulary widened past: ``done_with_warnings``
+    # is eighteen characters and the column was ``String(16)``, which
+    # PostgreSQL enforces even with no CHECK constraint in sight -- so this
+    # one word did need a migration after all (``b3d91f7c05ea``). Twenty-four
+    # matches the two outcome tables' own status columns, which is the width
+    # this project already reaches for when a state name has to grow.
+    state: Mapped[str] = mapped_column(String(24), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     claimed_by: Mapped[str | None] = mapped_column(String(64))
@@ -928,21 +942,28 @@ class ImdbMissRefreshState(Base):
 
 
 class ConfigOverride(Base):
-    """The operator's configuration deltas, deep-merged over the YAML on load.
+    """The configuration this deployment runs, as one JSON document.
 
-    A single row, pinned to ``id=1``, holding one JSON document. The mounted
-    ``autoposter.yaml`` stays git/Flux-owned and is never written by the app
-    (it is read-only in the pod, and an in-app writer would diverge from the
-    repository it is delivered from); what the UI edits lands here instead and
-    is merged over the file by ``config/overrides.py``.
+    A single row, pinned to ``id=1``. The mounted ``autoposter.yaml`` stays
+    git/Flux-owned and is never written by the app (it is read-only in the pod,
+    and an in-app writer would diverge from the repository it is delivered
+    from); it seeds this row once, on the first boot that finds the store
+    empty, and is not read at boot again. What the UI edits lands here, and
+    what this row holds is what runs.
 
-    One document rather than a key/value row per setting because the merge
-    result has to be validated *whole* -- a half-applied config is the thing
-    the reload path exists to prevent -- and because "what has the operator
-    changed" is then a single readable value.
+    One document rather than a key/value row per setting because it has to be
+    validated *whole* -- a half-applied config is the thing the reload path
+    exists to prevent -- and because "what is this deployment set to" is then a
+    single readable value.
 
-    ``secrets`` never appears in it: those come from the environment, and
-    ``merge_overrides`` rejects the key outright.
+    A row written before the store held whole documents holds a DELTA instead:
+    a partial document that ``config/overrides.py`` merges over the mounted
+    file. ``meta["format"]`` tells the two apart, and the delta is converted on
+    the first load that finds one.
+
+    ``secrets`` never appears in it: those come from the environment or the
+    secrets table, and ``config/overrides.py`` refuses the key in every
+    document it loads and in every edit it merges.
     """
 
     __tablename__ = "config_overrides"
@@ -959,6 +980,20 @@ class ConfigOverride(Base):
     document: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    #: What the store knows about ITSELF, never about the configuration.
+    #:
+    #: ``format`` is 2 once the row holds the whole document rather than a
+    #: delta (config/overrides.py's ``STORE_FORMAT``); an empty object means
+    #: the row predates that and is a delta. ``restart_paths`` is the list of
+    #: frozen paths saved since the last restart -- kept here rather than in
+    #: memory so it survives a reload and shows to a second admin (spec §4).
+    #:
+    #: Deliberately not inside ``document``: everything in that column is
+    #: validated by ``build_config`` and an extra key there would be an
+    #: "unknown setting" 422 on the next save.
+    meta: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
 
 
@@ -985,12 +1020,46 @@ class ConfigOverrideSnapshot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     document: Mapped[dict] = mapped_column(JSONB, nullable=False)
     path_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    # save | apply | restore | import -- what the write that displaced this
-    # document was doing. Not nullable: every writer knows its own reason, and
-    # a nullable column would only ever record that somebody forgot.
+    #: 1 for a delta taken before the store became the document, 2 for a
+    #: document. Restoring a format-1 snapshot re-runs the merge the delta
+    #: described (api/routes.py's restore), which is the whole of spec §8's
+    #: "every existing snapshot stays restorable".
+    format: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    # save | apply | restore | import | migrate -- what the write that
+    # displaced this document was doing. The last of those is the one-time
+    # conversion of a delta into a document, and is the only one that displaces
+    # something of a different format than it writes. Not nullable: every
+    # writer knows its own reason, and a nullable column would only ever record
+    # that somebody forgot.
     reason: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class StoredSecret(Base):
+    """One secret the operator set from the UI, encrypted.
+
+    The NAME is the environment variable name every other reader of this
+    service speaks in (``AUTOPOSTER_TMDB_TOKEN``), so the store, the resolver
+    and the UI all key on one vocabulary. The VALUE is a Fernet token under
+    the key in the state directory (``config/secret_store.py``): the database
+    alone cannot reveal it, which is the trade spec §3 records -- losing the
+    volume loses the key and therefore every stored secret.
+
+    No ``source``, no ``set_by``, no history. What the UI needs is the name
+    and where the running value came from, and the second is computed by the
+    resolver rather than stored.
+    """
+
+    __tablename__ = "secrets"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -1155,7 +1224,9 @@ class Run(Base):
     than ``stale_job_reclaim`` is registered behind that same switch
     alongside the trim -- ``stale_job_reclaim`` itself, registered
     unconditionally and five-minutely, records no row at all
-    (``scheduler/run_history.py``'s ``UNRECORDED``). A full-pass row is
+    (``scheduler/run_history.py``'s ``UNRECORDED``, which exempts the catch-up
+    drain as well, for a reason of its own written down there). A full-pass
+    row is
     bounded instead by the drain-watcher's own close
     (``close_drained_full_passes``), which runs regardless of that switch,
     scoped to ``kind='full_pass'``/``name='full_pass'`` -- because

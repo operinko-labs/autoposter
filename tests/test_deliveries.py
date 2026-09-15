@@ -138,7 +138,7 @@ async def test_transport_error_during_resolve_stays_pending(session, config_with
 async def test_a_transport_error_at_resolve_spends_budget_on_both_tables(
     session, config_with_badges
 ):
-    """The same event -- the server is unreachable at resolve time
+    """Review I2: the same event -- the server is unreachable at resolve time
     -- spent an attempt on `render_deliveries` and none on `metadata_writes`,
     so spec §2's "nothing retries forever" did not hold for metadata in the
     one production failure mode it was written for. Only `ItemNotFound`, a
@@ -656,10 +656,11 @@ async def test_an_uncounted_pending_leaves_the_budget_alone(session):
 
 
 async def test_an_outcome_inside_a_run_keeps_its_scope(session):
-    """A row keeps `run_id`/`previous_status`
-    across every retry inside the run that armed it, terminal outcome
-    included -- Phase C's progress counts by run AND status, and its cancel
-    restores `previous_status`. Only `leave_run` clears them."""
+    """The other half of the scoping rule: a row keeps `run_id` and
+    `previous_status` across every retry inside the run that armed it,
+    terminal outcome included -- the progress view counts by run AND status,
+    and its cancel restores `previous_status`. Only `leave_run` clears
+    them."""
     from conftest import seed_media_item
     from autoposter.scheduler.run_history import open_run
 
@@ -687,7 +688,7 @@ async def test_an_outcome_inside_a_run_keeps_its_scope(session):
 
 
 async def test_a_re_arm_that_is_also_an_attempt_lands_at_one(session):
-    """`reset_attempts` used to be silently ignored whenever
+    """Review M9: `reset_attempts` used to be silently ignored whenever
     `count_attempt` was true, so a caller whose event is both a fresh start
     and a real attempt had no way to say so. Reset, then count -- 1."""
     render = await _render(session)
@@ -747,7 +748,7 @@ async def test_record_metadata_skipped_keeps_its_reason(session):
 
 
 async def test_an_absent_row_is_never_written_over_by_either_writer(session):
-    """The `absent` rule is a clause on the upsert, not a
+    """Review C1/I4: the `absent` rule is a clause on the upsert, not a
     convention each caller remembers. Both writers, both tables."""
     from conftest import seed_media_item
     item = await seed_media_item(session, "rk-abs", title="A")
@@ -804,7 +805,7 @@ async def test_a_terminal_call_without_a_fingerprint_keeps_the_stored_one(sessio
 async def test_the_retry_records_the_fingerprint_it_actually_delivered(
     session, config_with_badges, monkeypatch
 ):
-    """`compose_badged_bytes(force=True)` deliberately does not
+    """Review I1/T3: `compose_badged_bytes(force=True)` deliberately does not
     write `render.badge_fingerprint`, so the render's stored fingerprint is by
     construction not the one these bytes were composed under -- the two differ
     routinely, most sharply when the item has no Plex ref and the forced
@@ -844,7 +845,7 @@ async def test_the_retry_records_the_fingerprint_it_actually_delivered(
 
 
 async def _item_with_facts(session, native="j9"):
-    """The item AND the ``item_facts`` row the name promises.
+    """The item AND the ``item_facts`` row the name promises (review M8).
 
     Seeding none is why C1 was invisible to every metadata test in this file:
     the retry took the `or GatheredFacts()` fallback and never constructed the
@@ -888,7 +889,7 @@ async def test_a_due_metadata_row_is_written_and_recorded(session, config_with_b
 async def test_the_stored_facts_row_reaches_the_real_writer_and_a_write_lands(
     session, config_with_badges
 ):
-    """The retry handed `plan_edits` the raw `ItemFacts` ORM row,
+    """Review C1: the retry handed `plan_edits` the raw `ItemFacts` ORM row,
     which has none of the four `GatheredFacts` fields with no column
     (`user_rating`, `original_title`, `added_at`, `sort_title`). `plan_edits`
     dereferences `facts.user_rating` for every kind of item -- it is in all
@@ -987,7 +988,7 @@ async def test_the_server_filter_leaves_every_other_servers_rows_alone(
     render = await _render(session)
     await deliveries.record(session, render.id, "plex", "pending", retry_in=0)
     await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
-    # Both tables, because a catch-up marks both.
+    # Both tables, because a catch-up marks both (review M1).
     await deliveries.record_metadata(session, render.item_id, "plex", "pending", retry_in=0)
     await deliveries.record_metadata(session, render.item_id, "jellyfin", "pending", retry_in=0)
     await session.commit()
@@ -1024,7 +1025,7 @@ async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_
     run_id = await open_run(session, kind="catch_up", name="catch_up:jellyfin")
     await deliveries.record(session, render.id, "jellyfin", "pending", retry_in=0)
     await deliveries.record(session, other.id, "jellyfin", "pending", retry_in=0)
-    # Both tables, because a catch-up marks both.
+    # Both tables, because a catch-up marks both (review M1).
     await deliveries.record_metadata(session, render.item_id, "jellyfin", "pending", retry_in=0)
     await deliveries.record_metadata(session, other_item.id, "jellyfin", "pending", retry_in=0)
     await session.execute(
@@ -1056,7 +1057,7 @@ async def test_the_run_id_filter_takes_only_that_runs_rows(session, config_with_
 
 
 async def test_the_scheduled_pass_never_drains_a_catch_ups_rows(session, config_with_badges):
-    """The scheduled pass passed neither filter and therefore took
+    """Review I5: the scheduled pass passed neither filter and therefore took
     every due row. A catch-up stamps its backlog `next_attempt_at = now` while
     ordinary rows sit six hours out, so `ORDER BY next_attempt_at LIMIT 500`
     handed the catch-up's thousands of rows the whole budget of every
@@ -1105,7 +1106,7 @@ async def test_the_scheduled_pass_never_drains_a_catch_ups_rows(session, config_
 async def test_metadata_operations_turned_off_records_a_skip_and_writes_nothing(
     session, config_with_badges
 ):
-    """`apply_metadata` returns before it writes a row at all when
+    """Review I2: `apply_metadata` returns before it writes a row at all when
     `operations.enabled` is off, so this pass was the one path that could
     still write to a server the operator had switched off entirely."""
     from media_server_doubles import FakeMediaServer, JELLYFIN_CAPS
@@ -1225,7 +1226,7 @@ async def test_the_budget_turns_a_persistently_failing_metadata_write_failed(
 
 
 async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_badges):
-    """`failed` is itself a counted attempt, so an exhausted row
+    """Review I1: `failed` is itself a counted attempt, so an exhausted row
     stayed permanently above the budget -- `deliver`'s re-arm left the
     counter where it was, and the next failure exhausted the row again on its
     FIRST attempt. Spec §2 promises a row re-armed by a full pass (or, in
@@ -1280,7 +1281,7 @@ async def test_a_re_armed_row_gets_its_whole_budget_again(session, config_with_b
 
 
 async def test_a_failed_commit_costs_only_its_own_row(session, config_with_badges, monkeypatch):
-    """The pass held ONE transaction over as many as 1,000 rows and
+    """Review I3: the pass held ONE transaction over as many as 1,000 rows and
     committed once at the end, so a single failure there discarded every
     outcome row while the uploads and writes had already landed on real
     servers -- and the summary still claimed them. Each row now commits its
@@ -1534,3 +1535,98 @@ async def test_both_filters_select_rows_that_then_do_real_work(session, config_w
         select(MetadataWrite.server, MetadataWrite.status)
     )).all())
     assert statuses == {"jellyfin": "written", "plex": "written"}
+
+
+async def test_outcome_warnings_names_each_unsettled_server_and_kind(session):
+    """Spec §4's sentence: one clause per unsettled (server, kind), artwork
+    before metadata, with the stored detail in brackets."""
+    render = await _render(session, native="w1")
+    await deliveries.record(
+        session, render.id, "jellyfin", "pending", detail="connect: ConnectError", retry_in=60,
+    )
+    await deliveries.record_metadata(
+        session, render.item_id, "jellyfin", "failed", detail="status: HTTPStatusError 400",
+    )
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await session.commit()
+
+    sentence = await deliveries.outcome_warnings(
+        session, render.item_id, ["jellyfin", "plex"],
+    )
+
+    assert sentence == (
+        "jellyfin: artwork pending (connect: ConnectError); "
+        "jellyfin: metadata failed (status: HTTPStatusError 400)"
+    )
+
+
+async def test_outcome_warnings_is_none_when_everything_settled(session):
+    render = await _render(session, native="w2")
+    await deliveries.record(session, render.id, "jellyfin", "uploaded", fingerprint="fp1")
+    await deliveries.record_metadata(session, render.item_id, "jellyfin", "absent")
+    await session.commit()
+
+    assert await deliveries.outcome_warnings(session, render.item_id, ["jellyfin"]) is None
+
+
+async def test_outcome_warnings_ignores_servers_this_pass_did_not_touch(session):
+    render = await _render(session, native="w3")
+    await deliveries.record(session, render.id, "jellyfin", "failed", detail="error: X")
+    await session.commit()
+
+    assert await deliveries.outcome_warnings(session, render.item_id, ["plex"]) is None
+
+
+async def test_outcome_warnings_names_a_resolution_miss_that_left_no_row(session):
+    """A missed server leaves a row only when the badge stage ran AND its
+    upload toggle is on, and never leaves a metadata row at all -- so the
+    misses have to be told, or the case this state exists for reads as
+    nothing at all."""
+    render = await _render(session, native="w4")
+    await deliveries.record(session, render.id, "plex", "uploaded", fingerprint="fp1")
+    await session.commit()
+
+    sentence = await deliveries.outcome_warnings(
+        session, render.item_id, ["plex", "jellyfin"], misses=["jellyfin"],
+    )
+
+    assert sentence == "jellyfin: not found"
+
+
+async def test_outcome_warnings_prefers_a_servers_row_over_its_miss(session):
+    """A row says more than "not found" does, and a server is never honestly
+    both -- so the row wins and the miss adds no second clause."""
+    render = await _render(session, native="w5")
+    await deliveries.record(
+        session, render.id, "jellyfin", "pending", detail="connect: ConnectError", retry_in=60,
+    )
+    await session.commit()
+
+    sentence = await deliveries.outcome_warnings(
+        session, render.item_id, ["jellyfin"], misses=["jellyfin"],
+    )
+
+    assert sentence == "jellyfin: artwork pending (connect: ConnectError)"
+
+
+async def test_outcome_warnings_orders_a_miss_among_the_other_servers(session):
+    render = await _render(session, native="w6")
+    await deliveries.record_metadata(
+        session, render.item_id, "plex", "failed", detail="error: X",
+    )
+    await session.commit()
+
+    sentence = await deliveries.outcome_warnings(
+        session, render.item_id, ["plex", "jellyfin"], misses=["jellyfin"],
+    )
+
+    assert sentence == "jellyfin: not found; plex: metadata failed (error: X)"
+
+
+async def test_outcome_warnings_ignores_a_miss_on_a_server_it_was_not_given(session):
+    render = await _render(session, native="w7")
+    await session.commit()
+
+    assert await deliveries.outcome_warnings(
+        session, render.item_id, ["plex"], misses=["jellyfin"],
+    ) is None

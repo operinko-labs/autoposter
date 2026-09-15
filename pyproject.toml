@@ -53,6 +53,12 @@ dependencies = [
     # The W/WU/WL modifiers in the <<variable>> grammar (probe section 2.3)
     # spell an integer out as words. Pure python, no C extension.
     "num2words>=0.5",
+    # The stored secrets' cipher (config/secret_store.py). Fernet: AES-128-CBC
+    # with an HMAC, one symmetric key, a versioned token format -- the smallest
+    # correct thing for "encrypt a short string with a key on this volume", and
+    # the one this project does not have to get right itself. Not a transitive
+    # dependency of anything already here, so it is declared.
+    "cryptography>=44",
 ]
 
 [project.optional-dependencies]

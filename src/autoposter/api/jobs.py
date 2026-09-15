@@ -66,12 +66,12 @@ LIVE_STATES = ("running", "pending", "deferred")
 LIST_LIMIT = 200
 
 
-def _text(payload: dict, key: str) -> str | None:
+def payload_text(payload: dict, key: str) -> str | None:
     value = payload.get(key)
     return value if isinstance(value, str) else None
 
 
-def _number(payload: dict, key: str) -> int | None:
+def payload_number(payload: dict, key: str) -> int | None:
     value = payload.get(key)
     # bool is an int subclass, and a `true` in a payload field is not a season.
     return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -132,10 +132,10 @@ async def list_jobs(
                 "max_attempts": None if waiting else MAX_ATTEMPTS,
                 "waiting_for_plex": waiting,
                 # The four payload fields that name the item, and nothing else.
-                "title": _text(payload, "title"),
-                "item_kind": _text(payload, "kind"),
-                "season_number": _number(payload, "season_number"),
-                "episode_number": _number(payload, "episode_number"),
+                "title": payload_text(payload, "title"),
+                "item_kind": payload_text(payload, "kind"),
+                "season_number": payload_number(payload, "season_number"),
+                "episode_number": payload_number(payload, "episode_number"),
                 # Negative for a job that is already due (and for every running
                 # job, whose run_after is in the past). The page renders that as
                 # "now" rather than a countdown, which is the truth.

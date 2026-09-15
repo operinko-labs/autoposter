@@ -12,6 +12,8 @@ disagreeing about what "configured" means.
 Endpoint citations: docs/reference/2026-09-jellyfin-openapi-12.md.
 """
 
+import os
+
 import httpx
 import pytest
 import pytest_asyncio
@@ -34,8 +36,22 @@ from test_api_setup import (  # noqa: F401
     _answering,
     _authenticate,
     _headers,
+    _stored,
     isolated_state,
 )
+
+
+@pytest.fixture
+def database_url():
+    """The database this pytest process owns, named the way
+    `tests/test_api_setup.py`'s own fixture names it.
+
+    The finish step CONNECTS now -- it writes the staged credentials into the
+    secrets table -- so a walk that goes through it has to name a database that
+    answers, where before a well-formed unreachable one was enough.
+    """
+    return os.environ["AUTOPOSTER_TEST_DATABASE_URL"]
+
 
 JELLYFIN_URL = "https://jf.example"
 JELLYFIN_KEY = "row-267-jellyfin-key-4a1e"
@@ -511,7 +527,7 @@ async def test_the_servers_line_reads_a_document_the_deployment_already_has(
 
 
 async def test_progress_carries_servers_and_the_wizard_finishes_jellyfin_only(
-    setup_app, setup_client, monkeypatch
+    setup_app, setup_client, monkeypatch, session_factory, database_url
 ):
     """A Jellyfin-only walk through the REAL routes (spec 8).
 
@@ -521,6 +537,11 @@ async def test_progress_carries_servers_and_the_wizard_finishes_jellyfin_only(
     """
     token = await _authenticate(setup_client)
     headers = _headers(token)
+    # The suite's database is built from the models rather than by the
+    # migrations, so the upgrade the finish step runs for itself is stubbed:
+    # this walk is about what the wizard writes, and
+    # `tests/test_api_setup.py` is where the migration itself is pinned.
+    monkeypatch.setattr(setup_api, "_migrate_for_the_store", lambda database: True)
     monkeypatch.setattr(setup_api, "database_answers", _answering(True))
     assert (
         await setup_client.post(
@@ -529,7 +550,7 @@ async def test_progress_carries_servers_and_the_wizard_finishes_jellyfin_only(
     ).status_code == 200
     assert (
         await setup_client.post(
-            "/api/setup/database", json={"url": FAKE_DB_URL}, headers=headers
+            "/api/setup/database", json={"url": database_url}, headers=headers
         )
     ).status_code == 200
 
@@ -593,20 +614,26 @@ async def test_progress_carries_servers_and_the_wizard_finishes_jellyfin_only(
     response = await setup_client.post("/api/setup/finish", headers=headers)
 
     assert response.status_code == 200, response.text
+    # The credentials land in the STORE now; the state file holds the one name
+    # that cannot live there, because reading the store needs it.
+    stored = await _stored(session_factory)
+    assert stored["AUTOPOSTER_JELLYFIN_APIKEY"] == JELLYFIN_KEY
+    assert "AUTOPOSTER_PLEX_TOKEN" not in stored
     written = state_module.read_secrets_file(state_module.secrets_file_path())
-    assert written["AUTOPOSTER_JELLYFIN_APIKEY"] == JELLYFIN_KEY
-    assert "AUTOPOSTER_PLEX_TOKEN" not in written
+    assert written["AUTOPOSTER_DATABASE_URL"] == database_url
+    assert "AUTOPOSTER_JELLYFIN_APIKEY" not in written
     document = setup_api.read_config_document(state_module.state_config_path())
     assert document["jellyfin"] == {"url": JELLYFIN_URL, "excluded_libraries": ["Photos"]}
     assert "plex" not in document
-    # The gate the next boot will run, over what was actually persisted.
-    assert boot.is_configured(setup_api.resolve_secret_values()) is True
+    # The gate the next boot will run, over what was actually persisted -- the
+    # stored layer included, which is where this walk put every credential.
+    assert boot.is_configured(setup_api.resolve_secret_values(stored)) is True
     assert JELLYFIN_KEY not in response.text
     assert setup_app.state.setup.token is not None
 
 
 async def test_both_servers_reach_the_written_document_and_the_written_secrets(
-    setup_app, setup_client, monkeypatch
+    setup_app, setup_client, monkeypatch, session_factory, database_url
 ):
     """The third shape spec 8 allows, walked to the end.
 
@@ -618,9 +645,10 @@ async def test_both_servers_reach_the_written_document_and_the_written_secrets(
     """
     token = await _authenticate(setup_client)
     headers = _headers(token)
+    monkeypatch.setattr(setup_api, "_migrate_for_the_store", lambda database: True)
     monkeypatch.setattr(setup_api, "database_answers", _answering(True))
     await setup_client.post(
-        "/api/setup/database", json={"url": FAKE_DB_URL}, headers=headers
+        "/api/setup/database", json={"url": database_url}, headers=headers
     )
     values = {
         name: "value"
@@ -663,8 +691,10 @@ async def test_both_servers_reach_the_written_document_and_the_written_secrets(
     assert document["jellyfin"] == {
         "url": JELLYFIN_URL, "excluded_libraries": ["Home Videos"],
     }
+    stored = await _stored(session_factory)
+    assert stored["AUTOPOSTER_JELLYFIN_APIKEY"] == JELLYFIN_KEY
+    assert stored["AUTOPOSTER_PLEX_TOKEN"] == "row-267-plex-token-8b12"
     written = state_module.read_secrets_file(state_module.secrets_file_path())
-    assert written["AUTOPOSTER_JELLYFIN_APIKEY"] == JELLYFIN_KEY
-    assert written["AUTOPOSTER_PLEX_TOKEN"] == "row-267-plex-token-8b12"
-    assert boot.is_configured(setup_api.resolve_secret_values()) is True
+    assert set(written) == {"AUTOPOSTER_DATABASE_URL", "AUTOPOSTER_ADMIN_PASSWORD_HASH"}
+    assert boot.is_configured(setup_api.resolve_secret_values(stored)) is True
     assert setup_app.state.setup.config_document is not None

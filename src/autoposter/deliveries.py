@@ -7,6 +7,7 @@ that reads it keeps working unchanged.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 
@@ -898,3 +899,93 @@ async def retry_pending_deliveries(
     # to lose. A pass with no due rows leaves only the two SELECTs' read
     # transaction, which the caller's `async with session_factory()` closes.
     return summary
+
+
+# The statuses that are NOT an ending. Everything else either table can hold
+# -- `uploaded`, `written`, `skipped`, `absent` -- is a settled outcome and
+# has nothing left to warn about.
+_UNSETTLED = ("pending", "failed")
+
+
+async def outcome_warnings(
+    session: AsyncSession, item_id: int, servers: Iterable[str], *,
+    misses: Iterable[str] = (),
+) -> str | None:
+    """One sentence naming every server this item still owes something to.
+
+    The ``done_with_warnings`` half of spec §4. A job ends ``done`` only when
+    every server it touched recorded ``uploaded``, ``written``, ``skipped``
+    or ``absent``; anything still ``pending`` or ``failed`` is named here,
+    with the stored detail in brackets -- which is already a category and a
+    class name and never a URL, because ``failure_detail`` is the only thing
+    that writes one.
+
+    ``servers`` is the names THIS pass touched. A server the pass never
+    considered is not this job's warning, even if it has an old row of its
+    own -- which is what keeps a job about one server from reporting
+    another's unrelated backlog, and what keeps a server the deployment no
+    longer configures out of the sentence entirely.
+
+    ``misses`` is the subset of those that did not resolve at all, named as
+    ``<server>: not found``. Rows alone are not enough to answer for one: a
+    missed server gets a ``pending`` delivery row only when the badge stage
+    runs AND that server's upload toggle is on, and it gets no
+    ``metadata_writes`` row at all, since those are written per RESOLVED
+    server. So on a badges-off deployment the item a server has never scanned
+    left no row anywhere and the job finished plain ``done`` -- the exact
+    silence this state exists to break. A server that has an unsettled ROW is
+    reported by the row: that says more than "not found" does, and a server
+    cannot honestly be both.
+
+    A miss on a server whose ``absent`` row says it does not carry this
+    item's library must never reach here -- spec §1 says such an item "is
+    never resolved there, and is never retried", so nothing is owed. Keeping
+    that set out of BOTH arguments is the caller's job: the caller is what
+    knows which servers it skipped for being absent and which it asked anyway
+    because the item's identity was not yet established.
+    """
+    wanted = set(servers)
+    if not wanted:
+        return None
+    missed = set(misses) & wanted
+    artwork = (await session.execute(
+        select(RenderDelivery.server, RenderDelivery.status, RenderDelivery.detail)
+        .join(Render, Render.id == RenderDelivery.render_id)
+        .where(Render.item_id == item_id, RenderDelivery.status.in_(_UNSETTLED))
+    )).all()
+    metadata = (await session.execute(
+        select(MetadataWrite.server, MetadataWrite.status, MetadataWrite.detail)
+        .where(MetadataWrite.item_id == item_id, MetadataWrite.status.in_(_UNSETTLED))
+    )).all()
+    clauses: list[tuple[str, str, str]] = []
+    # `artwork` first so the sort below names a server's art before its
+    # metadata, which is the order the item page's own table uses.
+    for kind, rows in (("artwork", artwork), ("metadata", metadata)):
+        for server_name, status, detail in rows:
+            if server_name not in wanted:
+                continue
+            clause = f"{server_name}: {kind} {status}"
+            if detail:
+                clause += f" ({detail})"
+            clauses.append((server_name, kind, clause))
+    # The misses that no row already answers for. Sorted in with the rest by
+    # server name; the empty kind is a sort slot, not a word -- a server with
+    # a row is never also reported as a miss, so it never renders.
+    named_by_a_row = {server_name for server_name, _kind, _clause in clauses}
+    for server_name in missed - named_by_a_row:
+        clauses.append((server_name, "", f"{server_name}: not found"))
+    if not clauses:
+        return None
+    # One clause per rendered sentence fragment: a movie has one poster and
+    # one background, and naming the same server twice for two art kinds that
+    # failed the same way would make the sentence longer without saying
+    # anything more. De-duplicated on the RENDERED clause, so two identical
+    # failures collapse and two different ones do not.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for _server_name, _kind, clause in sorted(clauses):
+        if clause in seen:
+            continue
+        seen.add(clause)
+        ordered.append(clause)
+    return "; ".join(ordered)

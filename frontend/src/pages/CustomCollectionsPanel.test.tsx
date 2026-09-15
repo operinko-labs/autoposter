@@ -59,9 +59,8 @@ const OVERRIDE_ROWS = [
 ];
 
 /** The stored entries behind OVERRIDE_ROWS, as the served config carries
- * them: `overridden_paths` names the list-as-leaf path and the served value
- * IS the stored one (an override wins the merge), so `documentFromConfig`
- * seeds exactly this array.
+ * them: the served value IS the stored one, so `documentFromConfig` seeds
+ * exactly this array.
  *
  * `summary` and `limit` are the point of the second entry: the listing does
  * not project them, so a write built from the listing would drop them. */
@@ -82,14 +81,15 @@ function listing(definitions: unknown[] = []) {
 }
 
 /** The config GET, whose only job here is seeding the document the panel
- * writes. The unrelated `plex.url` override is the point of the fixture: a
- * save about definitions must not drop it. */
+ * writes. The unrelated `plex.url` is the point of the fixture: the document
+ * is the whole configuration, so a save about definitions has to carry it
+ * back untouched rather than drop it. */
 function config(overrides: Record<string, unknown> = {}) {
   return {
     version: "cfg-1",
     plex: { url: "http://plex:32400" },
     collections: { enabled: true },
-    overridden_paths: ["plex.url"],
+    restart_paths: [],
     frozen_paths: {},
     redacted_paths: [],
     keep_sentinel: "***KEEP***",
@@ -97,12 +97,11 @@ function config(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** A config already storing a definitions override, so Remove has stored
- * entries to subtract from. */
+/** A config already storing a definitions list, so Remove has stored entries
+ * to subtract from. */
 function overriddenConfig(entries: unknown[] = STORED_ENTRIES) {
   return config({
     collections: { enabled: true, definitions: entries },
-    overridden_paths: ["plex.url", "collections.definitions"],
   });
 }
 
@@ -360,7 +359,7 @@ describe("the custom collections panel", () => {
     expect(sentDocument(puts).collections.definitions).toEqual([STORED_ENTRIES[1]]);
   });
 
-  it("removing the last override drops the key — the overrides revert", async () => {
+  it("removing the last row drops the key rather than storing an empty list", async () => {
     const { puts } = await renderPanel({
       definitions: listing([OVERRIDE_ROWS[0]]),
       config: overriddenConfig([STORED_ENTRIES[0]]),
@@ -370,9 +369,11 @@ describe("the custom collections panel", () => {
 
     await waitFor(() => expect(puts).toHaveLength(1));
     const document = sentDocument(puts);
-    // The revert IS the absence: `[]` would keep shadowing whatever the file
-    // lists; the key going away hands the decision back to the file.
-    expect(document.collections).toBeUndefined();
+    // The key going away is how "no custom definitions" is said: an explicit
+    // `[]` is a list the operator wrote, and the two are not the same claim.
+    // The rest of the section is untouched.
+    expect(document.collections.definitions).toBeUndefined();
+    expect(document.collections.enabled).toBe(true);
     expect(document.plex.url).toBe("http://plex:32400");
   });
 

@@ -297,9 +297,30 @@
 /* The one delivery status dashboard.css's shared .pill-* variants do not
  * already cover (pending/failed/skipped are pill-pending/pill-failed/
  * pill-skipped there) -- matching .pill-ok/.pill-rendered's own green. */
-.pill-uploaded {
+.pill-uploaded,
+/* A written metadata row is the metadata half of an uploaded delivery, so it
+ * reads the same green. */
+.pill-written {
   background: color-mix(in srgb, var(--ok) 22%, transparent);
   color: var(--ok);
+}
+
+/* `absent` is not an outcome of a write, it is the library saying this server
+ * never held the item, so it is grey rather than any of the outcome colours. */
+.pill-absent {
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+  color: var(--text-muted);
+}
+
+/* The per-server table. Its own rule rather than .render-table's because that
+ * one nowraps every cell, and the detail-bearing columns here are the ones
+ * that must be allowed to wrap. */
+.server-outcomes {
+  width: 100%;
+}
+
+.server-outcomes .pill {
+  margin-right: 6px;
 }
 
 .fingerprint {

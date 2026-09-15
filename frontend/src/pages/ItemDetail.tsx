@@ -17,6 +17,7 @@ import type {
 import { artKindFor } from "../artKind";
 import { formatTime } from "../format";
 import { MetadataOverridesPanel } from "./MetadataOverridesPanel";
+import ServerOutcomes from "./ServerOutcomes";
 import "./item.css";
 
 /** The shape of the pane box, matched by art kind in item.css: posters are
@@ -1218,6 +1219,13 @@ export function ItemDetail() {
           note={clearNote}
           onClear={(artKind) => void clearOverride(artKind)}
         />
+
+        {/* In the Renders panel rather than one of its own: the renders table
+            is per art kind and this is the same work seen per server, and an
+            operator asking "did Jellyfin get it" should not have to find a
+            second panel to answer it. */}
+        <h3>Per server</h3>
+        <ServerOutcomes servers={item.servers} />
       </div>
     </>
   );

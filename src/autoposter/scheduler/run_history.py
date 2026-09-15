@@ -54,7 +54,19 @@ _DETAIL_WIDTH = 2000
 # jobs' rows are meant to be read. Consulted in `scheduler/core.py`'s
 # `_maybe_run`, before `open_run` is even called, so an unrecorded name never
 # gets a `close_run` call either.
-UNRECORDED = frozenset({"stale_job_reclaim"})
+#
+# `catch_up_drain` is here for a different reason, and not because its rows
+# would go untrimmed. Its pass is a LOOK: it asks whether any catch-up has
+# deliveries due and hands a slice of them on. The catch-up itself already
+# owns a row of its own -- `kind='catch_up'`, open for the hours the backlog
+# takes -- so the drain's every-minute ticks record the bookkeeping around a
+# run that is already recorded, and an operator reading the history sees the
+# catch-up, which is the thing that happened. It also makes the row honest for
+# everything that asks "is work in flight in this process": a tick of the look
+# is not a reason to say yes, and `scheduled_runs` still carries its last
+# status and detail for the Run-now button, which reads that table and not
+# this one.
+UNRECORDED = frozenset({"stale_job_reclaim", "catch_up_drain"})
 
 
 async def open_run(session: AsyncSession, *, kind: str, name: str) -> int:
@@ -189,7 +201,17 @@ _ART_KINDS = ("poster", "season_poster", "background", "title_card")
 # The job states each count column reads. `parked` is deliberately absent:
 # a parked job is an operator matter the Action Center owns, and a
 # run rollup is not a surface anyone can act on it from.
-_JOB_STATE_COLUMNS = {"processed": "done", "failed": "failed", "deferred": "deferred"}
+#
+# `processed` reads TWO states: `done_with_warnings` is a finished job whose
+# item was processed exactly like a `done` one -- only a server it touched is
+# still owed something -- so counting it anywhere else would have a pass read
+# as having done less work than it did, or (worse) as having failed items it
+# did not.
+_JOB_STATE_COLUMNS = {
+    "processed": ("done", "done_with_warnings"),
+    "failed": ("failed",),
+    "deferred": ("deferred",),
+}
 
 
 async def window_counts(
@@ -254,8 +276,8 @@ async def window_counts(
             counts[key] = int(total)
 
     seen = {state: int(total) for state, total in by_state}
-    for column, state in _JOB_STATE_COLUMNS.items():
-        counts[column] = seen.get(state, 0)
+    for column, states in _JOB_STATE_COLUMNS.items():
+        counts[column] = sum(seen.get(state, 0) for state in states)
 
     return counts
 

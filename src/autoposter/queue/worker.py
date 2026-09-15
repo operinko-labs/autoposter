@@ -26,7 +26,13 @@ IDLE_SLEEP_SECONDS = 2.0
 # (a process_item job's is a RenderIntent; a mode job's is its filters), so the
 # map values share one signature regardless of kind. Wired in app.py, where the
 # per-process dependencies each handler closes over are constructed.
-JobHandler = Callable[[AsyncSession, Job], Awaitable[None]]
+#
+# A handler may RETURN a warning sentence (spec §4) -- the work finished, but a
+# server it touched is still owed something -- and the job then completes as
+# `done_with_warnings` with the sentence in `last_error`. Returning None is the
+# ordinary success, which is what a handler with nothing to report does
+# implicitly.
+JobHandler = Callable[[AsyncSession, Job], Awaitable[str | None]]
 
 
 def _served_reason(exc: BaseException) -> str:
@@ -92,7 +98,7 @@ async def run_once(
     tracker = pause.running_job() if pause is not None else contextlib.nullcontext()
     with tracker:
         try:
-            await handler(session, job)
+            warnings = await handler(session, job)
         except asyncio.CancelledError:
             # Shutdown, not a job failure: hand it straight back so it's immediately
             # claimable again, without charging a retry attempt, then let the
@@ -171,7 +177,7 @@ async def run_once(
             max_attempts = getattr(exc, "max_attempts", MAX_ATTEMPTS)
             await fail(session, job_id, _served_reason(exc), max_attempts)
         else:
-            await complete(session, job_id)
+            await complete(session, job_id, warnings=warnings)
     return True
 
 

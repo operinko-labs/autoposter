@@ -122,14 +122,15 @@ function catalog(active: Record<string, boolean> = {}) {
 }
 
 /** The config GET, whose only job here is seeding the document the picker
- * edits. `overridden_paths` carrying an unrelated override is the point of the
- * fixture: a save about collections must not drop it. */
+ * edits. The unrelated `plex.url` is the point of the fixture: the document is
+ * the whole configuration now, so a save about collections has to carry it
+ * back untouched rather than drop it. */
 function config(overrides: Record<string, unknown> = {}) {
   return {
     version: "cfg-1",
     plex: { url: "http://plex:32400" },
     collections: { enabled: true, awards: false, charts: false, presets: [] },
-    overridden_paths: ["plex.url"],
+    restart_paths: [],
     frozen_paths: {},
     redacted_paths: [],
     keep_sentinel: "***KEEP***",
@@ -342,11 +343,11 @@ describe("saving the picker's choices", () => {
     await waitFor(() => expect(puts).toHaveLength(1));
     const document = sentDocument(puts);
     expect(document.collections.presets).toEqual(["award_cannes"]);
-    // A preset is not a setting. If the routing were reversed this key would
-    // be here, and the config it produced would switch on the Oscars.
-    expect(document.collections.awards).toBeUndefined();
-    // The unrelated override the config reported is still in the document: a
-    // save about collections must not drop what another page stored.
+    // A preset is not a setting. If the routing were reversed this would have
+    // moved, and the config it produced would switch on the Oscars.
+    expect(document.collections.awards).toBe(false);
+    // The unrelated setting the config served is still in the document: a save
+    // about collections must not drop what the rest of the store holds.
     expect(document.plex.url).toBe("http://plex:32400");
   });
 
@@ -361,20 +362,19 @@ describe("saving the picker's choices", () => {
     expect(document.collections.awards).toBe(true);
     // The whole point. `presets: [oscars]` is refused by the server as an
     // unknown key, so a document carrying one is a 422 waiting to happen --
-    // and nothing else in the picker would notice.
-    expect(document.collections.presets).toBeUndefined();
+    // and nothing else in the picker would notice. The list is sent back as
+    // it was served, which is empty.
+    expect(document.collections.presets).toEqual([]);
   });
 
   it("writes an explicit false when a setting-backed row is switched off", async () => {
-    // The off direction of the same route. It cannot be expressed by dropping
-    // the key: the document is a delta, so a missing `collections.awards`
-    // reverts to whatever the config file says -- which is `true` for anyone
-    // who switched the Oscars on there. Only an explicit `false` turns them off.
+    // The off direction of the same route, and it has to be an explicit
+    // `false`: a `collections.awards` the document left out would hand the
+    // setting back to the schema's own default rather than switch it off.
     const { puts } = await renderPanel({
       catalog: catalog({ oscars: true }),
       config: config({
         collections: { enabled: true, awards: true, charts: false, presets: [] },
-        overridden_paths: ["collections.awards"],
       }),
     });
 
@@ -386,7 +386,7 @@ describe("saving the picker's choices", () => {
     await waitFor(() => expect(puts).toHaveLength(1));
     const document = sentDocument(puts);
     expect(document.collections.awards).toBe(false);
-    expect(document.collections.presets).toBeUndefined();
+    expect(document.collections.presets).toEqual([]);
   });
 
   it("writes the boolean a setting-backed row in another category names", async () => {
@@ -399,8 +399,9 @@ describe("saving the picker's choices", () => {
     await waitFor(() => expect(puts).toHaveLength(1));
     const document = sentDocument(puts);
     expect(document.collections.charts).toBe(true);
-    expect(document.collections.awards).toBeUndefined();
-    expect(document.collections.presets).toBeUndefined();
+    // Both sent back exactly as they were served: the picker moved one row.
+    expect(document.collections.awards).toBe(false);
+    expect(document.collections.presets).toEqual([]);
   });
 
   it("drops an unchecked preset from the list it sends, keeping the rest", async () => {
@@ -413,7 +414,6 @@ describe("saving the picker's choices", () => {
           charts: false,
           presets: ["award_cannes", "award_berlinale"],
         },
-        overridden_paths: ["collections.presets"],
       }),
     });
 

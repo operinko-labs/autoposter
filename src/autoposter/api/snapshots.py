@@ -24,9 +24,21 @@ from autoposter.db.models import EventLog, Job, ScheduledRun
 # pending or counted with parked: it is neither. It is live work that is
 # waiting for the library to catch up, and an operator seeing a hundred of them
 # is seeing a hundred items Plex has not indexed, which is its own fact.
+#
+# ``done_with_warnings`` is listed for the same zero-fill reason and for one
+# more: without it the count arrived only once such a job existed, so the
+# payload's shape changed under the dashboard rather than a number moving. It
+# is a FINISHED state, so it is never folded in with ``failed``.
 JOB_STATES = (
-    "pending", "running", "deferred", "done", "failed", "parked", "dismissed",
+    "pending", "running", "deferred", "done", "done_with_warnings", "failed",
+    "parked", "dismissed",
 )
+
+# The finished-successfully states, for the counts that ask "how much work
+# came out the other end". ``done_with_warnings`` belongs in every one of
+# them: the item WAS processed, and leaving it out would have a server that
+# is down read as the queue quietly doing less work.
+COMPLETED_STATES = ("done", "done_with_warnings")
 
 
 def _run_status(row: ScheduledRun, started_at: datetime) -> str | None:
@@ -92,7 +104,7 @@ async def status_snapshot(
             select(func.count())
             .select_from(Job)
             .where(
-                Job.state == "done",
+                Job.state.in_(COMPLETED_STATES),
                 Job.updated_at >= func.now() - timedelta(hours=24),
             )
         )

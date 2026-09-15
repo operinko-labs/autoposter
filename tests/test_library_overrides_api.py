@@ -41,12 +41,11 @@ async def _put(client, auth_headers, document: dict, **extra):
 
 
 async def test_a_per_library_override_round_trips(client, auth_headers):
-    """Stored, merged, served back as an overridden path at full depth."""
+    """Stored, merged, and served back at full depth."""
     saved = await _put(client, auth_headers, BLOCK)
     assert saved.status_code == 200, saved.text
 
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert "libraries.Movies.operations.write_to_plex" in body["overridden_paths"]
     assert body["libraries"]["Movies"]["operations"]["write_to_plex"] is False
     # The GLOBAL setting is untouched, which is the whole point of the layer.
     assert body["operations"]["write_to_plex"] is True
@@ -190,7 +189,7 @@ async def test_dropping_more_than_the_cap_needs_confirm_as_today(
     confirmed = await _put(client, auth_headers, {}, confirm=True)
     assert confirmed.status_code == 200, confirmed.text
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["overridden_paths"] == []
+    assert body["libraries"] == {}, "the cleared row is gone from the served config"
 
 
 async def test_every_served_per_library_leaf_has_a_description(
@@ -226,9 +225,9 @@ async def test_the_export_import_envelope_carries_a_libraries_block(
 
     ``OVERRIDES_EXPORT_FORMAT`` is bumped only when the shape of ``document``
     changes in a way an older reader would misread; adding a config section
-    is not that, because the document is a delta whose shape is the config's
-    own. Exported, re-imported, and served back identical -- which is what a
-    backup taken before this row and restored after it has to do.
+    is not that, because the document's shape is the config's own. Exported,
+    re-imported, and served back identical -- which is what a backup taken
+    before this row and restored after it has to do.
     """
     stored = {"libraries": {"Movies": {
         "operations": {"write_to_plex": False},
@@ -260,11 +259,7 @@ async def test_the_export_import_envelope_carries_a_libraries_block(
     assert imported.status_code == 200, imported.text
 
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert sorted(body["overridden_paths"]) == [
-        "libraries.Movies.badges.enabled",
-        "libraries.Movies.maintenance.empty_trash",
-        "libraries.Movies.operations.write_to_plex",
-    ]
+    assert body["libraries"] == stored["libraries"]
 
 
 async def test_an_imported_block_naming_an_unknown_library_is_refused(

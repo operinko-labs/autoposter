@@ -2,18 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "../api/client";
 import type { ParkedJob, ParkedJobsResponse } from "../api/types";
-import { formatTime } from "../format";
-
-/** The season/episode suffix Plex users read titles by, or null when the job
- * is not for an episode or a season. Jobs.tsx's own helper, duplicated here:
- * both pages read it off the same four lifted payload fields. */
-function seasonEpisode(job: ParkedJob): string | null {
-  const { season_number: season, episode_number: episode } = job;
-  if (season === null) return null;
-  const padded = String(season).padStart(2, "0");
-  if (episode === null) return `S${padded}`;
-  return `S${padded}E${String(episode).padStart(2, "0")}`;
-}
+import { formatTime, seasonEpisode } from "../format";
 
 export function Failures() {
   const [jobs, setJobs] = useState<ParkedJob[] | null>(null);

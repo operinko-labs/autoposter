@@ -233,9 +233,9 @@ describe("Settings configuration", () => {
   });
 });
 
-/** The editor's own fixture: it carries the two provenance keys the enriched
- * GET adds, one frozen prefix with the server's reason, and one field of each
- * editable value type. */
+/** The editor's own fixture: it carries the keys the enriched GET adds that
+ * are not settings, one frozen prefix with the server's reason, and one field
+ * of each editable value type. */
 const EDITOR_CONFIG = {
   version: "abc123",
   workers: 5,
@@ -247,7 +247,7 @@ const EDITOR_CONFIG = {
   badges: { enabled: true },
   artwork: { poster: { text: { min_point_size: 20 } } },
   secrets: { plex_token: REDACTED },
-  overridden_paths: [] as string[],
+  restart_paths: [] as string[],
   frozen_paths: {
     workers: "the worker pool is sized once, at startup",
     plex: "the Plex client is built once at startup",
@@ -261,6 +261,25 @@ const EDITOR_CONFIG = {
   },
   computed_paths: ["version"],
   live_paths: ["plex.resolve_max_attempts"],
+};
+
+/** The document the page seeds from `EDITOR_CONFIG`: the whole served
+ * configuration minus the keys that are not settings.
+ *
+ * Spelled out rather than computed, because what these tests are checking is
+ * that the page sends the whole store back. Deriving it from the same helper
+ * the page uses would make every assertion below agree with the page by
+ * construction, including when both are wrong. */
+const SEEDED_DOCUMENT = {
+  version: "abc123",
+  workers: 5,
+  plex: {
+    url: "http://plex:32400",
+    excluded_libraries: ["Muskarit", "Photos"],
+    resolve_max_attempts: 10,
+  },
+  badges: { enabled: true },
+  artwork: { poster: { text: { min_point_size: 20 } } },
 };
 
 function json(body: unknown, status = 200): Response {
@@ -312,7 +331,7 @@ function rowOf(field: HTMLElement): HTMLElement {
 }
 
 describe("Settings editor", () => {
-  it("sends a document carrying only the touched path", async () => {
+  it("sends the whole document with the touched path changed in it", async () => {
     const fetchMock = stubApi();
     await renderSettings();
 
@@ -321,13 +340,14 @@ describe("Settings editor", () => {
     });
     await save();
 
-    // The overrides document is a delta, not a round-trip of the running
-    // config: everything present in it is something the operator changed.
-    // A builder that sent the whole config would store `workers`, `plex` and
-    // the rest as overrides, freezing today's values against every future
-    // change to the mounted YAML.
+    // The document IS the store: there is no file layer under it, so a body
+    // carrying only the touched path would delete `workers`, `plex` and every
+    // other setting the operator did not happen to visit.
     expect(putDocument(fetchMock)).toEqual({
-      document: { artwork: { poster: { text: { min_point_size: 24 } } } },
+      document: {
+        ...SEEDED_DOCUMENT,
+        artwork: { poster: { text: { min_point_size: 24 } } },
+      },
     });
   });
 
@@ -521,29 +541,18 @@ describe("Settings editor", () => {
     ).toBeInTheDocument();
   });
 
-  it("badges an overridden field and clears it by omission, never by null", async () => {
-    const overridden = { ...EDITOR_CONFIG, workers: 9, overridden_paths: ["workers"] };
-    const fetchMock = stubApi({ config: [overridden, EDITOR_CONFIG] });
+  it("renders no overridden pill, because the served config carries no provenance", async () => {
+    // The store holds the whole configuration, so every value on the page came
+    // from it and marking them all would say nothing. The question a row
+    // answers is "what is this set to", and the answer is the field.
+    stubApi({ config: [{ ...EDITOR_CONFIG, workers: 9 }] });
     await renderSettings();
 
-    const badge = within(rowOf(screen.getByLabelText("workers"))).getByText("overridden");
-    expect(badge).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Clear override for workers" }));
-    await save();
-
-    // Reverting to the mounted file's value is expressed by the key being
-    // absent. Writing null asks the API for a null-valued setting, which it
-    // rejects -- so a null here is a clear control that cannot clear.
-    const body = putDocument(fetchMock);
-    expect(body).toEqual({ document: {} });
-    expect(JSON.stringify(body)).not.toContain("null");
-
-    // The page re-reads after saving, so the provenance the server now
-    // reports is what shows.
+    expect(screen.queryByText("overridden")).toBeNull();
     expect(
-      within(rowOf(screen.getByLabelText("workers"))).queryByText("overridden"),
+      screen.queryByRole("button", { name: /Clear override for/ }),
     ).toBeNull();
+    expect(screen.getByLabelText("workers")).toHaveValue(9);
   });
 
   it("never makes a secret editable", async () => {
@@ -561,10 +570,10 @@ describe("Settings editor", () => {
     stubApi();
     await renderSettings();
 
-    // `overridden_paths` and `frozen_paths` are not settings; rendered as
+    // `restart_paths` and `frozen_paths` are not settings; rendered as
     // sections they would offer the operator an edit the API cannot accept.
     expect(screen.queryByRole("heading", { name: "Frozen paths" })).toBeNull();
-    expect(screen.queryByText("Overridden paths")).toBeNull();
+    expect(screen.queryByText("Restart paths")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Field descriptions" })).toBeNull();
     expect(document.body.textContent).not.toContain(
       "the worker pool is sized once, at startup",
@@ -603,7 +612,10 @@ describe("Settings editor", () => {
     // A list is one value: the document carries the resulting list, not a
     // per-index patch the API has no way to merge.
     expect(putDocument(fetchMock)).toEqual({
-      document: { plex: { excluded_libraries: ["Photos", "Anime"] } },
+      document: {
+        ...SEEDED_DOCUMENT,
+        plex: { ...SEEDED_DOCUMENT.plex, excluded_libraries: ["Photos", "Anime"] },
+      },
     });
   });
 
@@ -614,10 +626,12 @@ describe("Settings editor", () => {
     fireEvent.click(screen.getByLabelText("badges.enabled"));
     await save();
 
-    expect(putDocument(fetchMock)).toEqual({ document: { badges: { enabled: false } } });
+    expect(putDocument(fetchMock)).toEqual({
+      document: { ...SEEDED_DOCUMENT, badges: { enabled: false } },
+    });
   });
 
-  it("clearing a number input takes the field back out of the document", async () => {
+  it("clearing a number input puts the served value back", async () => {
     const fetchMock = stubApi();
     await renderSettings();
 
@@ -625,17 +639,19 @@ describe("Settings editor", () => {
     fireEvent.change(field, { target: { value: "9" } });
     expect(screen.getByRole("heading", { name: "Pending changes" })).toBeInTheDocument();
 
-    // An empty number input is not "workers = 0" and it is not "workers =
-    // null" either -- the operator emptied a box mid-edit. The field goes back
-    // to the served value and the document stops carrying it, so there is
-    // nothing pending to save.
+    // An empty number input is not "workers = 0", it is not "workers = null"
+    // and it is not "workers back to the schema default" either -- the
+    // operator emptied a box mid-edit. The row goes back to the value the
+    // server served, so there is nothing pending to save.
     fireEvent.change(field, { target: { value: "" } });
     expect(screen.queryByRole("heading", { name: "Pending changes" })).toBeNull();
     expect(screen.getByLabelText("workers")).toHaveValue(5);
 
     fireEvent.change(field, { target: { value: "9" } });
     await save();
-    expect(putDocument(fetchMock)).toEqual({ document: { workers: 9 } });
+    expect(putDocument(fetchMock)).toEqual({
+      document: { ...SEEDED_DOCUMENT, workers: 9 },
+    });
   });
 
   it("marks a field under a frozen prefix, not only a frozen path itself", async () => {
@@ -693,7 +709,6 @@ const KEEP = "***KEEP***";
 const REDACTED_CONFIG = {
   ...EDITOR_CONFIG,
   notifications: { enabled: true, url: "kuma.example.com" },
-  overridden_paths: ["notifications.enabled", "notifications.url"],
   redacted_paths: ["notifications.url"],
   keep_sentinel: KEEP,
 };
@@ -709,11 +724,12 @@ describe("Settings editor, redacted values", () => {
     const body = putDocument(fetchMock);
     expect(body).toEqual({
       document: {
+        ...SEEDED_DOCUMENT,
         workers: 9,
         notifications: { enabled: true, url: KEEP },
       },
     });
-    // The exact failure: the served host submitted back as the override.
+    // The exact failure: the served host submitted back as the setting.
     expect(JSON.stringify(body)).not.toContain("kuma.example.com");
   });
 
@@ -752,7 +768,7 @@ describe("Settings editor, redacted values", () => {
 
     const body = putDocument(fetchMock);
     expect(body).toEqual({
-      document: { notifications: { enabled: true, url } },
+      document: { ...SEEDED_DOCUMENT, notifications: { enabled: true, url } },
     });
     expect(JSON.stringify(body)).not.toContain(KEEP);
   });
@@ -771,6 +787,7 @@ describe("Settings editor, redacted values", () => {
 
     expect(putDocument(fetchMock)).toEqual({
       document: {
+        ...SEEDED_DOCUMENT,
         workers: 9,
         notifications: { enabled: true, url: "kuma.example.com" },
       },
@@ -871,7 +888,10 @@ describe("Settings preview", () => {
     const call = callTo(fetchMock, "/api/config/preview");
     expect(call.method).toBe("POST");
     expect(call.body).toEqual({
-      document: { artwork: { poster: { text: { min_point_size: 24 } } } },
+      document: {
+        ...SEEDED_DOCUMENT,
+        artwork: { poster: { text: { min_point_size: 24 } } },
+      },
     });
 
     // "~", never "3": the walk cannot know which renders composited a logo,
@@ -1147,7 +1167,11 @@ describe("Settings preview", () => {
 
     const body = callTo(fetchMock, "/api/config/preview").body;
     expect(body).toEqual({
-      document: { workers: 9, notifications: { enabled: true, url: KEEP } },
+      document: {
+        ...SEEDED_DOCUMENT,
+        workers: 9,
+        notifications: { enabled: true, url: KEEP },
+      },
     });
     expect(JSON.stringify(body)).not.toContain("kuma.example.com");
   });
@@ -1264,7 +1288,10 @@ describe("Settings apply", () => {
     const call = callTo(fetchMock, "/api/config/apply");
     expect(call.method).toBe("POST");
     expect(call.body).toEqual({
-      document: { artwork: { poster: { text: { min_point_size: 24 } } } },
+      document: {
+        ...SEEDED_DOCUMENT,
+        artwork: { poster: { text: { min_point_size: 24 } } },
+      },
     });
     // Apply is the save plus an enqueue, so both halves are reported.
     expect(screen.getByText(/abc123 → def456/)).toBeInTheDocument();
@@ -1293,7 +1320,11 @@ describe("Settings apply", () => {
 
     const body = callTo(fetchMock, "/api/config/apply").body;
     expect(body).toEqual({
-      document: { workers: 9, notifications: { enabled: true, url: KEEP } },
+      document: {
+        ...SEEDED_DOCUMENT,
+        workers: 9,
+        notifications: { enabled: true, url: KEEP },
+      },
     });
     expect(JSON.stringify(body)).not.toContain("kuma.example.com");
   });
@@ -1318,7 +1349,10 @@ describe("Settings apply", () => {
     const call = callTo(fetchMock, "/api/config/overrides");
     expect(call.method).toBe("PUT");
     expect(call.body).toEqual({
-      document: { artwork: { poster: { text: { min_point_size: 24 } } } },
+      document: {
+        ...SEEDED_DOCUMENT,
+        artwork: { poster: { text: { min_point_size: 24 } } },
+      },
     });
     // The regenerate-later arm: it must not have touched the apply endpoint,
     // and it must not claim to have queued anything.
@@ -1475,13 +1509,13 @@ describe("Settings stale-save recovery", () => {
     fireEvent.change(screen.getByLabelText("workers"), { target: { value: "9" } });
     await click("Preview");
     expect(callTo(fetchMock, "/api/config/preview").body).toEqual({
-      document: { workers: 9 },
+      document: { ...SEEDED_DOCUMENT, workers: 9 },
       expected_revision: "rev-1",
     });
 
     await save();
     expect(callTo(fetchMock, "/api/config/overrides").body).toEqual({
-      document: { workers: 9 },
+      document: { ...SEEDED_DOCUMENT, workers: 9 },
       expected_revision: "rev-1",
     });
   });
@@ -1493,7 +1527,6 @@ describe("Settings stale-save recovery", () => {
       ...EDITOR_CONFIG,
       workers: 5,
       badges: { enabled: false },
-      overridden_paths: ["badges.enabled"],
       overrides_revision: "rev-9",
     };
     let served: unknown = SEEDED;

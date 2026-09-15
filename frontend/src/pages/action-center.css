@@ -172,3 +172,16 @@
 .action-coverage {
   margin-bottom: 20px;
 }
+
+/* Jobs that finished with warnings. Above the flag queue on purpose, and
+ * below the bulk bar: a job that finished owing a server is a fact about work
+ * already done, which qualifies the queue under it the way the coverage panel
+ * qualifies the chips above. */
+.action-warnings {
+  margin-bottom: 20px;
+}
+
+.action-warnings h2 {
+  margin: 0;
+  font-size: 16px;
+}

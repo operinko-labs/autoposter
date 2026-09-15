@@ -12,6 +12,7 @@ const STATUS = {
     running: 1,
     deferred: 5,
     done: 412,
+    done_with_warnings: 4,
     failed: 2,
     parked: 7,
     dismissed: 0,
@@ -186,6 +187,15 @@ describe("Dashboard", () => {
     expect(screen.getByText("plex")).toBeInTheDocument();
     expect(screen.getByText("library.new")).toBeInTheDocument();
     expect(screen.getByText("queued")).toBeInTheDocument();
+  });
+
+  it("renders a tile for jobs that finished with warnings", async () => {
+    stubFetch();
+
+    render(<Dashboard />);
+
+    expect(await screen.findByText("done_with_warnings")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
   });
 
   it("shows a fixed sentence, not the bytes, when the stream is not JSON", async () => {
