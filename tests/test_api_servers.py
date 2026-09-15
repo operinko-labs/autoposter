@@ -901,6 +901,23 @@ async def test_a_saved_address_is_not_an_address_this_deployment_booted_with(
     assert response.json()["detail"] == servers_api.NEEDS_AN_ADDRESS
 
 
+async def test_a_removed_server_is_reported_as_pending_a_restart(
+    client, auth_headers
+):
+    """The other direction of the same pill: the block is gone from the swapped
+    generation, but the process still holds the client the booted one built, so
+    the row is unconfigured AND pending until the restart."""
+    assert (await _save(client, auth_headers)).status_code == 200
+    assert (
+        await _remove(client, auth_headers, name="plex", confirm=True)
+    ).status_code == 200
+
+    rows = await _rows(client, auth_headers)
+    assert rows["plex"]["configured"] is False
+    assert rows["plex"]["url"] is None
+    assert rows["plex"]["restart_pending"] is True
+
+
 async def _remove(client, auth_headers, name="jellyfin", **fields):
     body = {"expected_revision": await _revision(client, auth_headers)}
     body.update(fields)
@@ -1248,3 +1265,227 @@ async def test_every_write_route_needs_a_session(client):
         await client.put("/api/servers/jellyfin/credential", json={"value": "x"})
     ).status_code == 401
     assert (await client.delete("/api/servers/jellyfin/credential")).status_code == 401
+
+
+# --- The Jellyfin library map, validated against both servers' own lists ----
+
+
+def _both_servers(monkeypatch, plex_names, jellyfin_names, jellyfin_status=200):
+    """A transport that answers Plex's sections and Jellyfin's folders by path."""
+
+    def handler(request):
+        if "/library/sections" in request.url.path:
+            return httpx.Response(
+                200,
+                content=json.dumps(
+                    {
+                        "MediaContainer": {
+                            "Directory": [
+                                {"key": str(i), "title": name, "type": "movie"}
+                                for i, name in enumerate(plex_names, start=1)
+                            ]
+                        }
+                    }
+                ).encode(),
+            )
+        return httpx.Response(
+            jellyfin_status,
+            content=json.dumps(
+                [
+                    {"ItemId": f"jf{i}", "Name": name, "CollectionType": "movies"}
+                    for i, name in enumerate(jellyfin_names, start=1)
+                ]
+            ).encode(),
+        )
+
+    monkeypatch.setattr(servers_api, "_transport", lambda: httpx.MockTransport(handler))
+
+
+async def _boot_both_servers(app, client, auth_headers):
+    """Configure Jellyfin, give it a credential, and restart onto both.
+
+    The map's two reads go to the BOOTED generation's addresses with the
+    credentials this deployment holds, so a save alone is not enough: the
+    restart is what makes a saved address one this deployment has, and the
+    reassignment here is that restart.
+    """
+    assert (await _save(client, auth_headers)).status_code == 200
+    assert (
+        await client.put(
+            "/api/servers/jellyfin/credential",
+            json={"value": "jf-key"},
+            headers=auth_headers,
+        )
+    ).status_code == 200
+    app.state.booted_config = app.state.config
+
+
+async def _map(client, auth_headers, pairs, **fields):
+    body = {"pairs": pairs, "expected_revision": await _revision(client, auth_headers)}
+    body.update(fields)
+    return await client.put(
+        "/api/servers/jellyfin/library-map", json=body, headers=auth_headers
+    )
+
+
+async def test_the_library_map_needs_both_servers(client, auth_headers):
+    """A map pairs two servers, so a deployment with one has nothing to pair --
+    and the refusal is about the map rather than the probe's sentence about an
+    address, because neither server is the one at fault."""
+    response = await _map(client, auth_headers, {"Movies": "Films"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.LIBRARY_MAP_NEEDS_BOTH_SERVERS
+
+
+async def test_a_saved_but_unbooted_server_cannot_be_mapped_yet(
+    app, client, auth_headers
+):
+    """The BOOTED generation, for the module header's reason: a saved address
+    is not one this deployment sends its held credential to."""
+    assert (await _save(client, auth_headers)).status_code == 200
+    response = await _map(client, auth_headers, {"Movies": "Films"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.LIBRARY_MAP_NEEDS_BOTH_SERVERS
+
+
+async def test_a_pair_the_server_does_not_list_is_refused(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """Spec section 6: a name typed by hand is not accepted. That is what makes
+    a library's map partner decidable when the sibling design asks whether an
+    item is missing from Jellyfin."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    response = await _map(client, auth_headers, {"Movies": "Elokuvat"})
+    assert response.status_code == 422
+    assert "Jellyfin" in response.text
+    assert "Plex" not in response.text, "the half that does list its name"
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert document["jellyfin"].get("library_map", {}) == {}
+
+
+async def test_a_plex_name_the_server_does_not_list_is_refused(
+    app, client, auth_headers, monkeypatch
+):
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    response = await _map(client, auth_headers, {"Elokuvat": "Films"})
+    assert response.status_code == 422
+    assert "Plex" in response.text
+
+
+async def test_the_refusal_names_the_side_and_not_the_name_that_was_sent(
+    app, client, auth_headers, monkeypatch
+):
+    """One fixed sentence with this service's own label for the server; the
+    name the caller sent is the path beside it, never inside the sentence."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    response = await _map(client, auth_headers, {"Movies": "Elokuvat"})
+    assert response.json()["detail"] == [
+        {
+            "path": "jellyfin.library_map.Movies",
+            "message": servers_api.NOT_A_LIBRARY_THIS_SERVER_LISTS.format(
+                side="Jellyfin"
+            ),
+        }
+    ]
+
+
+async def test_only_pairs_that_differ_are_stored(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """A library named the same on both servers pairs itself, so an editor that
+    sends every row it shows stores only what is not already implied."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies", "TV Shows"], ["Films", "TV Shows"])
+    response = await _map(
+        client, auth_headers, {"Movies": "Films", "TV Shows": "TV Shows"}
+    )
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        document, _meta = await load_store(session)
+    assert document["jellyfin"]["library_map"] == {"Movies": "Films"}
+    assert document["jellyfin"]["url"] == "http://jellyfin:8096", "the block survived"
+
+
+async def test_a_stored_map_is_visible_in_the_settings_page_own_view(
+    app, client, auth_headers, monkeypatch
+):
+    """The card and the Settings page read one configuration, and the frozen
+    section puts the map on the restart banner like every other Jellyfin key --
+    so a map saved here is a map the Settings page reports as unapplied."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    assert (await _map(client, auth_headers, {"Movies": "Films"})).status_code == 200
+
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["jellyfin"]["library_map"] == {"Movies": "Films"}
+    assert body["restart_paths"] == ["jellyfin.library_map.Movies"]
+
+
+async def test_a_map_response_carries_no_credential(
+    app, client, auth_headers, monkeypatch
+):
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    response = await _map(client, auth_headers, {"Movies": "Films"})
+    assert "jf-key" not in response.text
+    assert "plex-token" not in response.text
+
+
+async def test_a_stale_revision_is_refused_on_the_map_too(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """This write reads the stored document outside the row lock as well, so a
+    settings save landing in that window is a 409 and not a silent revert."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    response = await _map(
+        client, auth_headers, {"Movies": "Films"}, expected_revision="not-the-one"
+    )
+    assert response.status_code == 409
+    assert "changed somewhere else" in response.text
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert document["jellyfin"].get("library_map", {}) == {}
+
+
+async def test_a_map_without_a_revision_is_refused(
+    app, client, auth_headers, monkeypatch
+):
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    response = await client.put(
+        "/api/servers/jellyfin/library-map",
+        json={"pairs": {"Movies": "Films"}},
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert "expected_revision" in response.text
+
+
+async def test_a_library_read_that_fails_answers_the_probes_own_sentence(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """One outage, one vocabulary: the map's reads and the card's library
+    reload cannot tell an operator two different things about one server."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"], jellyfin_status=500)
+    response = await _map(client, auth_headers, {"Movies": "Films"})
+    assert response.status_code == 502
+    assert response.json()["detail"] == servers_api.probe.UNREACHABLE.format(
+        system="Jellyfin", failure="HTTPStatus500"
+    )
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert document["jellyfin"].get("library_map", {}) == {}
+
+
+async def test_the_map_route_needs_a_session(client):
+    response = await client.put(
+        "/api/servers/jellyfin/library-map",
+        json={"pairs": {}, "expected_revision": "whatever"},
+    )
+    assert response.status_code == 401

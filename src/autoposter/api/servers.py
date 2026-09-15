@@ -1,6 +1,6 @@
 """The Servers tab's backend (spec §5): list them, probe one, read its
-libraries, save or remove one, set or clear its credential, catch up, and retry
-what failed.
+libraries, save or remove one, pair Plex's libraries with Jellyfin's, set or
+clear its credential, catch up, and retry what failed.
 
 The listing and the two live reads are here because the tab asks on a RUNNING
 deployment the same two questions the wizard asks before there is one -- does
@@ -339,14 +339,13 @@ async def check(
     }
 
 
-@router.post("/servers/{name}/libraries")
-async def libraries(
-    name: str,
-    body: ProbeBody,
-    request: Request,
-    _: SessionModel = Depends(require_session),
-) -> dict:
-    """The server's library list, read live, for the card's tick-list.
+async def _live_libraries(name: str, url: str, credential: str) -> list[probe.Library]:
+    """This server's library list, read live, or a 502 in the probe's words.
+
+    Separate from the route because the library map is validated against the
+    same two reads (spec §6) and a second translation of the same failures
+    would be a second vocabulary: one operator, one server, two sentences about
+    one outage, depending on which button they pressed.
 
     ``client_identifier`` is left to the probe's default: it is plex.tv's
     requirement, and this call is to the operator's own server, which serves
@@ -355,11 +354,9 @@ async def libraries(
     fresh one per request would be a new device on the operator's account each
     time the tab is opened.
     """
-    _known(name)
     label = setup_checks.CHECK_SYSTEMS[name].label
-    url, credential = _resolve_target(request, name, body)
     try:
-        found = await probe.list_libraries(
+        return await probe.list_libraries(
             name, url, credential, transport=_transport()
         )
     except httpx.HTTPStatusError as exc:
@@ -387,6 +384,19 @@ async def libraries(
                 system=label, failure=type(exc).__name__
             ),
         ) from None
+
+
+@router.post("/servers/{name}/libraries")
+async def libraries(
+    name: str,
+    body: ProbeBody,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """The server's library list, read live, for the card's tick-list."""
+    _known(name)
+    url, credential = _resolve_target(request, name, body)
+    found = await _live_libraries(name, url, credential)
     return {
         "libraries": [
             {"id": row.id, "name": row.name, "kind": row.kind} for row in found
@@ -645,6 +655,122 @@ async def save_server(
     # thing an operator just typed and the one thing this module's header
     # promises no log line carries.
     logger.info("a media server's configuration was saved (%s)", name)
+    return result
+
+
+LIBRARY_MAP_NEEDS_BOTH_SERVERS = (
+    "the library map pairs two servers; configure both before setting it"
+)
+#: Rendered with the SIDE's own label -- ``Plex`` or ``Jellyfin`` -- and never
+#: with the name the caller sent, which is already in the ``path`` beside it.
+#: The two halves of a pair fail for different reasons and an operator fixes
+#: them on different servers, so the sentence has to say which one was asked.
+NOT_A_LIBRARY_THIS_SERVER_LISTS = "{side} lists no library called that"
+
+
+class LibraryMapBody(BaseModel):
+    """The whole map, not a patch: the editor sends every pair it shows.
+
+    ``expected_revision`` is REQUIRED for ``ServerBody``'s reason -- this write
+    reads the stored document outside the row lock too.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pairs: dict[str, str]
+    expected_revision: str
+    confirm: bool = False
+
+
+@router.put("/servers/jellyfin/library-map")
+async def save_library_map(
+    body: LibraryMapBody,
+    request: Request,
+    _: SessionModel = Depends(require_session),
+) -> dict:
+    """Pair Plex's libraries with Jellyfin's, from the servers' own lists.
+
+    Every name on both sides is checked against a LIVE read of the server that
+    would have to carry it (spec §6). A name typed by hand is not accepted, and
+    that refusal is load-bearing rather than fussy: whether an item is missing
+    from Jellyfin is decided by looking for its library's map partner among the
+    folders Jellyfin lists, so a map naming a library nothing carries would
+    leave every item in it permanently pending.
+
+    Both reads go to the BOOTED generation's addresses with the credentials
+    this deployment holds -- ``_resolve_target``'s stored branch, with an empty
+    body -- because that is the only pairing the module header allows a held
+    credential to be sent to, and because a map is about the deployment's
+    servers rather than about an address in this request. A server the process
+    did not boot with is therefore not one whose libraries can be listed, and
+    the refusal says so as a 409 about the map rather than as the probe's
+    per-server sentence about an address: neither server is the one at fault.
+
+    Only pairs whose two names DIFFER are stored. A library called the same
+    thing on both servers pairs itself, so storing it would be a row that says
+    nothing and one more thing to keep correct when a library is renamed -- an
+    editor that sends every row it shows therefore writes only what is not
+    already implied.
+    """
+    booted = request.app.state.booted_config
+    if not all(
+        getattr(_block(booted, name), "url", "") or "" for name in probe.SERVER_NAMES
+    ):
+        raise HTTPException(status_code=409, detail=LIBRARY_MAP_NEEDS_BOTH_SERVERS)
+
+    listed: dict[str, set[str]] = {}
+    for name in probe.SERVER_NAMES:
+        url, credential = _resolve_target(request, name, ProbeBody())
+        listed[name] = {
+            row.name for row in await _live_libraries(name, url, credential)
+        }
+
+    problems = []
+    for plex_name, jellyfin_name in sorted(body.pairs.items()):
+        for name, library in (("plex", plex_name), ("jellyfin", jellyfin_name)):
+            if library not in listed[name]:
+                # The PAIR is what an operator fixes, so both halves are
+                # reported against the row that carries them; the sentence is
+                # the fixed one and the label is this service's own.
+                problems.append(
+                    {
+                        "path": f"jellyfin.library_map.{plex_name}",
+                        "message": NOT_A_LIBRARY_THIS_SERVER_LISTS.format(
+                            side=setup_checks.CHECK_SYSTEMS[name].label
+                        ),
+                    }
+                )
+    if problems:
+        raise HTTPException(status_code=422, detail=problems)
+
+    # Read last, so the window between the read and the row lock holds nothing
+    # but the write itself rather than two live server reads as well.
+    document, _whole = await _stored(request)
+    candidate = {
+        **document,
+        "jellyfin": {
+            **_stored_block(document, "jellyfin"),
+            "library_map": {
+                plex_name: jellyfin_name
+                for plex_name, jellyfin_name in body.pairs.items()
+                if plex_name != jellyfin_name
+            },
+        },
+    }
+
+    validated_generation, persist_and_swap = _config_write()
+    validated, after, whole = await validated_generation(request, candidate)
+    result = await persist_and_swap(
+        request,
+        validated,
+        after,
+        whole_document=whole,
+        expected_revision=body.expected_revision,
+        confirm=body.confirm,
+    )
+    # No names: the library names are the operator's own and this module's
+    # header promises a log line carries the server and the action only.
+    logger.info("a media server's library map was saved (jellyfin)")
     return result
 
 
