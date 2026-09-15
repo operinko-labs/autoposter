@@ -79,7 +79,7 @@ async def test_a_restart_answers_and_then_execs(client, auth_headers, no_exec):
     response = await client.post("/api/system/restart", headers=auth_headers)
     assert response.status_code == 200
     assert response.json() == {"restarting": True}
-    assert no_exec == [1], "the exec runs after the body is written"
+    assert no_exec == [1], "the route answered but scheduled no exec"
 
 
 def test_the_exec_is_the_wizard_s_own(monkeypatch):
@@ -270,11 +270,24 @@ async def test_a_failed_exec_hands_the_lock_back(client, auth_headers, app, monk
 
     The class name reaches the log and nothing else does: the failures this
     call has are about the environment block the credentials travel in.
+
+    The handing back also happens on the event loop, which is what the running
+    loop recorded below stands for: ``asyncio.Lock`` is not thread-safe, and a
+    release from a threadpool thread reaches ``call_soon`` from off the loop
+    the day anything awaits this lock rather than looking at it.
     """
     class Boom(Exception):
         pass
 
+    on_the_loop: list[bool] = []
+
     def _fail() -> None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_the_loop.append(False)
+        else:
+            on_the_loop.append(True)
         raise Boom("a message with an oversized value in it")
 
     monkeypatch.setattr(system, "_exec_boot", _fail)
@@ -283,6 +296,10 @@ async def test_a_failed_exec_hands_the_lock_back(client, auth_headers, app, monk
         response = await client.post("/api/system/restart", headers=auth_headers)
 
     assert response.status_code == 200, "the answer was already written"
+    assert on_the_loop == [True], (
+        "the background task ran off the event loop, so the lock release "
+        "under it ran from a thread that may not touch an asyncio lock"
+    )
     assert not app.state.mode_lock.locked(), "a failed exec kept the mode lock"
     assert app.state.restart_in_flight is False
     assert "Boom" in caplog.text
@@ -327,7 +344,7 @@ async def test_a_single_worker_is_not_several(client, auth_headers, monkeypatch,
     assert (
         await client.post("/api/system/restart", headers=auth_headers)
     ).status_code == 200
-    assert no_exec == [1], "answered 200 and scheduled nothing"
+    assert no_exec == [1], "answered 200 and scheduled the exec"
 
 
 async def test_the_catch_up_drain_s_own_ticks_do_not_refuse_a_restart(
@@ -391,6 +408,42 @@ def test_the_listen_address_travels_through_the_environment(monkeypatch):
     assert listen_address() == ("127.0.0.1", 8080), (
         "a number no socket can bind is a typo too -- it would parse here and "
         "then kill the boot at bind, with no UI left to fix it"
+    )
+
+
+def test_the_refusals_are_written_down_where_an_operator_reads_them():
+    """A guard nobody is told about is one an operator walks straight past.
+
+    The multi-worker refusal is opt-in on two environment variables and on
+    nothing else, so a deployment scaled by typing ``--workers 4`` on a command
+    line passes it and comes up half old and half new -- the exact state the
+    guard exists to prevent. The module docstring here says so; a terminal on a
+    deployment cannot read it, and ``deploy/README.md`` is what can. The other
+    two operator-visible behaviours ride along: a catch-up does not refuse, and
+    an orphaned run row does until it is older than the ceiling.
+    """
+    readme = (Path(__file__).parent.parent / "deploy" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    paragraphs = [block for block in readme.split("\n\n") if "WEB_CONCURRENCY" in block]
+    assert len(paragraphs) == 1, (
+        "deploy/README.md does not describe the Restart button's refusals in "
+        "one paragraph naming WEB_CONCURRENCY"
+    )
+    paragraph = paragraphs[0]
+    for name in system.WORKER_COUNT_ENV:
+        assert name in paragraph, (
+            f"the restart paragraph does not name {name}, so nothing tells a "
+            "multi-worker deployment what to set for the refusal to fire"
+        )
+    assert "catch-up" in paragraph, (
+        "the restart paragraph does not say a catch-up is exempt, which is the "
+        "one refusal an operator would expect and does not get"
+    )
+    hours = system.ORPHAN_RUN_SECONDS // 3600
+    assert f"{hours} hours" in paragraph, (
+        f"the restart paragraph does not say an orphaned run row refuses for "
+        f"{hours} hours, which is how long the button can look broken"
     )
 
 

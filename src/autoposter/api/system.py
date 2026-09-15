@@ -116,8 +116,15 @@ def _exec_boot() -> None:
     exec_boot()
 
 
-def _exec_or_release(app) -> None:
+async def _exec_or_release(app) -> None:
     """Run the exec, and hand everything back if it does not happen.
+
+    ``async`` so that Starlette awaits this on the event loop rather than
+    running it through ``run_in_threadpool``. ``asyncio.Lock`` is not
+    thread-safe: a ``release()`` with a waiter queued reaches ``call_soon``
+    from whatever thread called it, which is a dropped wakeup the day anything
+    awaits ``mode_lock`` rather than looking at it. The exec belongs on the
+    main thread besides -- it is the call that replaces the process.
 
     ``os.execv`` normally never returns, but it has two documented ways to fail
     in this service (``config/secret_store.py``): an oversized stored value
@@ -134,13 +141,16 @@ def _exec_or_release(app) -> None:
     try:
         _exec_boot()
     except Exception as exc:
-        app.state.restart_in_flight = False
-        app.state.mode_lock.release()
+        # The record first, the handing back second: a release that itself
+        # raised would otherwise leave nothing anywhere saying why the restart
+        # did not happen.
         logger.error(
             "the restart could not replace this process (%s); nothing was "
             "restarted and this process continues",
             type(exc).__name__,
         )
+        app.state.restart_in_flight = False
+        app.state.mode_lock.release()
 
 
 @router.post("/system/restart")
