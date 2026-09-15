@@ -35,9 +35,16 @@ Four rules the walk encodes:
   substitutes the library name into it, the way the Custom collections panel
   reads the ``[]`` paths. ``{}``, like ``[]``, is a marker in this map and
   never a path the API accepts.
+
+``build_field_types`` walks the same models to the same paths and answers what
+each one HOLDS. It exists because a served value cannot be trusted to say
+that: a setting nobody has set arrives as ``null``, and an editor choosing its
+control from the served value had nothing to choose from -- so every unset
+setting on the page was one the operator could not set, which is the whole
+reason this second walk is here. The schema knows, and this is how it says so.
 """
 from types import UnionType
-from typing import Union, get_args, get_origin
+from typing import Annotated, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -119,6 +126,77 @@ def _walk(model: type[BaseModel], prefix: str = "") -> dict[str, str]:
     return described
 
 
+#: The four scalar kinds an editor has a control for. Identity lookup, and
+#: ``bool`` before ``int`` is not a concern here for the reason it usually is:
+#: type objects hash by identity, so ``bool`` never finds ``int``'s entry.
+_SCALAR_KINDS: dict[type, str] = {
+    bool: "boolean",
+    int: "integer",
+    float: "number",
+    str: "string",
+}
+
+
+def _kind_of(annotation) -> str:
+    """What a field holds, in the vocabulary an editor can act on.
+
+    One of ``boolean``, ``integer``, ``number``, ``string``, ``string_list``
+    or ``object``. ``object`` is the answer for everything else -- a model, a
+    mapping, a list of objects, a union of two real types, a shape added to
+    the schema after this was written -- and it is deliberately the answer a
+    page renders read-only rather than guessing a control for.
+
+    ``Optional[X]``, ``X | None`` and ``Annotated[X, ...]`` are wrappers, not
+    kinds: an optional string is a string, and it is precisely the optional
+    fields whose served value is ``null`` that this walk exists for.
+    """
+    if get_origin(annotation) is Annotated:
+        return _kind_of(get_args(annotation)[0])
+    if get_origin(annotation) in (Union, UnionType):
+        present = [arg for arg in get_args(annotation) if arg is not type(None)]
+        return _kind_of(present[0]) if len(present) == 1 else "object"
+    if get_origin(annotation) is list:
+        args = get_args(annotation)
+        return "string_list" if len(args) == 1 and args[0] is str else "object"
+    if isinstance(annotation, type):
+        return _SCALAR_KINDS.get(annotation, "object")
+    return "object"
+
+
+def _walk_types(model: type[BaseModel], prefix: str = "") -> dict[str, str]:
+    """``_walk``'s twin, path for path.
+
+    Kept as a separate function rather than folded into ``_walk`` because the
+    two maps are served separately and one of them is allowed to be empty for
+    a field while the other is not; the guard that matters -- that they
+    describe the SAME set of paths -- is a test rather than shared code, so a
+    future divergence is reported rather than hidden.
+    """
+    kinds: dict[str, str] = {}
+    for name, field in model.model_fields.items():
+        path = f"{prefix}{name}"
+        kinds[path] = _kind_of(field.annotation)
+        nested = _model_of(field.annotation)
+        if nested is not None:
+            kinds.update(_walk_types(nested, f"{path}."))
+            continue
+        item = _item_model_of(field.annotation)
+        if item is not None:
+            kinds.update(_walk_types(item, f"{path}[]."))
+            continue
+        mapping = _mapping_model_of(field.annotation)
+        if mapping is not None:
+            kinds.update(_walk_types(mapping, f"{path}.{{}}."))
+    return kinds
+
+
+def build_field_types() -> dict[str, str]:
+    """The whole kind map, freshly walked. ``FIELD_TYPES`` is the cached one."""
+    kinds = _walk_types(Config)
+    kinds.update(_walk_types(Secrets, "secrets."))
+    return kinds
+
+
 def build_field_descriptions() -> dict[str, str]:
     """The whole map, freshly walked. ``FIELD_DESCRIPTIONS`` is the cached one."""
     described = _walk(Config)
@@ -130,3 +208,7 @@ def build_field_descriptions() -> dict[str, str]:
 # cannot change between requests -- the same reasoning that makes
 # ``FROZEN_SECTIONS`` a module-level dict.
 FIELD_DESCRIPTIONS: dict[str, str] = build_field_descriptions()
+
+#: Cached for the same reason, and beside it because the page reads the two
+#: together: one says what a row is, the other what it can be set to.
+FIELD_TYPES: dict[str, str] = build_field_types()

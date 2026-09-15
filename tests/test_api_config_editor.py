@@ -297,10 +297,13 @@ PROVENANCE_KEYS = {
     "redacted_paths",
     "keep_sentinel",
     "field_descriptions",
+    # What each of those paths holds, so a setting nobody has set still gets
+    # the control its schema declares instead of no control at all.
+    "field_types",
     "computed_paths",
     "live_paths",
-    # The eighth, and provenance in the same sense as the rest: a content hash
-    # of the stored document, not a setting anybody edits.
+    # A content hash of the stored document, and provenance in the same sense
+    # as the rest: not a setting anybody edits.
     "overrides_revision",
 }
 
@@ -309,7 +312,7 @@ async def test_provenance_keys_names_exactly_the_keys_the_response_adds(app, cli
     """Roadmap row 237. Set equality gives both directions for free.
 
     ``GET /api/config`` serves the config's own fields plus ``secrets`` plus
-    eight provenance keys the handler adds (``api/routes.py:1621-1632``).
+    the provenance keys the handler adds (``api/routes.py``'s ``get_config``).
     Subtracting the settings side leaves exactly the provenance keys, so an
     added provenance key lands on the left of this equality and a key dropped
     from the set lands on the right -- the same two-way shape row 107 gave
@@ -401,6 +404,24 @@ async def test_get_config_describes_a_sample_of_settings_in_words(client, auth_h
     for path in ("workers", "plex.url", "collections.max_deletes"):
         assert descriptions[path].strip(), f"{path} is described by nothing"
         assert len(descriptions[path]) > 20, f"{path}'s description is a stub"
+
+
+async def test_get_config_serves_the_kind_of_every_setting(client, auth_headers):
+    """The half the walk's own tests cannot reach: it has to be on the wire.
+
+    A setting the operator has never set is served as ``null``, which is a
+    value of no type -- so the page picks that row's control from this map or
+    it renders no control at all and the setting cannot be set from the UI.
+    The map is keyed on the same dotted paths as ``field_descriptions``.
+    """
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    kinds = body["field_types"]
+
+    assert set(kinds) == set(body["field_descriptions"])
+    assert kinds["plex.url"] == "string"
+    assert kinds["badges.enabled"] == "boolean"
+    assert kinds["plex.resolve_max_attempts"] == "integer"
+    assert kinds["plex.excluded_libraries"] == "string_list"
 
 
 async def test_get_config_names_the_paths_it_computes(client, auth_headers):
