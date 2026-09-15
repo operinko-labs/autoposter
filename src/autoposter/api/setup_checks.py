@@ -89,6 +89,14 @@ REFUSING_STATUSES: tuple[int, ...] = (401, 403)
 # which half of this service is calling rather than a number it cannot know.
 SETUP_VERSION = "setup"
 
+# The most of a media server's OWN version string this service will pass on.
+# That string is the one piece of a third party's body anything here answers
+# with -- spec section 5's connection pill asks for it by name -- so it is
+# bounded like everything else in this module rather than trusted: a server
+# version is a short number, and a longer value is answered as none rather
+# than truncated, which would put a version on a card that no server reported.
+VERSION_LIMIT_CHARS = 64
+
 
 class _DropEveryRecord(logging.Filter):
     """Attached to the ``httpx`` logger for the length of one probe."""
@@ -152,6 +160,12 @@ class Check:
     error_key: str | None = None
     #: Tracearr's proof that the API and not the SPA answered.
     require_header: str | None = None
+    #: Where this system volunteers its own version, for the two media servers
+    #: whose card shows one. ``None`` for the eight that are asked no such
+    #: question. A fixed path, like ``path`` and for the same reason.
+    version_path: str | None = None
+    #: The key path into that answer, outermost first.
+    version_keys: tuple[str, ...] = ()
 
 
 CHECK_SYSTEMS: dict[str, Check] = {
@@ -159,12 +173,18 @@ CHECK_SYSTEMS: dict[str, Check] = {
     # (plex/health.py:58) and proves reachability only, while sections proves
     # the URL AND the token -- and is the same read the library tick-list
     # needs, so the wizard makes it once.
+    # The version comes from /identity and not from the section list, which
+    # carries none: /identity is the read plex/health.py already polls, it is
+    # the same fixed shape on every server, and it is asked only after the
+    # section list has proved the address and the token.
     "plex": Check(
         label="Plex",
         host=None,
         path="/library/sections",
         credential="AUTOPOSTER_PLEX_TOKEN",
         auth="x-plex-token",
+        version_path="/identity",
+        version_keys=("MediaContainer", "version"),
     ),
     "plex_account": Check(
         label="the Plex account",
@@ -187,6 +207,8 @@ CHECK_SYSTEMS: dict[str, Check] = {
         path="/System/Info",
         credential="AUTOPOSTER_JELLYFIN_APIKEY",
         auth="mediabrowser",
+        version_path="/System/Info",
+        version_keys=("Version",),
     ),
     # providers/tmdb.py:131 -- the configured token is a v4 read access token,
     # carried as a bearer. /3/configuration is the cheapest authenticated read.
@@ -271,8 +293,15 @@ async def _capped_body(response: httpx.Response) -> bytes:
     return bytes(head[:CHECK_BODY_LIMIT_BYTES])
 
 
-async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) -> CheckOutcome:
-    """One request, and the reading of its answer. Never its body's text."""
+def _credentialed(
+    check: Check, value: str
+) -> tuple[dict[str, str], dict[str, str], dict[str, str] | None]:
+    """How this system carries its credential: headers, query and body.
+
+    One copy, because two calls in this module make it -- the probe and the
+    version read -- and a second spelling of the Jellyfin header in particular
+    is a typo indistinguishable from a wrong API key.
+    """
     headers: dict[str, str] = {"accept": "application/json"}
     params: dict[str, str] = {}
     json_body: dict[str, str] | None = None
@@ -299,6 +328,13 @@ async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) 
         params["apikey"] = value
     elif check.auth == "json":
         json_body = {check.json_credential_key or "apikey": value}
+
+    return headers, params, json_body
+
+
+async def _probe(client: httpx.AsyncClient, check: Check, url: str, value: str) -> CheckOutcome:
+    """One request, and the reading of its answer. Never its body's text."""
+    headers, params, json_body = _credentialed(check, value)
 
     # `params or None` and not `params`: httpx turns a FALSY params into
     # `query=None` and then `copy_with(query=None)`, which drops the query the
@@ -373,3 +409,58 @@ async def run_check(
         # first-start setup.
         logger.info("a connection check did not succeed (%s)", system)
         return CheckOutcome(ok=False, refused=False, failure=type(exc).__name__)
+
+
+async def read_version(
+    system: str,
+    base_url: str | None,
+    credentials: dict[str, str],
+    transport: httpx.BaseTransport | None = None,
+) -> str | None:
+    """A media server's own version string, or ``None``. Never raises.
+
+    The one value this module passes on that is the third party's own text
+    rather than a class name or a status number, because spec section 5's
+    connection pill asks for it by name. It is therefore bounded the way the
+    probe beside it is -- a compiled-in path per system, a compiled-in key path
+    into the answer, this module's timeout, its body cap and no redirect
+    followed -- plus ``VERSION_LIMIT_CHARS``, which is the bound the probe has
+    no need of because the probe reads nothing.
+
+    Asked only after ``run_check`` has already answered ok, so this call is a
+    second question to a server that answered a moment ago. Nothing it finds
+    may change what the check said, which is why every arm answers ``None``:
+    a card that said "connected" does not stop saying it because a version
+    could not be read.
+    """
+    check = CHECK_SYSTEMS[system]
+    if check.version_path is None:
+        return None
+    try:
+        headers, params, _body = _credentialed(
+            check, credentials.get(check.credential or "", "")
+        )
+        host = check.host if check.host is not None else base_url
+        url = f"{host}{check.version_path}"
+
+        async def attempt() -> str | None:
+            async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
+                with no_httpx_request_log():
+                    async with client.stream(
+                        "GET", url, headers=headers, params=params or None
+                    ) as response:
+                        if not response.is_success:
+                            return None
+                        found = json.loads(await _capped_body(response))
+            for key in check.version_keys:
+                found = found.get(key) if isinstance(found, dict) else None
+            if isinstance(found, str) and 0 < len(found) <= VERSION_LIMIT_CHARS:
+                return found
+            return None
+
+        return await asyncio.wait_for(attempt(), timeout=CHECK_TIMEOUT_SECONDS)
+    except Exception:
+        # The SYSTEM only, like the check's own line: a version that could not
+        # be read is not a failure anyone is asked to act on.
+        logger.info("a media server's version could not be read (%s)", system)
+        return None

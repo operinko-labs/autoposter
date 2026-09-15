@@ -56,8 +56,10 @@ class ProbeResult:
     refused: bool
     #: An exception class name or a status marker, never a message.
     failure: str | None
-    #: The server's own version when it volunteered one, else None. Jellyfin's
-    #: /System/Info carries it; Plex's /library/sections does not.
+    #: The server's own version when it volunteered one, else None. Read only
+    #: on a probe that answered ok, from the fixed path each server states it
+    #: on (``setup_checks.read_version``), and never allowed to change the
+    #: three fields above it.
     version: str | None
     #: One of the three sentences above, rendered.
     detail: str
@@ -94,18 +96,26 @@ async def check_server(
 
     ``setup_checks.run_check`` does the work and never raises for a network
     reason; this wraps its two booleans in the sentence each one means.
+
+    The version is asked for SECOND and only of a server that answered, so the
+    three fields the card renders a pill from are decided by the credentialed
+    probe alone: a version this service could not read is a null field beside
+    "connected", never a connection reported as broken.
     """
     _known(name)
     check = setup_checks.CHECK_SYSTEMS[name]
+    credentials = {check.credential or "": credential}
     outcome = await setup_checks.run_check(
-        name, base_url, {check.credential or "": credential}, transport=transport
+        name, base_url, credentials, transport=transport
     )
     if outcome.ok:
         return ProbeResult(
             ok=True,
             refused=False,
             failure=None,
-            version=None,
+            version=await setup_checks.read_version(
+                name, base_url, credentials, transport=transport
+            ),
             detail=ANSWERED.format(system=check.label),
         )
     if outcome.refused:

@@ -11,6 +11,7 @@ import json
 import httpx
 import pytest
 
+from autoposter.api import setup_checks
 from autoposter.servers import probe
 
 
@@ -85,6 +86,78 @@ async def test_jellyfin_libraries_arrive_in_the_same_shape_and_carry_no_paths():
         "jellyfin", "http://jf:8096", "key", transport=transport
     )
     assert libraries == [probe.Library(id="abc", name="Movies", kind="movies")]
+
+
+async def test_each_server_states_its_version_on_its_own_path():
+    """Spec section 5's connection pill. Plex states it on ``/identity``, which
+    the section list the probe reads does not carry; Jellyfin states it in the
+    very body the probe already asks for."""
+
+    def handler(request):
+        if request.url.path == "/identity":
+            return httpx.Response(
+                200,
+                content=json.dumps({"MediaContainer": {"version": "1.41.2"}}).encode(),
+            )
+        if request.url.path == "/System/Info":
+            return httpx.Response(200, content=json.dumps({"Version": "10.11.0"}).encode())
+        return httpx.Response(200, content=_plex_sections())
+
+    transport = httpx.MockTransport(handler)
+    plex = await probe.check_server("plex", "http://plex:32400", "tok", transport=transport)
+    assert plex.ok is True and plex.version == "1.41.2"
+
+    jellyfin = await probe.check_server("jellyfin", "http://jf:8096", "k", transport=transport)
+    assert jellyfin.ok is True and jellyfin.version == "10.11.0"
+
+
+async def test_a_version_longer_than_a_version_is_not_passed_on():
+    """The one value these probes answer with that is the third party's own
+    text, so it is bounded rather than trusted: too long is answered as none
+    rather than truncated, which would report a version no server stated."""
+    body = json.dumps({"Version": "9" * (setup_checks.VERSION_LIMIT_CHARS + 1)}).encode()
+    result = await probe.check_server(
+        "jellyfin",
+        "http://jf:8096",
+        "k",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body)),
+    )
+    assert result.ok is True and result.version is None
+
+
+async def test_a_refused_server_is_not_asked_for_a_version():
+    """The version is a second question, asked only of a server that answered:
+    a refusal must not turn into a second outbound call."""
+    seen: list[httpx.Request] = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(401)
+
+    result = await probe.check_server(
+        "jellyfin", "http://jf:8096", "bad", transport=httpx.MockTransport(handler)
+    )
+    assert result.refused is True and result.version is None
+    assert len(seen) == 1
+
+
+async def test_a_jellyfin_folder_with_null_fields_is_served_with_empty_ones():
+    """``ItemId`` and ``CollectionType`` are nullable in Jellyfin's own schema,
+    and a key that is PRESENT and null takes the null rather than a ``get``
+    default -- which served the literal string "None" as an id and a null on a
+    field typed ``str``. The folder is still listed, because the operator can
+    see it in their own server, and an empty kind is in neither server's
+    indexable set, so it cannot be paired into a library map."""
+    body = json.dumps(
+        [{"ItemId": None, "Name": "Odd", "CollectionType": None}]
+    ).encode()
+    libraries = await probe.list_libraries(
+        "jellyfin",
+        "http://jf:8096",
+        "key",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body)),
+    )
+    assert libraries == [probe.Library(id="", name="Odd", kind="")]
 
 
 async def test_an_unknown_server_is_refused_by_name():
