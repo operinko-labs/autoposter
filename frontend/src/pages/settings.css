@@ -289,3 +289,47 @@
   font-size: 0.85em;
   margin-left: 0.4rem;
 }
+
+.settings-accordion {
+  margin-top: 16px;
+}
+
+.settings-accordion-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.settings-accordion-header button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* The chevron points at the closed state's affordance -- "this opens" -- and
+   turns to point at the open state's -- "this closes" -- rather than adding a
+   second boolean class that could disagree with aria-expanded. */
+.settings-accordion-chevron {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: currentColor;
+  transition: transform 0.15s ease;
+}
+
+.settings-accordion-header button[aria-expanded="true"] .settings-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.settings-accordion-body {
+  margin-top: 12px;
+}
