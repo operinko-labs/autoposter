@@ -3622,7 +3622,26 @@ the Service, **both** probes, the webhook URLs above and the Compose port
 mapping have to be changed by hand to the same number. A value that is not a
 port number — a typo, or a number outside 1–65535 — is ignored with a warning
 and the default is used, rather than killing a boot that would then have no UI
-left to fix it from.
+left to fix it from. In the development Compose stack the `api` command pins
+`--port 8080` itself, so the two variables there change nothing until the first
+Restart — which is why `.env.example` ships them commented out.
+
+The Restart button replaces this process and refuses in three cases, and one of
+them is opt-in. It refuses when `WEB_CONCURRENCY` or `UVICORN_WORKERS` is set
+above `1`, because one worker re-execing itself would leave the deployment half
+old and half new — and those two variables are the *only* thing it looks at, so
+a deployment that runs several workers by any other means (`uvicorn --workers 4`
+typed on a command line sets neither) must set one of them for the refusal to
+fire at all. Run one worker per process, or declare the count. It also refuses
+while a run that lives in this process is in flight — a full pass, a scheduled
+job — but **not** during a catch-up: a catch-up's state is rows in the database
+and its drain resumes on the other side of the boot, so restarting interrupts
+nothing and an operator with a day-long backlog would otherwise never be able to
+apply a setting. Finally, an *orphaned* open run row — one left `running` by a
+process that was killed mid-pass, which nothing reconciles except the next pass
+of that same job — keeps refusing until it is older than the full pass's own
+timeout horizon, 24 hours, after which it is ignored. Either wait it out or
+close the row.
 
 Configure Radarr and Sonarr with a webhook notification pointing at this
 service's webhook URL (`/webhook/radarr` and `/webhook/sonarr` respectively),

@@ -278,6 +278,35 @@ def test_the_api_service_fails_closed_without_credentials():
     )
 
 
+def test_the_env_example_leaves_the_listen_address_commented_out():
+    """A listen address set for this stack is a trap, not a setting.
+
+    The api service's compose command pins ``uvicorn --host 0.0.0.0 --port
+    8080``, so AUTOPOSTER_PORT does nothing for as long as the process lives --
+    until the Settings page's Restart execs a bare boot, which reads it and
+    binds wherever it says while the stack still publishes 8080. Shipping the
+    two names uncommented made that the default experience, so they ship
+    commented and compose sets neither itself.
+    """
+    lines = (REPO / ".env.example").read_text(encoding="utf-8").splitlines()
+    environment = _service("api").get("environment") or {}
+    for name in ("AUTOPOSTER_HOST", "AUTOPOSTER_PORT"):
+        assert [line for line in lines if line.strip().startswith(f"{name}=")] == [], (
+            f"`.env.example` sets {name} and compose passes that file into the "
+            "api service; the dev command pins --port 8080, so the value takes "
+            "effect only at the first Restart, after which the process binds a "
+            "port the stack does not publish"
+        )
+        assert any(name in line for line in lines), (
+            f"{name} is no longer mentioned in `.env.example`; the commented "
+            "block is what tells an operator the variable exists at all"
+        )
+        assert name not in environment, (
+            f"the api service sets {name} itself, which would override the "
+            "pinned --port in its own command at the next boot"
+        )
+
+
 def test_the_api_service_boots_the_same_way_production_does():
     """The production CMD is ``exec python -m autoposter.boot``, and that module
     is what runs ``alembic upgrade head``.
