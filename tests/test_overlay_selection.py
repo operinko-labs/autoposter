@@ -618,8 +618,8 @@ def test_an_absolute_date_condition_compiles_instead_of_raising_a_type_error():
 
 
 def test_a_definition_carrying_a_date_condition_still_fingerprints():
-    """The other half of the same finding, and the reason the plan pins both rather than
-    reasoning about one. `compiled_condition` is not the only place a
+    """The other half of the same date-serialization gap, and the reason both
+    are pinned rather than reasoned about from one. `compiled_condition` is not the only place a
     condition is serialised: `badges/compose.py::_definitions_digest` dumps
     every definition with `model_dump(mode="json")`, and a `date` sitting
     inside a `dict[str, object]` field is serialised by pydantic's json mode

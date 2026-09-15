@@ -171,7 +171,7 @@ def test_parse_ratings_keys_match_the_mdb_rating_sources():
     """Nothing structurally coupled `parse_ratings`' produced keys to
     the grammar's own vocabulary -- a rename on either side would go
     unnoticed until an operator's token silently stopped resolving. This is
-    what would have caught M-A's stale docstring count."""
+    what would have caught a stale docstring count going unnoticed."""
     assert set(parse_ratings({})) == {n for n in RATING_SOURCES if n.startswith("mdb_")}
 
 
