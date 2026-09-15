@@ -888,6 +888,21 @@ export interface ConfigExport {
   document: OverridesDocument;
 }
 
+/** GET /api/config/drift: whether the mounted configuration file still agrees
+ * with the store, which is the file's whole remaining job.
+ *
+ * `document` is the FILE's document when it differs from the store, so the
+ * notice's Import can post it back through the ordinary import endpoint
+ * without a second read of the file. Null when there is no difference, which
+ * is also when there is nothing to import. */
+export interface DriftResponse {
+  file_present: boolean;
+  differs: boolean;
+  paths: string[];
+  path: string | null;
+  document: OverridesDocument | null;
+}
+
 /** POST /api/config/apply: the PUT's own response plus what it enqueued.
  * `skipped` counts items whose identical job was already pending -- the same
  * dedupe arbiter the full-pass button reports through, not a failure. */

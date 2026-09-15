@@ -10,6 +10,7 @@ import {
   fieldErrors,
   isPlainObject,
   readPath,
+  RESTART_NOTE,
   revisionFromConfig,
   saveBody,
   STALE_SAVE_NOTE,
@@ -583,9 +584,7 @@ export function PlaylistsPanel() {
           <p>{`Saved. Config ${result.version_before} → ${result.version_after}.`}</p>
           <p className="muted">{APPLIES_NOTE}</p>
           {result.restart_required.length > 0 && (
-            <p className="muted">
-              {`Needs a restart: ${result.restart_required.join(", ")}.`}
-            </p>
+            <p className="muted">{RESTART_NOTE}</p>
           )}
         </div>
       )}

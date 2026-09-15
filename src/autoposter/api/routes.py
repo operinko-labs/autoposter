@@ -2702,6 +2702,14 @@ async def config_drift(
     is ``null`` on a deployment that has no mounted file, which is also the one
     case that reports no drift at all (``drift_report``).
 
+    ``document`` is the file's own document when it differs, so Import posts
+    back the very document this comparison was made against rather than asking
+    the server to read the file a second time -- between the two reads the file
+    can change, and the notice would then import something it never described.
+    It is ``null`` when there is nothing to import. Unredacted, like the export
+    it is posted to: a redacted document would write a bare notification host
+    back over a real URL, which is the hazard ``EXPORT_WARNING`` names.
+
     The file is read off the event loop: it is a mounted file on a possibly
     slow volume and this route is polled by an open page.
     """
@@ -2709,7 +2717,12 @@ async def config_drift(
     file_document = await asyncio.to_thread(_read_file_document, path)
     async with request.app.state.session_factory() as session:
         stored = await load_overrides_document(session)
-    return {**drift_report(file_document, stored), "path": str(path) if path else None}
+    report = drift_report(file_document, stored)
+    return {
+        **report,
+        "path": str(path) if path else None,
+        "document": file_document if report["differs"] else None,
+    }
 
 
 @router.get("/config/overrides/export")

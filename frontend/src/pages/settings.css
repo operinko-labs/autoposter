@@ -216,6 +216,50 @@
   color: var(--warn);
 }
 
+/* Sits above the tab strip, so it is the first thing on the page when a
+   restart is waiting and takes no room at all when one is not. The warn
+   border is what separates it from the ordinary panels below it without a
+   second background colour. */
+.settings-restart-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  border-color: var(--warn);
+}
+
+/* Takes the width and lets the button hold the right edge, until the row is
+   too narrow for both -- then the button wraps under the sentence rather than
+   squeezing it into a column of single words. */
+.settings-restart-banner-text {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+
+.settings-restart-banner p {
+  margin: 0;
+}
+
+.settings-restart-banner p + p {
+  margin-top: 6px;
+}
+
+.config-drift-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.config-drift-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .config-safety-list {
   list-style: none;
   margin: 8px 0;

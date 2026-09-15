@@ -454,8 +454,14 @@ describe("Settings editor", () => {
     });
   });
 
-  it("reports the version move and the restart list the save returned", async () => {
+  it("reports the version move, and leaves the restart list to the banner", async () => {
+    // The save's own `restart_required` is its difference against the running
+    // generation; the banner renders the STORE's list, which is measured
+    // against what this process booted on. Repeating the first beside the
+    // second would be two answers to one question, and they disagree the
+    // first time a setting is edited and put back.
     stubApi({
+      config: [EDITOR_CONFIG, { ...EDITOR_CONFIG, restart_paths: ["workers"] }],
       put: json({
         version_before: "abc123",
         version_after: "def456",
@@ -469,17 +475,26 @@ describe("Settings editor", () => {
     await save();
 
     expect(screen.getByText(/abc123 → def456/)).toBeInTheDocument();
-    expect(screen.getByText(/Restart required to apply: workers/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "These settings are saved and take effect at the next restart: workers",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Restart required to apply/)).toBeNull();
   });
 
-  it("reports an inert change separately from the restart list, honestly", async () => {
+  it("puts an inert change on the same banner, not a second sentence", async () => {
     // api_docs_enabled is built into the application object before any
     // override is read, so no swap reaches it even in part -- the restart
-    // that does apply it reads the stored document. It is reported
-    // separately from `restart_required` because the server reports it
-    // separately, and because the two are answers to different questions
-    // about the same word.
+    // that does apply it reads the stored document. The save response still
+    // reports it apart from `restart_required`, because the two land at
+    // different moments; the store's restart list carries both, because a
+    // restart is what applies either and the banner asks one question.
     stubApi({
+      config: [
+        EDITOR_CONFIG,
+        { ...EDITOR_CONFIG, restart_paths: ["api_docs_enabled"] },
+      ],
       put: json({
         version_before: "abc123",
         version_after: "abc123",
@@ -494,9 +509,26 @@ describe("Settings editor", () => {
     await save();
 
     expect(
-      screen.getByText("Takes effect at the next restart: api_docs_enabled"),
+      screen.getByText(
+        "These settings are saved and take effect at the next restart: api_docs_enabled",
+      ),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Restart required to apply/)).toBeNull();
+    expect(screen.queryByText(/Takes effect at the next restart:/)).toBeNull();
+  });
+
+  it("puts the banner above the tab strip, so it is visible from every tab", async () => {
+    // The operator who needs to see a waiting restart is rarely the one still
+    // looking at the tab that caused it.
+    stubApi({ config: { ...EDITOR_CONFIG, restart_paths: ["jellyfin", "workers"] } });
+    await renderSettings();
+
+    const banner = screen.getByText(
+      "These settings are saved and take effect at the next restart: jellyfin, workers",
+    );
+    const tabs = screen.getByRole("tablist");
+    expect(
+      banner.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("lands a 422 inline at the field its path names", async () => {

@@ -238,3 +238,16 @@ export const STALE_SAVE_NOTE =
   "These settings were changed somewhere else while this page was open, so " +
   "nothing was saved. The page now shows the current settings — make your " +
   "change again.";
+
+/** What a panel says when its save changed something a restart applies.
+ *
+ * A pointer, never a second list. What a save response reports is its own
+ * difference against the generation the process is running; what the settings
+ * page's banner renders is the store's list, measured against what the process
+ * booted on and emptied by the boot that settles it. The two disagree the
+ * first time a setting is edited and put back, and only one of them is beside
+ * the button that does something about it. Shared here for the reason every
+ * other sentence in this module is: four panels saying it four ways is four
+ * chances for one of them to go stale. */
+export const RESTART_NOTE =
+  "Settings that need a restart are listed in the banner on the Settings page.";

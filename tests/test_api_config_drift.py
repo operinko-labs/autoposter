@@ -86,6 +86,8 @@ async def test_a_seeded_store_matching_its_file_reports_no_drift(client, auth_he
     assert body["file_present"] is True
     assert body["differs"] is False
     assert body["paths"] == []
+    # Nothing to import, so nothing is served to import with.
+    assert body["document"] is None
 
 
 @pytest.mark.asyncio
@@ -99,6 +101,10 @@ async def test_an_edited_file_reports_the_paths_that_differ(
     body = (await client.get("/api/config/drift", headers=auth_headers)).json()
     assert body["differs"] is True
     assert body["paths"] == ["workers"]
+    # The document this comparison was made against, so the notice's Import
+    # posts back what it described rather than whatever a second read of the
+    # file would find.
+    assert body["document"] == document
 
 
 @pytest.mark.asyncio

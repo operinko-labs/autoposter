@@ -27,7 +27,9 @@ import type {
 } from "../api/types";
 import { ProviderAttribution } from "../ProviderAttribution";
 import { ConfigSafetyPanel } from "./ConfigSafetyPanel";
+import { DriftNotice } from "./DriftNotice";
 import { LibraryOverridesPanel } from "./LibraryOverridesPanel";
+import { RestartBanner } from "./RestartBanner";
 import { SettingsAccordion } from "./SettingsAccordion";
 import {
   GENERAL_TAB,
@@ -818,6 +820,14 @@ export function Settings() {
   }, [adopt]);
 
   const keep = config === null ? { paths: [], sentinel: "" } : keepContract(config);
+  // The server's list, never a save response's `restart_required`: that field
+  // is one write's difference against the running generation, while this is
+  // measured against what the process booted on and is emptied by the boot
+  // that settles it. A setting edited and then put back is on one and not the
+  // other, and the banner is answering the question the stored list answers.
+  const restartPaths = Array.isArray(config?.restart_paths)
+    ? config.restart_paths.filter((path): path is string => typeof path === "string")
+    : [];
   const editor: Editor = {
     document: pendingDocument,
     saved: savedDocument,
@@ -968,6 +978,14 @@ export function Settings() {
           it. */}
       {staleNote !== null && <p className="page-error">{staleNote}</p>}
 
+      {/* Above the tab strip and mounted once, so a restart waiting on a
+          setting saved under System is visible from Artwork -- the operator
+          who needs to see it is rarely the one still looking at the tab that
+          caused it. One mount rather than a second copy inside the System
+          panel: two banners on one screen, each with its own Restart button,
+          is two answers to a question with one. */}
+      <RestartBanner paths={restartPaths} onRestarted={reload} />
+
       {/* Replaced by the pending bar the moment there is an edit, which says
           the same thing about a change that exists. */}
       {!dirty && (
@@ -1028,6 +1046,12 @@ export function Settings() {
         {config !== null && tab === "system" && (
           <ConfigSafetyPanel revision={storedRevision} onChanged={reload} />
         )}
+        {/* The mounted file's whole remaining job, on the tab that owns the
+            rest of the deployment's plumbing. It renders nothing at all when
+            the file agrees with the store, or when there is no file. */}
+        {config !== null && tab === "system" && (
+          <DriftNotice revision={storedRevision} onChanged={reload} />
+        )}
         {/* Not gated on the config load: rotating the webhook secret is how an
             operator recovers a deployment whose config read is what failed. */}
         {tab === "system" && <WebhookSecretPanel />}
@@ -1055,21 +1079,15 @@ export function Settings() {
               {`Queued ${result.queued} items to re-render, ${result.skipped} already queued.`}
             </p>
           )}
-          {result.restart_required.length > 0 && (
-            <p className="config-restart">
-              {`Restart required to apply: ${result.restart_required.join(", ")}`}
-            </p>
-          )}
-          {/* Distinct from restart_required on purpose: these paths are built
-              into the application object before any override is read, so no
-              swap reaches them even in part. The restart that does apply them
-              reads the stored document, which is why this says restart rather
-              than promising something a reload could deliver. */}
-          {(result.inert ?? []).length > 0 && (
-            <p className="config-inert">
-              {`Takes effect at the next restart: ${(result.inert ?? []).join(", ")}`}
-            </p>
-          )}
+          {/* Neither `restart_required` nor `inert` is repeated here. The
+              store carries both of them on `restart_paths`, the re-read above
+              has just fetched it, and the banner at the top of the page is
+              rendering it -- with the button that acts on it. A second list
+              beside that one would be a different measurement of the same
+              thing (this save against the running generation, rather than
+              every save since the boot) and would disagree with it the first
+              time a setting was edited and put back. The preview still shows
+              both, because nothing is stored for the banner to read yet. */}
         </section>
       )}
 
