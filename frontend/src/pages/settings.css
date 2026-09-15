@@ -16,7 +16,8 @@
   font-size: 13px;
 }
 
-.config-node > .config-row:last-child {
+.config-node > .config-row:last-child,
+.settings-accordion-body > .config-row:last-child {
   border-bottom: none;
 }
 

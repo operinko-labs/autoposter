@@ -14,12 +14,14 @@ import { SecretsPanel } from "./SecretsPanel";
  * on its server's card rather than here. */
 const ROWS = {
   secrets: [
+    { name: "AUTOPOSTER_DATABASE_URL", source: "environment", generated: false },
     { name: "AUTOPOSTER_TMDB_TOKEN", source: "stored", generated: false },
     { name: "AUTOPOSTER_TVDB_APIKEY", source: "environment", generated: false },
     { name: "AUTOPOSTER_FANART_APIKEY", source: "state file", generated: false },
     { name: "AUTOPOSTER_RADARR_APIKEY", source: "unset", generated: false },
     { name: "AUTOPOSTER_WEBHOOK_SECRET", source: "stored", generated: true },
     { name: "AUTOPOSTER_PLEX_TOKEN", source: "stored", generated: false },
+    { name: "AUTOPOSTER_JELLYFIN_APIKEY", source: "environment", generated: false },
   ],
 };
 
@@ -62,7 +64,9 @@ describe("SecretsPanel", () => {
     // Two of the listed names are stored: the token above and the generated
     // one, which is listed like any other.
     expect(screen.getAllByText("stored")).toHaveLength(2);
-    expect(screen.getByText("environment")).toBeInTheDocument();
+    // Two rows are answered as `environment`; one of them is a server
+    // credential and is not listed here.
+    expect(screen.getAllByText("environment")).toHaveLength(2);
     expect(screen.getByText("state file")).toBeInTheDocument();
     expect(screen.getByText("unset")).toBeInTheDocument();
   });
@@ -71,6 +75,27 @@ describe("SecretsPanel", () => {
     stubSecrets();
     await renderPanel();
     expect(screen.queryByText("AUTOPOSTER_PLEX_TOKEN")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("AUTOPOSTER_JELLYFIN_APIKEY"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers no field for the secret that cannot live in the store", async () => {
+    stubSecrets();
+    await renderPanel();
+    // The database URL is read to reach the store, so the store is not a
+    // place it can be kept: the server refuses every write to it, and a
+    // control that is always refused is worse than none.
+    expect(screen.getByText("AUTOPOSTER_DATABASE_URL")).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("AUTOPOSTER_DATABASE_URL"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Set AUTOPOSTER_DATABASE_URL" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("This secret is set in the environment or at first start, not here."),
+    ).toBeInTheDocument();
   });
 
   it("offers Replace and Clear for a stored value, Set for the rest", async () => {
@@ -107,8 +132,15 @@ describe("SecretsPanel", () => {
     expect(JSON.parse(String(write?.init?.body))).toEqual({ value: "a-typed-key" });
     expect(screen.queryByDisplayValue("a-typed-key")).not.toBeInTheDocument();
     expect(
-      screen.getByLabelText("AUTOPOSTER_RADARR_APIKEY"),
-    ).toHaveAttribute("type", "password");
+      screen.getByText(
+        "Stored AUTOPOSTER_RADARR_APIKEY. It is not shown again. Anything that read it at startup picks it up at the next restart.",
+      ),
+    ).toBeInTheDocument();
+    const field = screen.getByLabelText("AUTOPOSTER_RADARR_APIKEY");
+    expect(field).toHaveAttribute("type", "password");
+    // So a password manager cannot offer to save an API token as a
+    // credential for this site, or fill a saved one into this field.
+    expect(field).toHaveAttribute("autocomplete", "off");
   });
 
   it("re-reads the sources and the page's configuration after a write", async () => {
@@ -176,6 +208,54 @@ describe("SecretsPanel", () => {
       screen.getByText(
         "that value cannot be stored: it is empty, too long, or carries a newline",
       ),
+    ).toBeInTheDocument();
+    // And nothing claiming the opposite above it.
+    expect(screen.queryByText(/^Stored AUTOPOSTER_/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the rotation control when the listing itself failed", async () => {
+    // This listing opens a database session and decrypts every row, so it
+    // fails in more circumstances than the rest of the page does -- and
+    // rotating is how a deployment whose reads are failing is recovered.
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          json(
+            { detail: "the stored-secret encryption key could not be read or created" },
+            503,
+          ),
+        ),
+    );
+    await act(async () => {
+      render(<SecretsPanel />);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
+
+    expect(
+      screen.getByText(/the stored-secret encryption key could not be read/),
+    ).toBeInTheDocument();
+    // And no word that promises the list is still on its way.
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /rotate webhook secret/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("says so when the listing answers no names at all", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ secrets: [] })));
+    await act(async () => {
+      render(<SecretsPanel />);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
+
+    expect(
+      screen.getByText("No secret names came back, so there is none to set here."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /rotate webhook secret/i }),
     ).toBeInTheDocument();
   });
 

@@ -201,7 +201,27 @@ describe("Settings configuration", () => {
   });
 
   it("renders the served secrets block on no tab, and never the marker string", async () => {
-    stubConfig();
+    // Routed per URL: answering the config body to `/api/secrets` too would
+    // leave the accordion with no rows, and every assertion below would pass
+    // against an empty section rather than against a rendered list.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) =>
+        json(
+          path === "/api/secrets"
+            ? {
+                secrets: [
+                  {
+                    name: "AUTOPOSTER_TMDB_TOKEN",
+                    source: "stored",
+                    generated: false,
+                  },
+                ],
+              }
+            : CONFIG,
+        ),
+      ),
+    );
     await renderSettings();
 
     // The config's own `secrets` block is no longer rendered as a section: an
@@ -221,8 +241,9 @@ describe("Settings configuration", () => {
     }
     // The one accordion of that name is the panel that can set one, and it
     // lists what its own endpoint answers rather than anything the config
-    // carried -- so not one served key reaches it, open or closed.
+    // carried: its row is there, and not one served key is.
     await openSettled("System", "Secrets");
+    expect(screen.getByText("AUTOPOSTER_TMDB_TOKEN")).toBeInTheDocument();
     expect(screen.queryByText("secrets.plex_token")).toBeNull();
     expect(screen.queryByText("Plex token")).toBeNull();
     // And the literal marker never reaches the page as a value.
