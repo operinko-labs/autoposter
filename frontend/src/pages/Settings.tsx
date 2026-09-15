@@ -248,8 +248,13 @@ function ListValue({ value }: { value: unknown[] }) {
 
 /** A string list, edited as a list rather than as a comma-joined string: the
  * document carries the whole list at its own path, because that is the unit
- * the API merges. */
-function StringListField({
+ * the API merges.
+ *
+ * Exported for the per-library matrix, which edits the same shape at
+ * `libraries.<name>.<suffix>` and writes it through the same `Editor`. Shared
+ * rather than copied for the reason `api/overrides.ts` gives: the copy is
+ * where the two would drift about what a list edit means. */
+export function StringListField({
   path,
   value,
   onChange,
@@ -311,6 +316,15 @@ function fieldKind(base: unknown, declared?: string): string | undefined {
   if (typeof base === "boolean") return "boolean";
   if (typeof base === "number") return "integer";
   if (typeof base === "string") return "string";
+  // An EMPTY list says as little as a `null` does -- `[].every(...)` is
+  // vacuously true, so a list of objects that nobody has added an entry to
+  // read as a list of strings and offered an "Add" button whose entry the API
+  // is bound to refuse (`collections.definitions` and the two like it). The
+  // schema knows which it is; an older server that says nothing keeps the old
+  // answer.
+  if (Array.isArray(base) && base.length === 0 && declared !== undefined) {
+    return declared;
+  }
   if (Array.isArray(base) && base.every((item) => typeof item === "string")) {
     return "string_list";
   }
@@ -345,6 +359,35 @@ function Field({
   if (editor === null || base === REDACTED_MARKER) return readOnly;
 
   const kind = fieldKind(base, declared);
+  // A `bool | None` is a three-state setting, and the schema keeps the third
+  // state on purpose: "None -- not False -- so 'this kind says nothing' and
+  // 'this kind says no' stay distinguishable and the global switch can be
+  // overridden in both directions" (`config/schema.py`, above
+  // `disable_online_asset_fetch`, which every art kind carries). A checkbox
+  // has two states, so it would state "no" where the stored answer is
+  // "nothing" and there would be no way back. The three-state control is the
+  // one the per-library matrix already uses, with the same three words;
+  // "inherit" puts the served value back, which for these rows is the unset
+  // the row started at. A boolean that HAS a value keeps its checkbox below,
+  // where on-then-off ending as `false` is the operator choosing a value.
+  if (kind === "boolean" && (base === null || base === undefined)) {
+    return (
+      <select
+        aria-label={path}
+        title={title}
+        value={current === true ? "on" : current === false ? "off" : "inherit"}
+        onChange={(event) => {
+          const choice = event.target.value;
+          if (choice === "inherit") editor.revert(path);
+          else editor.setValue(path, choice === "on");
+        }}
+      >
+        <option value="inherit">inherit</option>
+        <option value="on">on</option>
+        <option value="off">off</option>
+      </select>
+    );
+  }
   if (kind === "boolean") {
     return (
       <input

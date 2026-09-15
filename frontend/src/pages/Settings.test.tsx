@@ -1043,18 +1043,11 @@ describe("Settings editor", () => {
   });
 
   it("marks a field under a frozen prefix, not only a frozen path itself", async () => {
-    // `frozen_paths` keys are prefixes: `notifications` freezes everything
-    // beneath it. A page that only matched the key exactly would tell an
-    // operator that `notifications.url` applies live, which it does not.
-    stubApi({
-      config: {
-        ...EDITOR_CONFIG,
-        frozen_paths: {
-          ...EDITOR_CONFIG.frozen_paths,
-          notifications: "the notifier is built once at startup",
-        },
-      },
-    });
+    // `frozen_paths` keys are prefixes: the fixture freezes `notifications`,
+    // and the field edited below is a leaf beneath it rather than the key
+    // itself. A page that only matched the key exactly would tell an operator
+    // that `notifications.url` applies live, which it does not.
+    stubApi();
     await renderSettings();
     openSection("Integrations", "Notifications");
 
@@ -2441,6 +2434,10 @@ describe("Settings editor, unset values", () => {
       genre_source: null,
       ignore_labels: null,
       field_verbs: null,
+      // A list of objects that nobody has added an entry to. Empty, so its
+      // own value says as little as a `null` does -- the kind is what keeps
+      // it read-only instead of offering a string entry the API would refuse.
+      definitions: [] as unknown[],
       // Served with no kind of its own: an older deployment, or a shape the
       // schema walk answers `object` for and this fixture leaves out
       // entirely. Either way the page must not guess a control for it.
@@ -2457,6 +2454,7 @@ describe("Settings editor, unset values", () => {
       "operations.genre_source": "string",
       "operations.ignore_labels": "string_list",
       "operations.field_verbs": "object",
+      "operations.definitions": "object",
     },
   };
 
@@ -2465,11 +2463,12 @@ describe("Settings editor, unset values", () => {
     await renderSettings();
     openSection("Metadata", "Operations");
 
-    expect(screen.getByLabelText("operations.enabled")).toHaveAttribute(
-      "type",
-      "checkbox",
-    );
-    expect(screen.getByLabelText("operations.enabled")).not.toBeChecked();
+    // A `bool | None` keeps its third state: the schema distinguishes "says
+    // nothing" from "says no", so the control has to be able to say all
+    // three.
+    const tristate = screen.getByLabelText("operations.enabled");
+    expect(tristate.tagName).toBe("SELECT");
+    expect(tristate).toHaveValue("inherit");
     expect(screen.getByLabelText("operations.imdb_refresh_hours")).toHaveAttribute(
       "type",
       "number",
@@ -2485,12 +2484,29 @@ describe("Settings editor, unset values", () => {
     ).toBeInTheDocument();
   });
 
+  it("offers no list editor for an empty list the schema calls an object", async () => {
+    // `[].every(...)` is vacuously true, so an empty list of objects read as
+    // a list of strings and offered an "Add" button whose entry is a string
+    // -- a save the API is bound to refuse.
+    stubApi({ config: UNSET });
+    await renderSettings();
+    openSection("Metadata", "Operations");
+
+    expect(
+      screen.queryByRole("button", { name: "Add to operations.definitions" }),
+    ).toBeNull();
+    expect(within(rowOf(screen.getByText("Definitions"))).getByText("(none)"))
+      .toBeInTheDocument();
+  });
+
   it("carries the typed value at the row's own path", async () => {
     const fetchMock = stubApi({ config: UNSET });
     await renderSettings();
     openSection("Metadata", "Operations");
 
-    fireEvent.click(screen.getByLabelText("operations.enabled"));
+    fireEvent.change(screen.getByLabelText("operations.enabled"), {
+      target: { value: "on" },
+    });
     fireEvent.change(screen.getByLabelText("operations.imdb_refresh_hours"), {
       target: { value: "6" },
     });
@@ -2514,28 +2530,59 @@ describe("Settings editor, unset values", () => {
           genre_source: "tmdb",
           ignore_labels: ["Keep"],
           field_verbs: null,
+          definitions: [],
           unknown_setting: null,
         },
       },
     });
   });
 
-  it("leaves a boolean the operator turned on and off again set to off", async () => {
-    // Not back to unset: the operator chose a value, and a switch that put
-    // the setting back to "nobody has said" on the way through could not
-    // express half of what it offers.
+  it("says off as a value, and keeps the way back to saying nothing", async () => {
+    // The two halves of the third state. "off" is a value the operator chose
+    // and is stored as `false`, not collapsed back into unset; "inherit" puts
+    // the served `null` back, which a checkbox could never express -- the
+    // schema keeps "says nothing" and "says no" apart on purpose.
     const fetchMock = stubApi({ config: UNSET });
     await renderSettings();
     openSection("Metadata", "Operations");
 
-    fireEvent.click(screen.getByLabelText("operations.enabled"));
-    fireEvent.click(screen.getByLabelText("operations.enabled"));
+    const tristate = screen.getByLabelText("operations.enabled");
+    fireEvent.change(tristate, { target: { value: "on" } });
+    fireEvent.change(tristate, { target: { value: "off" } });
+    expect(tristate).toHaveValue("off");
+    expect(
+      screen.getByRole("heading", { name: "Pending changes" }),
+    ).toBeInTheDocument();
     await save();
 
     const body = putDocument(fetchMock) as {
       document: { operations: Record<string, unknown> };
     };
     expect(body.document.operations.enabled).toBe(false);
+
+    fireEvent.change(screen.getByLabelText("operations.enabled"), {
+      target: { value: "on" },
+    });
+    fireEvent.change(screen.getByLabelText("operations.enabled"), {
+      target: { value: "inherit" },
+    });
+    expect(screen.getByLabelText("operations.enabled")).toHaveValue("inherit");
+    expect(screen.queryByRole("heading", { name: "Pending changes" })).toBeNull();
+  });
+
+  it("keeps the checkbox for a boolean that already has a value", async () => {
+    // The three-state control is for the rows whose stored answer is
+    // "nothing". A setting that says yes or no is a two-state setting, and a
+    // third option on it would offer a state it does not have.
+    stubApi();
+    await renderSettings();
+    openSection("Artwork", "Badges");
+
+    expect(screen.getByLabelText("badges.enabled")).toHaveAttribute(
+      "type",
+      "checkbox",
+    );
+    expect(screen.getByLabelText("badges.enabled")).toBeChecked();
   });
 
   it("leaves a leaf whose kind it was never told read-only", async () => {

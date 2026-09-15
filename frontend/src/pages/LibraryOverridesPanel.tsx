@@ -5,10 +5,11 @@
  * set to something else, or not editable here. It is the section's only home
  * on the page now: a generic accordion over `libraries` used to sit beneath
  * it, and it was an empty accordion on a deployment that overrides nothing
- * and a second, differently shaped copy of this table on one that does. What
- * that tree could do and this cannot is edit a per-library LIST or MAPPING
- * cell -- those are reported here and set through the API, which is the cost
- * of the section having one home instead of two.
+ * and a second, differently shaped copy of this table on one that does. A
+ * list cell is edited here rather than there (the tree could only ever edit a
+ * per-library list that already HELD a value -- it was shape-driven, so an
+ * unset one was `null` and got no control); a MAPPING cell is reported and
+ * not edited, which is the one thing this page cannot do that it could.
  *
  * It writes through the page's own `Editor` rather than fetching anything,
  * and that is the decision everything else falls out of. One pending
@@ -36,7 +37,7 @@
  */
 import type { ConfigResponse } from "../api/types";
 import { hasPath, isPlainObject, readPath } from "../api/overrides";
-import type { Editor } from "./Settings";
+import { StringListField, type Editor } from "./Settings";
 
 /** The prefix `config/descriptions.py` publishes the per-library shape under.
  * `{}` stands in for a library NAME, which is data a schema walk cannot
@@ -58,9 +59,42 @@ export function overridableLeaves(config: ConfigResponse): string[] {
     .sort();
 }
 
+/** The libraries this table has a column for: the ones collections are built
+ * in, plus every library that already overrides something.
+ *
+ * The union, not `collections.libraries` alone. That list is the scope of ONE
+ * feature, and per-library overrides cover badges, operations and maintenance,
+ * which apply to libraries outside it -- so an override stored under a library
+ * that is not in it (or one later removed from it) had no column, no row and,
+ * since this panel became the section's only home, no rendering at all: stored,
+ * still applied by the service, and invisible. A library that overrides
+ * something is exactly a library this table should show.
+ *
+ * Sorted, because the two sources have no shared order to preserve. */
 function libraryNames(config: ConfigResponse): string[] {
-  const names = readPath(config, "collections.libraries");
-  return Array.isArray(names) ? names.filter((n): n is string => typeof n === "string") : [];
+  const scoped = readPath(config, "collections.libraries");
+  const stored = config.libraries;
+  const names = new Set<string>(
+    Array.isArray(scoped) ? scoped.filter((n): n is string => typeof n === "string") : [],
+  );
+  if (isPlainObject(stored)) for (const name of Object.keys(stored)) names.add(name);
+  return [...names].sort();
+}
+
+/** The kind the schema declares for one overridable leaf, read under the
+ * wildcard the map publishes it at.
+ *
+ * The cell used to pick its control from the GLOBAL value, which is the same
+ * defect this branch fixes on the settings page: a leaf whose global is unset
+ * is `null`, which says nothing about what it holds. */
+function leafKinds(config: ConfigResponse): Record<string, string> {
+  const kinds = config.field_types;
+  if (!isPlainObject(kinds)) return {};
+  return Object.fromEntries(
+    Object.entries(kinds)
+      .filter(([path]) => path.startsWith(LIBRARY_WILDCARD))
+      .map(([path, kind]) => [path.slice(LIBRARY_WILDCARD.length), String(kind)]),
+  );
 }
 
 /** How the global value reads in a placeholder. Deliberately the same
@@ -81,11 +115,17 @@ function Cell({
   library,
   suffix,
   globalValue,
+  kind,
   editor,
 }: {
   library: string;
   suffix: string;
   globalValue: unknown;
+  /** What the schema says this leaf holds, from `field_types` under the
+   * wildcard. `undefined` only for a server that serves no kinds, where the
+   * global's own type is the best answer available -- which is what this cell
+   * read before, and is wrong for exactly the leaves whose global is unset. */
+  kind?: string;
   editor: Editor;
 }) {
   const path = `libraries.${library}.${suffix}`;
@@ -93,10 +133,10 @@ function Cell({
   const current = set ? readPath(editor.document, path) : undefined;
   const inherits = `inherits ${describeGlobal(globalValue)}`;
 
-  // A boolean is the only leaf type with a closed set of answers, so it gets
-  // the widget that can say "unset" as a first-class third option -- which a
-  // checkbox cannot, and which is the state this whole panel is about.
-  if (typeof globalValue === "boolean") {
+  // A boolean has a closed set of answers, so it gets the widget that can say
+  // "unset" as a first-class third option -- which a checkbox cannot, and
+  // which is the state this whole panel is about.
+  if (kind === undefined ? typeof globalValue === "boolean" : kind === "boolean") {
     return (
       <>
         <select
@@ -118,11 +158,42 @@ function Cell({
     );
   }
 
-  // A list or a mapping needs a list editor, and a copy of the settings
-  // page's inside a table cell is exactly the shape `api/overrides.ts`'s own
-  // docstring warns about. The cell reports its state instead, and the
+  // A list of strings is edited here, with the settings page's own list
+  // field rather than a copy of it -- a copy is the shape `api/overrides.ts`'s
+  // own docstring warns about. An empty cell writes nothing, so the override
+  // is created by the first entry added; "inherit" deletes the key, the same
+  // removal the three-state select performs, so the library goes back to
+  // following the global rather than freezing today's value.
+  if (kind === "string_list") {
+    return (
+      <>
+        <StringListField
+          path={path}
+          value={(Array.isArray(current) ? current : []).map(String)}
+          onChange={(next) => editor.setValue(path, next)}
+        />
+        {set ? (
+          <button
+            type="button"
+            aria-label={`Inherit ${path}`}
+            onClick={() => editor.clear(path)}
+          >
+            Inherit
+          </button>
+        ) : (
+          <span className="muted library-cell-note">{inherits}</span>
+        )}
+      </>
+    );
+  }
+
+  // A mapping has no single control, so the cell reports its state and the
   // panel's copy says so rather than implying an edit that is not here.
-  if (Array.isArray(globalValue) || isPlainObject(globalValue)) {
+  if (
+    kind === undefined
+      ? Array.isArray(globalValue) || isPlainObject(globalValue)
+      : kind === "object"
+  ) {
     return (
       <span className="muted library-cell-note">
         {set ? "overridden" : inherits}
@@ -130,9 +201,9 @@ function Cell({
     );
   }
 
-  // Everything else is a string or a null -- the five `Literal | None`
-  // sources, whose global default is null. No numeric branch: not one leaf
-  // in the whitelist is a number.
+  // Everything else is a string -- including the `Literal | None` sources,
+  // whose global default is null and whose kind the schema still answers. No
+  // numeric branch: not one leaf in the whitelist is a number.
   return (
     <input
       type="text"
@@ -161,13 +232,15 @@ export function LibraryOverridesPanel({
 }) {
   const libraries = libraryNames(config);
   const leaves = overridableLeaves(config);
-  // Nothing to override and nowhere to put it: a deployment with no
-  // configured library gets no panel rather than an empty table.
+  // Nothing to override and nowhere to put it: a deployment with no library
+  // in scope and none overriding anything gets no panel rather than an empty
+  // table.
   if (libraries.length === 0 || leaves.length === 0) return null;
 
   const descriptions = isPlainObject(config.field_descriptions)
     ? config.field_descriptions
     : {};
+  const kinds = leafKinds(config);
 
   return (
     <section className="panel config-section library-overrides">
@@ -181,9 +254,11 @@ export function LibraryOverridesPanel({
         to Plex, badged and swept.
       </p>
       <p className="muted config-note">
-        List and mapping settings (ignore lists, overlay families, the genre
-        and content-rating mappers, field verbs) say here whether a library
-        overrides the global, but are not edited on this page.
+        Lists (the ignore lists, overlay families) are set here entry by
+        entry, and <strong>Inherit</strong> beside one removes it. Mapping
+        settings — the genre and content-rating mappers, field verbs — say
+        here whether a library overrides the global, but are not edited on
+        this page.
       </p>
       <div className="library-overrides-scroll">
         <table className="library-overrides-table">
@@ -207,6 +282,7 @@ export function LibraryOverridesPanel({
                       library={library}
                       suffix={suffix}
                       globalValue={readPath(config, suffix)}
+                      kind={kinds[suffix]}
                       editor={editor}
                     />
                   </td>

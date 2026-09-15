@@ -11,12 +11,28 @@ const CONFIG = {
     enabled: true,
     write_to_plex: true,
     user_rating_source: null,
+    // A global nobody has set, on a leaf that holds a boolean: the cell used
+    // to pick its control from this value, so it gave this one a text box.
+    lock_apply: null,
     ignore_labels: ["skip_autoposter"],
+    genre_mapper: {},
   },
   badges: { enabled: true },
   maintenance: { empty_trash: false },
   collections: { libraries: ["Movies", "TV Shows"] },
   libraries: {},
+  // What the schema says each overridable leaf holds, under the same wildcard
+  // the descriptions use.
+  field_types: {
+    "libraries.{}.operations.enabled": "boolean",
+    "libraries.{}.operations.write_to_plex": "boolean",
+    "libraries.{}.operations.lock_apply": "boolean",
+    "libraries.{}.operations.user_rating_source": "string",
+    "libraries.{}.operations.ignore_labels": "string_list",
+    "libraries.{}.operations.genre_mapper": "object",
+    "libraries.{}.badges.enabled": "boolean",
+    "libraries.{}.maintenance.empty_trash": "boolean",
+  },
   field_descriptions: {
     libraries: "Per-library overrides, keyed by Plex library name.",
     "libraries.{}.operations": "The metadata-operations settings this library uses.",
@@ -28,6 +44,10 @@ const CONFIG = {
       "This library's value for operations.user_rating_source; unset inherits the global setting.",
     "libraries.{}.operations.ignore_labels":
       "This library's value for operations.ignore_labels; unset inherits the global setting.",
+    "libraries.{}.operations.lock_apply":
+      "This library's value for operations.lock_apply; unset inherits the global setting.",
+    "libraries.{}.operations.genre_mapper":
+      "This library's value for operations.genre_mapper; unset inherits the global setting.",
     "libraries.{}.badges.enabled":
       "This library's value for badges.enabled; unset inherits the global setting.",
     "libraries.{}.maintenance.empty_trash":
@@ -61,7 +81,9 @@ describe("overridableLeaves", () => {
       "badges.enabled",
       "maintenance.empty_trash",
       "operations.enabled",
+      "operations.genre_mapper",
       "operations.ignore_labels",
+      "operations.lock_apply",
       "operations.user_rating_source",
       "operations.write_to_plex",
     ]);
@@ -171,13 +193,107 @@ describe("LibraryOverridesPanel", () => {
     ).toBe("inherit");
   });
 
-  it("offers no editor for a list-valued leaf and says where to edit it", () => {
+  it("sets a per-library list here, entry by entry", () => {
+    // The one thing the generic tree beneath this panel used to be able to do
+    // -- and could only do for a list that already held a value, since it
+    // chose its control from the value. An unset one is created by the first
+    // entry added.
     const editor = editorFor();
     render(<LibraryOverridesPanel config={CONFIG} editor={editor} />);
+
     const cell = screen.getByTestId("cell-Movies-operations.ignore_labels");
+    fireEvent.click(
+      within(cell).getByRole("button", {
+        name: "Add to libraries.Movies.operations.ignore_labels",
+      }),
+    );
+    expect(editor.setValue).toHaveBeenCalledWith(
+      "libraries.Movies.operations.ignore_labels",
+      [""],
+    );
+  });
+
+  it("inherit on a set list cell deletes the path", () => {
+    const editor = editorFor({
+      libraries: { Movies: { operations: { ignore_labels: ["Skip"] } } },
+    });
+    render(<LibraryOverridesPanel config={CONFIG} editor={editor} />);
+
+    const cell = screen.getByTestId("cell-Movies-operations.ignore_labels");
+    expect(
+      within(cell).getByLabelText("libraries.Movies.operations.ignore_labels[0]"),
+    ).toHaveValue("Skip");
+    fireEvent.click(
+      within(cell).getByRole("button", {
+        name: "Inherit libraries.Movies.operations.ignore_labels",
+      }),
+    );
+    expect(editor.clear).toHaveBeenCalledWith(
+      "libraries.Movies.operations.ignore_labels",
+    );
+    expect(editor.setValue).not.toHaveBeenCalled();
+  });
+
+  it("offers no editor for a mapping leaf and says so", () => {
+    const editor = editorFor();
+    render(<LibraryOverridesPanel config={CONFIG} editor={editor} />);
+    const cell = screen.getByTestId("cell-Movies-operations.genre_mapper");
     expect(within(cell).queryByRole("textbox")).toBeNull();
     expect(within(cell).queryByRole("combobox")).toBeNull();
-    expect(screen.getByText(/list and mapping settings/i)).toBeTruthy();
+    expect(screen.getByText(/mapping settings/i)).toBeTruthy();
+  });
+
+  it("takes a cell's control from the schema's kind, not from the global value", () => {
+    // `operations.lock_apply` holds a boolean and its global is unset, so the
+    // value says nothing about what the cell is -- it used to fall through to
+    // the text branch, which is the same defect the settings page had.
+    render(<LibraryOverridesPanel config={CONFIG} editor={editorFor()} />);
+    const cell = screen.getByLabelText("libraries.Movies.operations.lock_apply");
+    expect(cell.tagName).toBe("SELECT");
+    expect((cell as HTMLSelectElement).value).toBe("inherit");
+  });
+
+  it("falls back to the global's own type when the server names no kinds", () => {
+    // An older deployment serves no `field_types`. Every cell whose global
+    // has a value is what it was before, so the panel still works.
+    const { field_types: _unused, ...older } = CONFIG;
+    render(<LibraryOverridesPanel config={older} editor={editorFor()} />);
+    expect(
+      screen.getByLabelText("libraries.Movies.operations.enabled").tagName,
+    ).toBe("SELECT");
+    const list = screen.getByTestId("cell-Movies-operations.ignore_labels");
+    expect(within(list).queryByRole("textbox")).toBeNull();
+  });
+
+  it("gives a column to a library that overrides something out of collections scope", () => {
+    // Per-library overrides cover badges, operations and maintenance, which
+    // apply to libraries outside `collections.libraries`. Such an override is
+    // stored and applied, and with the generic tree gone this table is the
+    // only thing that can show it.
+    const config = {
+      ...CONFIG,
+      libraries: { Anime: { badges: { enabled: false } } },
+    };
+    const editor = editorFor({
+      libraries: { Anime: { badges: { enabled: false } } },
+    });
+    render(<LibraryOverridesPanel config={config} editor={editor} />);
+
+    expect(screen.getByRole("columnheader", { name: "Anime" })).toBeTruthy();
+    expect(
+      (screen.getByLabelText("libraries.Anime.badges.enabled") as HTMLSelectElement)
+        .value,
+    ).toBe("off");
+  });
+
+  it("still renders for an override when no library is in collections scope", () => {
+    const config = {
+      ...CONFIG,
+      collections: { libraries: [] },
+      libraries: { Anime: { badges: { enabled: false } } },
+    };
+    render(<LibraryOverridesPanel config={config} editor={editorFor(config)} />);
+    expect(screen.getByRole("columnheader", { name: "Anime" })).toBeTruthy();
   });
 
   it("states that a change here re-renders no artwork", () => {
@@ -189,10 +305,10 @@ describe("LibraryOverridesPanel", () => {
     expect(screen.getByText(/changes no rendered artwork/i)).toBeTruthy();
   });
 
-  it("renders nothing at all when no library is configured", () => {
+  it("renders nothing at all when no library is configured and none overrides", () => {
     const { container } = render(
       <LibraryOverridesPanel
-        config={{ ...CONFIG, collections: { libraries: [] } }}
+        config={{ ...CONFIG, collections: { libraries: [] }, libraries: {} }}
         editor={editorFor()}
       />,
     );
