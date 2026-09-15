@@ -595,14 +595,15 @@ Practical consequences:
   so two pods never run at once — not even for the seconds a rolling update
   would give them — and every pod re-reads the persisted overrides at boot
   before anything is built from them.
-- `api_docs_enabled` is the one exception a restart does NOT fix: it must
-  be set in the ConfigMap. FastAPI decides whether `/docs`, `/redoc` and
-  `/openapi.json` exist when the application object is built, and that
-  happens before the pod has read a single override, so an override on it
-  is inert at every boot. The editor says as much in its own reason text.
-  To close the docs on a pod whose ConfigMap has them on, edit the
-  ConfigMap (or set `AUTOPOSTER_CONFIG` at a file that has them off) and
-  restart — a database override will not do it.
+- `api_docs_enabled` is the one exception a *swap* never reaches, not even
+  in part: FastAPI decides whether `/docs`, `/redoc` and `/openapi.json`
+  exist when the application object is built, and that happens before the
+  pod has merged a single override. It takes effect at the next restart
+  instead, because the object is built from the stored document — so a save
+  followed by a restart closes the docs on a pod whose ConfigMap has them
+  on, and so does editing the ConfigMap (or pointing `AUTOPOSTER_CONFIG` at
+  a file that has them off) and restarting. The editor says as much in its
+  own reason text.
 - An invalid save changes nothing — the merged result is validated whole
   before anything is persisted or applied, and errors come back
   field-labelled.
@@ -3608,6 +3609,39 @@ four categories:
 
 The app listens on port `8080` — point the Kubernetes Service, the probes
 (`/healthz`) and these webhook URLs at it.
+
+`AUTOPOSTER_HOST` and `AUTOPOSTER_PORT` override that address (defaults
+`0.0.0.0` and `8080`), and `.env.example` carries the same two names for the
+Compose path. They are read from the environment rather than compiled in
+because the Settings page's Restart button replaces the process with a fresh
+boot, and the new process has to come back on the address the operator reached
+it on; the environment survives the exec, so it does — and the first-start
+wizard binds the same address, so a manual install keeps its port from its very
+first screen. Setting the port is only half the move: nothing propagates it, so
+the Service, **both** probes, the webhook URLs above and the Compose port
+mapping have to be changed by hand to the same number. A value that is not a
+port number — a typo, or a number outside 1–65535 — is ignored with a warning
+and the default is used, rather than killing a boot that would then have no UI
+left to fix it from. In the development Compose stack the `api` command pins
+`--port 8080` itself, so the two variables there change nothing until the first
+Restart — which is why `.env.example` ships them commented out.
+
+The Restart button replaces this process and refuses in three cases, and one of
+them is opt-in. It refuses when `WEB_CONCURRENCY` or `UVICORN_WORKERS` is set
+above `1`, because one worker re-execing itself would leave the deployment half
+old and half new — and those two variables are the *only* thing it looks at, so
+a deployment that runs several workers by any other means (`uvicorn --workers 4`
+typed on a command line sets neither) must set one of them for the refusal to
+fire at all. Run one worker per process, or declare the count. It also refuses
+while a run that lives in this process is in flight — a full pass, a scheduled
+job — but **not** during a catch-up: a catch-up's state is rows in the database
+and its drain resumes on the other side of the boot, so restarting interrupts
+nothing and an operator with a day-long backlog would otherwise never be able to
+apply a setting. Finally, an *orphaned* open run row — one left `running` by a
+process that was killed mid-pass, which nothing reconciles except the next pass
+of that same job — keeps refusing until it is older than the full pass's own
+timeout horizon, 24 hours, after which it is ignored. Either wait it out or
+close the row.
 
 Configure Radarr and Sonarr with a webhook notification pointing at this
 service's webhook URL (`/webhook/radarr` and `/webhook/sonarr` respectively),

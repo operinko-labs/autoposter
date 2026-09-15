@@ -665,6 +665,33 @@ def test_an_unconfigured_boot_runs_no_migration_and_serves_the_setup_app(monkeyp
     assert served[0].document is None
 
 
+def test_the_wizard_is_served_on_the_address_the_environment_names(monkeypatch):
+    """The wizard and the application ask ONE function for their address.
+
+    The wizard ends by execing this module again, so an operator who reached
+    first-start on 9090 has to find the finished application there too -- and
+    would not if only one of the two call sites read the variable.
+    """
+    monkeypatch.setitem(
+        sys.modules,
+        "autoposter.api.setup",
+        SimpleNamespace(build_setup_app=lambda document=None: SimpleNamespace()),
+    )
+    monkeypatch.setenv("AUTOPOSTER_HOST", "127.0.0.1")
+    monkeypatch.setenv("AUTOPOSTER_PORT", "9090")
+    bound: list[dict] = []
+    monkeypatch.setattr(boot, "_migrate", _must_not_run)
+    monkeypatch.setattr(boot.os, "execv", _must_not_run)
+    monkeypatch.setattr(db_base, "make_engine", _must_not_run)
+    monkeypatch.setattr(boot.uvicorn, "run", lambda app, **kwargs: bound.append(kwargs))
+
+    boot.main([])
+
+    assert len(bound) == 1
+    assert bound[0]["host"] == "127.0.0.1"
+    assert bound[0]["port"] == 9090
+
+
 # --- the two entrypoints ----------------------------------------------------
 
 
