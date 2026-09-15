@@ -61,13 +61,18 @@ const SERVED_SECTIONS = [
 
 describe("the tab map", () => {
   it("gives every served section exactly one tab", () => {
+    const ids = new Set(TABS.map((entry) => entry.id));
     for (const section of SERVED_SECTIONS) {
-      const tab = tabForSection(section);
-      expect(TABS.map((entry) => entry.id)).toContain(tab);
-      expect(
-        SERVED_SECTIONS.filter((other) => other === section),
-      ).toHaveLength(1);
+      expect(ids.has(tabForSection(section))).toBe(true);
     }
+    // "Exactly one" is the part the loop above can't see: it would pass
+    // whether a section is assigned once or several times, since a `Record`
+    // collapses a repeated key to its last value. Comparing SECTION_TAB's own
+    // keys against the served list -- as sets, so order doesn't matter --
+    // catches a section entered twice under different tabs (the second entry
+    // silently wins, dropping the key count) the same way it catches a
+    // section the table never mentions at all.
+    expect(new Set(Object.keys(SECTION_TAB))).toEqual(new Set(SERVED_SECTIONS));
   });
 
   it("assigns a section it has never seen to System rather than nowhere", () => {
@@ -110,6 +115,38 @@ describe("SettingsAccordion", () => {
       </SettingsAccordion>,
     );
     expect(screen.getByText("the body")).toBeInTheDocument();
+  });
+
+  it("points the trigger's aria-controls at the disclosure region's own id", () => {
+    render(
+      <SettingsAccordion title="Scheduler" open onToggle={() => {}}>
+        <p>the body</p>
+      </SettingsAccordion>,
+    );
+    const button = screen.getByRole("button", { name: "Scheduler" });
+    const controls = button.getAttribute("aria-controls");
+    if (controls === null) throw new Error("expected an aria-controls attribute");
+    expect(screen.getByText("the body").parentElement).toHaveAttribute(
+      "id",
+      controls,
+    );
+  });
+
+  it("gives two accordions on the same page two different ids", () => {
+    render(
+      <>
+        <SettingsAccordion title="Scheduler" open onToggle={() => {}}>
+          <p>scheduler body</p>
+        </SettingsAccordion>
+        <SettingsAccordion title="Workers" open onToggle={() => {}}>
+          <p>workers body</p>
+        </SettingsAccordion>
+      </>,
+    );
+    const [scheduler, workers] = screen.getAllByRole("button");
+    expect(scheduler.getAttribute("aria-controls")).not.toBe(
+      workers.getAttribute("aria-controls"),
+    );
   });
 
   it("carries the restart pill with its reason as hover text", () => {

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 /** One configuration section, collapsed by default.
  *
@@ -29,10 +29,21 @@ export function SettingsAccordion({
   restartReason?: string;
   children: ReactNode;
 }) {
+  // Generated rather than derived from `title`: the same title (e.g.
+  // "Scheduler" could plausibly repeat) is not guaranteed unique, and this
+  // component is instantiated many times across the page's tabs -- the
+  // `Sidebar.tsx` precedent (`aria-controls="sidebar-nav"`) can hardcode its
+  // id because there is only ever one sidebar.
+  const bodyId = useId();
   return (
     <section className="panel settings-accordion">
       <h2 className="settings-accordion-header">
-        <button type="button" aria-expanded={open} onClick={onToggle}>
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={onToggle}
+        >
           <svg
             className="settings-accordion-chevron"
             viewBox="0 0 24 24"
@@ -48,7 +59,11 @@ export function SettingsAccordion({
           </span>
         )}
       </h2>
-      {open && <div className="settings-accordion-body">{children}</div>}
+      {open && (
+        <div className="settings-accordion-body" id={bodyId}>
+          {children}
+        </div>
+      )}
     </section>
   );
 }
