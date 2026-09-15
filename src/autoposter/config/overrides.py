@@ -339,6 +339,32 @@ def store_meta(
     return meta
 
 
+def restart_paths(meta: dict) -> list[str]:
+    """The frozen paths saved since the last restart. Sorted, never ``None``.
+
+    An absent key, an empty list and a row with no metadata at all all mean
+    "nothing is waiting", so every reader gets one shape back and none of them
+    has to know which of the three it is looking at.
+    """
+    return sorted(meta.get("restart_paths") or [])
+
+
+def with_restart_paths(meta: dict, paths: list[str]) -> dict:
+    """``meta`` with ``paths`` added to its restart list.
+
+    A UNION, not a replacement: two saves of two frozen sections both wait for
+    the same restart, and the second must not erase the first's claim. Sorted,
+    so the page's banner and this list cannot disagree about order.
+
+    The key is dropped rather than written empty when nothing is waiting,
+    which is what ``store_meta`` writes for the same state.
+    """
+    merged = sorted(set(restart_paths(meta)) | set(paths))
+    if not merged:
+        return {key: value for key, value in meta.items() if key != "restart_paths"}
+    return {**meta, "restart_paths": merged}
+
+
 async def store_row(
     session: AsyncSession, *, for_update: bool
 ) -> ConfigOverride | None:
@@ -487,6 +513,28 @@ async def write_store(session: AsyncSession, document: dict, meta: dict) -> None
         set_={"document": document, "meta": meta, "updated_at": func.now()},
     )
     await session.execute(statement)
+
+
+async def clear_restart_paths(session: AsyncSession) -> None:
+    """Forget the restart list. Called by the restart, and by nothing else.
+
+    Under the row lock, because the save path takes the same one and the two
+    must not interleave: a save that added a path between an unlocked read
+    here and the write would have its claim erased by a restart that never
+    applied it.
+
+    Not committed here, for ``write_store``'s reason -- the caller owns the
+    transaction. Nothing is written when the list is already empty, so the
+    common restart touches no row at all.
+    """
+    document, meta = await load_store(session, for_update=True)
+    if not restart_paths(meta):
+        return
+    await write_store(
+        session,
+        document,
+        {key: value for key, value in meta.items() if key != "restart_paths"},
+    )
 
 
 async def seed_store(session: AsyncSession, document: dict) -> dict:

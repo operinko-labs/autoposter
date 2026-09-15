@@ -80,9 +80,11 @@ from autoposter.config.overrides import (
     load_overrides_document,
     load_store,
     merge_overrides,
+    restart_paths,
     store_contents,
     store_row,
     unknown_key_paths,
+    with_restart_paths,
     without_migrated_sections,
     write_store,
 )
@@ -1743,7 +1745,7 @@ async def get_config(
     # exactly the invariant a stale-write check needs, because a page that
     # seeded from this response holds this token for what it seeded from.
     body["overrides_revision"] = document_revision(document)
-    body["restart_paths"] = list(meta.get("restart_paths") or [])
+    body["restart_paths"] = restart_paths(meta)
     body["frozen_paths"] = dict(FROZEN_SECTIONS)
     body["redacted_paths"] = redacted_here
     body["keep_sentinel"] = KEEP_SENTINEL
@@ -2297,6 +2299,20 @@ async def _persist_and_swap(
         # throw away.
         if whole_document:
             meta = {**meta, "format": STORE_FORMAT}
+        restart_required = _restart_required(before, after)
+        inert = _inert_changes(before, after)
+        # The restart list, in the SAME transaction as the write that earned
+        # it. A list committed without its document -- or the reverse -- would
+        # either tell an operator to restart for a change that is not stored,
+        # or silently drop the one promise the editor makes about a frozen
+        # setting. The metadata read under the lock above is what this adds to,
+        # so there is no second read and no second write.
+        #
+        # Both lists go on it. They are reported apart because they land at
+        # different moments -- the lifespan's merge reaches one and not the
+        # other -- but a restart is what applies either, and the page's notice
+        # asks one question.
+        meta = with_restart_paths(meta, restart_required + inert)
         await write_store(session, document, meta)
         session.add(
             EventLog(
@@ -2321,8 +2337,6 @@ async def _persist_and_swap(
         )
         await session.commit()
 
-    restart_required = _restart_required(before, after)
-    inert = _inert_changes(before, after)
     swap_config(request.app, after)
     return {
         "version_before": before.version,

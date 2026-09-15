@@ -37,6 +37,7 @@ from starlette.background import BackgroundTask
 
 from autoposter.api.auth import require_session
 from autoposter.catchup import CATCH_UP_KIND
+from autoposter.config.overrides import clear_restart_paths
 from autoposter.db.models import Run
 from autoposter.db.models import Session as SessionModel
 from autoposter.scheduler.run_history import FULL_PASS_CEILING_SECONDS, UNRECORDED
@@ -203,6 +204,24 @@ async def restart(
         )
     await lock.acquire()
     request.app.state.restart_in_flight = True
+    # After every guard, so a refusal forgets nothing, and before the exec,
+    # because this process is the only one that knows a restart was asked for:
+    # the one that replaces it starts from the store and cannot tell a list
+    # that has just been satisfied from one that is still waiting. Committed on
+    # its own -- an exec that does not happen leaves a list one restart stale,
+    # which is a far better failure than a list nothing ever clears.
+    try:
+        async with request.app.state.session_factory() as session:
+            await clear_restart_paths(session)
+            await session.commit()
+    except Exception:
+        # The lock was taken on the understanding this process was about to
+        # disappear. It is not going to, so hand it back rather than refuse
+        # every artwork and metadata mode for the rest of this process's life
+        # (`_exec_or_release`, for the same reason).
+        request.app.state.restart_in_flight = False
+        lock.release()
+        raise
     logger.warning("a restart was requested from the Settings page")
     return JSONResponse(
         content={"restarting": True},

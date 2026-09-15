@@ -22,6 +22,7 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
+from autoposter.config.overrides import load_store, store_meta, write_store
 from autoposter.config.schema import Secrets
 from autoposter.db.models import Run, ScheduledRun
 from autoposter.main import listen_address
@@ -386,3 +387,42 @@ def test_the_listen_address_travels_through_the_environment(monkeypatch):
         "a number no socket can bind is a typo too -- it would parse here and "
         "then kill the boot at bind, with no UI left to fix it"
     )
+
+
+async def test_a_restart_clears_the_list(client, auth_headers, session_factory, no_exec):
+    """This process is the only one that knows the restart happened: the one
+    that replaces it starts from the store and cannot tell a list that has just
+    been satisfied from one that is still waiting."""
+    async with session_factory() as session:
+        document, _meta = await load_store(session)
+        await write_store(
+            session, document or {"workers": 2}, store_meta(restart_paths=["workers"])
+        )
+        await session.commit()
+
+    response = await client.post("/api/system/restart", headers=auth_headers)
+    assert response.status_code == 200, response.text
+    assert no_exec == [1]
+
+    async with session_factory() as session:
+        _document, meta = await load_store(session)
+    assert meta.get("restart_paths") in (None, [])
+
+
+async def test_a_refused_restart_leaves_the_list_alone(
+    client, auth_headers, session_factory, monkeypatch, no_exec
+):
+    """Nothing was restarted, so nothing has been applied and the operator
+    still has the same thing to do."""
+    async with session_factory() as session:
+        await write_store(session, {"workers": 2}, store_meta(restart_paths=["workers"]))
+        await session.commit()
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+
+    response = await client.post("/api/system/restart", headers=auth_headers)
+    assert response.status_code == 409
+    assert no_exec == []
+
+    async with session_factory() as session:
+        _document, meta = await load_store(session)
+    assert meta["restart_paths"] == ["workers"]
