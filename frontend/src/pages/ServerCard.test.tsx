@@ -14,7 +14,9 @@
  *
  * Every button on the card is named for the server it acts on -- "Save Plex",
  * not "Save" -- because two cards are open together in the states this tab is
- * built for, so that is how they are pressed here.
+ * built for, so that is how they are pressed here. Each of those names still
+ * BEGINS with what the button says, which is what a voice-control user says to
+ * press it, and one test below asserts that for every button at once.
  */
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -184,7 +186,7 @@ describe("ServerCard", () => {
     await renderCard();
     type("Plex address", "http://elsewhere:32400");
     type("Plex credential", "typed");
-    await click("Check Plex connection");
+    await click("Check connection for Plex");
     expect(bodyOf(calls, "POST", "/api/servers/plex/check")).toEqual({
       url: "http://elsewhere:32400",
       credential_value: "typed",
@@ -210,7 +212,7 @@ describe("ServerCard", () => {
         }),
     });
     await renderCard();
-    await click("Check Plex connection");
+    await click("Check connection for Plex");
     expect(bodyOf(calls, "POST", "/api/servers/plex/check")).toEqual({});
   });
 
@@ -221,13 +223,13 @@ describe("ServerCard", () => {
     router({});
     await renderCard();
     type("Plex address", "http://elsewhere:32400");
-    expect(screen.getByRole("button", { name: "Check Plex connection" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Reload Plex libraries" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check connection for Plex" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reload libraries for Plex" })).toBeDisabled();
     expect(
       screen.getByText(/must come with the credential to use against it/),
     ).toBeInTheDocument();
     type("Plex credential", "typed");
-    expect(screen.getByRole("button", { name: "Check Plex connection" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Check connection for Plex" })).toBeEnabled();
   });
 
   it("puts the version the server answered with into the pill", async () => {
@@ -242,7 +244,7 @@ describe("ServerCard", () => {
         }),
     });
     await renderCard();
-    await click("Check Plex connection");
+    await click("Check connection for Plex");
     expect(screen.getByText("connected, version 1.41.0.8992")).toBeInTheDocument();
   });
 
@@ -260,7 +262,7 @@ describe("ServerCard", () => {
         }),
     });
     await renderCard();
-    await click("Check Plex connection");
+    await click("Check connection for Plex");
     expect(screen.getByText("connected, version 1.41.0.8992")).toBeInTheDocument();
     type("Plex address", "http://elsewhere:32400");
     expect(screen.queryByText("connected, version 1.41.0.8992")).not.toBeInTheDocument();
@@ -270,7 +272,7 @@ describe("ServerCard", () => {
   it("reloads the libraries and ticks the ones that are not excluded", async () => {
     router({ "POST /api/servers/plex/libraries": () => json(LIBRARIES) });
     await renderCard();
-    await click("Reload Plex libraries");
+    await click("Reload libraries for Plex");
     expect(screen.getByLabelText("Movies")).toBeChecked();
     expect(screen.getByLabelText("Photos")).not.toBeChecked();
   });
@@ -281,7 +283,7 @@ describe("ServerCard", () => {
         json({ detail: "Plex refused the credential." }, 502),
     });
     await renderCard();
-    await click("Reload Plex libraries");
+    await click("Reload libraries for Plex");
     expect(screen.getByText("Plex refused the credential.")).toBeInTheDocument();
   });
 
@@ -291,7 +293,7 @@ describe("ServerCard", () => {
       "PUT /api/servers/plex": () => json(SAVED),
     });
     await renderCard();
-    await click("Reload Plex libraries");
+    await click("Reload libraries for Plex");
     fireEvent.click(screen.getByLabelText("Movies"));
     await click("Save Plex");
     expect(bodyOf(calls, "PUT", "/api/servers/plex")).toEqual({
@@ -367,7 +369,7 @@ describe("ServerCard", () => {
       "PUT /api/servers/plex": () => json(SAVED),
     });
     await renderCard();
-    await click("Reload Plex libraries");
+    await click("Reload libraries for Plex");
     fireEvent.click(screen.getByLabelText("Movies"));
     await click("Save Plex");
     expect(
@@ -388,7 +390,7 @@ describe("ServerCard", () => {
     router({});
     await renderCard(PLEX, { revision: null });
     expect(screen.getByRole("button", { name: "Save Plex" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Remove Plex" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove server Plex" })).toBeDisabled();
   });
 
   it("puts the credential field first on a server that is not configured", async () => {
@@ -422,7 +424,7 @@ describe("ServerCard", () => {
     });
     await renderCard();
     type("Plex credential", "a-token");
-    await click("Save Plex credential");
+    await click("Save credential for Plex");
     expect(calls.filter((call) => call.method === "PUT").map((call) => call.url)).toEqual([
       "/api/servers/plex/credential",
     ]);
@@ -441,7 +443,7 @@ describe("ServerCard", () => {
         }),
     });
     await renderCard();
-    await click("Clear Plex credential");
+    await click("Clear credential for Plex");
     expect(
       calls.filter((call) => call.method === "DELETE").map((call) => call.url),
     ).toEqual(["/api/servers/plex/credential"]);
@@ -454,7 +456,7 @@ describe("ServerCard", () => {
         json({ name: "plex", credential_source: "unset", restart_required: false }),
     });
     await renderCard();
-    await click("Clear Plex credential");
+    await click("Clear credential for Plex");
     expect(screen.getByText(/No other source supplies it/)).toBeInTheDocument();
   });
 
@@ -476,13 +478,13 @@ describe("ServerCard", () => {
     });
     await renderCard();
     expect(screen.getByText("No catch-up has run for Plex yet.")).toBeInTheDocument();
-    await click("Catch Plex up");
+    await click("Catch up Plex");
     expect(
       calls.filter((call) => call.method === "POST").map((call) => call.url),
     ).toEqual(["/api/servers/plex/catch-up"]);
     expect(screen.getByText(/120 due/)).toBeInTheDocument();
     // A run that is still open is one that can be called off.
-    expect(screen.getByRole("button", { name: "Cancel Plex catch-up" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel catch-up for Plex" })).toBeInTheDocument();
   });
 
   it("calls off a run in flight and re-reads what it left behind", async () => {
@@ -507,14 +509,14 @@ describe("ServerCard", () => {
         }),
     });
     await renderCard();
-    await click("Cancel Plex catch-up");
+    await click("Cancel catch-up for Plex");
     expect(
       calls.filter((call) => call.method === "DELETE").map((call) => call.url),
     ).toEqual(["/api/servers/plex/catch-up"]);
     expect(screen.getByText(/2 restored, 1 removed/)).toBeInTheDocument();
     expect(screen.getByText(/Catch up cancelled/)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Cancel Plex catch-up" }),
+      screen.queryByRole("button", { name: "Cancel catch-up for Plex" }),
     ).not.toBeInTheDocument();
   });
 
@@ -524,7 +526,7 @@ describe("ServerCard", () => {
         json({ server: "plex", artwork: 4, metadata: 2 }),
     });
     await renderCard();
-    await click("Retry Plex's failed deliveries");
+    await click("Retry failed deliveries for Plex");
     expect(
       calls.filter((call) => call.method === "POST").map((call) => call.url),
     ).toEqual(["/api/servers/plex/retry-failed"]);
@@ -536,7 +538,7 @@ describe("ServerCard", () => {
       "DELETE /api/servers/plex": () => json({ ...SAVED, credential_cleared: true }),
     });
     await renderCard();
-    fireEvent.click(screen.getByRole("button", { name: "Remove Plex" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove server Plex" }));
     await click("Yes, remove Plex");
     const removal = calls.find((call) => call.method === "DELETE");
     // A bodyless DELETE is refused by the request validator before the
@@ -556,7 +558,7 @@ describe("ServerCard", () => {
       "DELETE /api/servers/plex": () => json({ ...SAVED, credential_cleared: false }),
     });
     await renderCard(PLEX, { onRemoved });
-    fireEvent.click(screen.getByRole("button", { name: "Remove Plex" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove server Plex" }));
     await click("Yes, remove Plex");
     expect(onRemoved).toHaveBeenCalledWith(
       expect.objectContaining({ credential_cleared: false }),
@@ -571,7 +573,7 @@ describe("ServerCard", () => {
       "this is the only configured media server; configure another one before removing it";
     router({ "DELETE /api/servers/plex": () => json({ detail: refusal }, 409) });
     await renderCard();
-    fireEvent.click(screen.getByRole("button", { name: "Remove Plex" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove server Plex" }));
     await click("Yes, remove Plex");
     expect(screen.getByText(refusal)).toBeInTheDocument();
   });
@@ -650,11 +652,11 @@ describe("ServerCard", () => {
     });
     await renderCard(PLEX, { onChanged });
     type("Plex credential", "a-token");
-    await click("Save Plex credential");
+    await click("Save credential for Plex");
     expect(onChanged).toHaveBeenCalledTimes(1);
     await click("Save Plex");
     expect(onChanged).toHaveBeenCalledTimes(2);
-    fireEvent.click(screen.getByRole("button", { name: "Remove Plex" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove server Plex" }));
     await click("Yes, remove Plex");
     expect(onChanged).toHaveBeenCalledTimes(3);
   });
@@ -668,17 +670,17 @@ describe("ServerCard", () => {
     type("Plex credential", "a-token");
     for (const name of [
       "Save Plex",
-      "Remove Plex",
-      "Save Plex credential",
-      "Clear Plex credential",
+      "Remove server Plex",
+      "Save credential for Plex",
+      "Clear credential for Plex",
     ]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();
     }
     // The reads are untouched: neither of them writes anything, so neither
     // has an edit to lose.
-    expect(screen.getByRole("button", { name: "Check Plex connection" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Reload Plex libraries" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Catch Plex up" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Check connection for Plex" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Reload libraries for Plex" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Catch up Plex" })).toBeEnabled();
     expect(screen.getAllByText(PENDING_EDITS_NOTE)).toHaveLength(1);
   });
 
@@ -692,8 +694,25 @@ describe("ServerCard", () => {
       "Save",
     );
     expect(
-      screen.getByRole("button", { name: "Check Plex connection" }),
+      screen.getByRole("button", { name: "Check connection for Plex" }),
     ).toHaveTextContent("Check connection");
+  });
+
+  it("keeps every button's own words at the front of its accessible name", async () => {
+    // Label-in-name: a voice-control user says what the button says, so a
+    // name that replaces the caption rather than extending it is a control
+    // they cannot press by reading it. The convention the secrets panel set.
+    router({});
+    await renderCard();
+    // Opened so the confirmation's two buttons are in the sweep as well.
+    fireEvent.click(screen.getByRole("button", { name: "Remove server Plex" }));
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.length).toBeGreaterThan(5);
+    for (const button of buttons) {
+      const caption = (button.textContent ?? "").trim();
+      const name = button.getAttribute("aria-label") ?? caption;
+      expect(name.slice(0, caption.length)).toBe(caption);
+    }
   });
 
   it("does not offer a second catch-up over a run nothing has closed", async () => {
@@ -702,9 +721,9 @@ describe("ServerCard", () => {
     // refusal.
     router({ "GET /api/servers/plex/catch-up": () => json(OPEN_RUN) });
     await renderCard();
-    expect(screen.queryByRole("button", { name: "Catch Plex up" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Catch up Plex" })).toBeNull();
     expect(
-      screen.getByRole("button", { name: "Cancel Plex catch-up" }),
+      screen.getByRole("button", { name: "Cancel catch-up for Plex" }),
     ).toBeInTheDocument();
   });
 
@@ -715,9 +734,9 @@ describe("ServerCard", () => {
     });
     await renderCard();
     expect(
-      screen.getByRole("button", { name: "Catch Plex up" }),
+      screen.getByRole("button", { name: "Catch up Plex" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Cancel Plex catch-up" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel catch-up for Plex" })).toBeNull();
   });
 
   it("reads an open run's counts again while it is open, and stops when it closes", async () => {
@@ -802,12 +821,12 @@ describe("ServerCard", () => {
     // finds none.
     router({});
     await renderCard({ ...PLEX, credential_source: "unset" });
-    expect(screen.getByRole("button", { name: "Check Plex connection" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Check connection for Plex" })).toBeDisabled();
     expect(
       screen.getByText(/holds no credential for Plex, and a check needs one/),
     ).toBeInTheDocument();
     type("Plex credential", "typed");
-    expect(screen.getByRole("button", { name: "Check Plex connection" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Check connection for Plex" })).toBeEnabled();
   });
 
   it("refuses a check on a card that has no address in it at all", async () => {
@@ -816,10 +835,10 @@ describe("ServerCard", () => {
     router({}, "jellyfin");
     await renderCard(JELLYFIN);
     expect(
-      screen.getByRole("button", { name: "Check Jellyfin connection" }),
+      screen.getByRole("button", { name: "Check connection for Jellyfin" }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "Reload Jellyfin libraries" }),
+      screen.getByRole("button", { name: "Reload libraries for Jellyfin" }),
     ).toBeDisabled();
     expect(screen.getByText(/There is no address to check/)).toBeInTheDocument();
   });

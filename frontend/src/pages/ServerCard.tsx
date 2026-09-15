@@ -436,7 +436,7 @@ export function ServerCard({
         <span className="config-pill">{`credential: ${server.credential_source}`}</span>
         <button
           type="button"
-          aria-label={`Save ${label} credential`}
+          aria-label={`Save credential for ${label}`}
           disabled={busy || credential === "" || pendingEdits}
           onClick={() =>
             void run(
@@ -454,7 +454,7 @@ export function ServerCard({
         {server.credential_source === "stored" && (
           <button
             type="button"
-            aria-label={`Clear ${label} credential`}
+            aria-label={`Clear credential for ${label}`}
             disabled={busy || pendingEdits}
             onClick={() =>
               void run(async () => {
@@ -608,7 +608,7 @@ export function ServerCard({
       <div className="config-actions">
         <button
           type="button"
-          aria-label={`Check ${label} connection`}
+          aria-label={`Check connection for ${label}`}
           disabled={busy || cannotProbe !== null}
           onClick={() =>
             void run(
@@ -624,7 +624,7 @@ export function ServerCard({
         </button>
         <button
           type="button"
-          aria-label={`Reload ${label} libraries`}
+          aria-label={`Reload libraries for ${label}`}
           disabled={busy || cannotProbe !== null}
           onClick={() =>
             void run(
@@ -646,7 +646,7 @@ export function ServerCard({
         {server.configured && !runOpen && (
           <button
             type="button"
-            aria-label={`Catch ${label} up`}
+            aria-label={`Catch up ${label}`}
             disabled={busy}
             onClick={() =>
               void run(async () => {
@@ -669,7 +669,7 @@ export function ServerCard({
         {runOpen && (
           <button
             type="button"
-            aria-label={`Cancel ${label} catch-up`}
+            aria-label={`Cancel catch-up for ${label}`}
             disabled={busy}
             onClick={() =>
               void run(async () => {
@@ -686,7 +686,7 @@ export function ServerCard({
         {server.configured && (
           <button
             type="button"
-            aria-label={`Retry ${label}'s failed deliveries`}
+            aria-label={`Retry failed deliveries for ${label}`}
             disabled={busy}
             onClick={() =>
               void run(async () => {
@@ -705,7 +705,7 @@ export function ServerCard({
         {server.configured && (
           <button
             type="button"
-            aria-label={`Remove ${label}`}
+            aria-label={`Remove server ${label}`}
             disabled={busy || !canWrite}
             onClick={() => setConfirming(true)}
           >
@@ -802,12 +802,11 @@ export function ServerCard({
           >
             {`Yes, remove ${label}`}
           </button>
-          <button
-            type="button"
-            aria-label={`Keep ${label}`}
-            onClick={() => setConfirming(false)}
-          >
-            Cancel
+          {/* Named by what it says, beside the "Yes, remove ..." it answers:
+              a caption an aria-label has to correct is a name a voice-control
+              user cannot say. */}
+          <button type="button" onClick={() => setConfirming(false)}>
+            {`Keep ${label}`}
           </button>
         </p>
       )}

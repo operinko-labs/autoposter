@@ -268,7 +268,7 @@ describe("ServersTab", () => {
     fireEvent.change(screen.getByLabelText("Jellyfin credential"), {
       target: { value: "a-key" },
     });
-    await click("Save Jellyfin credential");
+    await click("Save credential for Jellyfin");
 
     // Both halves of a card move together: the listing it is rendered from,
     // and the configuration its switches are read out of.
@@ -291,7 +291,7 @@ describe("ServersTab", () => {
     fireEvent.change(screen.getByLabelText("Jellyfin credential"), {
       target: { value: "a-key" },
     });
-    await click("Save Jellyfin credential");
+    await click("Save credential for Jellyfin");
 
     // The write landed. A re-read that failed afterwards is said here, not
     // thrown back into the card, where it would be rendered as that write's
@@ -355,7 +355,7 @@ describe("ServersTab", () => {
     await renderTab();
 
     await click("Jellyfin");
-    await click("Remove Jellyfin");
+    await click("Remove server Jellyfin");
     await click("Yes, remove Jellyfin");
 
     // The card is gone, and the sentence is not.
@@ -393,7 +393,7 @@ describe("ServersTab", () => {
     await renderTab();
 
     await click("Jellyfin");
-    await click("Remove Jellyfin");
+    await click("Remove server Jellyfin");
     await click("Yes, remove Jellyfin");
 
     expect(screen.getByText("Removed Jellyfin.")).toBeInTheDocument();
@@ -416,7 +416,7 @@ describe("ServersTab", () => {
     const onChanged = vi.fn();
     await renderTab({ onChanged });
 
-    await click("Catch Jellyfin up");
+    await click("Catch up Jellyfin");
 
     expect(countOf(calls, "POST", "/api/servers/jellyfin/catch-up")).toBe(1);
     expect(countOf(calls, "GET", "/api/servers")).toBe(2);
@@ -433,7 +433,7 @@ describe("ServersTab", () => {
     // The read beside it is untouched, and so is the catch-up: neither of
     // them asks the page to re-read.
     expect(
-      screen.getByRole("button", { name: "Catch Jellyfin up" }),
+      screen.getByRole("button", { name: "Catch up Jellyfin" }),
     ).toBeEnabled();
   });
 
