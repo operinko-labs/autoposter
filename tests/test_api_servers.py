@@ -1270,8 +1270,19 @@ async def test_every_write_route_needs_a_session(client):
 # --- The Jellyfin library map, validated against both servers' own lists ----
 
 
-def _both_servers(monkeypatch, plex_names, jellyfin_names, jellyfin_status=200):
-    """A transport that answers Plex's sections and Jellyfin's folders by path."""
+def _both_servers(
+    monkeypatch,
+    plex_names,
+    jellyfin_names,
+    jellyfin_status=200,
+    plex_kind="movie",
+    jellyfin_kind="movies",
+):
+    """A transport that answers Plex's sections and Jellyfin's folders by path.
+
+    The kinds are settable because they are validated: a folder of a kind this
+    service never walks is refused even though the server does list it.
+    """
 
     def handler(request):
         if "/library/sections" in request.url.path:
@@ -1281,7 +1292,7 @@ def _both_servers(monkeypatch, plex_names, jellyfin_names, jellyfin_status=200):
                     {
                         "MediaContainer": {
                             "Directory": [
-                                {"key": str(i), "title": name, "type": "movie"}
+                                {"key": str(i), "title": name, "type": plex_kind}
                                 for i, name in enumerate(plex_names, start=1)
                             ]
                         }
@@ -1292,7 +1303,7 @@ def _both_servers(monkeypatch, plex_names, jellyfin_names, jellyfin_status=200):
             jellyfin_status,
             content=json.dumps(
                 [
-                    {"ItemId": f"jf{i}", "Name": name, "CollectionType": "movies"}
+                    {"ItemId": f"jf{i}", "Name": name, "CollectionType": jellyfin_kind}
                     for i, name in enumerate(jellyfin_names, start=1)
                 ]
             ).encode(),
@@ -1307,7 +1318,9 @@ async def _boot_both_servers(app, client, auth_headers):
     The map's two reads go to the BOOTED generation's addresses with the
     credentials this deployment holds, so a save alone is not enough: the
     restart is what makes a saved address one this deployment has, and the
-    reassignment here is that restart.
+    two reassignments here are that restart. ``object_config`` is the
+    generation the application OBJECT was built from and a real restart builds
+    a new one, so leaving it behind would model a process that cannot exist.
     """
     assert (await _save(client, auth_headers)).status_code == 200
     assert (
@@ -1318,6 +1331,7 @@ async def _boot_both_servers(app, client, auth_headers):
         )
     ).status_code == 200
     app.state.booted_config = app.state.config
+    app.state.object_config = app.state.config
 
 
 async def _map(client, auth_headers, pairs, **fields):
@@ -1489,3 +1503,138 @@ async def test_the_map_route_needs_a_session(client):
         json={"pairs": {}, "expected_revision": "whatever"},
     )
     assert response.status_code == 401
+
+
+async def test_a_server_removed_but_not_restarted_away_from_cannot_be_mapped(
+    app, client, auth_headers, monkeypatch
+):
+    """The booted generation still carries the server, so the first gate lets it
+    through; the stored document has no block to write the map into, and the
+    answer is the route's sentence rather than pydantic's missing-field."""
+    await _boot_both_servers(app, client, auth_headers)
+    assert (
+        await _remove(client, auth_headers, confirm=True)
+    ).status_code == 200
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    response = await _map(client, auth_headers, {"Movies": "Films"})
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.LIBRARY_MAP_NEEDS_BOTH_SERVERS
+
+
+async def test_a_library_of_a_kind_this_service_never_walks_is_refused(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """A music folder is listed by the server and dropped by the index, so a
+    pair naming one maps a Plex library onto nothing: the Plex-facing name
+    never appears, and every item in it would stay unresolved forever."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Music"], jellyfin_kind="music")
+    response = await _map(client, auth_headers, {"Movies": "Music"})
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {
+            "path": "jellyfin.library_map.Movies",
+            "message": servers_api.NOT_A_LIBRARY_THIS_SERVICE_INDEXES.format(
+                side="Jellyfin"
+            ),
+        }
+    ]
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "library_map" not in document["jellyfin"]
+
+
+async def test_a_kind_this_service_never_walks_is_not_reported_as_a_typo(
+    app, client, auth_headers, monkeypatch
+):
+    """The two refusals send an operator looking for different mistakes, so a
+    folder they can see in their own server must not be called unknown."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Music"], jellyfin_kind="music")
+    response = await _map(client, auth_headers, {"Movies": "Music"})
+    assert servers_api.NOT_A_LIBRARY_THIS_SERVER_LISTS.format(
+        side="Jellyfin"
+    ) not in response.text
+
+
+async def test_clearing_the_map_leaves_no_key_behind(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """Absent is how "no map" is spelled in a configuration document, and the
+    editor's per-row clear control produces exactly this body."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+    assert (await _map(client, auth_headers, {"Movies": "Films"})).status_code == 200
+
+    assert (await _map(client, auth_headers, {})).status_code == 200
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "library_map" not in document["jellyfin"]
+    assert document["jellyfin"]["url"] == "http://jellyfin:8096", "the block survived"
+
+    body = (await client.get("/api/config", headers=auth_headers)).json()
+    assert body["jellyfin"]["library_map"] == {}, "the schema's own default"
+
+
+async def test_a_map_of_nothing_but_self_pairs_leaves_no_key_behind(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """Every row cleared, sent as the whole map: the pairs that survive the
+    differ-filter are none, and none is an absent key, not an empty one."""
+    await _boot_both_servers(app, client, auth_headers)
+    _both_servers(monkeypatch, ["TV Shows"], ["TV Shows"])
+    response = await _map(client, auth_headers, {"TV Shows": "TV Shows"})
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    assert "library_map" not in document["jellyfin"]
+
+
+async def test_a_map_on_a_delta_era_store_is_refused(
+    app, client, auth_headers, session_factory, tmp_path
+):
+    """A delta is MERGED over the mounted file, so a map written into one is
+    added to the file's pairs rather than replacing them: a cleared row comes
+    back and an emptied map changes nothing. Refused before anything else,
+    including the two live reads."""
+    app.state.config_path = tmp_path / "autoposter.yaml"
+    app.state.config_path.write_text(
+        yaml.safe_dump(_plex_only_document()), encoding="utf-8"
+    )
+    async with session_factory() as session:
+        await write_store(session, {"workers": 5}, store_meta(1))
+        await session.commit()
+
+    response = await _map(client, auth_headers, {})
+    assert response.status_code == 409
+    assert response.json()["detail"] == servers_api.DELTA_STORE_CANNOT_MAP
+
+
+async def test_a_map_that_crosses_the_drop_cap_needs_confirm(
+    app, client, auth_headers, monkeypatch, session_factory
+):
+    """This is the one route whose ordinary payload drops many leaves at once:
+    each pair is a leaf, so an operator clearing four rows meets the editor's
+    own cap and has to say they meant it."""
+    await _boot_both_servers(app, client, auth_headers)
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+        document["jellyfin"]["library_map"] = {
+            "A": "a", "B": "b", "C": "c", "D": "d", "Movies": "Films",
+        }
+        await write_store(session, document, store_meta())
+        await session.commit()
+    _both_servers(monkeypatch, ["Movies"], ["Films"])
+
+    refused = await _map(client, auth_headers, {"Movies": "Films"})
+    assert refused.status_code == 422
+    assert "confirm" in refused.text
+    async with session_factory() as session:
+        after = await load_overrides_document(session)
+    assert len(after["jellyfin"]["library_map"]) == 5, "nothing was dropped"
+
+    allowed = await _map(client, auth_headers, {"Movies": "Films"}, confirm=True)
+    assert allowed.status_code == 200, allowed.text
+    async with session_factory() as session:
+        after = await load_overrides_document(session)
+    assert after["jellyfin"]["library_map"] == {"Movies": "Films"}

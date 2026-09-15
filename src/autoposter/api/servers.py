@@ -666,6 +666,42 @@ LIBRARY_MAP_NEEDS_BOTH_SERVERS = (
 #: The two halves of a pair fail for different reasons and an operator fixes
 #: them on different servers, so the sentence has to say which one was asked.
 NOT_A_LIBRARY_THIS_SERVER_LISTS = "{side} lists no library called that"
+#: A library that exists and is not one this service walks. Separate from the
+#: sentence above because the fix is different: the first is a typo or a
+#: renamed library, this one is a library that was never a candidate, and an
+#: operator told "lists no library called that" about a folder they can see in
+#: their own server would go looking for the wrong mistake.
+NOT_A_LIBRARY_THIS_SERVICE_INDEXES = (
+    "{side} has a library called that, but it is not a movie or show library"
+)
+#: What each server calls the two library kinds this service walks, in that
+#: server's own vocabulary. Compiled in and borrowed from the two runtimes that
+#: enforce it -- ``plex/client.py``'s section filter and
+#: ``jellyfin/index.py``'s ``CollectionType`` filter -- because a pair the
+#: index would drop is a pair that maps a library onto nothing: the Plex-facing
+#: name never appears in ``library_names()``, presence stamps the whole library
+#: absent, and every item in it stays unresolved forever. That is the exact
+#: state this route's validation exists to prevent, so the kind is as much a
+#: part of "a library this server carries" as the name is.
+INDEXED_KINDS: dict[str, frozenset[str]] = {
+    "plex": frozenset({"movie", "show"}),
+    "jellyfin": frozenset({"movies", "tvshows"}),
+}
+#: A store that still holds a DELTA over the mounted file, which cannot express
+#: a map. ``config/overrides.py``'s ``_merge`` recurses into two dicts, so a map
+#: written onto a delta is ADDED to the file's pairs rather than replacing
+#: them: a row the operator deleted comes back at the next start, and clearing
+#: the map changes nothing at all. The editor sends the whole map, so a store
+#: that can only state additions is not one this route can write to honestly.
+#: The next start converts the store (``migrate_delta_to_document``), and then
+#: the map means what it says.
+DELTA_STORE_CANNOT_MAP = (
+    "this deployment still stores its settings as changes to the mounted "
+    "configuration file, and a library map written into those would be added "
+    "to the file's own pairs rather than replacing them; restart this "
+    "deployment, which converts the stored settings into a whole document, "
+    "then set the map"
+)
 
 
 class LibraryMapBody(BaseModel):
@@ -706,57 +742,87 @@ async def save_library_map(
     the refusal says so as a 409 about the map rather than as the probe's
     per-server sentence about an address: neither server is the one at fault.
 
-    Only pairs whose two names DIFFER are stored. A library called the same
-    thing on both servers pairs itself, so storing it would be a row that says
-    nothing and one more thing to keep correct when a library is renamed -- an
-    editor that sends every row it shows therefore writes only what is not
-    already implied.
+    Only pairs whose two names DIFFER are stored, and a map that comes out
+    empty stores no ``library_map`` key at all rather than an empty one. A
+    library called the same thing on both servers pairs itself, so storing it
+    would be a row that says nothing and one more thing to keep correct when a
+    library is renamed -- an editor that sends every row it shows therefore
+    writes only what is not already implied, and an editor whose every row has
+    been cleared leaves the key absent, which is how "no map" is spelled
+    everywhere else in a configuration document.
+
+    The map's leaf paths DO land on the restart list: the Jellyfin client and
+    its library index are built once at startup from ``library_map``
+    (``servers/registry.py``), so a saved map is genuinely not in force until
+    the restart, and the banner is what says so.
     """
+    document, whole_store = await _stored(request)
+    if not whole_store:
+        raise HTTPException(status_code=409, detail=DELTA_STORE_CANNOT_MAP)
+    # Both generations, because they answer different halves of one question:
+    # the BOOTED one is where the two library lists can be read from at all,
+    # and the STORED document is what this write edits -- a server removed but
+    # not yet restarted away from passes the first and has no block to map in
+    # the second, and pydantic's "field required" is not a sentence about a
+    # button.
     booted = request.app.state.booted_config
     if not all(
-        getattr(_block(booted, name), "url", "") or "" for name in probe.SERVER_NAMES
+        (getattr(_block(booted, name), "url", "") or "")
+        and _stored_block(document, name).get("url")
+        for name in probe.SERVER_NAMES
     ):
         raise HTTPException(status_code=409, detail=LIBRARY_MAP_NEEDS_BOTH_SERVERS)
 
+    carried: dict[str, set[str]] = {}
     listed: dict[str, set[str]] = {}
     for name in probe.SERVER_NAMES:
         url, credential = _resolve_target(request, name, ProbeBody())
-        listed[name] = {
-            row.name for row in await _live_libraries(name, url, credential)
+        found = await _live_libraries(name, url, credential)
+        listed[name] = {row.name for row in found}
+        carried[name] = {
+            row.name for row in found if row.kind in INDEXED_KINDS[name]
         }
 
     problems = []
     for plex_name, jellyfin_name in sorted(body.pairs.items()):
-        for name, library in (("plex", plex_name), ("jellyfin", jellyfin_name)):
-            if library not in listed[name]:
-                # The PAIR is what an operator fixes, so both halves are
-                # reported against the row that carries them; the sentence is
-                # the fixed one and the label is this service's own.
-                problems.append(
-                    {
-                        "path": f"jellyfin.library_map.{plex_name}",
-                        "message": NOT_A_LIBRARY_THIS_SERVER_LISTS.format(
-                            side=setup_checks.CHECK_SYSTEMS[name].label
-                        ),
-                    }
-                )
+        # Zipped against ``SERVER_NAMES`` rather than spelled again: the two
+        # halves of a pair ARE the two servers, in their order, and a third
+        # name added to that tuple must fail this loop rather than slip past
+        # it unchecked.
+        for name, library in zip(
+            probe.SERVER_NAMES, (plex_name, jellyfin_name), strict=True
+        ):
+            if library in carried[name]:
+                continue
+            # The PAIR is what an operator fixes, so both halves are reported
+            # against the row that carries them; the sentence is one of the two
+            # fixed ones and the label is this service's own.
+            problems.append(
+                {
+                    "path": f"jellyfin.library_map.{plex_name}",
+                    "message": (
+                        NOT_A_LIBRARY_THIS_SERVICE_INDEXES
+                        if library in listed[name]
+                        else NOT_A_LIBRARY_THIS_SERVER_LISTS
+                    ).format(side=setup_checks.CHECK_SYSTEMS[name].label),
+                }
+            )
     if problems:
         raise HTTPException(status_code=422, detail=problems)
 
-    # Read last, so the window between the read and the row lock holds nothing
-    # but the write itself rather than two live server reads as well.
-    document, _whole = await _stored(request)
-    candidate = {
-        **document,
-        "jellyfin": {
-            **_stored_block(document, "jellyfin"),
-            "library_map": {
-                plex_name: jellyfin_name
-                for plex_name, jellyfin_name in body.pairs.items()
-                if plex_name != jellyfin_name
-            },
-        },
+    pairs = {
+        plex_name: jellyfin_name
+        for plex_name, jellyfin_name in body.pairs.items()
+        if plex_name != jellyfin_name
     }
+    block = {
+        key: value
+        for key, value in _stored_block(document, "jellyfin").items()
+        if key != "library_map"
+    }
+    if pairs:
+        block["library_map"] = pairs
+    candidate = {**document, "jellyfin": block}
 
     validated_generation, persist_and_swap = _config_write()
     validated, after, whole = await validated_generation(request, candidate)
