@@ -85,6 +85,7 @@ DEEP_SUITES = frozenset(
         "test_api_setup_plex.py",
         "test_api_stats_runs.py",
         "test_api_stats_storage.py",
+        "test_api_system_restart.py",
         "test_api_testing.py",
         "test_api_version.py",
         "test_migrate_preview.py",

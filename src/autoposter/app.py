@@ -598,13 +598,14 @@ def create_app(
     # router, so they cannot carry require_session. Off by default; passing
     # openapi_url=None is what actually removes /docs and /redoc too.
     #
-    # Read from the file generation, and only ever from it: this decision is
-    # baked into the FastAPI object itself, which exists before the lifespan
-    # runs and therefore before any override is known. A database override on
-    # api_docs_enabled consequently does nothing, restart or not -- the one
-    # setting in the schema that is genuinely file-only. FROZEN_SECTIONS says
-    # so in the reason the editor renders, and deploy/README.md says so in
-    # the overrides section.
+    # Read from the generation this application OBJECT is constructed from,
+    # and only ever from it: the decision is baked into the FastAPI object,
+    # which exists before the lifespan runs and therefore before any override
+    # is merged. A change to api_docs_enabled consequently does nothing to a
+    # running process -- it takes effect at the next boot, which builds this
+    # object from the stored document (main._boot_config). FROZEN_SECTIONS
+    # says so in the reason the editor renders, and deploy/README.md says so
+    # in the overrides section.
     docs = config.api_docs_enabled
     app = FastAPI(
         title="autoposter",

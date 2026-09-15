@@ -595,14 +595,15 @@ Practical consequences:
   so two pods never run at once — not even for the seconds a rolling update
   would give them — and every pod re-reads the persisted overrides at boot
   before anything is built from them.
-- `api_docs_enabled` is the one exception a restart does NOT fix: it must
-  be set in the ConfigMap. FastAPI decides whether `/docs`, `/redoc` and
-  `/openapi.json` exist when the application object is built, and that
-  happens before the pod has read a single override, so an override on it
-  is inert at every boot. The editor says as much in its own reason text.
-  To close the docs on a pod whose ConfigMap has them on, edit the
-  ConfigMap (or set `AUTOPOSTER_CONFIG` at a file that has them off) and
-  restart — a database override will not do it.
+- `api_docs_enabled` is the one exception a *swap* never reaches, not even
+  in part: FastAPI decides whether `/docs`, `/redoc` and `/openapi.json`
+  exist when the application object is built, and that happens before the
+  pod has merged a single override. It takes effect at the next restart
+  instead, because the object is built from the stored document — so a save
+  followed by a restart closes the docs on a pod whose ConfigMap has them
+  on, and so does editing the ConfigMap (or pointing `AUTOPOSTER_CONFIG` at
+  a file that has them off) and restarting. The editor says as much in its
+  own reason text.
 - An invalid save changes nothing — the merged result is validated whole
   before anything is persisted or applied, and errors come back
   field-labelled.

@@ -38,6 +38,7 @@ from autoposter.api.secret_rotation import router as secret_rotation_router
 from autoposter.api.secrets_api import router as secrets_api_router
 from autoposter.api.servers import router as servers_router
 from autoposter.api.snapshots import events_snapshot, status_snapshot
+from autoposter.api.system import router as system_router
 from autoposter.api.testing import router as testing_router
 from autoposter.api.version import router as version_router
 from autoposter.api.stats import router as stats_router
@@ -303,6 +304,13 @@ router.include_router(files_router)
 # button shows, and that translation is the whole of what it does -- every
 # rule about what a catch-up may do lives in catchup.py.
 router.include_router(servers_router)
+
+# The restart button: the one endpoint here whose success is the end of this
+# process. Its own module because the three refusals that make an exec safe --
+# a run this process is holding, a mode mid-write to a media server, and a
+# deployment of several workers behind one port -- are the substance of it,
+# and because the exec itself is the wizard's, called rather than copied.
+router.include_router(system_router)
 
 # How long an issued session stays valid before the operator has to log in
 # again.
@@ -1823,11 +1831,12 @@ def _changed_paths(before: dict, after: dict, prefix: str = "") -> list[str]:
 
 def _restart_required(before: Config, after: Config) -> list[str]:
     """Which of the changed paths a generation swap does not reach, minus the
-    ones a restart does not reach either.
+    ones the lifespan's own merge never revisits.
 
     Those -- currently just ``api_docs_enabled`` -- are reported separately by
-    ``_inert_changes``, so this list stays a promise the editor can keep:
-    every path in it, restarting really does apply.
+    ``_inert_changes``, which says the same thing about them in the words that
+    setting needs. This list stays what it says it is: paths a restart applies
+    from the overrides the lifespan merges.
     """
     changed = _changed_paths(before.model_dump(mode="json"), after.model_dump(mode="json"))
     return sorted(
@@ -1836,8 +1845,9 @@ def _restart_required(before: Config, after: Config) -> list[str]:
 
 
 def _inert_changes(before: Config, after: Config) -> list[str]:
-    """Changed paths that no restart can apply either -- only editing the
-    mounted config file reaches them (``config.live.INERT_SECTIONS``)."""
+    """Changed paths that no swap reaches at all: they are read once, when the
+    application object is built, so the next restart is what applies them
+    (``config.live.INERT_SECTIONS``)."""
     changed = _changed_paths(before.model_dump(mode="json"), after.model_dump(mode="json"))
     return sorted(path for path in changed if is_inert(path))
 
@@ -2205,10 +2215,12 @@ async def _persist_and_swap(
     and ``swap_config``, requests keep being served by the old generation until
     restart, at which point ``load_effective_config`` reads the persisted
     overrides back off the database and starts on the new one -- correct by
-    design, not by luck. ``api_docs_enabled`` is the one exception: a restart
-    re-reads the database overrides but not the mounted file, so it lands back
-    exactly where the file left it -- which is why it is reported in ``inert``
-    below rather than ``restart_required``.
+    design, not by luck. ``api_docs_enabled`` takes a different road to the
+    same place: ``swap_config`` cannot touch it at all, because the docs routes
+    were built into the application object, and the restart that does apply it
+    reads the STORED DOCUMENT rather than the merged overrides
+    (``main._boot_config``) -- which is why it is reported in ``inert`` below
+    rather than ``restart_required``.
     """
     before = request.app.state.config
     async with request.app.state.session_factory() as session:

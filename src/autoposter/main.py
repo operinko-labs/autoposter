@@ -1,4 +1,5 @@
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -101,6 +102,39 @@ def _boot_config(database_url: str) -> Config:
     )
 
 
+#: Where this process listens. Read from the environment rather than compiled
+#: in, because ``POST /api/system/restart`` replaces the process image with a
+#: fresh ``python -m autoposter.boot`` and the new image has to come back up on
+#: the same address. A manual install on 9090 that restarted onto 8080 would
+#: vanish from its own operator's browser.
+LISTEN_HOST_ENV = "AUTOPOSTER_HOST"
+LISTEN_PORT_ENV = "AUTOPOSTER_PORT"
+DEFAULT_LISTEN_HOST = "0.0.0.0"
+DEFAULT_LISTEN_PORT = 8080
+
+
+def listen_address() -> tuple[str, int]:
+    """``(host, port)``, from the environment, with the shipped defaults.
+
+    A port that is not an integer falls back to the default with a WARNING
+    rather than crashing the boot: the alternative is a deployment that will
+    not start over a typo in an optional variable, with no UI left to fix it.
+    """
+    host = os.environ.get(LISTEN_HOST_ENV) or DEFAULT_LISTEN_HOST
+    raw = os.environ.get(LISTEN_PORT_ENV) or ""
+    if not raw:
+        return host, DEFAULT_LISTEN_PORT
+    try:
+        return host, int(raw)
+    except ValueError:
+        logger.warning(
+            "%s is not a port number; listening on %d",
+            LISTEN_PORT_ENV,
+            DEFAULT_LISTEN_PORT,
+        )
+        return host, DEFAULT_LISTEN_PORT
+
+
 def build() -> FastAPI:
     """The application, constructed from one config *document* alone -- the
     store's, or the mounted file's when the store answers none
@@ -192,7 +226,8 @@ def main() -> None:
     # kubelet's SIGKILL at the 30s grace period, which is exactly the
     # dropped-connection symptom this bounds: at 10s uvicorn forces the
     # remaining connections closed and the lifespan's shutdown runs instead.
-    uvicorn.run(build(), host="0.0.0.0", port=8080, timeout_graceful_shutdown=10)
+    host, port = listen_address()
+    uvicorn.run(build(), host=host, port=port, timeout_graceful_shutdown=10)
 
 
 if __name__ == "__main__":

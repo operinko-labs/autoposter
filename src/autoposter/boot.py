@@ -579,10 +579,22 @@ def main(argv: list[str] | None = None) -> None:
         # write a second one to the volume, which the next boot would not
         # read. It is configuration and not a credential, so it is handed over
         # as a value rather than published into the environment.
+        # The application's own address function, not a second pair of
+        # literals: the wizard ends by execing this module again, and the
+        # application that comes up afterwards has to answer on the port the
+        # operator reached the wizard on. Two copies of "0.0.0.0:8080" would
+        # agree until the day one of them was made configurable, and then a
+        # manual install on another port would lose its own browser tab
+        # halfway through first-start. Imported at the call and not at module
+        # scope because `main` imports THIS module there; at module scope the
+        # two would be a cycle.
+        from autoposter.main import listen_address
+
+        host, port = listen_address()
         uvicorn.run(
             build_setup_app(document),
-            host="0.0.0.0",
-            port=8080,
+            host=host,
+            port=port,
             timeout_graceful_shutdown=10,
         )
         return
