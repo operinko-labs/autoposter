@@ -1224,7 +1224,9 @@ class Run(Base):
     than ``stale_job_reclaim`` is registered behind that same switch
     alongside the trim -- ``stale_job_reclaim`` itself, registered
     unconditionally and five-minutely, records no row at all
-    (``scheduler/run_history.py``'s ``UNRECORDED``). A full-pass row is
+    (``scheduler/run_history.py``'s ``UNRECORDED``, which exempts the catch-up
+    drain as well, for a reason of its own written down there). A full-pass
+    row is
     bounded instead by the drain-watcher's own close
     (``close_drained_full_passes``), which runs regardless of that switch,
     scoped to ``kind='full_pass'``/``name='full_pass'`` -- because

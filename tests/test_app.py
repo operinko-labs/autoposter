@@ -852,8 +852,11 @@ async def test_the_catch_up_drain_is_registered_for_a_jellyfin_only_deployment(
 ):
     """Spec §3. The drain sits beside the retry pass it uses and inside the
     same gate: not Plex-gated, since a catch-up is for whatever server the
-    deployment has, and not ahead of the gate like ``stale_job_reclaim``,
-    since its runs ARE recorded and trimmed by the cleanup pass.
+    deployment has.
+
+    Its ticks record no run history, which is a different question from where
+    it is registered: the catch-up itself owns the row that says work is in
+    flight, and a look that finds nothing due is not a second one.
     """
     await _store_override(session, {"plex": None, "jellyfin": {"url": "https://jf"}})
 
@@ -865,7 +868,7 @@ async def test_the_catch_up_drain_is_registered_for_a_jellyfin_only_deployment(
         )
         assert "catch_up_drain" in app.state.scheduler_intervals
         assert any(job.name == "catch_up_drain" for job in app.state.scheduler_jobs)
-        assert "catch_up_drain" not in UNRECORDED
+        assert "catch_up_drain" in UNRECORDED
 
 
 def test_every_application_publishes_the_catch_up_request_queue(
