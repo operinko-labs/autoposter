@@ -102,7 +102,7 @@ def test_is_empty_true_when_only_sources_populated():
 
 
 async def test_the_two_status_columns_round_trip(session):
-    """Roadmap row 100 sub-phase C2c. The stored status is Kometa's TOKEN --
+    """Roadmap row 100. The stored status is Kometa's TOKEN --
     `facts/tmdb_facts.py::TMDB_SHOW_STATUS` maps TMDb's string to it at the
     edge -- so this column and a `tmdb_status:` filter value are the same
     value space, which is the condition row 156 set for a facts-backed

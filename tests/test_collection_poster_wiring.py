@@ -33,7 +33,7 @@ LABEL = "autoposter"
 
 # The content-ratings group's divider title, as the engine derives it -- no
 # longer a name ``reconcile`` exports, since row 49 left that module with no
-# reader of its own for it (roadmap row 49, task 3 review Important 1).
+# reader of its own for it.
 SEPARATOR_TITLE = groups.separator_title("content_ratings")
 
 
@@ -1349,7 +1349,7 @@ async def test_a_font_that_resolves_nowhere_reports_a_skip_and_uploads_nothing(
 async def test_a_font_refusal_on_an_existing_poster_is_retried_once_the_font_resolves(
     session, config_factory, tmp_path
 ):
-    """review I-1: a refusal must not freeze ``definition_hash`` at ``wanted``.
+    """A refusal must not freeze ``definition_hash`` at ``wanted``.
 
     Unlike the fresh-collection case above, this collection already has a
     non-NULL ``poster_sha256`` when the font breaks -- the common shape on any

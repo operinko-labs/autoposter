@@ -937,7 +937,7 @@ def test_an_over_long_poster_url_is_refused_without_echoing_it():
     ],
 )
 def test_a_poster_url_with_whitespace_anywhere_is_refused(value):
-    """Row 222 / I-1. `urlsplit` strips leading/trailing whitespace and drops
+    """Row 222. `urlsplit` strips leading/trailing whitespace and drops
     embedded tab/CR/LF before checking the shape, but this validator must not
     store a different string than the one it checked -- so a value carrying
     whitespace anywhere is refused outright rather than silently rewritten.

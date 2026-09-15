@@ -1764,7 +1764,7 @@ async def apply_metadata(
             )
             # The whole point of spec §0: a warning in the log and a `done`
             # job left no row anywhere saying the server still lacks this
-            # item's metadata. Now it does, and the pass in Phase B drains it.
+            # item's metadata. Now it does, and the next pass drains it.
             #
             # This is `metadata_writes`' ONLY door out of `failed`, so it is
             # also its re-arm: the full pass just tried an exhausted row
@@ -2063,7 +2063,7 @@ async def compose_badged_bytes(
     critic_rating = getattr(facts, "critic_rating", None)
     audience_rating = getattr(facts, "audience_rating", None)
     ratings: dict[str, float | None] = dict(plex_native_ratings(plex_item)) if plex_item is not None else {}
-    # The imdb_rating/tmdb_rating aliases (roadmap row 100, sub-phase C2a):
+    # The imdb_rating/tmdb_rating aliases (roadmap row 100):
     # this service's IMDb/TMDb facts ARE Kometa's imdb_rating/tmdb_rating
     # rating-source values (probe bucket (a)) -- no new fetch, just making
     # the <<imdb_rating>>/<<tmdb_rating>> SPELLINGS resolve too, alongside

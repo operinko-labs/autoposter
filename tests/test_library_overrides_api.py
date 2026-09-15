@@ -127,7 +127,7 @@ async def test_a_server_wide_maintenance_key_is_refused_with_its_reason(
 async def test_a_non_whitelisted_section_under_a_library_is_refused(
     client, auth_headers, session, section,
 ):
-    """Roadmap row 92 review, Important 1.
+    """Roadmap row 92.
 
     A SECTION under a library block that is not one of the three
     whitelisted ones is refused, whether it names a real config field this

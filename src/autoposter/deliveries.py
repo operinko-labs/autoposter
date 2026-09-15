@@ -120,12 +120,13 @@ async def _upsert_outcome(
 
     ``run_id``/``previous_status`` are otherwise never named here, so a row
     keeps its scope across every retry inside the run that armed it -- which
-    is what Phase C's run-scoped progress counts, by run and status, and what
-    its cancel restores. ``leave_run`` is the one exception: a row the
-    ORDINARY pipeline re-arms has left that run, and carrying the run id on
-    would have a later cancel or progress query act on rows the run no longer
-    owns. A terminal outcome inside a run keeps both columns; clearing them
-    when the run closes is the run's own business.
+    is what the catch-up run's run-scoped progress counts, by run and
+    status, and what its cancel restores. ``leave_run`` is the one
+    exception: a row the ORDINARY pipeline re-arms has left that run, and
+    carrying the run id on would have a later cancel or progress query act
+    on rows the run no longer owns. A terminal outcome inside a run keeps
+    both columns; clearing them when the run closes is the run's own
+    business.
 
     ``keep_next_attempt`` is the third half of that: a row inside an OPEN run
     keeps the horizon that run gave it, because the run's own drain owns its
@@ -232,7 +233,7 @@ async def record(
     its very first failure and spec 2's "stays visible as `failed` until the
     next full pass or catch-up re-arms it" gave it one retry rather than the
     whole budget. ``deliver``'s re-arm of a missing/pending/failed row passes
-    it; Phase C's catch-up re-arm must pass it too. The WAIT sites
+    it; the catch-up re-arm must pass it too. The WAIT sites
     (``ItemNotFound``, an identity server that cannot be sampled) do not:
     they are the same streak of trouble continuing, not a fresh start.
 
@@ -273,7 +274,7 @@ async def record_metadata(
     where artwork says ``uploaded`` and ``written_at`` where it says
     ``uploaded_at``. Keyed on the ITEM: a metadata write has no art kind.
     ``reset_attempts`` and ``leave_run`` mean what they mean there -- the
-    re-arm, which Phase C's catch-up is the other writer of for this table.
+    re-arm, which the catch-up run is the other writer of for this table.
     """
     return await _upsert_outcome(
         session, MetadataWrite, "uq_metadata_write_item_server",
@@ -315,7 +316,7 @@ async def rollup(session: AsyncSession, render_id: int) -> str:
         # nothing to say about this render, so an absent row must never raise
         # the roll-up above what the servers that DO carry it report -- and a
         # render whose every row is absent or skipped is exactly the "nothing
-        # to report" that `skipped` means. Phase D's item page reads this
+        # to report" that `skipped` means. The item page reads this
         # back, so it is written down rather than left to be rediscovered.
         status = "skipped"
     uploaded_at = max((u for _, u in rows if u is not None), default=None)
@@ -401,7 +402,7 @@ async def retry_pending_deliveries(
         # `, id`: a catch-up stamps thousands of rows with ONE timestamp, and
         # without a tiebreak which 500 of them a pass takes is arbitrary --
         # which makes a catch-up's drain unobservable and unrepeatable, and
-        # Phase C's progress reporting reads exactly that drain.
+        # the catch-up run's progress reporting reads exactly that drain.
         .order_by(RenderDelivery.next_attempt_at, RenderDelivery.id)
         .limit(500),
         RenderDelivery,

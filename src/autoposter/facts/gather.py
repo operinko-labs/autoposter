@@ -393,7 +393,7 @@ async def persist_facts(
         values["tmdb_original_language"] = facts.tmdb_original_language
     if facts.tmdb_collection_id is not None:
         values["tmdb_collection_id"] = facts.tmdb_collection_id
-    # Roadmap row 100 sub-phase C2c. Same never-blank shape as every branch
+    # Roadmap row 100. Same never-blank shape as every branch
     # above: a field the gather did not populate is simply absent from
     # `values`, so the ON CONFLICT SET clause does not name it and whatever
     # the row already had survives. `last_episode_aired` is tested for

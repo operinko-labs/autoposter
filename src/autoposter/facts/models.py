@@ -43,11 +43,11 @@ class GatheredFacts:
     tmdb_origin_country: list[str] = field(default_factory=list)
     tmdb_original_language: str | None = None
     tmdb_collection_id: int | None = None
-    # Roadmap row 100 sub-phase C2c, and the FIRST facts fields named for
+    # Roadmap row 100, and the FIRST facts fields named for
     # Kometa's own FILTER vocabulary rather than "ours" (the three prefetch
     # fields above). That is not a break with row 156's law but its condition
     # being met: those three are enumeration-only because a facts-backed
-    # filter needs a `facts` source tier, and C2c adds one
+    # filter needs a `facts` source tier, and this row adds one
     # (`collections/filters.py::SOURCE_TIERS`) -- refusal-only on the
     # collections side, readable by an overlay `condition:`. Both carry
     # exactly the value space Kometa's filter compares in --

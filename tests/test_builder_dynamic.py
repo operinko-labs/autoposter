@@ -1113,7 +1113,7 @@ async def test_an_addons_key_with_every_member_absent_is_named_as_dead(session):
 async def test_an_include_by_display_value_is_reported_inert_on_a_keyed_type(
     session,
 ):
-    """I-1. ``genre`` (key == value) cannot see this bug: ``include`` matches
+    """``genre`` (key == value) cannot see this bug: ``include`` matches
     the KEY only (``dynamic_keys.py:156``), but ``decade`` keys on
     ``choice.key`` (``1980``) while titling the display value (``1980s``). An
     operator who writes the display form is a typo the old single

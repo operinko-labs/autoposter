@@ -408,7 +408,7 @@ def test_a_ceremony_year_unit_orders_by_its_inverted_year():
 
 
 def test_the_awards_winners_definition_leads_its_ceremony_year_expansions():
-    # Review Important 1: a group mixing an unkeyed parent with a keyed
+    # A group mixing an unkeyed parent with a keyed
     # expansion sorted the parent AFTER the keys -- a digit-first key always
     # sorts ahead of a letter-first title -- so every ceremony year filed
     # ahead of the winners collection it belongs with, the reverse of

@@ -145,7 +145,7 @@ def test_a_rating_override_compares_on_the_formatted_value():
     """8.65 and 8.7 both render "8.7" to a viewer, so rewriting one as the
     other would churn Plex for no visible gain -- the same rule
     ``plan_edits`` applies to a provider's rating. Locked already, so the
-    equal case is genuinely nothing (the lock-ensure fix from I-1 only adds
+    equal case is genuinely nothing (the lock-ensure guard only adds
     a write when the field is unlocked -- pinned on the text field above)."""
     locked = LockableItem(rating=8.7, locks=[("rating", True)])
     assert override_edits(locked, {"critic_rating": 8.7}) == {}
@@ -155,11 +155,11 @@ def test_a_rating_override_compares_on_the_formatted_value():
 
 
 def test_a_rating_override_within_the_same_formatted_value_writes_no_value():
-    """Regression pin for I-3: replacing the FORMATTED compare with a raw
+    """Regression pin: replacing the FORMATTED compare with a raw
     ``!=`` would treat Plex's 7.04 and the operator's 7.0 as different --
     both render "7.0" -- and rewrite the same rating every pass. Locked
     already, so the only observable outcome of the formatted-equal check is
-    the absence of ``rating.value`` (the lock rule from I-1 still applies:
+    the absence of ``rating.value`` (the lock rule still applies:
     an unlocked item here would instead get the lock-only edit, as pinned
     for text above)."""
     item = LockableItem(rating=7.04, locks=[("rating", True)])

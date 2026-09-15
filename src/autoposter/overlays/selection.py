@@ -91,18 +91,18 @@ __all__ = [
 #   `content_rating` row in `collections/filters.py` says exactly this.
 # - `resolution`: every version's `videoResolution`, which is what
 #   `direct_play` regexes.
-# - `versions` (sub-phase C2a): how many `<Media>` versions the item
+# - `versions`: how many `<Media>` versions the item
 #   carries -- adjudication A14's row, shared verbatim with
 #   `filter_values.PlexItemView` via the same `_versions` function object,
 #   so Global Constraint 9's agreement is structural rather than merely
 #   tested.
-# - `aspect` (sub-phase C2b): the `<Media aspectRatio=...>` float, which is
+# - `aspect`: the `<Media aspectRatio=...>` float, which is
 #   what the eight `aspect` bands compare. Adjudication A11's row, and
 #   shared the same structural way `versions` is -- one `_aspect` function
 #   object, imported rather than copied. Its multi-version rule is A-2's:
 #   the same whole-list walk `resolution` makes, narrowed to the first
 #   version carrying the attrib, because a `float` cannot answer a tuple.
-# - `audio_language`, `subtitle_language` (sub-phase C2b): the item's
+# - `audio_language`, `subtitle_language`: the item's
 #   stream languages as Kometa itself reads them -- EVERY stream, across
 #   every `<Media>`, NOT deduplicated (`modules/plex.py:2915-2922`) --
 #   which is what `language_count`'s Dual/Multi bands count with Kometa's
@@ -113,7 +113,7 @@ __all__ = [
 #   while `filter_values.PlexItemView` reads the same two from the
 #   collections engine's batched metadata enrichment -- a different read,
 #   which no shared function object could span. Their agreement is therefore
-#   pinned at the VERDICT level (finding L-1), not on the raw values: this
+#   pinned at the VERDICT level, not on the raw values: this
 #   view answers `()` for an item with no streams where `PlexItemView`
 #   answers `None`, and the two are identical under every operator (the tag
 #   missing-value rule for the value operators, and the `.count_*` reduction
@@ -123,12 +123,12 @@ __all__ = [
 #   stream languages the two views disagree under `.count_*`, because
 #   `plex/client.py::_stream_languages` ends in `_uniq` while this view
 #   carries Kometa's undeduplicated list. Kometa's answer is this view's; the
-#   collections side's dedupe predates sub-phase C2b by two phases and lives
-#   in a module C2b does not touch. It affects only the four operators C2b
-#   introduces, it is pinned in `tests/test_overlay_selection.py` so it
+#   collections side's dedupe predates this attribute and lives in a module
+#   this attribute does not touch. It affects only the four `.count_*`
+#   operators above, it is pinned in `tests/test_overlay_selection.py` so it
 #   cannot drift unnoticed, and closing it is a separate adjudication.
 #
-# - `tmdb_status`, `last_episode_aired` (sub-phase C2c): the show's TMDb
+# - `tmdb_status`, `last_episode_aired`: the show's TMDb
 #   airing status as Kometa's own token, and the date its most recent
 #   episode aired. **THE FIRST TWO ATTRIBUTES THIS VIEW ANSWERS FROM
 #   `facts`** -- every one above comes from `plex_item` or from the
@@ -231,8 +231,8 @@ class OverlayItemView:
         # (`filters._is_missing` reads an empty sequence as missing for a
         # tag, and `.count_*` reduces both to zero above that rule), and
         # this view's contract is to hand on what `MediaInfo` carries
-        # without reshaping it. See finding L-1 and the verdict-level
-        # agreement pins.
+        # without reshaping it, matching the verdict-level agreement pinned
+        # above.
         #
         # The `*_stream_languages` fields, NOT `audio_languages`: the former
         # are Kometa's own filter value (every stream, every `<Media>`, no
@@ -250,7 +250,7 @@ class OverlayItemView:
                 self._media.subtitle_stream_languages
                 if self._media is not None else None
             )
-        # The two facts-backed rows (sub-phase C2c). `getattr` with a default,
+        # The two facts-backed rows. `getattr` with a default,
         # never attribute access -- see the source note on
         # `OVERLAY_ATTRIBUTES` above for the four shapes `facts` arrives in.
         #
@@ -358,9 +358,9 @@ def compiled_condition(definition) -> FilterGroup | None:
     this module does not import the schema that imports it back at validation
     time.
 
-    **`default=str` is finding L-7, and it lands with sub-phase C2c because
-    C2c brings the first date-typed attribute into `OVERLAY_ATTRIBUTES` --
-    but NOT for the reason the roadmap gave.** The shipped `status` family
+    **`default=str` exists because `tmdb_status`/`last_episode_aired` bring
+    the first date-typed attribute into `OVERLAY_ATTRIBUTES` -- but NOT for
+    the reason the roadmap gave.** The shipped `status` family
     writes `{"last_episode_aired": 14}`, an int, which dumps fine. The
     reachable break is an OPERATOR writing the absolute form,
     `last_episode_aired.after: 2026-01-01`, which YAML parses to a

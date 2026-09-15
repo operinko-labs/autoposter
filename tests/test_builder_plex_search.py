@@ -44,7 +44,7 @@ def test_two_bases_are_refused():
 
 
 def test_an_empty_all_base_names_all_not_any():
-    """Important 1. YAML's most common mistake -- ``all:`` with nothing under
+    """YAML's most common mistake -- ``all:`` with nothing under
     it -- parses as ``{"all": None}``. Before the fix this fell through to
     ``base = "any"`` (computed as ``"all" if self.all is not None else
     "any"``) and sent the operator looking for an ``any:`` block that does
@@ -970,7 +970,7 @@ def test_the_field_discovery_forces_the_episode_scope_on_a_show_library():
 
 
 def test_the_field_discovery_forces_the_episode_scope_when_the_search_type_already_is_one():
-    """The m-3 resolution's third row: a show library
+    """The third case in this scope-resolution sequence: a show library
     whose SEARCH type is already ``episode`` (``builder_level: episode``) asks
     ``listFilters("episode")`` and answers the SAME prefixed field as row 2's
     item-level show search -- ``is_show and filter_type == "show"`` is false

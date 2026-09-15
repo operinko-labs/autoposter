@@ -58,7 +58,7 @@ def secrets():
 
 
 async def test_unknown_provider_is_warned_about_and_skipped(secrets, caplog):
-    # Regression guard for finding 5: a typo'd or stale provider name (e.g. the
+    # Regression guard: a typo'd or stale provider name (e.g. the
     # "Plex" provider this project does not implement) must be dropped with a
     # clear warning, not silently produce an empty provider list.
     config = load_config(EXAMPLE)
@@ -273,7 +273,7 @@ async def test_the_lifespan_forgets_the_restart_list(
 async def test_the_lifespan_reads_the_boot_instant_from_the_database_clock(
     session_factory, secrets, stubbed_background_services, monkeypatch, caplog
 ):
-    """SCHED-UX review, Important 1: /api/status derives a scheduled job's
+    """/api/status derives a scheduled job's
     status by comparing ``app.state.started_at`` against ``last_started_at``,
     a column the scheduler stamps with Postgres's own ``now()``
     (scheduler/core.py's ``claim_due``). ``create_app`` can only set a

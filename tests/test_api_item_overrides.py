@@ -603,7 +603,7 @@ async def test_a_library_that_disables_the_gate_refuses_its_items(
 async def test_a_library_that_enables_the_gate_while_the_global_disables_it_is_allowed(
     app, client, auth_headers, session_factory,
 ):
-    """Branch review Important 1, the mirror direction. The global gate had
+    """The mirror direction. The global gate had
     tightened only: a library that turned the setting OFF was refused even
     with the global ON, but a library that turned it ON while the global was
     OFF was refused too, by a bare pre-gate that ran before the item -- and

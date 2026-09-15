@@ -874,15 +874,14 @@ def test_a_packs_placeholder_reaches_the_managed_titles_helper():
 
 
 def test_a_dynamic_packs_builds_string_is_honest_end_to_end():
-    """Minor 5, and Important 1's fix pinned past ``dynamic_shape`` called in
-    isolation.
+    """This pin goes past ``dynamic_shape`` called in isolation.
 
     ``years_title`` is the exact string ``CatalogPanel.tsx``'s ``buildsLabel``
     interpolates next to the placeholder in ``titles`` (its two-part branch:
     ``Builds: ${titles}, plus ${dynamic}``), so this reconstructs the whole
     sentence an operator reads for the Genres row through ``catalog_listing``'s
     real payload -- not a ``dynamic_shape`` call with a hand-picked
-    ``placeholder_title`` argument. Before Important 1's fix, ``grep "Builds"``
+    ``placeholder_title`` argument. Before this test existed, ``grep "Builds"``
     found only the frontend template and vitest fixture values; nothing on
     either side asserted the rendered string, so this closes that gap.
     """
@@ -917,7 +916,7 @@ _FORMAT_SENTINEL = "\x1fKEY\x1f"
 # title -- no bucket title contains ``\x1f`` -- so that half of the check
 # would pass even if a shipped pack rendered exactly into one; this
 # substitute renders into a string a real bucket title actually IS, so the
-# comparison can fail (task-4 review, Important 2).
+# comparison can fail.
 _BUCKET_SHAPED_KEY = "13"
 
 
@@ -930,8 +929,8 @@ def _rendered_formats(
     ``_BUCKET_SHAPED_KEY`` instead, since that comparison needs a
     substitution that CAN equal a real title.
 
-    Either engine's type table, because the collision check below spans both
-    (task-3 review, Important 1): the two tables are separate for the reasons
+    Either engine's type table, because the collision check below spans
+    both: the two tables are separate for the reasons
     ``facts_family.py``'s docstring gives, but both rows carry the ``name`` and
     ``title_format`` this needs, and ``family_titles`` renders both families
     through the same ``render_title``. A type in neither table raises here
@@ -959,9 +958,9 @@ def _rendered_formats(
 
 # The preset-key pairs allowed to render ONE format on one library type, as
 # frozenset literals -- pinned, not derived, so a pair that is not one of these
-# fails the guard loudly and has to be argued for here (task-3 review,
-# Important 1, which is also the review that widened this guard past the
-# dynamic packs it could see to the facts-enumerated ones it could not).
+# fails the guard loudly and has to be argued for here. This guard was later
+# widened past the dynamic packs it could see to the facts-enumerated ones it
+# could not.
 #
 # All four packs below title with the bare ``<<key_name>>`` on Movie. For the
 # three location packs that is Kometa's own format, transcribed; for
@@ -1014,8 +1013,7 @@ _ALLOWED_FORMAT_SHARERS: frozenset[frozenset[str]] = frozenset({
 def _assert_no_two_formats_collide(rows, allowed=frozenset()) -> set[frozenset[str]]:
     """The family-vs-family half of the check below, pulled out so the
     red-first proof (``test_the_collision_test_can_actually_fail``) can drive
-    the SAME code the real test runs instead of a copy of it (task-4 review,
-    Important 1).
+    the SAME code the real test runs instead of a copy of it.
 
     ``other_name`` leftovers titles go into the same ``seen`` map (Minor 2): a
     leftovers bucket is a rendered title exactly like a KEY title is, and two
@@ -1029,7 +1027,7 @@ def _assert_no_two_formats_collide(rows, allowed=frozenset()) -> set[frozenset[s
     sharing a title is checked rather than only the first pair seen, so an
     allowlisted pair cannot shield a third pack behind it; the pairs actually
     exercised are returned, so the caller can pin the allowlist to reality
-    instead of letting a stale entry sit forever (task-3 review, Important 1).
+    instead of letting a stale entry sit forever.
     """
     from autoposter.collections.dynamic_titles import _other_title
 
@@ -1059,8 +1057,7 @@ def _assert_no_two_formats_collide(rows, allowed=frozenset()) -> set[frozenset[s
 
 
 def _assert_no_bucket_collisions(rows) -> None:
-    """The cs_bucket half of the check below, pulled out for the same reason
-    (task-4 review, Important 2).
+    """The cs_bucket half of the check below, pulled out for the same reason.
 
     Rendered with ``_BUCKET_SHAPED_KEY`` rather than the sentinel: a
     comparison that can never match proves nothing, and a pack that rendered
@@ -1098,7 +1095,7 @@ def test_no_two_families_an_operator_can_co_enable_share_a_title_format():
     runtime values -- is rows 135/162's documented gap and is not caught here
     or anywhere else.
 
-    BOTH engines' rows, not just the dynamic ones (task-3 review, Important 1).
+    BOTH engines' rows, not just the dynamic ones.
     Until the location-names phase the facts-enumerated set was one pack and
     this guard never looked at it; then two more shipped, sharing Kometa's bare
     ``<<key_name>>`` with the ``Countries`` pack on the same Movie libraries and
@@ -1135,8 +1132,8 @@ def test_the_collision_test_can_actually_fail():
     over fabricated ``(preset, params)`` pairs, not a re-implementation of
     their loops: the assertion's teeth are proven on the exact code the real
     test runs, not a copy of it that would keep passing if that code were
-    deleted, inverted, or had its assertion removed (task-4 review, Important
-    1 and 2). ``genre`` is used as every fake's ``type`` purely to satisfy
+    deleted, inverted, or had its assertion removed. ``genre`` is used as
+    every fake's ``type`` purely to satisfy
     ``_rendered_formats``' ``DYNAMIC_TYPES`` lookup; what actually collides in
     each case is the fabricated ``title_format`` or ``other_name``.
     """
@@ -1544,7 +1541,7 @@ def test_the_ten_tmdb_spellings_upstream_misses_land_in_their_own_group():
 
 
 def test_the_three_location_packs_disclose_the_titles_they_share():
-    """The disclosure half of the collision answer (task-3 review, Important 1).
+    """The disclosure half of the collision answer.
 
     ``_ALLOWED_FORMAT_SHARERS`` lets these three render one title format
     because the alternative is a NOT KOMETA rename of a transcription. What an
@@ -2552,7 +2549,7 @@ def test_a_preset_reaches_default_definitions_at_all():
 
 
 # The roots that can reach the world, in one place because two modules are now
-# held to the same rule (task-3 review, Important 2) and a denylist copied per
+# held to the same rule and a denylist copied per
 # module is a denylist that grows in one copy only.
 _ROOTS_THAT_REACH_THE_WORLD = {
     "httpx", "requests", "urllib", "socket", "http",
@@ -2610,8 +2607,8 @@ def test_the_catalog_module_imports_nothing_that_could_reach_the_world():
 
     assert packs_imports == {"autoposter.collections.iso_names"}, sorted(packs_imports)
 
-    # The property that allow-list DEPENDS on, one hop out (task-3 review,
-    # Important 2). Permitting `iso_names` here is only safe while `iso_names`
+    # The property that allow-list DEPENDS on, one hop out. Permitting
+    # `iso_names` here is only safe while `iso_names`
     # itself reaches nothing: an httpx import THERE is the same network call
     # inside config validation, the same 500 on a settings save, and the
     # allow-list above would stay green straight through it. The denylist is

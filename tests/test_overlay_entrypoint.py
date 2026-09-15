@@ -513,7 +513,7 @@ async def test_apply_badges_draws_a_blur_definition_through_the_real_entry_point
     """The entry-point law (Global Constraint 7): the blur pre-pass is a NEW
     top-level mechanism in compose(), not an extension of an existing
     per-definition draw call -- it needs its own proof through the real
-    apply_badges, the same lesson Phase A's own review drew about
+    apply_badges, the same lesson already learned about
     definitions never reaching compose() through anything but a direct
     call."""
     config_with_badges.badges.definitions = []
@@ -1509,7 +1509,7 @@ async def test_a_family_this_config_does_not_name_costs_nothing(
     """The other end of the same law: `FAMILIES` gaining two keys must not
     move a fingerprint for a config that names neither.
     `BadgesConfig.all_definitions()` expands only NAMED families, so a
-    C1/C2a config is byte-identical across this sub-phase -- and so is the
+    C1/C2a config is byte-identical here -- and so is the
     empty one, which is what the two pinned literals at the top of this file
     (`576f88e5...` and `PRE_SEAM_ONE_DEFINITION_FINGERPRINT`) guard
     unmodified."""
@@ -1531,12 +1531,12 @@ async def test_a_family_this_config_does_not_name_costs_nothing(
     assert plex_item.uploads == 1
 
 
-# --- sub-phase C2c: the `status` family, through the real apply_badges -----
+# --- The `status` family, through the real apply_badges --------------------
 
 
 class _StatusFacts(_Facts):
-    """`item_facts` as `facts/tmdb_facts.py::parse_show_facts` writes it after
-    sub-phase C2c. Subclasses this file's own `_Facts` so the three rating
+    """`item_facts` as `facts/tmdb_facts.py::parse_show_facts` writes it.
+    Subclasses this file's own `_Facts` so the three rating
     fields keep their existing values and no OTHER badge moves between the
     baseline and the fires case -- if the critic/audience ratings differed,
     the pixel comparison would fail for a reason that has nothing to do with
@@ -1745,10 +1745,10 @@ async def test_the_family_list_gaining_status_moves_no_fingerprint_for_a_config_
     """The other end of the same law: `FAMILIES` gaining an eleventh key must
     not move a fingerprint for a config that does not name it.
     `BadgesConfig.all_definitions()` expands only NAMED families, so a
-    C1/C2a/C2b config is byte-identical across this sub-phase -- and so is
+    C1/C2a/C2b config is byte-identical here -- and so is
     the empty one, which is what the two pinned literals at the top of this
     file (`576f88e5...` and `PRE_SEAM_ONE_DEFINITION_FINGERPRINT`) guard
-    unmodified. Neither literal is edited by C2c."""
+    unmodified. Neither literal is edited by this addition."""
     from autoposter.config.schema import BadgesConfig
 
     assert BadgesConfig().all_definitions() == []

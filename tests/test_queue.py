@@ -171,7 +171,7 @@ async def test_make_due_leaves_more_margin_than_the_clock_can_step(session):
 
 
 async def test_created_at_uses_the_database_clock(session):
-    # Regression guard for finding 1: created_at must be a server-side default
+    # Regression guard: created_at must be a server-side default
     # (func.now()), not one computed in this process, because the app clock and
     # the database clock can drift by several seconds on this machine.
     #

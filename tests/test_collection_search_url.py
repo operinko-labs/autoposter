@@ -67,7 +67,7 @@ def discover_field(attribute, libtype, /):
     a bare function fixture has nowhere to hold one. Every ``url(...)`` call
     below that names ``folder_location`` leaves ``search_type`` at its default,
     so the search type and the library kind agree and this two-argument answer
-    is the one the live resolver gives (round-1 review m-3).
+    is the one the live resolver gives.
     """
     return "episode.location" if libtype == "show" else "location"
 
@@ -308,7 +308,7 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_date_only_field
     to 24 hours, because the client compares against ``now`` (a moment) while
     the wire compares against ``now.date()`` (a midnight) -- inherited from
     the pre-existing ``_Today`` convention (``.after: today`` has the same
-    split) and out of scope for roadmap row 157 (review Important 3).
+    split) and out of scope for roadmap row 157.
     """
     on_the_boundary = {"release": dt.date(2024, 1, 1)}
     the_day_before = {"release": dt.date(2023, 12, 31)}
@@ -370,7 +370,7 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_moment_field():
     that agreement is asserted here in prose, not by an assertion. The
     surviving asymmetry is on ``.from`` and is inherited from the
     pre-existing ``_Today`` convention (``.after: today`` has the same
-    split) -- out of scope for roadmap row 157 (review Important 3).
+    split) -- out of scope for roadmap row 157.
     """
     at_midnight = {"added": dt.datetime(2026, 1, 10, 0, 0)}
     during_the_day = {"added": dt.datetime(2026, 1, 10, 9, 15)}
@@ -407,7 +407,7 @@ def test_the_from_to_boundary_agrees_between_the_two_halves_on_a_moment_field():
     )
 
 
-# Roadmap row 157's Important 2 review finding: `MOMENT_DATE_ROWS` was
+# Roadmap row 157: `MOMENT_DATE_ROWS` was
 # referenced by no test, so two of its four members (`episode_added`,
 # `episode_last_played`) rendered `.to` unpinned -- dropping either from the
 # frozenset kept the whole suite green while the row silently fell onto the

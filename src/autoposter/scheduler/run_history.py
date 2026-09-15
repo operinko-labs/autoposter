@@ -366,7 +366,7 @@ async def close_drained_full_passes(
         counts = await window_counts(session, started_at, now)
         await session.execute(
             update(Run)
-            # `finished_at IS NULL` (M-3): a second replica's tick that raced
+            # `finished_at IS NULL`: a second replica's tick that raced
             # this one to the same row must not overwrite the first writer's
             # numbers with its own, later window's.
             .where(Run.id == run_id, Run.finished_at.is_(None))
@@ -376,7 +376,7 @@ async def close_drained_full_passes(
                 # Counts only, never a job's last_error (row 213). The same
                 # three numbers the columns hold, so the served sentence and
                 # the served fields can never disagree. "timed out" rather
-                # than "drained" on that path (M-1): the ceiling fired
+                # than "drained" on that path: the ceiling fired
                 # precisely because the pass had NOT drained.
                 detail=(
                     ("timed out: " if status == "timed_out" else "drained: ")

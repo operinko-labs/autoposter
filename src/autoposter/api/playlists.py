@@ -126,9 +126,10 @@ async def playlist_definitions(
     def _row(definition, source: str, preset_key: str | None) -> dict:
         """One definition as the panel reads it.
 
-        ``summary``, ``limit`` and ``schedule`` are here and were not in 98a
-        (L-7): the collections listing omits the same three, which made it
-        parity at the time and makes it a blocker now -- the edit form cannot
+        ``summary``, ``limit`` and ``schedule`` are here and were missing
+        from the original playlist listing: the collections listing omits
+        the same three, which made it parity at the time and makes it a
+        blocker now -- the edit form cannot
         show a field the listing does not carry, and it must never rebuild an
         entry from this projection anyway (that is the freezing hazard
         ``api/overrides.ts`` opens with). These are for DISPLAY; the write is

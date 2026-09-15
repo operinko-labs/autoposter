@@ -246,7 +246,7 @@ def test_no_exclusion_names_a_section_outside_the_whitelist():
 
 
 def test_the_frozen_operations_paths_are_all_excluded_per_library():
-    """Roadmap row 92 review, Important 2.
+    """Roadmap row 92.
 
     ``LIBRARY_OVERRIDE_EXCLUSIONS``' four ``operations.*`` entries are
     derived from ``config/live.py``'s ``FROZEN_SECTIONS`` rather than a
@@ -268,7 +268,7 @@ def test_the_frozen_operations_paths_are_all_excluded_per_library():
 
 @pytest.mark.parametrize("section", ["artwork", "render", "scheduler", "made_up_section"])
 def test_a_non_whitelisted_section_is_refused_at_load(section):
-    """Roadmap row 92 review, Important 1.
+    """Roadmap row 92.
 
     ``LIBRARY_OVERRIDE_EXCLUSIONS`` is keyed ``section.name`` and only ever
     matches a LEAF of an already-whitelisted section, so it could never

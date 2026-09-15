@@ -62,7 +62,7 @@ def _confined(root: Path, value: str, name: str) -> Path:
 
 
 # The faces this service SHIPS, keyed by the bare filename a definition
-# writes (roadmap row 100, sub-phase C2b, adjudication A-4).
+# writes (roadmap row 100, adjudication A-4).
 #
 # Why this exists: the `aspect` family is the first shipped family that draws
 # TEXT, and a family definition's `font:` flows through `resolve_font_path`

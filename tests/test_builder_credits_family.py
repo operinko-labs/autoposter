@@ -850,7 +850,7 @@ async def test_an_unreadable_vocabulary_falls_back_to_the_in_loop_drop_paths(ses
 
 
 async def test_the_limit_sentence_does_not_fire_when_the_vocabulary_narrowed_alone(session):
-    """Row 224 review, Important 1. ``capped`` is ``searchable[: limit]``, not
+    """Row 224. ``capped`` is ``searchable[: limit]``, not
     ``eligible[: limit]``, so the ``(`limit`)`` sentence must fire only when
     ``limit`` itself did the cutting -- ``len(searchable) > len(capped)`` --
     not merely because the vocabulary filter above it already shortened the

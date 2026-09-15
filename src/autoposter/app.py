@@ -873,7 +873,7 @@ def _build_mdblist(
 
     An operator who has not configured MDBList has no reason to suspect
     content ratings are the only thing affected unless told so explicitly
-    (finding 1) — hence the warning naming the environment variable.
+    -- hence the warning naming the environment variable.
     """
     if secrets.mdblist_apikey:
         return MDBListClient(

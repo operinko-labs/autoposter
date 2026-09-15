@@ -837,7 +837,7 @@ LANGUAGE_COUNT: list[OverlayDefinition] = [
 # `resolve_image_path`'s name-keyed fallback rung, find nothing, and draw
 # text alone -- the case `ASPECT` reached first. `OVERLAY-MANIFEST.sha256`
 # does not move, `manifest_sha()` does not move, and no already-badged item
-# re-renders for art: sub-phase C2c is the first family slice in row 100 that
+# re-renders for art: this is the first family slice in row 100 that
 # vendors nothing at all.
 #
 # THE SLOT IS left/15, top/330, AND THE 330 IS NOT A TYPO. `status.yml:13-15`
