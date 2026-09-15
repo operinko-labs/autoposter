@@ -36,6 +36,7 @@ from autoposter.config.loader import (
     RENDER_ART_KINDS, build_config, load_config, read_config_document,
     render_version, render_version_for,
 )
+from autoposter.config.overrides import MIGRATED_SETTINGS
 from autoposter.config.schema import ArtKindConfig, ProvidersConfig
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
@@ -109,6 +110,27 @@ def test_a_document_still_carrying_all_four_keys_loads_and_drops_them():
     for art_kind in RENDER_ART_KINDS:
         assert "min_width" not in artwork_json[art_kind], art_kind
         assert "min_height" not in artwork_json[art_kind], art_kind
+
+
+def test_every_position_the_four_keys_lived_at_is_a_stale_stored_path():
+    """The half this file's second test proved harmless for the FILE and that
+    turned out not to be harmless for the STORE, met on a v0.4.0 deployment.
+
+    A mounted file still naming these keys seeds them into the stored
+    document, where they are not silently dropped: every whole-document write
+    walks ``config/overrides.py``'s ``unknown_key_paths`` first and answers
+    422 ``unknown setting``, and the editor cannot take out a key it never
+    renders -- so the Settings page, the library map and the server cards were
+    all blocked at once. ``MIGRATED_SETTINGS`` is what the read seam drops, so
+    it has to name every position the schema once accepted these four at, and
+    ``TitleCardConfig`` and ``SeasonPosterConfig`` subclassing
+    ``ArtKindConfig`` is what makes that all four art kinds rather than two.
+    """
+    expected = {"providers.favourite", "providers.tmdb_vote_sorting"}
+    for art_kind in RENDER_ART_KINDS:
+        expected |= {f"artwork.{art_kind}.min_width", f"artwork.{art_kind}.min_height"}
+
+    assert set(MIGRATED_SETTINGS) == expected
 
 
 def test_removing_the_two_min_keys_moved_every_render_fingerprint():

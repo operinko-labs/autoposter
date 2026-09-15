@@ -25,7 +25,8 @@ from autoposter.app import create_app
 from autoposter.config import secret_store
 from autoposter.config.loader import build_config
 from autoposter.config.overrides import (
-    load_overrides_document, load_store, seed_store, store_meta, write_store,
+    document_revision, load_overrides_document, load_store, seed_store, store_meta,
+    write_store,
 )
 from autoposter.config.schema import (
     ENVIRONMENT_SECRET_NAMES_ENV,
@@ -33,7 +34,7 @@ from autoposter.config.schema import (
     STORED_SECRET_NAMES_ENV,
     Secrets,
 )
-from autoposter.db.models import EventLog
+from autoposter.db.models import ConfigOverride, EventLog
 from autoposter.config.state import STATE_DIR_ENV
 from autoposter.jellyfin.health import JellyfinHealth
 from autoposter.plex.health import PlexHealth
@@ -872,6 +873,110 @@ async def test_a_save_on_a_delta_era_store_merges_over_the_file(
     rows = await _rows(client, auth_headers)
     assert rows["plex"]["configured"] is True, "the file's server survived the merge"
     assert rows["jellyfin"]["configured"] is True
+
+
+async def _stale_store(session_factory) -> None:
+    """Put the store in the state a v0.4.0 deployment was found in.
+
+    ``providers.favourite`` and ``providers.tmdb_vote_sorting`` left the
+    schema in ``f8a7440``, the mounted file still named them, and the seed
+    copied them into the stored document -- where every whole-document write
+    since walked ``unknown_key_paths`` over them and answered 422. Written
+    with format 2, because a whole-document store is the shape the deployment
+    was in and the shape the refusal happens on.
+    """
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+        document["providers"] = {
+            **document["providers"],
+            "favourite": "TMDB",
+            "tmdb_vote_sorting": "vote_average",
+        }
+        await write_store(session, document, store_meta())
+        await session.commit()
+
+
+async def test_a_card_save_is_not_blocked_by_a_setting_that_left_the_schema(
+    client, auth_headers, session_factory
+):
+    """The bug, at the route the operator pressed. Save on the Plex card
+    answered ``providers.favourite: unknown setting`` and there was no way out
+    of it from the UI: the Settings page's own save, the library map and the
+    other server cards all compose a whole document and all met the same
+    refusal, and the editor renders no field for a key the schema no longer
+    has.
+
+    The row afterwards carries neither key, which is the self-healing half:
+    the save is composed from the stripped read, so the document it writes is
+    clean and the next read has nothing left to strip."""
+    await _stale_store(session_factory)
+
+    response = await _save(
+        client, auth_headers, name="plex", credential=None, url="http://plex:32400"
+    )
+
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert "favourite" not in stored["providers"]
+    assert "tmdb_vote_sorting" not in stored["providers"]
+    assert stored["plex"]["url"] == "http://plex:32400"
+    assert stored["providers"]["order"], "the section's real settings are untouched"
+
+
+async def test_the_settings_page_round_trip_survives_a_stale_setting(
+    client, auth_headers, session_factory
+):
+    """The Settings page's own Save, which the operator met the same 422 on.
+
+    The page seeds from ``GET /api/config``, sends the document back whole and
+    carries that response's revision with it -- so the seed and the revision
+    have to describe the document the write path will accept. Both come
+    through the same read, and the strip is on it: the document carries no
+    stale key and the revision is that document's, so the round trip lands."""
+    await _stale_store(session_factory)
+
+    seed = (await client.get("/api/config", headers=auth_headers)).json()
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={
+            "document": document,
+            "expected_revision": seed["overrides_revision"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert seed["overrides_revision"] == document_revision(document)
+
+
+async def test_a_genuine_typo_is_still_refused_by_name(
+    client, auth_headers, session_factory
+):
+    """The strip drops the paths that left the schema and nothing else.
+    ``providers.favorite_typo`` never was a setting, and a save carrying one
+    still comes back naming it -- otherwise the strip would have bought this
+    fix by turning every typo into an override that silently does nothing."""
+    async with session_factory() as session:
+        document = await load_overrides_document(session)
+    document["providers"] = {**document["providers"], "favorite_typo": "TMDB"}
+
+    response = await client.put(
+        "/api/config/overrides",
+        headers=auth_headers,
+        json={
+            "document": document,
+            "expected_revision": await _revision(client, auth_headers),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {"path": "providers.favorite_typo", "message": "unknown setting"}
+    ]
 
 
 async def test_a_save_without_a_credential_is_refused_and_writes_nothing(

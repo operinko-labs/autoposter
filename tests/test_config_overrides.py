@@ -10,7 +10,8 @@ import logging
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+import yaml
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 # From conftest rather than from os.environ directly, because the value that
@@ -30,6 +31,7 @@ from autoposter.config.overrides import (
     load_effective_config,
     load_overrides_document,
     merge_overrides,
+    without_migrated_settings,
 )
 from autoposter.config.schema import Secrets
 from autoposter.db.models import ConfigOverride
@@ -257,8 +259,8 @@ async def test_dropping_a_stored_version_check_section_says_so(session, caplog):
     warnings = _strip_warnings(caplog)
     assert len(warnings) == 3
     assert len(set(warnings)) == 1
-    assert "dropping stale version_check from stored overrides" in warnings[0]
-    assert "takes no configuration now" in warnings[0]
+    assert "dropping stale version_check from the stored configuration" in warnings[0]
+    assert "no longer a setting" in warnings[0]
     # Self-healing, and the message has to say so: the editor can no longer
     # produce the key, and the document is always written whole.
     assert "next saved" in warnings[0]
@@ -304,6 +306,99 @@ async def test_a_version_check_key_in_the_yaml_file_is_still_refused(tmp_path, s
 
     with pytest.raises(ValueError, match="version_check"):
         await load_effective_config(bad, session)
+
+
+# --- settings that left the schema -------------------------------------------
+
+
+async def test_stored_settings_that_left_the_schema_are_dropped_at_the_leaf(
+    session, caplog
+):
+    """The 422 a v0.4.0 deployment met on every save. ``providers.favourite``
+    and ``ArtKindConfig``'s ``min_width`` left the schema in ``f8a7440``, but
+    the mounted file still named them and the seed copied them into the stored
+    document -- and from then on every whole-document write walked
+    ``unknown_key_paths`` over them and refused. Nothing in the UI could take
+    them out, because the editor never rendered them.
+
+    Dropped at their exact positions, with their neighbours untouched: these
+    are individual settings that left, not whole sections."""
+    await _store(
+        session,
+        {
+            "providers": {"favourite": "TMDB", "order": ["tmdb"]},
+            "artwork": {"poster": {"min_width": 1000, "add_border": True}},
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        document = await load_overrides_document(session)
+
+    assert document == {
+        "providers": {"order": ["tmdb"]},
+        "artwork": {"poster": {"add_border": True}},
+    }
+    warnings = _strip_warnings(caplog)
+    assert len(warnings) == 2, "once per key, and only for the keys that are there"
+    assert "providers.favourite" in warnings[0]
+    assert "artwork.poster.min_width" in warnings[1]
+
+
+async def test_a_section_the_strip_empties_goes_with_the_leaf(session):
+    """A block that said nothing but the stale key is not left behind as
+    ``{}``. The write path refuses an empty object on a delta-era store
+    (``api/routes.py``'s empty-leaf gate), so leaving one here would trade one
+    unsaveable document for another."""
+    await _store(session, {"providers": {"favourite": "TMDB"}, "workers": 2})
+
+    assert await load_overrides_document(session) == {"workers": 2}
+
+
+def test_a_document_with_nothing_stale_in_it_is_the_object_handed_in():
+    """The cost every deployment whose store is clean pays: a membership test
+    and no allocation, which is the posture the section strip already took."""
+    document = {"workers": 2, "providers": {"order": ["tmdb"]}}
+
+    assert without_migrated_settings(document) is document
+
+
+async def test_a_file_naming_a_stale_setting_seeds_a_store_without_it(
+    tmp_path, session
+):
+    """The half that keeps a fresh deployment out of this state altogether.
+
+    The mounted file is git-owned and nobody edits it for a key that stopped
+    doing anything, so it is free to still name one -- which is exactly how the
+    v0.4.0 deployment got its stale keys, through the seed. A store nobody has
+    saved yet must not start life holding a document the write path refuses.
+
+    The file's SECTION refusal is untouched by this, and the asymmetry is the
+    point (``test_a_version_check_key_in_the_yaml_file_is_still_refused``): a
+    setting that left was never refused in a file, so dropping it changes
+    nothing about what the file means, while a section that left is an error an
+    operator can act on by deleting the block."""
+    document = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+    document["providers"]["favourite"] = "TMDB"
+    seeded = tmp_path / "autoposter.yaml"
+    seeded.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    config = await load_effective_config(seeded, session)
+
+    assert config.providers.order, "the file's own settings still seeded"
+    row = (await session.execute(select(ConfigOverride))).scalar_one()
+    assert "favourite" not in row.document["providers"]
+
+
+async def test_a_typo_beside_a_stale_setting_is_left_where_it_is(session):
+    """The strip knows the paths that left the schema and nothing else.
+    ``providers.favorite_typo`` never was a setting, so dropping it would turn
+    a 422 that names the typo into an override that silently does nothing --
+    which is the failure ``unknown_key_paths`` exists to stop."""
+    await _store(session, {"providers": {"favourite": "TMDB", "favorite_typo": "x"}})
+
+    assert await load_overrides_document(session) == {
+        "providers": {"favorite_typo": "x"}
+    }
 
 
 # --- the generation holder ---------------------------------------------------

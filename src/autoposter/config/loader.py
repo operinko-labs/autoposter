@@ -310,7 +310,7 @@ def config_for_library(config: Config, library: str) -> Config:
     override, or names one that states no leaf, gets the very object it was
     handed back: the ordinary deployment -- every one whose operator never
     opened the matrix -- allocates nothing per item. That is the posture
-    ``config/overrides.py``'s ``without_migrated_sections`` already takes.
+    ``config/overrides.py``'s ``without_migrated_settings`` already takes.
 
     **Only the whitelisted sections are rebuilt**, through
     ``model_copy(update=...)``, so ``artwork``, ``version`` and every other

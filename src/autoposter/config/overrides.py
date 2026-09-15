@@ -70,6 +70,41 @@ OVERRIDES_INSERT_LOCK_KEY = 4907594664404778877
 # existence for good.
 MIGRATED_SECTIONS = ("version_check",)
 
+# Individual settings that left the config schema behind, each named at the
+# exact dotted position the schema once accepted it at.
+#
+# All four came off in ``f8a7440`` (2026-09-08, "remove the four orphan
+# Posterizarr-parity keys"): ``favourite`` and ``tmdb_vote_sorting`` off
+# ``ProvidersConfig``, ``min_width`` and ``min_height`` off ``ArtKindConfig``
+# -- which ``TitleCardConfig`` and ``SeasonPosterConfig`` both subclass, so
+# all four art kinds carried the pair and each of them is named below.
+#
+# That removal was harmless for the mounted FILE, which is what it checked:
+# the schema sets no ``model_config``, so pydantic drops an unknown key and a
+# deployment whose YAML still named these booted unchanged. It was not
+# harmless for the STORE. The file seeded the keys into the stored document,
+# and a stored document is walked by ``unknown_key_paths`` before every
+# whole-document write -- so from v0.4.0 the Settings page's own save, the
+# library map and every server card answered 422 ``unknown setting`` on a
+# deployment whose operator had no way to remove the keys, the editor
+# rendering no field for a setting the schema no longer has.
+#
+# Spelled out rather than built from the art kinds: this is a record of what
+# the schema once accepted, and a later change to the art kinds must not
+# quietly rewrite it.
+MIGRATED_SETTINGS: tuple[str, ...] = (
+    "providers.favourite",
+    "providers.tmdb_vote_sorting",
+    "artwork.poster.min_width",
+    "artwork.poster.min_height",
+    "artwork.season_poster.min_width",
+    "artwork.season_poster.min_height",
+    "artwork.background.min_width",
+    "artwork.background.min_height",
+    "artwork.title_card.min_width",
+    "artwork.title_card.min_height",
+)
+
 
 def document_revision(document: dict) -> str:
     """A token identifying exactly this document's *content*.
@@ -287,32 +322,94 @@ def empty_leaf_paths(document: dict, path: str = "") -> list[str]:
     return paths
 
 
-def without_migrated_sections(document: dict) -> dict:
-    """``document`` minus any ``MIGRATED_SECTIONS`` key, warning once per key.
+def _holds_leaf(document: dict, parts: tuple[str, ...]) -> bool:
+    """Whether ``document`` states the leaf at ``parts``, at that exact depth.
+
+    Every step but the last has to be a mapping, because a document is free to
+    say ``artwork: null`` or to hold a string where a section belongs -- both
+    are somebody else's error to report, and neither is a leaf to drop.
+    """
+    for part in parts[:-1]:
+        document = document.get(part)
+        if not isinstance(document, dict):
+            return False
+    return parts[-1] in document
+
+
+def _without_leaf(document: dict, parts: tuple[str, ...]) -> dict:
+    """``document`` minus the leaf at ``parts``, and minus what the drop empties.
+
+    A section left holding ``{}`` would be one unsaveable document traded for
+    another: the write path refuses an empty object as a leaf on a delta-era
+    store (``api/routes.py``'s empty-object gate). So a section this strip
+    itself empties goes with the leaf -- and only such a section, because one
+    an operator spelled ``{}`` deliberately never held the stale key to begin
+    with.
+    """
+    key, rest = parts[0], parts[1:]
+    if rest:
+        inner = _without_leaf(document[key], rest)
+        if inner:
+            return {**document, key: inner}
+    return {name: value for name, value in document.items() if name != key}
+
+
+def without_migrated_settings(document: dict, *, drop_sections: bool = True) -> dict:
+    """``document`` minus what has left the schema, warning once per key.
 
     Public because the stored document is no longer its only source: a restored
     snapshot is a raw row this function never ran over, and a snapshot taken
-    before a section left the schema still holds it (config/snapshots.py).
+    before a section or a setting left the schema still holds it
+    (config/snapshots.py).
 
-    Top-level only, and deliberately so: these are whole sections that left the
-    schema, not individual settings, and a walk looking for the name at depth
-    would strip an operator's legitimately-named subkey somewhere else in the
-    tree.
+    Two shapes are dropped, and each is matched the only way it safely can be.
+    ``MIGRATED_SECTIONS`` are whole sections and are matched at the TOP LEVEL
+    only: a walk looking for the name at depth would strip an operator's
+    legitimately-named subkey somewhere else in the tree. ``MIGRATED_SETTINGS``
+    are individual leaves and are matched at their exact dotted position for
+    the same reason -- ``min_width`` is a plausible name for a key under some
+    later section, and the only one that left is the one under ``artwork``'s
+    art kinds.
+
+    Nothing else is dropped. A key that never was a setting -- a typo -- stays
+    exactly where it is, so the write path can answer 422 naming it rather
+    than storing an override that silently does nothing.
+
+    ``drop_sections=False`` is for a document that came out of the mounted
+    FILE, and it is the asymmetry the section comment above ``MIGRATED_SECTIONS``
+    states: a ``version_check:`` block in a git-owned YAML is an
+    operator-actionable error and being told to delete it is the point, so it
+    must reach the validator rather than be quietly dropped on the way into the
+    store. The individual settings are the opposite case. They were never
+    refused in a file -- the schema sets no ``model_config``, so pydantic drops
+    an unknown key and a file naming one has always loaded clean -- so carrying
+    one into the store would turn a key that meant nothing into a key that
+    blocks every save.
 
     Returns the same object when there is nothing to drop, so the ordinary
-    deployment -- every one whose operator never touched the section -- pays a
+    deployment -- every one whose store carries none of this -- pays a
     membership test and allocates nothing.
     """
-    present = [key for key in MIGRATED_SECTIONS if key in document]
-    if not present:
+    sections = (
+        [key for key in MIGRATED_SECTIONS if key in document] if drop_sections else []
+    )
+    leaves = [
+        parts
+        for parts in (tuple(path.split(".")) for path in MIGRATED_SETTINGS)
+        if _holds_leaf(document, parts)
+    ]
+    if not sections and not leaves:
         return document
-    for key in present:
+    for name in sections + [".".join(parts) for parts in leaves]:
         logger.warning(
-            "dropping stale %s from stored overrides -- the update check "
-            "takes no configuration now; this warning disappears once the "
-            "stored overrides are next saved", key,
+            "dropping stale %s from the stored configuration -- it is no "
+            "longer a setting; this warning disappears once the stored "
+            "configuration is next saved", name,
         )
-    return {key: value for key, value in document.items() if key not in present}
+    stripped = {key: value for key, value in document.items() if key not in sections}
+    for parts in leaves:
+        stripped = _without_leaf(stripped, parts)
+    return stripped
 
 
 #: The store's own version, kept in the row's ``meta`` and nowhere else.
@@ -433,7 +530,7 @@ async def store_row(
 
 
 def _row_document(row: ConfigOverride | None) -> dict:
-    """A row's document, checked, and stripped of sections that left the schema.
+    """A row's document, checked, and stripped of what has left the schema.
 
     The strip lives here rather than at any later point, because this is the
     single seam every reader of the stored document comes through: the
@@ -454,7 +551,7 @@ def _row_document(row: ConfigOverride | None) -> dict:
             "the config_overrides document must be a JSON object, not "
             f"{type(row.document).__name__}"
         )
-    return without_migrated_sections(row.document)
+    return without_migrated_settings(row.document)
 
 
 def store_contents(row: ConfigOverride | None) -> tuple[dict, dict]:
@@ -587,11 +684,23 @@ async def seed_store(session: AsyncSession, document: dict) -> dict:
     is nothing to snapshot: the store was empty. That is also why it needs no
     reason string -- a snapshot records what a write displaced, and this one
     displaces nothing.
+
+    The document is STRIPPED on the way in, and what that buys is a fresh
+    deployment that never reaches the state the strip exists to recover from.
+    The mounted file is free to name a setting that has left the schema -- it
+    is git-owned and nobody edits it for a key that stopped doing anything --
+    and a seed copying one into the row would write a refusal into a store
+    nobody has saved yet. What is stored is what the read would hand back.
+
+    ``drop_sections=False``, because this document is the FILE's: a section
+    that left the schema is refused there rather than dropped, and the refusal
+    happens at the validation this seed's caller runs next.
     """
     row = await store_row(session, for_update=True)
     if row is not None and row.document:
         return _row_document(row)
     _empty, meta = store_contents(row)
+    document = without_migrated_settings(document, drop_sections=False)
     await write_store(session, document, store_meta(restart_list=restart_paths(meta)))
     return document
 
@@ -675,7 +784,15 @@ async def migrate_delta_to_document(session: AsyncSession, base: dict | None) ->
         await session.commit()
         return document
     delta = _row_document(row)
-    merged = merge_overrides(base, delta)
+    # Stripped for ``seed_store``'s reason, and it has to be done after the
+    # merge rather than before: the delta has already been through the read
+    # seam, but the file underneath it has not, so a setting that left the
+    # schema can only enter the merged document from the file's side. Which is
+    # also why the sections are left alone here -- what the merge adds is the
+    # file's, and a section the file names is refused rather than dropped.
+    merged = without_migrated_settings(
+        merge_overrides(base, delta), drop_sections=False
+    )
     _validated(merged)
     await capture_snapshot(session, delta, MIGRATE_REASON, format=1)
     # What the row already said is carried through rather than replaced. Only

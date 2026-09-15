@@ -414,6 +414,34 @@ async def test_a_restore_strips_a_migrated_section(
     assert stored == whole_store
 
 
+async def test_a_restore_strips_a_setting_that_left_the_schema(
+    client, auth_headers, session, whole_store
+):
+    """The same trap one level down, on an individual setting rather than a
+    whole section. A snapshot taken while the store still held
+    ``providers.favourite`` carries it for as long as the snapshot is kept,
+    and a restore is a save -- so without the strip the recovery path 422s on
+    ``unknown setting`` for exactly the snapshots taken before the key left."""
+    await _store(client, auth_headers, _whole(whole_store, {"workers": 9}))
+    [row] = (await client.get("/api/config/snapshots", headers=auth_headers)).json()
+
+    stored_row = (
+        await session.execute(select(ConfigOverrideSnapshot))
+    ).scalar_one()
+    stored_row.document = _whole(whole_store, {"providers": {"favourite": "TMDB"}})
+    await session.commit()
+
+    response = await client.post(
+        f"/api/config/snapshots/{row['id']}/restore",
+        headers=auth_headers,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 200, response.text
+    stored = (await session.execute(select(ConfigOverride))).scalar_one().document
+    assert stored == whole_store
+
+
 async def test_a_restore_honours_the_revision_check(client, auth_headers):
     """The safety UI sits on the same page as the editor, so a restore can be
     stale for exactly the same reason a save can."""
