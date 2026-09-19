@@ -2250,8 +2250,6 @@ URL, name the collection, pick which of `collections.libraries` it applies to
 - **Shape-checked only.** Nothing asks the provider whether the list exists;
   the first pass discovers that, and a failing source leaves its collection
   untouched (the sync-semantics guarantee documented above).
-- **trakt is refused by name** — no trakt builder is shipped (its own roadmap
-  gap), so a trakt URL has nothing to parse to.
 - **Stored as config overrides**, like the Settings page's edits: the panel
   writes `collections.definitions` through `PUT /api/config/overrides`, and
   the definitions it creates are removable from the same panel. Definitions

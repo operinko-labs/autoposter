@@ -62,7 +62,11 @@ def test_parse_ratings_applies_the_probes_per_field_rescaling():
     outlier (a 5-point scale to Kometa's 10-point one); `imdb`,
     `metacriticuser` and `myanimelist` are untransformed because their native
     scale is already 0-10; everything else reads MDBList's own 0-100 `score`
-    and divides by 10."""
+    and divides by 10.
+
+    The fixture still carries a `trakt` entry, on purpose: MDBList keeps
+    sending one, and the absent `mdb_trakt_rating` key below is what proves
+    this client now drops it on the floor rather than surfacing it."""
     payload = load("mdblist_full_ratings.json")
     assert parse_ratings(payload) == {
         "mdb_average_rating": 5.8,
@@ -75,7 +79,6 @@ def test_parse_ratings_applies_the_probes_per_field_rescaling():
         "mdb_tmdb_rating": 6.3,
         "mdb_tomatoes_rating": 6.7,
         "mdb_tomatoesaudience_rating": 7.1,
-        "mdb_trakt_rating": 7.2,
     }
 
 
@@ -121,7 +124,6 @@ def test_parse_ratings_is_total_over_a_payload_with_no_ratings_array():
         "mdb_tmdb_rating": None,
         "mdb_tomatoes_rating": None,
         "mdb_tomatoesaudience_rating": None,
-        "mdb_trakt_rating": None,
     }
 
 
@@ -422,7 +424,7 @@ async def test_ratings_with_no_identifier_makes_no_request_and_answers_all_none(
         result = await MDBListClient("KEY", http).ratings(is_movie=True)
 
     assert result == {k: None for k in result}
-    assert len(result) == 11
+    assert len(result) == 10
 
 
 async def test_ratings_quota_exhaustion_raises_the_same_error_content_rating_does():
@@ -440,4 +442,4 @@ async def test_ratings_quota_exhaustion_raises_the_same_error_content_rating_doe
 async def test_null_client_ratings_answers_all_none_and_makes_no_request():
     result = await NullMDBListClient().ratings(tmdb_id=1, is_movie=True)
     assert result == {k: None for k in result}
-    assert len(result) == 11
+    assert len(result) == 10

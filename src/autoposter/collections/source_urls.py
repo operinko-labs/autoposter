@@ -12,11 +12,6 @@ validation at parse time matches validation at config load (the same params
 models), and a list that does not exist is discovered the way it always has
 been -- the first pass's builder raises, and sync semantics leave the
 collection untouched. The form says so in as many words.
-
-trakt is refused BY NAME rather than falling through the generic refusal:
-row 202's fence says a pasted trakt URL has nothing to parse to because no
-trakt builder is shipped, and an operator pasting one deserves that answer
-rather than a list of hosts theirs is not among.
 """
 import re
 from dataclasses import dataclass
@@ -161,21 +156,12 @@ def _parse_tvdb(segments: list[str]) -> ParsedSource:
     )
 
 
-def _refuse_trakt(_segments: list[str]) -> ParsedSource:
-    raise SourceUrlRefused(
-        "trakt.tv is not a supported source: no trakt builder is shipped, so "
-        "a pasted trakt URL has nothing to parse to -- trakt support is its "
-        "own roadmap gap, not this form's. Supported: " + SUPPORTED
-    )
-
-
 _HOSTS = {
     "imdb.com": _parse_imdb,
     "m.imdb.com": _parse_imdb,
     "mdblist.com": _parse_mdblist,
     "themoviedb.org": _parse_tmdb,
     "thetvdb.com": _parse_tvdb,
-    "trakt.tv": _refuse_trakt,
 }
 
 

@@ -396,20 +396,19 @@ describe("the custom collections panel", () => {
       parse: () =>
         json(
           {
-            detail:
-              "trakt.tv is not a supported source: no trakt builder is shipped",
+            detail: "that host is not a supported source -- supported: imdb.com…",
           },
           422,
         ),
     });
 
     fireEvent.change(screen.getByLabelText("Source URL"), {
-      target: { value: "https://trakt.tv/users/x/lists/y" },
+      target: { value: "https://letterboxd.com/someone/list/slasher/" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Read URL" }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("no trakt builder is shipped");
+    expect(alert).toHaveTextContent("that host is not a supported source");
   });
 
   it("renders a parse 422 that arrives as FastAPI's list of entries", async () => {

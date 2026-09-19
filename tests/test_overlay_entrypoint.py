@@ -83,7 +83,7 @@ def test_a_definition_naming_an_unresolvable_variable_is_skipped_not_fatal():
     with a warning, not a run abort. The other overlays still draw, so the
     output equals the no-definitions baseline exactly."""
     stamp = OverlayDefinition(
-        name="text(<<trakt_user_rating>>)",
+        name="text(<<mal_rating>>)",
         horizontal_align="center", horizontal_offset=0,
         vertical_align="center", vertical_offset=0,
         back_width=300, back_height=100,

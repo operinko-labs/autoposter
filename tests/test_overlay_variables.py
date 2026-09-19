@@ -148,15 +148,19 @@ def test_a_variable_with_no_value_raises_rather_than_rendering_a_hole():
         render_text("<<critic_rating>>", {})
 
 
-def test_the_rating_vocabulary_is_the_banked_twenty_nine():
-    """Data-source probe section 2.1 / appendix 9.1: 29 external rating
-    sources, banked verbatim from `modules/overlay.py:19-49` at the pinned
-    tag. The NAMES are grammar and ship here; the per-source API fetches are
-    row 100's data half and do not."""
-    assert len(RATING_SOURCES) == 29
+def test_the_rating_vocabulary_is_the_banked_twenty_six():
+    """Data-source probe section 2.1 / appendix 9.1: 26 of upstream's 29
+    external rating sources, banked from `modules/overlay.py:19-49` at the
+    pinned tag. The NAMES are grammar and ship here; the per-source API
+    fetches are row 100's data half and do not."""
+    assert len(RATING_SOURCES) == 26
     assert "imdb_rating" in RATING_SOURCES
-    assert "trakt_user_rating" in RATING_SOURCES
     assert "anidb_average_rating" in RATING_SOURCES
+    # The three Trakt names are the documented deviation from upstream:
+    # Trakt's API use policy forbids this class of integration, so they are
+    # not vocabulary at all rather than vocabulary that never resolves.
+    for gone in ("mdb_trakt_rating", "trakt_rating", "trakt_user_rating"):
+        assert gone not in RATING_SOURCES
     # The four plex_* ratings need no external call at all (probe section
     # 2.3.6) -- the reconstruction this replaces omitted all four of them.
     assert "plex_imdb_rating" in RATING_SOURCES
