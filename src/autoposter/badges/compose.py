@@ -381,15 +381,18 @@ def _draw_languages(poster: Image.Image, canvas: tuple[int, int], inputs: BadgeI
 def _variable_values(art_kind: str, inputs: BadgeInputs) -> dict[str, object]:
     """The item values an operator's <<variable>> tokens can resolve against.
 
-    Roadmap row 100: seventeen of the data-source probe's 29
-    external rating sources now resolve here -- the eleven mdb_*, the four
-    plex_*, and the imdb_rating/tmdb_rating aliases, all carried
-    in `inputs.ratings` and merged in below. The remaining twelve (four
-    omdb_*, three anidb_*, mal_rating, two trakt_*, serializd_rating,
-    floppy_rating) each need a new external integration this service does not
-    have (probe bucket (c), fenced pending an operator decision --
-    adjudication A2) and are still absent on purpose: a definition naming one
-    is skipped rather than silently rendered wrong.
+    Roadmap row 100: sixteen of the twenty-six external rating sources in
+    the grammar now resolve here -- the ten mdb_*, the four plex_*, and the
+    imdb_rating/tmdb_rating aliases, all carried in `inputs.ratings` and
+    merged in below. The remaining ten (four omdb_*, three anidb_*,
+    mal_rating, serializd_rating, floppy_rating) each need a new external
+    integration this service does not have (probe bucket (c), fenced pending
+    an operator decision -- adjudication A2) and are still absent on purpose:
+    a definition naming one is skipped rather than silently rendered wrong.
+
+    The probe banked 29 sources; the three Trakt names are not vocabulary at
+    all (`overlays/variables.py::RATING_SOURCES`), because Trakt's API use
+    policy forbids this class of integration.
     """
     media = inputs.media
     values: dict[str, object] = {

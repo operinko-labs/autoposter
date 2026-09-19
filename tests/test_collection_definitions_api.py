@@ -202,7 +202,7 @@ async def test_parse_source_resolves_and_refuses_through_the_pure_parser(
     client, auth_headers
 ):
     """The endpoint is a thin shell: one accepted parse proving the shape of
-    the 200, one trakt paste proving the 422 carries the refusal verbatim.
+    the 200, one unknown host proving the 422 carries the refusal verbatim.
     The full accept/refuse tables are ``tests/test_source_urls.py``'s."""
     good = await client.post(
         "/api/collections/parse-source",
@@ -217,11 +217,11 @@ async def test_parse_source_resolves_and_refuses_through_the_pure_parser(
 
     refused = await client.post(
         "/api/collections/parse-source",
-        json={"url": "https://trakt.tv/users/someone/lists/best-of"},
+        json={"url": "https://letterboxd.com/someone/list/slasher-flicks/"},
         headers=auth_headers,
     )
     assert refused.status_code == 422
-    assert "no trakt builder is shipped" in refused.json()["detail"]
+    assert "is not a supported source" in refused.json()["detail"]
 
 
 async def test_parse_source_refuses_an_unknown_host_without_echoing_it(

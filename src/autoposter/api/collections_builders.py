@@ -252,8 +252,7 @@ async def parse_collection_source(
     a replica with no Plex connection.
 
     The refusal is a 422 whose ``detail`` is one operator-facing sentence:
-    the params model's own error string, or the supported-shapes list -- and
-    for trakt, the row-202 fence by name.
+    the params model's own error string, or the supported-shapes list.
     """
     try:
         parsed = parse_source(body.url)

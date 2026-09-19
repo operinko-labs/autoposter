@@ -6,8 +6,8 @@ not exist is the first pass's discovery, and sync semantics leave the
 collection untouched when it fails.
 
 The refusal table's fragments are the load-bearing half: a recognised shape
-with a bad value must surface the params model's OWN error string (not a
-paraphrase), and a trakt paste must be refused BY NAME -- row 202's fence.
+with a bad value must surface the params model's OWN error string, not a
+paraphrase.
 """
 import re
 
@@ -84,8 +84,6 @@ def test_a_slashed_bare_value_is_an_mdblist_reference_whatever_it_starts_with():
 
 
 REFUSED = [
-    # trakt: refused BY NAME -- row 202's fence, verbatim in the message.
-    ("https://trakt.tv/users/someone/lists/best-of", "no trakt builder is shipped"),
     # An unknown host with a scheme is a refusal naming what IS supported...
     ("https://letterboxd.com/someone/list/slasher-flicks/", "is not a supported source"),
     # ...and schemeless it falls through the bare shapes to the same teaching.

@@ -7,7 +7,7 @@ that look like bugs -- `%` truncates because `int()` truncates, and
 `badges/values.py` already records that production output really does.
 
 This module is pure: it formats values it is HANDED. It never reads a Plex
-item and never calls a rating API. The 29 external rating-source names are
+item and never calls a rating API. The 26 external rating-source names are
 part of the grammar and appear in the vocabulary; fetching them is row 100's
 data half, which the probe's own section 7.2 leaves unprobed.
 """
@@ -16,9 +16,13 @@ from collections.abc import Mapping
 
 from num2words import num2words
 
-# Transcribed verbatim from `modules/overlay.py:19-49` at the pinned tag
-# (`Kometa-Team/Kometa` @ `498b3af6e921fc5e857dd081061000c87482489d`). 29
-# entries, in the source's own order.
+# Transcribed from `modules/overlay.py:19-49` at the pinned tag
+# (`Kometa-Team/Kometa` @ `498b3af6e921fc5e857dd081061000c87482489d`), in the
+# source's own order -- 26 of upstream's 29 entries. The three Trakt names
+# (`mdb_trakt_rating`, `trakt_rating`, `trakt_user_rating`) are deliberately
+# ABSENT: Trakt's API use policy forbids this class of integration, so no
+# Trakt source can ever resolve here. An operator's token naming one is
+# better an unknown variable than a permanently empty known one.
 RATING_SOURCES = (
     "anidb_average_rating",
     "anidb_rating",
@@ -36,7 +40,6 @@ RATING_SOURCES = (
     "mdb_tmdb_rating",
     "mdb_tomatoes_rating",
     "mdb_tomatoesaudience_rating",
-    "mdb_trakt_rating",
     "omdb_rating",
     "omdb_imdb_rating",
     "omdb_metascore_rating",
@@ -47,8 +50,6 @@ RATING_SOURCES = (
     "plex_tomatoesaudience_rating",
     "serializd_rating",
     "tmdb_rating",
-    "trakt_rating",
-    "trakt_user_rating",
 )
 
 # Probe section 2.2. The three Plex-native ratings are float vars but not

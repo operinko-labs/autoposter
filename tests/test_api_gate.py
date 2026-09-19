@@ -52,7 +52,7 @@ PLEX_ONLY_ROUTES: list[tuple[str, str, dict | None]] = [
 NOT_GATED_ROUTES: list[tuple[str, str, dict | None]] = [
     ("GET", "/api/collections/catalog", None),
     ("GET", "/api/collections/definitions", None),
-    ("POST", "/api/collections/parse-source", {"url": "https://trakt.tv/lists/1"}),
+    ("POST", "/api/collections/parse-source", {"url": "https://imdb.com/list/ls1"}),
     ("GET", "/api/playlists/definitions", None),
     ("GET", "/api/items/999999/metadata-overrides", None),  # 404, not 409: not gated
 ]

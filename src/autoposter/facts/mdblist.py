@@ -77,12 +77,12 @@ def parse_content_rating(payload: dict) -> str | None:
 #     distinct from its 0-100 Metascore; MyAnimeList), so no rescale applies;
 #   - letterboxd reads `value` too (its native scale is 0-5 stars) and
 #     doubles it, per the probe;
-#   - the remaining five array-sourced fields (metacritic, trakt, tomatoes,
+#   - the remaining four array-sourced fields (metacritic, tomatoes,
 #     tomatoesaudience, tmdb) read the array entry's `score` -- MDBList's own
 #     0-100 cross-source normalisation -- and divide by 10; their native
 #     scales are NOT uniformly 0-10 (Rotten Tomatoes and Metacritic's
-#     Metascore are 0-100, Trakt is 0-100), so the normalised field is the
-#     one that produces a sane 0-10 number for all five with one rule;
+#     Metascore are 0-100), so the normalised field is the one that produces
+#     a sane 0-10 number for all four with one rule;
 #   - the two TOP-LEVEL scalars (`average`, `score`) are MDBList's own
 #     composite fields and both divide by 10, per the probe's `mdb_average_
 #     rating`/`mdb_rating` rows.
@@ -94,7 +94,6 @@ _ARRAY_VALUE_FIELDS = {
 _ARRAY_VALUE_DOUBLED_FIELDS = {"mdb_letterboxd_rating": "letterboxd"}
 _ARRAY_SCORE_FIELDS = {
     "mdb_metacritic_rating": "metacritic",
-    "mdb_trakt_rating": "trakt",
     "mdb_tomatoes_rating": "tomatoes",
     "mdb_tomatoesaudience_rating": "tomatoesaudience",
     "mdb_tmdb_rating": "tmdb",
@@ -102,7 +101,7 @@ _ARRAY_SCORE_FIELDS = {
 
 
 def parse_ratings(payload: dict) -> dict[str, float | None]:
-    """The eleven `mdb_*` overlay rating sources (`overlays/variables.py::
+    """The ten `mdb_*` overlay rating sources (`overlays/variables.py::
     RATING_SOURCES`), per probe section 2.3.3's per-field rescaling table --
     transcribed exactly, letterboxd's `*2` included. See the module comment
     above for the value-vs-score sourcing this client's own shape requires
@@ -110,7 +109,7 @@ def parse_ratings(payload: dict) -> dict[str, float | None]:
 
     `MDBListClient.content_rating` already fetches this same response for the
     Common Sense age rating; this is a second, independent parse of it -- no
-    new HTTP call. Always returns all eleven keys; an unresolved field is
+    new HTTP call. Always returns all ten keys; an unresolved field is
     `None`, never a missing key, so a caller can `dict.update` it in without
     a stale value surviving from a previous pass.
     """
@@ -127,7 +126,7 @@ def parse_ratings(payload: dict) -> dict[str, float | None]:
         # warning names the field; the caller (Concern E) still degrades the
         # whole `ratings()` call on a transport failure, but a malformed
         # value inside an otherwise-good response must not take the other
-        # ten keys down with it.
+        # nine keys down with it.
         try:
             value = float(raw)
         except (TypeError, ValueError):
@@ -364,7 +363,7 @@ class MDBListClient:
         tvdb_id: int | None = None,
         is_movie: bool = True,
     ) -> dict[str, float | None]:
-        """The eleven `mdb_*` overlay rating sources for one item.
+        """The ten `mdb_*` overlay rating sources for one item.
 
         Hits the exact same URL and params `content_rating` does, so within
         this response's cache TTL calling both on one item costs one HTTP

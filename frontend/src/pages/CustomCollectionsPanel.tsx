@@ -335,9 +335,9 @@ export function CustomCollectionsPanel() {
       );
       if (live.current) setParsed(response);
     } catch (caught) {
-      // The refusal -- the params model's own error string, or the trakt
-      // fence -- lands here verbatim; see `refusalMessage` for the other
-      // shape the same status can arrive in.
+      // The refusal -- the params model's own error string, or the
+      // supported-shapes list -- lands here verbatim; see `refusalMessage`
+      // for the other shape the same status can arrive in.
       if (live.current) setParseError(refusalMessage(caught));
     } finally {
       if (live.current) setBusy(null);
