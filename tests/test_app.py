@@ -754,6 +754,10 @@ async def test_the_lifespan_hands_the_notifier_to_the_scheduler(
     created = []
 
     class _RecordingScheduler:
+        # Stands in for Scheduler too, whose running-job name the lifespan
+        # hands the event-loop lag monitor. No job is ever running here.
+        current_job = None
+
         def __init__(self, *args, **kwargs):
             created.append(kwargs)
 
