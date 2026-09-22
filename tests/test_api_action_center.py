@@ -14,11 +14,12 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from autoposter.api import action_center
 from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import ActionDismissal, EventLog, Job, Render
+from autoposter.db.models import ActionDismissal, EventLog, Job, MediaItem, Render
 from autoposter.intake.arr import RenderIntent
 
 from conftest import seed_media_item
@@ -1337,3 +1338,58 @@ async def test_the_action_center_lists_jobs_that_finished_with_warnings(
 
 async def test_job_warnings_requires_a_session(client):
     assert (await client.get("/api/actions/job-warnings")).status_code == 401
+
+
+# --- perf spec A7: the backfill walk reads only what the key needs ---------
+
+
+@pytest.mark.parametrize(
+    ("kind", "ids"),
+    [
+        ("movie", {"tmdb_id": 438631}),
+        ("show", {"tvdb_id": 393189}),
+        ("movie", {"imdb_id": "tt9253284"}),
+        ("movie", {}),
+        ("season", {"tvdb_id": 393189, "season_number": 2}),
+        ("episode", {"tvdb_id": 393189, "season_number": 2, "episode_number": 5}),
+    ],
+)
+def test_the_backfill_skip_key_is_the_key_the_enqueue_writes(kind, ids):
+    """The walk decides "already in flight / blocked" by comparing this key
+    against job rows' dedupe_key, which the enqueue wrote WITH the item's
+    Plex ref. Built without refs, it must still be the same string, for every
+    shape of id the key's precedence chain distinguishes -- or the backfill
+    re-selects items it should skip."""
+    item = MediaItem(id=41, kind=kind, title="Andor", year=2022, **ids)
+
+    [(_payload, enqueue_key)] = action_center._reprocess_entries([item], {41: "plex-9001"})
+
+    assert action_center._dedupe_key_for(item) == enqueue_key
+
+
+async def test_the_backfill_walks_read_no_server_refs(session, monkeypatch):
+    """Both walks used to fetch every unscored item's Plex id and hand it to
+    RenderIntent, whose dedupe_key never reads refs -- 8214 of 17264 rows in
+    the report that sized this. The ORM-walk branch is forced (a parked job
+    exists) so the refusal below is actually reachable."""
+    blocked, _ = await _seed(session, rating_key="1", status="rendered", quality_scored_at=None)
+    _, open_render = await _seed(
+        session, rating_key="2", status="rendered", quality_scored_at=None
+    )
+    parked = RenderIntent(kind=blocked.kind, title=blocked.title)
+    session.add(Job(kind="process_item", dedupe_key=parked.dedupe_key, state="parked"))
+    await session.commit()
+
+    async def refuse(*args, **kwargs):
+        raise AssertionError("the backfill walk read server refs it never uses")
+
+    monkeypatch.setattr(action_center, "native_ids", refuse)
+    config = load_config(EXAMPLE)
+
+    state = await action_center._backfill_state(session, config)
+    selected = await action_center._select_backfill_batch(session, 10, config)
+
+    # (done, total, blocked, queued_for_scoring): item 1 is blocked by its
+    # parked job and left out of total; item 2 is ordinary unscored work.
+    assert state == (0, 1, 1, 0)
+    assert [render.id for render in selected] == [open_render.id]
