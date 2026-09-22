@@ -175,7 +175,7 @@ def thumbnail_bytes(path: Path, size: int, mtime_ns: int, width: int) -> bytes:
         data = render_thumbnail(path, width)
     except FileNotFoundError:
         raise
-    except (OSError, Image.DecompressionBombError) as exc:
+    except (OSError, ValueError, SyntaxError, EOFError, Image.DecompressionBombError) as exc:
         raise UndecodableArtwork(f"{path}: {exc}") from exc
     _CACHE.put(key, data)
     return data

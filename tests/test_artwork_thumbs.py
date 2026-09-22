@@ -155,6 +155,25 @@ def test_bytes_pillow_cannot_decode_raise_undecodable_artwork(tmp_path):
         thumbs.thumbnail_bytes(source, 1, 1, 320)
 
 
+@pytest.mark.parametrize("exc_type", [SyntaxError, ValueError, EOFError])
+def test_other_pillow_decode_errors_also_raise_undecodable_artwork(
+    tmp_path, monkeypatch, exc_type
+):
+    """Pillow does not confine every bad-file complaint to OSError: a damaged
+    chunk header can surface as SyntaxError, and some codecs raise ValueError
+    or EOFError. Any of those from render_thumbnail must still map to
+    UndecodableArtwork rather than escape as a generic 500 (api/artwork.py)."""
+    source = _jpeg(tmp_path / "poster.jpg", (100, 150))
+
+    def raising(path, width):
+        raise exc_type("bad artwork")
+
+    monkeypatch.setattr(thumbs, "render_thumbnail", raising)
+
+    with pytest.raises(thumbs.UndecodableArtwork):
+        thumbs.thumbnail_bytes(source, 1, 1, 320)
+
+
 def test_a_file_gone_since_its_stat_stays_file_not_found(tmp_path):
     """A 404 for the route, not a 500: the render was deleted between the
     stat and the open, which is an ordinary miss."""
