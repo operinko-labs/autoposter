@@ -152,6 +152,14 @@ class Scheduler:
         # nothing else references could be garbage-collected mid-flight. The
         # done-callback drops each reference on completion.
         self._notify_tasks: set[asyncio.Task] = set()
+        # The scheduled job currently running, for the event-loop lag monitor
+        # (loop_lag.py) to name in its WARNING. Public because the lifespan
+        # hands the monitor ``lambda: scheduler.current_job`` and nothing else
+        # about this object. One name, not a set: ``run`` below executes due
+        # jobs one after another, so at most one is ever in flight here.
+        # Set only between a successful claim and the end of that run's
+        # result write (see ``_maybe_run``); None the rest of the time.
+        self.current_job: str | None = None
 
     async def run(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -278,6 +286,25 @@ class Scheduler:
             return
         if not claimed:
             return
+        # Named for the whole claimed run and cleared however it ends. The
+        # lag monitor reads this at its first wake-up AFTER a stall, which
+        # for a body that blocks the loop is the result write's first
+        # database await inside _run_claimed -- so clearing it straight after
+        # the body would name "none" for exactly the stalls it exists to
+        # attribute.
+        self.current_job = job.name
+        try:
+            await self._run_claimed(job)
+        finally:
+            self.current_job = None
+
+    async def _run_claimed(self, job: Job) -> None:
+        """Everything ``_maybe_run`` does once ``job`` is claimed: the run-history
+        row, the start notification, the body, the result write and the
+        completion notifications. Split out only so ``_maybe_run`` can hold
+        ``current_job`` across all of it in one ``try``/``finally``; the body
+        is unchanged, and so is its containment -- it never raises except
+        ``CancelledError``, which propagates as before."""
         # Nothing else logs between the claim and the finish -- a multi-minute
         # job (the prune walk, in production) was otherwise silent for its
         # whole run, indistinguishable from a scheduler that never woke up.

@@ -607,3 +607,94 @@ async def test_the_jobs_state_widening_is_reversible():
             await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
         finally:
             await maint.close()
+
+
+async def test_the_perf_index_migration_is_reversible():
+    """Perf spec D1 (`c3e8a1f5b7d2`), up -> down -> up on a scratch database.
+
+    Index-only, so `alembic check` above already proves the head matches the
+    models. What it cannot prove is the downgrade -- it never runs one. This
+    compares the WHOLE `pg_indexes` picture rather than a list of names: the
+    downgrade must restore exactly the index set the previous head had (every
+    dropped duplicate back, the due index full again, the claim index as it
+    was), and the second upgrade must land exactly where the first did. A
+    downgrade that forgot one `create_index` would otherwise look identical to
+    a correct one until somebody rolled back a deploy.
+    """
+    if not await _postgres_reachable():
+        _unreachable_postgres()
+
+    before = "a1f4c2d90e73"
+    suffix = "_perfidx"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
+        await maint.execute(f'CREATE DATABASE "{SCRATCH_DB_NAME}{suffix}"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, SCRATCH_DB_NAME + suffix)
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    async def indexes() -> dict[str, str]:
+        conn = await asyncpg.connect(
+            url.replace("postgresql+asyncpg", "postgresql"), timeout=5
+        )
+        try:
+            rows = await conn.fetch(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'"
+            )
+        finally:
+            await conn.close()
+        return {row["indexname"]: row["indexdef"] for row in rows}
+
+    try:
+        step = alembic("upgrade", before)
+        assert step.returncode == 0, step.stdout + step.stderr
+        previous = await indexes()
+
+        up = alembic("upgrade", "head")
+        assert up.returncode == 0, up.stdout + up.stderr
+        head = await indexes()
+
+        for dropped in (
+            "ix_jobs_state",
+            "ix_item_facts_item_id",
+            "ix_render_deliveries_render_id",
+            "ix_renders_item_id",
+            "ix_item_metadata_overrides_item_id",
+            "ix_action_dismissals_item_id",
+        ):
+            assert dropped in previous, f"{dropped} was expected at {before}"
+            assert dropped not in head, f"{dropped} survived the upgrade"
+        assert "(state, updated_at DESC, id DESC)" in head["ix_jobs_state_updated"]
+        assert "(dedupe_key, id DESC)" in head["ix_jobs_latest_per_key"]
+        assert "WHERE" in head["ix_jobs_latest_per_key"]
+        assert "(next_attempt_at, id)" in head["ix_render_deliveries_next_attempt_at"]
+        assert "WHERE" in head["ix_render_deliveries_next_attempt_at"]
+        assert "WHERE" not in previous["ix_render_deliveries_next_attempt_at"]
+        # The claim index -- Task 1 Step 5's decision (the plan's variant A).
+        assert "ix_jobs_claimable" not in head
+        assert "(run_after, id)" in head["ix_jobs_claim"]
+        assert "WHERE" in head["ix_jobs_claim"]
+
+        down = alembic("downgrade", before)
+        assert down.returncode == 0, down.stdout + down.stderr
+        assert await indexes() == previous, "the downgrade did not restore the previous index set"
+
+        again = alembic("upgrade", "head")
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert await indexes() == head, "the second upgrade did not land where the first did"
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
+        finally:
+            await maint.close()
