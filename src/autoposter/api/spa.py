@@ -14,11 +14,13 @@ boundary from both sides.
 
 import logging
 import os
+from os import PathLike
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, Response
 from starlette.staticfiles import StaticFiles
+from starlette.types import Scope
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,36 @@ RESERVED_PREFIXES = (
     "redoc",
     "openapi.json",
 )
+
+# Perf spec A2. Everything under /assets is named by Vite after its content
+# hash, so one URL's bytes never change: a browser may keep it for a year and
+# skip even the revalidation round trip.
+IMMUTABLE_ASSET_CACHE = "public, max-age=31536000, immutable"
+# The shell is the opposite: it is the one file whose name never changes and
+# whose content names the hashed files of the build that produced it. Cached,
+# a shell from the previous deploy asks the new pod for assets it no longer
+# has. `no-cache` still lets the browser keep a copy -- it just revalidates
+# every load, which a FileResponse's ETag makes a 304.
+SHELL_CACHE = "no-cache"
+
+
+class ImmutableStaticFiles(StaticFiles):
+    """StaticFiles whose successful answers carry ``IMMUTABLE_ASSET_CACHE``.
+
+    A miss raises before ``file_response`` is reached, so a 404 is never
+    marked immutable -- a missing file cached for a year would outlive the
+    deploy that fixes it."""
+
+    def file_response(
+        self,
+        full_path: PathLike[str] | str,
+        stat_result: os.stat_result,
+        scope: Scope,
+        status_code: int = 200,
+    ) -> Response:
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = IMMUTABLE_ASSET_CACHE
+        return response
 
 
 def spa_dist() -> Path | None:
@@ -71,7 +103,7 @@ def mount_spa(app: FastAPI, dist: Path | None) -> None:
     if assets.is_dir():
         # StaticFiles resolves against the directory and rejects traversal
         # itself, so `/assets/../../secret` cannot escape.
-        app.mount("/assets", StaticFiles(directory=assets), name="spa-assets")
+        app.mount("/assets", ImmutableStaticFiles(directory=assets), name="spa-assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
@@ -85,6 +117,6 @@ def mount_spa(app: FastAPI, dist: Path | None) -> None:
         # named by the request is deliberately not attempted -- that is what
         # the /assets mount is for, and reading arbitrary paths from the URL
         # is how directory traversal gets in.
-        return FileResponse(index)
+        return FileResponse(index, headers={"Cache-Control": SHELL_CACHE})
 
     logger.info("serving the web UI from %s", dist)
