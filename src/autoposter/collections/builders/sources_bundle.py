@@ -29,7 +29,7 @@ client all exist (``collections.service.build_source_clients``). The engine
 then binds ``plex`` per library, because that one accessor is the only part of
 the bundle that means something different for each library in the pass.
 """
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -61,7 +61,7 @@ class PlexSectionAccess:
     ownership and dry-run guard the engine exists to keep.
     """
 
-    def __init__(self, section: object, owned_index: Callable[..., dict]):
+    def __init__(self, section: object, owned_index: Callable[..., Awaitable[dict]]):
         self._section = section
         self._owned_index = owned_index
 
@@ -69,7 +69,7 @@ class PlexSectionAccess:
         """The plexapi ``LibrarySection`` this pass is running against."""
         return self._section
 
-    def owned_index(self, level: str = "item") -> dict:
+    async def owned_index(self, level: str = "item") -> dict:
         """``{namespace: {value: plex_item}}`` for the whole library.
 
         The engine's own index, built at most once per LEVEL per library per
@@ -77,8 +77,12 @@ class PlexSectionAccess:
         costs the ``section.all()`` the engine was paying anyway;
         ``"episode"``/``"season"`` cost one extra traversal, and only for the
         builders and definitions that ask.
+
+        Awaited since perf workstream C1: the first ask builds the index in
+        ``asyncio.to_thread``, because the walk is the longest blocking call in
+        a pass and the event loop is shared with every worker and request.
         """
-        return self._owned_index(level)
+        return await self._owned_index(level)
 
 
 @dataclass(frozen=True)

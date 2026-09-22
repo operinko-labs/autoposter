@@ -502,7 +502,7 @@ class CreditsFamilyBuilder:
         )
         # The pass's one listing, fetched here rather than at context
         # construction so a definition that refuses above costs nothing.
-        listing = ctx.listing() if ctx.listing is not None else None
+        listing = await ctx.listing() if ctx.listing is not None else None
         collections = ctx.config.collections
 
         for unit in titled:

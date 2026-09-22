@@ -8,6 +8,8 @@ from autoposter.collections.builders.collectionless import (
 from autoposter.collections.builders.plex_trivial import PlexLibraryUnavailable
 from autoposter.collections.builders.sources_bundle import PlexSectionAccess, SourceClients
 
+from plex_offload_doubles import returning
+
 
 class FakeTag:
     def __init__(self, tag):
@@ -42,7 +44,7 @@ def _context(items, params=None, section=None, run_cache=None):
         library="Movies", library_type="Movie",
         config=params or {},
         run_cache=run_cache if run_cache is not None else {},
-        sources=SourceClients(plex=PlexSectionAccess(section, lambda level="item": index)),
+        sources=SourceClients(plex=PlexSectionAccess(section, returning(index))),
     )
 
 

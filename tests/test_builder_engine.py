@@ -568,7 +568,7 @@ class _PlexReader:
         self.section = None
 
     async def build(self, ctx: BuilderContext) -> BuilderResult:
-        self.index = ctx.sources.plex.owned_index()
+        self.index = await ctx.sources.plex.owned_index()
         self.section = ctx.sources.plex.section()
         return BuilderResult(ids=[("plex", "m1")])
 

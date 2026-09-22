@@ -76,7 +76,7 @@ class PlexCollectionlessBuilder:
                 "the 'plex_collectionless' builder reads the library it is "
                 "running against, and this context carries no library accessor"
             )
-        rating_keys = list(access.owned_index()["plex"])
+        rating_keys = list((await access.owned_index())["plex"])
         tags = await ensure_tags(access.section(), ctx.run_cache, rating_keys)
         missing = [key for key in rating_keys if key not in tags]
         if missing:

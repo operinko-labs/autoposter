@@ -72,7 +72,7 @@ class PlexAllBuilder:
         # any request here would be a second walk of a library the engine has
         # already walked. ``test_plex_all_makes_no_plex_call_of_its_own``
         # counts on that.
-        rating_keys = list(access.owned_index()["plex"])
+        rating_keys = list((await access.owned_index())["plex"])
         logger.debug("plex_all: %d owned item(s)", len(rating_keys))
         # ``media_resolution`` is four definitions of THIS builder distinguished
         # only by their ``resolution`` filter, so the filter is where the

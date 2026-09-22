@@ -983,7 +983,7 @@ class DynamicBuilder:
         # The pass's one listing, fetched here rather than at context
         # construction so a definition that refuses above costs nothing and a
         # pass with no dynamic definition never fetches it at all.
-        listing = ctx.listing() if ctx.listing is not None else None
+        listing = await ctx.listing() if ctx.listing is not None else None
 
         for unit in titled:
             # ``ABSENT_KEY`` is Plex's "these items have no value for this

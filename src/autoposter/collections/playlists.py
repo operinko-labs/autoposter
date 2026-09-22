@@ -78,6 +78,7 @@ definition to build.
   owns separately. Intended -- a Plex item is a Plex item, and Kometa behaves
   the same way. See ``resolve.resolve_external_across``' docstring.
 """
+import asyncio
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -482,11 +483,17 @@ async def _reconcile_one(
     # library, and a playlist names several.
     primary = libraries[0]
     primary_section = section_for(primary)
+    async def primary_index(level: str = "item") -> dict:
+        # ``PlexSectionAccess.owned_index`` is awaited since perf C1, and the
+        # walk behind it is the same ``build_owned_index`` the engine offloads,
+        # so it takes the same single ``asyncio.to_thread`` hop here. The memo
+        # is still ``index_for``'s: the resolution below reads whatever index a
+        # builder already paid for.
+        return await asyncio.to_thread(index_for, primary, level)
+
     bound_sources = replace(
         sources or SourceClients(),
-        plex=PlexSectionAccess(
-            primary_section, lambda level="item": index_for(primary, level)
-        ),
+        plex=PlexSectionAccess(primary_section, primary_index),
     )
     ctx = BuilderContext(
         library=primary,

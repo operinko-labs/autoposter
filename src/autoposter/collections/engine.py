@@ -30,6 +30,7 @@ clean run (roadmap row 115). And, when the caller asks for it, the delete
 sweep (``_sweep``) -- the only code in this service that deletes a collection,
 off by default, capped, and refused outright past the cap.
 """
+import asyncio
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -202,6 +203,16 @@ def _due(definition: CollectionDefinition, run_index: int, now: datetime) -> boo
     if run_index % schedule.every_n_runs:
         return False
     return not (schedule.months and now.month not in schedule.months)
+
+
+def _collections_by_title(section) -> dict:
+    """``{title: collection}`` for the whole section.
+
+    One blocking request that returns every collection in the library (305 of
+    them on the production Movies section), so it is only ever called through
+    ``asyncio.to_thread`` -- ``run_library``'s ``listing`` below.
+    """
+    return {collection.title: collection for collection in section.collections()}
 
 
 # The fields an expanded definition inherits from the placeholder it came
@@ -385,15 +396,26 @@ async def run_library(
     indexes: dict[str, dict] = {}
     existing: dict | None = None
 
-    def owned_index(level: str = "item"):
+    # Both are coroutines since perf workstream C1. The index is a full
+    # ``section.all()`` -- 1,954 movies in 2.8 s against the production server,
+    # plus a synchronous reload for every unmatched item's ``guids`` -- and the
+    # listing is one request returning every collection in the library. On the
+    # event loop either one froze every worker, every request and the dashboard
+    # stream for its whole length. Each is now ONE ``asyncio.to_thread`` hop,
+    # and the memo stays on this side of the hop, so "built at most once per
+    # pass" is unchanged. The items and collections come back as objects the
+    # rest of the pass reads only loaded attributes off (``title``,
+    # ``ratingKey``); every lazy read happens in the reconcilers' own hops
+    # (``adopt/walk.py``'s rule: never touch a plexapi object outside the thread).
+    async def owned_index(level: str = "item") -> dict:
         if level not in indexes:
-            indexes[level] = build_owned_index(section, level)
+            indexes[level] = await asyncio.to_thread(build_owned_index, section, level)
         return indexes[level]
 
-    def listing() -> dict:
+    async def listing() -> dict:
         nonlocal existing
         if existing is None:
-            existing = {c.title: c for c in section.collections()}
+            existing = await asyncio.to_thread(_collections_by_title, section)
         return existing
 
     # The pass's bundle, with this library's Plex accessor bound onto it. The
@@ -681,7 +703,7 @@ async def run_library(
         }
         for action in await apply_local_posters_to_unmanaged(
             session, config, http, library,
-            {t: c for t, c in listing().items() if t not in owned_titles},
+            {t: c for t, c in (await listing()).items() if t not in owned_titles},
             dry_run=dry_run,
         ):
             actions.append(action)
@@ -792,7 +814,7 @@ async def _run_one(
             "shows; nothing was applied" % (definition.title, level)
         )
         return outcome
-    index = owned_index(level)
+    index = await owned_index(level)
     resolved = resolve_external(index, result.ids)
     outcome.unresolved = resolved.unresolved
     if resolved.unresolved:
@@ -986,7 +1008,7 @@ async def _run_one(
 
     outcome.skipped = not items
     if preview and definition.create_collection:
-        collection = listing().get(definition.title)
+        collection = (await listing()).get(definition.title)
         if collection is None:
             outcome.adding = len(items)
         elif items:
@@ -1076,7 +1098,7 @@ async def _run_one(
             summary_asserted=summary_action is None,
             sort=definition.sort,
             dry_run=dry_run,
-            existing=listing(),
+            existing=await listing(),
             adopt=config.collections.adopt,
             adopt_from=config.collections.adopt_from,
             adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
@@ -1587,8 +1609,9 @@ async def _sweep(
     as managing this one's titles, which is the safe direction for a report
     and the wrong one for a sweep.
     """
+    existing = await listing()
     managed = definition_titles_for(
-        definitions, listing().values(), library, library_type, config
+        definitions, existing.values(), library, library_type, config
     )
     families, generated = _family_state(definitions, library, run_cache)
     rows = {
@@ -1614,7 +1637,7 @@ async def _sweep(
             "were considered for deletion" % family_title
         )))
 
-    for title, collection in listing().items():
+    for title, collection in existing.items():
         if title in managed or title not in rows:
             continue
         if rows[title].kind in ("operator", LOCAL_ASSET_KIND):
@@ -1814,10 +1837,13 @@ async def _separators(
     }
     collections = config.collections
     results: list[DefinitionResult] = []
+    # The pass's one listing, awaited once: it is memoised, so this is the
+    # same dict every spec below would have been handed.
+    existing = await listing()
     for spec in specs:
         actions = await reconcile_separator(
             session, section, library, LIBTYPES[library_type], label, spec,
-            listing(), stored,
+            existing, stored,
             collections.adopt, collections.adopt_from or [],
             collections.adopt_removes_prior_label, dry_run,
             collections.protect_labels or [], http, config,
