@@ -77,8 +77,10 @@ class Render(Base):
     __table_args__ = (UniqueConstraint("item_id", "art_kind", name="uq_render_item_kind"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # No `index=True`: uq_render_item_kind (item_id, art_kind) leads with
+    # item_id and already serves every `WHERE item_id = ?` (perf spec D1).
     item_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE")
     )
     # poster | season_poster | background | title_card
     art_kind: Mapped[str] = mapped_column(String(24))
@@ -248,18 +250,31 @@ class RenderDelivery(Base):
         # every row the ordinary pipeline arms, and the only query that reads
         # the column asks `run_id = <id>`.
         Index("ix_render_deliveries_run_id", "run_id", postgresql_where=text("run_id IS NOT NULL")),
+        # PARTIAL for the metadata twin's reason (perf spec D1): the retry
+        # pass is this column's only reader and it asks for due `pending`
+        # rows ordered `(next_attempt_at, id)`; every other status leaves
+        # next_attempt_at NULL.
+        Index(
+            "ix_render_deliveries_next_attempt_at",
+            "next_attempt_at",
+            "id",
+            postgresql_where=text("status = 'pending'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # No `index=True`: uq_delivery_render_server (render_id, server) leads
+    # with render_id (perf spec D1).
     render_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("renders.id", ondelete="CASCADE"), index=True
+        BigInteger, ForeignKey("renders.id", ondelete="CASCADE")
     )
     server: Mapped[str] = mapped_column(String(16))
     # uploaded | skipped | failed | pending
     status: Mapped[str] = mapped_column(String(24), default="pending", server_default="pending")
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # No `index=True`: the index is the partial one in `__table_args__` above.
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     detail: Mapped[str | None] = mapped_column(Text)
     # How many times this row has been ATTEMPTED and not succeeded. Reset to 0
     # by any terminal-for-now outcome (`uploaded`, `skipped`, `absent`), so the
@@ -371,7 +386,29 @@ class Job(Base):
             unique=True,
             postgresql_where=text("state IN ('pending', 'deferred')"),
         ),
-        Index("ix_jobs_claimable", "state", "run_after"),
+        # The claim's own index (perf spec D1): partial over the two claimable
+        # states and ordered exactly as queue/jobs.py's _CLAIM_SQL orders --
+        # `run_after, id` -- so the claim reads the first due row off the
+        # index instead of gathering every pending/deferred row and sorting.
+        Index(
+            "ix_jobs_claim",
+            "run_after",
+            "id",
+            postgresql_where=text("state IN ('pending', 'deferred')"),
+        ),
+        # Every "rows in state X, newest first" reader: the dashboard's
+        # processed-last-24h count, the Failures list and the done-with-
+        # warnings list (perf spec D1).
+        Index("ix_jobs_state_updated", "state", text("updated_at DESC"), text("id DESC")),
+        # Action Center's `_parked_by_latest_job` DISTINCT ON, and retention's
+        # newest-row-per-key probe (scheduler/retention.py). Only
+        # process_item rows carry a dedupe_key.
+        Index(
+            "ix_jobs_latest_per_key",
+            "dedupe_key",
+            text("id DESC"),
+            postgresql_where=text("kind = 'process_item' AND dedupe_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -401,7 +438,8 @@ class Job(Base):
     # one word did need a migration after all (``b3d91f7c05ea``). Twenty-four
     # matches the two outcome tables' own status columns, which is the width
     # this project already reaches for when a state name has to grow.
-    state: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    # No `index=True`: ix_jobs_state_updated leads with state (perf spec D1).
+    state: Mapped[str] = mapped_column(String(24), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     claimed_by: Mapped[str | None] = mapped_column(String(64))
@@ -461,8 +499,9 @@ class ItemFacts(Base):
     __table_args__ = (UniqueConstraint("item_id", name="uq_item_facts_item"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # No `index=True`: uq_item_facts_item already indexes item_id (perf spec D1).
     item_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE")
     )
     critic_rating: Mapped[float | None] = mapped_column(Float)
     audience_rating: Mapped[float | None] = mapped_column(Float)
@@ -618,8 +657,10 @@ class ItemMetadataOverride(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # No `index=True`: uq_item_metadata_override_item_field (item_id, field)
+    # leads with item_id (perf spec D1).
     item_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE")
     )
     field: Mapped[str] = mapped_column(String(32))
     value: Mapped[str] = mapped_column(Text)
@@ -1190,8 +1231,10 @@ class ActionDismissal(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # No `index=True`: uq_action_dismissal_item_kind (item_id, art_kind)
+    # leads with item_id (perf spec D1).
     item_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE"), index=True
+        BigInteger, ForeignKey("media_items.id", ondelete="CASCADE")
     )
     art_kind: Mapped[str] = mapped_column(String(24))
     flag: Mapped[str | None] = mapped_column(String(32))

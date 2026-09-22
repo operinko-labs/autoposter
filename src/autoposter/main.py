@@ -12,7 +12,7 @@ from autoposter.boot import StoredDocument, stored_config_document
 from autoposter.config.loader import DEFAULT_CONFIG_PATH, load_config
 from autoposter.config.overrides import _validated
 from autoposter.config.schema import Config, Secrets
-from autoposter.db.base import make_engine, make_session_factory
+from autoposter.db.base import make_engine, make_session_factory, pool_size_for
 from autoposter.servers.registry import Servers, build_servers
 
 # The file this process boots from, published as app.state.config_path so the
@@ -177,7 +177,9 @@ def build() -> FastAPI:
     secrets = Secrets.from_env()
     config = _boot_config(secrets.database_url)
 
-    engine = make_engine(secrets.database_url)
+    # Sized from `workers` (perf spec D3). `workers` is frozen until restart
+    # (config/live.py), and so is this pool, for the same reason.
+    engine = make_engine(secrets.database_url, pool_size=pool_size_for(config.workers))
     session_factory = make_session_factory(engine)
 
     def servers_factory(effective: Config, http: httpx.AsyncClient) -> Servers:

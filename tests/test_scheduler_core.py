@@ -1,8 +1,10 @@
 """Scheduler bookkeeping and claiming."""
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
+import time
 from pathlib import Path
 
 import httpx
@@ -13,6 +15,7 @@ from autoposter.config.holder import ConfigHolder
 from autoposter.config.loader import load_config
 from autoposter.config.schema import NotificationsConfig
 from autoposter.db.models import Render, Run, ScheduledRun
+from autoposter.loop_lag import monitor_loop_lag
 
 from conftest import seed_media_item
 from autoposter.notify.dispatch import build_notifier
@@ -1261,3 +1264,91 @@ async def test_a_drain_that_closes_two_full_passes_sends_two_digests_each_over_i
         "2 newly actionable after a full pass",
         "1 newly actionable after a full pass",
     ]
+
+
+# --- the running job's name, for the event-loop lag monitor (perf A9) ---
+
+
+async def test_the_running_job_is_named_while_its_body_runs_and_cleared_after(
+    session_factory,
+):
+    """``current_job`` is what loop_lag.py names in its WARNING. It must read
+    the job's name for the whole run and ``None`` once the run is over -- a
+    name left behind would pin every later stall on a job that finished."""
+    seen = []
+    scheduler = Scheduler(session_factory, [], poll_seconds=60)
+
+    async def body(session):
+        seen.append(scheduler.current_job)
+        return "ok"
+
+    assert scheduler.current_job is None
+    await scheduler._maybe_run(_job(name="plex_prune", run=body))
+
+    assert seen == ["plex_prune"]
+    assert scheduler.current_job is None
+
+
+async def test_a_failing_job_still_clears_the_running_name(session_factory):
+    seen = []
+    scheduler = Scheduler(session_factory, [], poll_seconds=60)
+
+    async def body(session):
+        seen.append(scheduler.current_job)
+        raise RuntimeError("job exploded")
+
+    await scheduler._maybe_run(_job(name="plex_merge", run=body))
+
+    assert seen == ["plex_merge"]
+    assert scheduler.current_job is None
+
+
+async def test_a_job_that_is_not_due_is_never_named(session_factory):
+    scheduler = Scheduler(session_factory, [], poll_seconds=60)
+    job = _job(name="demo", interval=3600)
+    await scheduler._maybe_run(job)
+
+    ran = []
+
+    async def body(session):
+        ran.append(scheduler.current_job)
+        return "ok"
+
+    await scheduler._maybe_run(_job(name="demo", interval=3600, run=body))
+    assert ran == []
+    assert scheduler.current_job is None
+
+
+async def test_the_lag_monitor_names_a_scheduled_job_that_blocks_the_loop(
+    session_factory, caplog
+):
+    """The production path end to end: a real claim, a body that blocks the
+    loop the way a synchronous plexapi call does, and the real monitor reading
+    the real scheduler's attribute. The monitor wakes only after the stall --
+    at the result write's first database await -- and the name has to still
+    be set then, which is why ``_maybe_run`` clears it after the result write
+    rather than straight after the body."""
+    scheduler = Scheduler(session_factory, [], poll_seconds=60)
+
+    async def body(session):
+        time.sleep(0.6)
+        return "blocked the loop"
+
+    monitor = asyncio.create_task(monitor_loop_lag(lambda: scheduler.current_job))
+    try:
+        with caplog.at_level(logging.WARNING, logger="autoposter.loop_lag"):
+            await asyncio.sleep(0)
+            await scheduler._maybe_run(_job(name="collections_reconcile", run=body))
+            async with asyncio.timeout(5):
+                while not [r for r in caplog.records if r.name == "autoposter.loop_lag"]:
+                    await asyncio.sleep(0.01)
+    finally:
+        monitor.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await monitor
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.name == "autoposter.loop_lag" and r.levelno == logging.WARNING
+    ]
+    assert any("scheduled job running: collections_reconcile" in m for m in warnings), warnings

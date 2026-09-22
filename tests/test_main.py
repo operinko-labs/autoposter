@@ -26,6 +26,7 @@ from httpx import ASGITransport, AsyncClient
 import autoposter.main as main_module
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
+from autoposter.db.base import pool_size_for
 from autoposter.plex.client import PlexClient
 from autoposter.servers.base import ServerItemRef
 
@@ -94,7 +95,7 @@ def _stub_build_dependencies(monkeypatch, dist):
     """
     monkeypatch.setattr(main_module, "CONFIG_PATH", EXAMPLE)
     monkeypatch.setattr(main_module, "Secrets", _FakeSecrets)
-    monkeypatch.setattr(main_module, "make_engine", lambda url: object())
+    monkeypatch.setattr(main_module, "make_engine", lambda url, **kwargs: object())
     # spa_dist() itself is not under test; only whether build() calls
     # mount_spa with its result.
     monkeypatch.setattr(main_module, "spa_dist", lambda: dist)
@@ -308,3 +309,20 @@ def test_main_serves_on_the_address_the_environment_names(monkeypatch):
         "port": 9090,
         "timeout_graceful_shutdown": 10,
     }]
+
+
+async def test_build_sizes_the_pool_from_the_configured_workers(monkeypatch):
+    """Perf spec D3: ``build()`` is the one engine in the served process, and
+    the one with a config to size from. The fixture's stand-in accepts and
+    drops keyword arguments, so this records them instead."""
+    seen: list[dict] = []
+
+    def recording_make_engine(url, **kwargs):
+        seen.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(main_module, "make_engine", recording_make_engine)
+
+    main_module.build()
+
+    assert seen == [{"pool_size": pool_size_for(load_config(EXAMPLE).workers)}]
