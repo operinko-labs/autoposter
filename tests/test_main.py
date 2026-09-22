@@ -308,3 +308,26 @@ def test_main_serves_on_the_address_the_environment_names(monkeypatch):
         "port": 9090,
         "timeout_graceful_shutdown": 10,
     }]
+
+
+async def test_build_compresses_responses(dist):
+    """Perf spec A1 through the production entry point. ``install_compression``
+    is called from ``build()`` beside ``mount_spa`` -- deliberately not from
+    ``create_app`` -- so no other test would notice it being deleted. The
+    shell is padded past the 1 KiB threshold so size cannot be the reason a
+    response goes out plain."""
+    (dist / "index.html").write_text(
+        f"<!doctype html><html><body>{INDEX_MARKER}{'<p>padding</p>' * 400}</body></html>",
+        encoding="utf-8",
+    )
+    app = main_module.build()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/", headers={"Accept-Encoding": "gzip"})
+
+    assert response.status_code == 200
+    assert response.headers.get("content-encoding") == "gzip", (
+        "build() did not install the gzip middleware"
+    )
+    assert INDEX_MARKER in response.text
