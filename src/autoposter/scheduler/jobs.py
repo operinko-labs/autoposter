@@ -45,6 +45,7 @@ from autoposter.deliveries import retry_pending_deliveries
 from autoposter.intake.arr import RenderIntent
 from autoposter.queue.jobs import enqueue, reclaim_stale
 from autoposter.scheduler.core import Job
+from autoposter.scheduler.retention import apply_retention, describe_retention
 from autoposter.scheduler.run_history import RUN_HISTORY_KEEP, trim_run_history
 
 logger = logging.getLogger(__name__)
@@ -911,6 +912,12 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
     operator's files and can legitimately hold for weeks; retention is what
     keeps an unbounded table bounded and must not be hostage to an NFS mount
     OR to a later raise in this same pass.
+
+    Perf spec D2's retention (``scheduler/retention.py``) rides the same slot
+    for the same reasons: right after the trim, ahead of every refusal, each
+    of its tables committed in its own transaction. It never raises -- a table
+    that fails is logged, rolled back and named in the summary -- so the walk
+    below runs whatever happens there.
     """
 
     async def run(session: AsyncSession) -> str:
@@ -922,6 +929,9 @@ def make_cleanup_job(holder: ConfigHolder) -> Job:
         trimmed = await trim_run_history(session, RUN_HISTORY_KEEP)
         await session.commit()
         trim_note = f"; trimmed {trimmed} run history row(s)" if trimmed else ""
+        # Perf spec D2, beside the trim and for the trim's reasons -- see the
+        # docstring. Commits per table itself and never raises.
+        trim_note += describe_retention(await apply_retention(session))
 
         config = holder.current
         any_render = (await session.execute(select(Render.id).limit(1))).first()
