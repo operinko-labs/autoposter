@@ -261,7 +261,7 @@ function stubFetch(routes: RouteMap) {
 function movieRoutes(overrides: RouteMap = {}): RouteMap {
   return {
     "/api/items/3": () => json(MOVIE),
-    "/api/items/3/artwork/poster": () => imageBytes("base-image-bytes"),
+    "/api/items/3/artwork/poster?w=640": () => imageBytes("base-image-bytes"),
     "/api/items/3/artwork/poster/live": () => imageBytes("live-image-bytes"),
     ...overrides,
   };
@@ -272,9 +272,9 @@ function movieRoutes(overrides: RouteMap = {}): RouteMap {
 function bothKindRoutes(overrides: RouteMap = {}): RouteMap {
   return {
     "/api/items/3": () => json(MOVIE_BOTH_KINDS),
-    "/api/items/3/artwork/poster": () => imageBytes("base-poster-bytes"),
+    "/api/items/3/artwork/poster?w=640": () => imageBytes("base-poster-bytes"),
     "/api/items/3/artwork/poster/live": () => imageBytes("live-poster-bytes"),
-    "/api/items/3/artwork/background": () => imageBytes("base-background-bytes"),
+    "/api/items/3/artwork/background?w=640": () => imageBytes("base-background-bytes"),
     "/api/items/3/artwork/background/live": () => imageBytes("live-background-bytes"),
     ...overrides,
   };
@@ -468,7 +468,7 @@ describe("ItemDetail", () => {
   it("says nothing has been rendered when the base image 404s", async () => {
     stubFetch(
       movieRoutes({
-        "/api/items/3/artwork/poster": () => json({ detail: "artwork not found" }, 404),
+        "/api/items/3/artwork/poster?w=640": () => json({ detail: "artwork not found" }, 404),
       }),
     );
 
@@ -485,7 +485,7 @@ describe("ItemDetail", () => {
     // hits the stub's throw instead of quietly getting an image.
     const fetchMock = stubFetch({
       "/api/items/9": () => json(EPISODE),
-      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
 
@@ -496,10 +496,30 @@ describe("ItemDetail", () => {
         .map((call) => call[0] as string)
         .filter((path) => path.includes("/artwork/")),
     ).toEqual([
-      "/api/items/9/artwork/title_card",
+      "/api/items/9/artwork/title_card?w=640",
       "/api/items/9/artwork/title_card/live",
     ]);
     expect(await bytesShownBy(pane("Base image"))).toBe("title-card-bytes");
+  });
+
+  it("asks for the stored image at w=640 with no-cache, and leaves the live pane alone", async () => {
+    // no-cache because the server lets a browser reuse artwork for five
+    // minutes without asking; this page is where an operator looks at a
+    // render they have just made, so it must always revalidate. The live
+    // pane is Plex's own no-store response and is not touched.
+    const fetchMock = stubFetch(movieRoutes());
+
+    await renderItem();
+
+    const artworkCalls = fetchMock.mock.calls.filter(([path]) => path.includes("/artwork/"));
+    expect(artworkCalls.map(([path]) => path)).toEqual([
+      "/api/items/3/artwork/poster?w=640",
+      "/api/items/3/artwork/poster/live",
+    ]);
+    const [[, baseInit], [, liveInit]] = artworkCalls;
+    expect(baseInit?.cache).toBe("no-cache");
+    expect(liveInit?.cache).toBeUndefined();
+    expect(await bytesShownBy(pane("Base image"))).toBe("base-image-bytes");
   });
 
   it("shapes the pane box for the art kind: 2:3 for a poster, 16:9 for a title card", async () => {
@@ -516,7 +536,7 @@ describe("ItemDetail", () => {
     view.unmount();
     stubFetch({
       "/api/items/9": () => json(EPISODE),
-      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
     await renderItem(9);
@@ -760,7 +780,7 @@ describe("ItemDetail", () => {
     // unable to see whether Plex is serving something this project never made.
     stubFetch({
       "/api/items/9": () => json(EPISODE),
-      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
 
@@ -978,7 +998,7 @@ describe("ItemDetail parentage", () => {
   it("names the show in an episode's header, S/E numbers included, linked to the show's own item view", async () => {
     stubFetch({
       "/api/items/154245": () => json(EPISODE_WITH_PARENT),
-      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
 
@@ -995,7 +1015,7 @@ describe("ItemDetail parentage", () => {
   it("gains the show segment in the breadcrumb, linked to the show's own item view", async () => {
     stubFetch({
       "/api/items/154245": () => json(EPISODE_WITH_PARENT),
-      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
 
@@ -1014,7 +1034,7 @@ describe("ItemDetail parentage", () => {
     stubFetch({
       "/api/items/154245": () =>
         json({ ...EPISODE_WITH_PARENT, refs: { plex: "154245", jellyfin: "0a1b" } }),
-      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
 
@@ -1028,7 +1048,7 @@ describe("ItemDetail parentage", () => {
   it("shows a placeholder instead of a dangling separator when an item has no refs at all", async () => {
     stubFetch({
       "/api/items/154245": () => json({ ...EPISODE_WITH_PARENT, refs: {} }),
-      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
 
@@ -1046,7 +1066,7 @@ describe("ItemDetail parentage", () => {
   it("names the show in a season's header and breadcrumb, analogous to an episode", async () => {
     stubFetch({
       "/api/items/88": () => json(SEASON_WITH_PARENT),
-      "/api/items/88/artwork/season_poster": () => imageBytes("season-poster-bytes"),
+      "/api/items/88/artwork/season_poster?w=640": () => imageBytes("season-poster-bytes"),
       "/api/items/88/artwork/season_poster/live": () => imageBytes("live-season-poster-bytes"),
     });
 
@@ -1073,7 +1093,7 @@ describe("ItemDetail parentage", () => {
     // _upsert_media_item leaves it null rather than inventing one).
     stubFetch({
       "/api/items/9": () => json(EPISODE),
-      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
 
@@ -1321,7 +1341,7 @@ describe("ItemDetail candidate picker", () => {
     view.unmount();
     stubFetch({
       "/api/items/9": () => json(EPISODE),
-      "/api/items/9/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/9/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/9/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
     });
     await renderItem(9);
@@ -1718,13 +1738,13 @@ describe("ItemDetail candidate picker", () => {
     };
     stubFetch({
       "/api/items/154245": () => json(EPISODE_WITH_PARENT),
-      "/api/items/154245/artwork/title_card": () => imageBytes("title-card-bytes"),
+      "/api/items/154245/artwork/title_card?w=640": () => imageBytes("title-card-bytes"),
       "/api/items/154245/artwork/title_card/live": () => imageBytes("live-title-card-bytes"),
       "/api/items/154245/candidates/title_card": () => json(CANDIDATES),
       "/api/items/154245/candidates/title_card/pick": () =>
         json({ status: "picked", queued: true }),
       "/api/items/42": () => json(OTHER_ITEM),
-      "/api/items/42/artwork/title_card": () => imageBytes("base-image-bytes"),
+      "/api/items/42/artwork/title_card?w=640": () => imageBytes("base-image-bytes"),
       "/api/items/42/artwork/title_card/live": () => imageBytes("live-image-bytes"),
       "/api/items/42/candidates/title_card": () => json(CANDIDATES),
     });
