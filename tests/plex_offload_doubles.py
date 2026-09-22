@@ -176,6 +176,13 @@ class BlockingCollection:
         self._touch("items")
         return list(self._snapshot)
 
+    def __len__(self):
+        # plexapi 4.18.2's ``Collection.__len__`` is ``len(self.items())`` and
+        # there is no ``__bool__``, so a bare truth test on a collection is a
+        # membership fetch. Routed through ``items()`` here so one on the loop
+        # is recorded like any other touch.
+        return len(self.items())
+
     def addItems(self, items):
         self._touch("addItems")
         self._live.extend(items)

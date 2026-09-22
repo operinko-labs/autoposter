@@ -261,8 +261,12 @@ def _write(
 
     - create: ``createCollection`` with every item, the ownership label, the
       sort, the summary;
-    - update: the summary (helper called unconditionally -- it skips by itself,
-      and gating it on the text would starve its lock repair), or the clear
+    - update: the summary, because it is part of the members hash -- a
+      corrected summary takes this branch, and writing it only on create
+      would store the new hash while the old summary stayed on the collection
+      forever, every later pass short-circuiting on that hash. The helper is
+      called unconditionally (it skips by itself, and gating it on the text
+      would starve its lock repair); or the clear
       under ``summary_asserted``; then the diff, and the order under sync only
       (under append the new members arrive in source order at the end, and the
       positions already there are left alone);
@@ -286,8 +290,12 @@ def _write(
                 actions.append("updated the summary of %r" % title)
             _edit_collection_summary(collection, summary)
         elif summary_asserted and _clear_collection_summary(collection):
-            # Row 187: see ``reconcile_list_collection``'s docstring for why
-            # only an asserted absence may clear.
+            # Row 187: the summary is part of the members hash, so a
+            # deleted ``summary:`` reaches this branch; a definition that
+            # never set one finds the field unlocked and writes nothing.
+            # ``summary_asserted`` is what separates that deletion from an
+            # effective summary that could not be RESOLVED this pass
+            # (``engine._summary_for``).
             actions.append("cleared the summary of %r" % title)
         adding, removing = member_diff(collection, items, sync_mode)
         if adding:
@@ -455,7 +463,13 @@ async def reconcile_list_collection(
         written = None
         if dry_run:
             actions.append("%s %r with %d item(s)" % (
-                "would update" if collection else "would create", title, len(items)))
+                # ``is not None``, never a truth test: plexapi's
+                # ``Collection.__len__`` is ``len(self.items())`` with no
+                # ``__bool__``, so ``if collection`` would be a membership
+                # fetch on the loop -- and would call an existing EMPTY
+                # collection a create.
+                "would update" if collection is not None else "would create",
+                title, len(items)))
         else:
             written = await asyncio.to_thread(
                 _write, section, collection, title, items, label, summary,
@@ -477,6 +491,9 @@ async def reconcile_list_collection(
             deltas["removed"] = removed_count
 
         if not dry_run:
+            # Every non-dry pass through this block took the ``_write`` branch
+            # above, so the rating key is always the one it just returned.
+            assert written is not None
             if record is None:
                 record = ManagedCollection(
                     library=library, title=title, kind="manual",

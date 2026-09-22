@@ -206,3 +206,26 @@ async def test_a_preview_reads_the_collection_off_the_event_loop(session, regist
     assert (result.adding, result.removing) == (1, 1)
     assert "collection 'Previewed'.items" in log.names()
     assert log.on_thread(loop_thread) == []
+
+
+async def test_a_dry_run_on_an_existing_list_collection_stays_off_the_event_loop(
+    session, registry_entry
+):
+    """A dry run reports "would update" for a collection that exists -- and
+    must decide that without a truth test on the plexapi object, whose
+    ``__len__`` is a membership fetch. An existing EMPTY collection is still
+    an update, never a create."""
+    registry_entry(_Ids("test_offload_dry", [("imdb", "tt101")]))
+    log = CallLog()
+    server, section, _ = _library(log)
+    section.add(BlockingCollection(log, server, "Dry", labels=[LABEL]))
+    loop_thread = threading.get_ident()
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(title="Dry", builder="test_offload_dry")],
+        _config(), dry_run=True,
+    )
+
+    assert "would update 'Dry' with 1 item(s)" in run.actions
+    assert log.on_thread(loop_thread) == []
