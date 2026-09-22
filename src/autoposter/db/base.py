@@ -13,7 +13,7 @@ class Base(DeclarativeBase):
 # scheduler, the dashboard stream and the request handlers need connections
 # of their own beside them -- so the pool is the workers plus a fixed
 # headroom, not SQLAlchemy's flat 5 + 10 that a full pass at five workers
-# already crowded. At the default of 10 workers that is 20 + 10 overflow,
+# already crowded. At 5 workers that is 15 + 10 overflow; at 10, 20 + 10 --
 # well under PostgreSQL's default max_connections of 100.
 POOL_HEADROOM = 10
 POOL_MAX_OVERFLOW = 10
@@ -40,7 +40,7 @@ def make_engine(
 ) -> AsyncEngine:
     """The engine every caller builds. Keyword-only pool arguments with safe
     defaults, so a caller with no config -- ``database_answers`` first among
-    them -- keeps calling ``make_engine(url)`` and gets today's pool."""
+    them -- keeps calling ``make_engine(url)`` and gets today's pool size."""
     return create_async_engine(
         url,
         future=True,

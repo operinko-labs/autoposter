@@ -16,7 +16,7 @@ URL = "postgresql+asyncpg://user:pass@db.invalid:5432/nothing"
 
 
 def test_the_pool_is_workers_plus_ten_over_ten():
-    # The spec's numbers: at the new default of 10 workers, 20 + 10.
+    # The spec's numbers: at 5 workers, 15 + 10; at 10, 20 + 10.
     assert POOL_HEADROOM == 10
     assert POOL_MAX_OVERFLOW == 10
     assert POOL_RECYCLE_SECONDS == 1800
