@@ -45,6 +45,7 @@ collection sharing a movie's provider id must never be filed as that movie.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 
 from autoposter.render.naming import derive_root_folder  # the same helper plex/client.py uses
@@ -100,6 +101,13 @@ class LibraryIndex:
         self.built_at: float | None = None
         self._max_age_seconds = max_age_seconds
         self._lock = asyncio.Lock()
+        # Series listings in flight, one task per series id (perf C4). The
+        # global lock used to cover these fetches too, so one slow series
+        # held up every other resolve in the pool; now concurrent resolves
+        # of ONE series share one fetch, and different series never queue
+        # behind each other. The lock is left to what needs it:
+        # ``rebuild``'s all-or-nothing swap and ``refresh_folders``.
+        self._listing: dict[str, asyncio.Task] = {}
 
     # --- shape helpers the client also uses ---
     def kind_of(self, dto: dict) -> str:
@@ -155,6 +163,12 @@ class LibraryIndex:
             self._folders = await self._fetch_folders()
 
     async def rebuild(self) -> None:
+        if self.built and not self._stale():
+            # The fast path, BEFORE the lock (perf C4). A fresh index is the
+            # steady state and every resolve calls this first, so queueing
+            # each one behind the lock only to find nothing to do serialised
+            # the whole pool behind whatever held it.
+            return
         async with self._lock:
             if self.built and not self._stale():
                 # Another caller already won the race to build a still-fresh
@@ -223,14 +237,35 @@ class LibraryIndex:
         return None
 
     async def _children_of(self, series_id: str):
-        if series_id in self._children:
-            return self._children[series_id]
-        async with self._lock:
-            if series_id in self._children:
-                return self._children[series_id]
-            # capture -> "/Shows/{seriesId}/Seasons" and "/Shows/{seriesId}/Episodes" -> get
-            self._children[series_id] = (await self._api.seasons(series_id), await self._api.episodes(series_id))
-        return self._children[series_id]
+        cached = self._children.get(series_id)
+        if cached is not None:
+            return cached
+        task = self._listing.get(series_id)
+        if task is None:
+            task = asyncio.ensure_future(self._fetch_children(series_id, self._children))
+            self._listing[series_id] = task
+            task.add_done_callback(functools.partial(self._listing_done, series_id))
+        # Shielded: one waiter being cancelled (its job timed out, the worker
+        # is shutting down) must not cancel the fetch the other waiters share.
+        return await asyncio.shield(task)
+
+    async def _fetch_children(self, series_id: str, children: dict):
+        # capture -> "/Shows/{seriesId}/Seasons" and "/Shows/{seriesId}/Episodes" -> get
+        found = (await self._api.seasons(series_id), await self._api.episodes(series_id))
+        # Into the dict that was current when the fetch STARTED: a rebuild
+        # meanwhile swaps in a fresh ``_children``, and this result then lands
+        # in the discarded one rather than in the new generation.
+        children[series_id] = found
+        return found
+
+    def _listing_done(self, series_id: str, task: asyncio.Task) -> None:
+        if self._listing.get(series_id) is task:
+            del self._listing[series_id]
+        # A failure is never cached -- the next resolve asks again -- and it
+        # is retrieved here so a fetch every waiter abandoned is not reported
+        # as "exception was never retrieved".
+        if not task.cancelled():
+            task.exception()
 
     async def _find(self, intent) -> tuple[dict, dict | None, dict | None]:
         """(the item's dto, its series dto or None, the item's season dto or None).

@@ -314,3 +314,101 @@ async def test_the_index_rebuilds_after_max_age_seconds(monkeypatch):
         assert len([c for c in calls if c[0] == "/Library/VirtualFolders"]) == 2, (
             "stale: the next lookup must rebuild"
         )
+
+
+# --- perf C4: the fast path and per-series listings ---------------------------
+
+FUTURAMA = {"Id": "s2", "Name": "Futurama", "Type": "Series", "ProductionYear": 1999,
+            "ProviderIds": {"Tvdb": "73871"}, "Path": "/media/TV/Futurama"}
+
+
+class _GatedApi:
+    """A ``JellyfinApi`` stand-in whose series listings wait on a per-series
+    gate, so a test can hold one series' fetch open and watch what else
+    proceeds meanwhile."""
+
+    def __init__(self, series, *, open_gates=False, fail_first=False):
+        self._series = list(series)
+        self.gates = {s["Id"]: asyncio.Event() for s in self._series}
+        self.asked = {s["Id"]: asyncio.Event() for s in self._series}
+        if open_gates:
+            for gate in self.gates.values():
+                gate.set()
+        self._fail_first = fail_first
+        self.season_calls: list[str] = []
+
+    async def virtual_folders(self):
+        return FOLDERS
+
+    async def items(self, **query):
+        if "searchTerm" in query:
+            return []
+        return [MATRIX] if query["parentId"] == "lib-m" else list(self._series)
+
+    async def seasons(self, series_id):
+        self.season_calls.append(series_id)
+        self.asked[series_id].set()
+        await self.gates[series_id].wait()
+        if self._fail_first:
+            self._fail_first = False
+            raise RuntimeError("Jellyfin dropped the connection")
+        return [{**S2, "Id": "se2-" + series_id, "SeriesId": series_id}]
+
+    async def episodes(self, series_id):
+        return [{**E3, "Id": "ep3-" + series_id, "SeriesId": series_id}]
+
+
+def _season(tvdb_id, title):
+    return RenderIntent(kind="season", title=title, tvdb_id=tvdb_id, season_number=2)
+
+
+async def test_two_concurrent_resolves_of_one_series_share_one_listing():
+    api = _GatedApi([SIMPSONS])
+    index = LibraryIndex(api, excluded=set())
+    first = asyncio.create_task(index.resolve(_season(71663, "The Simpsons")))
+    second = asyncio.create_task(index.resolve(_season(71663, "The Simpsons")))
+    await asyncio.wait_for(api.asked["s1"].wait(), timeout=5)
+    for _ in range(10):
+        await asyncio.sleep(0)  # let the second resolve reach the listing
+
+    api.gates["s1"].set()
+    a, b = await asyncio.gather(first, second)
+
+    assert a.native_id == b.native_id == "se2-s1"
+    assert api.season_calls == ["s1"]
+
+
+async def test_a_slow_series_listing_does_not_hold_up_another_series():
+    api = _GatedApi([SIMPSONS, FUTURAMA])
+    api.gates["s2"].set()
+    index = LibraryIndex(api, excluded=set())
+    simpsons = asyncio.create_task(index.resolve(_season(71663, "The Simpsons")))
+    await asyncio.wait_for(api.asked["s1"].wait(), timeout=5)
+
+    futurama = await asyncio.wait_for(index.resolve(_season(73871, "Futurama")), timeout=5)
+
+    assert futurama.native_id == "se2-s2"
+    assert not simpsons.done(), "the Simpsons listing is still held open"
+    api.gates["s1"].set()
+    assert (await simpsons).native_id == "se2-s1"
+
+
+async def test_a_fresh_index_answers_without_waiting_for_the_lock():
+    api = _GatedApi([SIMPSONS], open_gates=True)
+    index = LibraryIndex(api, excluded=set())
+    await index.rebuild()
+
+    async with index._lock:  # a refresh_folders or a rebuild in progress
+        await asyncio.wait_for(index.rebuild(), timeout=5)
+
+
+async def test_a_failed_series_listing_is_retried_by_the_next_resolve():
+    api = _GatedApi([SIMPSONS], open_gates=True, fail_first=True)
+    index = LibraryIndex(api, excluded=set())
+
+    with pytest.raises(RuntimeError):
+        await index.resolve(_season(71663, "The Simpsons"))
+    item = await index.resolve(_season(71663, "The Simpsons"))
+
+    assert item.native_id == "se2-s1"
+    assert api.season_calls == ["s1", "s1"]
