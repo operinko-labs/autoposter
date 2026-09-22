@@ -189,6 +189,14 @@ function snapshotWithScheduledJobs(jobs: ScheduledRun[]) {
   };
 }
 
+/** Flip `document.hidden` and announce it, as a browser does when the tab is
+ * backgrounded or brought back. An own property shadows jsdom's getter;
+ * afterEach deletes it again. */
+function setHidden(hidden: boolean) {
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
 // RunCharts is a lazy chunk inside the page (perf spec A3) and pulls in
 // recharts. Loaded once here so no single test's findBy budget pays for the
 // cold transform.
@@ -202,6 +210,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  Reflect.deleteProperty(document, "hidden");
 });
 
 describe("Dashboard", () => {
@@ -609,6 +618,55 @@ describe("Dashboard", () => {
       await vi.advanceTimersByTimeAsync(30000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes the stream while the tab is hidden and reconnects when it is shown", async () => {
+    // Perf spec A8: a background tab held a stream open, and the server kept
+    // polling the database every two seconds for a page nobody could see.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const signals: AbortSignal[] = [];
+    stubFetch(undefined, undefined, async (_path, init) => {
+      signals.push(init!.signal as AbortSignal);
+      return ndjsonStream(
+        init!.signal as AbortSignal,
+        signals.length === 1 ? SNAPSHOT : snapshotWithPending(9),
+      ).response;
+    });
+
+    render(<Dashboard />);
+    await screen.findByText("collections_reconcile");
+
+    await act(async () => {
+      setHidden(true);
+    });
+    expect(signals[0].aborted).toBe(true);
+    // Far past the three-second reconnect: a hidden tab opens nothing.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(signals).toHaveLength(1);
+    // The last snapshot stays on screen meanwhile.
+    expect(statValue("pending")).toBe("3");
+
+    await act(async () => {
+      setHidden(false);
+    });
+    await waitFor(() => expect(signals).toHaveLength(2));
+    await waitFor(() => expect(statValue("pending")).toBe("9"));
+  });
+
+  it("opens no stream while mounted in a hidden tab, and connects once shown", async () => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    const fetchMock = stubFetch();
+
+    render(<Dashboard />);
+    await act(async () => {});
+    expect(fetchMock.mock.calls.some(([path]) => path === "/api/dashboard/stream")).toBe(false);
+
+    await act(async () => {
+      setHidden(false);
+    });
+    expect(await screen.findByText("collections_reconcile")).toBeInTheDocument();
   });
 
   it("runs a full pass and shows the server's outcome, not an optimistic one", async () => {

@@ -113,11 +113,19 @@ export function Dashboard() {
   // replays a buffer, whereas each snapshot here is self-contained, so the
   // last one stays on screen while a dropped stream is re-established rather
   // than blanking the page for three seconds.
+  //
+  // A hidden tab holds no stream (perf spec A8): the server polls the
+  // database every two seconds for as long as anyone is subscribed, and a
+  // background tab is nobody. Hiding aborts the stream and any pending
+  // reconnect; showing reconnects through the same connect() a drop uses,
+  // and the last snapshot stays on screen in between.
   useEffect(() => {
-    const controller = new AbortController();
+    let controller: AbortController | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function connect() {
+      const own = new AbortController();
+      controller = own;
       try {
         // Deliberately NOT setError(null) here, unlike Logs.tsx's connect:
         // this page's error state is shared with the run-now and full-pass
@@ -132,25 +140,39 @@ export function Dashboard() {
             setEvents(value.events);
             setError(null);
           },
-          controller.signal,
+          own.signal,
         );
       } catch (caught) {
         // A 401 is already handled centrally by apiFetchNdjson, which drops
         // the session and sends the user to the login form; the session is
         // checked once, at connect, so an expired one surfaces here as a
         // failed reconnect.
-        if (controller.signal.aborted) return;
+        if (own.signal.aborted) return;
         setError((caught as Error).message);
       }
-      if (controller.signal.aborted) return;
+      if (own.signal.aborted) return;
       setConnected(false);
       timer = setTimeout(() => void connect(), RECONNECT_MS);
     }
 
-    void connect();
-    return () => {
-      controller.abort();
+    /** Stop reading: abort the open stream and cancel a pending reconnect. */
+    function pause() {
+      controller?.abort();
+      controller = null;
       if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    }
+
+    function onVisibilityChange() {
+      pause();
+      if (!document.hidden) void connect();
+    }
+
+    if (!document.hidden) void connect();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      pause();
     };
   }, []);
 
