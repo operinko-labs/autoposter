@@ -42,8 +42,10 @@ display mode, the summary.
 - No delete-and-recreate on a shape change. See
   ``reconcile.shape_conflict``.
 """
+import asyncio
 import hashlib
 import logging
+from typing import NamedTuple
 
 import httpx
 from plexapi.utils import joinArgs
@@ -311,6 +313,106 @@ def _level_conflict(collection, title: str, want_level: str) -> str | None:
     )
 
 
+class _Claimed(NamedTuple):
+    """What ``_claim`` found. ``refusal`` is a shape or level conflict, which
+    the caller logs and returns as the pass's only action; otherwise ``ok`` and
+    ``message`` are ``resolve_collision``'s pair (``True, None`` when nothing
+    exists under the title yet)."""
+
+    listing: dict
+    collection: object | None
+    refusal: str | None
+    ok: bool
+    message: str | None
+
+
+def _claim(
+    section, existing, title, collection_type, label, adopt, adopt_from,
+    remove_prior, dry_run, protect_labels,
+) -> _Claimed:
+    """The Plex half of ``reconcile_smart_collection`` before its database read,
+    in ONE ``asyncio.to_thread`` hop (perf workstream C1): the fallback listing,
+    the ``smart`` and ``subtype`` reads, and ``resolve_collision``'s reload and
+    label reads (and, when it adopts, its label write).
+
+    The shape check first: a list collection under a smart definition must
+    never reach the ownership check, because passing it would send the pass on
+    to an update route that cannot mean anything for that collection.
+    """
+    listing = existing if existing is not None else {
+        collection.title: collection for collection in section.collections()
+    }
+    collection = listing.get(title)
+    if collection is None:
+        return _Claimed(listing, None, None, True, None)
+    conflict = shape_conflict(collection, title, want_smart=True)
+    if conflict is not None:
+        return _Claimed(listing, collection, conflict, False, None)
+    level_mismatch = _level_conflict(collection, title, collection_type)
+    if level_mismatch is not None:
+        return _Claimed(listing, collection, level_mismatch, False, None)
+    ok, message = resolve_collision(
+        collection, label, adopt, adopt_from or [], remove_prior, dry_run,
+        protect_labels or [],
+    )
+    return _Claimed(listing, collection, None, ok, message)
+
+
+class _Written(NamedTuple):
+    collection: object
+    created: bool
+    actions: list[str]
+    settings_ok: bool
+    rating_key: str
+
+
+def _write(
+    section, collection, collection_type, title, url, label, summary,
+    summary_asserted, settings, config,
+) -> _Written:
+    """The zero-match probe and every write of a non-dry pass, in ONE
+    ``asyncio.to_thread`` hop (perf workstream C1). The probe still comes first,
+    so ``SmartFilterMatchedNothing`` refuses before anything is written, and the
+    actions come back in the inline code's order.
+    """
+    matched = require_matches(section, url)
+    actions: list[str] = []
+    created = collection is None
+    if created:
+        collection = create_smart_collection(section, collection_type, title, url)
+        collection.addLabel(label)
+        actions.append(
+            "created %r as a smart collection (%d item(s) match now)" % (title, matched)
+        )
+    else:
+        update_smart_collection(section, collection, url)
+        # Not "updated the smart filter": a summary-only or settings-only edit
+        # reaches here too and re-PUTs a byte-identical uri (the match probe's
+        # re-run), and the pass cannot tell which part of the definition
+        # changed -- so the string claims the whole and nothing more (row 187).
+        actions.append(
+            "updated %r from its definition (%d item(s) match now)" % (title, matched)
+        )
+    # Truthy, matching ``lists.py``'s gate rather than ``is not None``: an
+    # empty summary is not a summary to write, and with a destructive false arm
+    # behind it the two reconcilers must not disagree about what ``""`` means.
+    if summary:
+        _edit_collection_summary(collection, summary)
+    elif summary_asserted and _clear_collection_summary(collection):
+        # Row 187 (M-B): only under ``summary_asserted`` -- see
+        # ``reconcile_smart_collection``'s docstring for the two callers for
+        # whom an absent summary asserts nothing.
+        actions.append("cleared the summary of %r" % title)
+    settings_actions, settings_ok = apply_collection_settings(
+        section, collection, settings, label, config
+    )
+    actions += settings_actions
+    return _Written(
+        collection, created, actions, settings_ok,
+        str(getattr(collection, "ratingKey", "") or ""),
+    )
+
+
 async def reconcile_smart_collection(
     session: AsyncSession,
     section,
@@ -419,35 +521,17 @@ async def reconcile_smart_collection(
     # libtype rather than folded into it -- ``libtype`` is still the library's
     # kind everywhere else in this function.
     collection_type = libtype if level == "item" else level
-    listing = existing if existing is not None else {
-        collection.title: collection for collection in section.collections()
-    }
-    collection = listing.get(title)
-    actions: list[str] = []
-
-    if collection is not None:
-        # The shape check first: a list collection under a smart definition
-        # must never reach
-        # the ownership check, because passing it would send the pass on to an
-        # update route that cannot mean anything for that collection.
-        conflict = shape_conflict(collection, title, want_smart=True)
-        if conflict is not None:
-            logger.warning("%s: %s", library, conflict)
-            return [conflict]
-
-        level_mismatch = _level_conflict(collection, title, collection_type)
-        if level_mismatch is not None:
-            logger.warning("%s: %s", library, level_mismatch)
-            return [level_mismatch]
-
-        ok, message = resolve_collision(
-            collection, label, adopt, adopt_from or [], adopt_removes_prior_label,
-            dry_run, protect_labels or [],
-        )
-        if message:
-            actions.append(message)
-        if not ok:
-            return actions
+    claimed = await asyncio.to_thread(
+        _claim, section, existing, title, collection_type, label, adopt,
+        adopt_from, adopt_removes_prior_label, dry_run, protect_labels,
+    )
+    listing, collection = claimed.listing, claimed.collection
+    if claimed.refusal is not None:
+        logger.warning("%s: %s", library, claimed.refusal)
+        return [claimed.refusal]
+    actions: list[str] = [claimed.message] if claimed.message else []
+    if not claimed.ok:
+        return actions
 
     record = (
         await session.execute(
@@ -475,69 +559,38 @@ async def reconcile_smart_collection(
         # the probe is a read, and an operator previewing a pass should learn
         # that their filter matches nothing then rather than on the first
         # applied one.
-        matched = require_matches(section, url)
-
         settings_ok = True
         if dry_run:
+            matched = await asyncio.to_thread(require_matches, section, url)
             actions.append(
                 "%s %r from a smart filter matching %d item(s)"
                 % ("would update" if collection is not None else "would create", title, matched)
             )
         else:
-            if collection is None:
-                collection = create_smart_collection(section, collection_type, title, url)
-                # Back into the shared listing, exactly as ``lists.py:283``
-                # does it: the map is the pass's, so a later definition
-                # reading it has to see a collection this pass created rather
-                # than a listing taken before it existed.
-                listing[title] = collection
-                collection.addLabel(label)
-                actions.append(
-                    "created %r as a smart collection (%d item(s) match now)"
-                    % (title, matched)
-                )
-            else:
-                update_smart_collection(section, collection, url)
-                # Not "updated the smart filter": a summary-only or
-                # settings-only edit reaches here too and re-PUTs a
-                # byte-identical uri (the match probe's re-run), and the pass
-                # cannot tell which part of the definition changed -- so the
-                # string claims the whole and nothing more (row 187).
-                actions.append(
-                    "updated %r from its definition (%d item(s) match now)"
-                    % (title, matched)
-                )
-
-            # Truthy, matching ``lists.py``'s gate rather than the ``is not
-            # None`` this used to read: an empty summary is not a summary to
-            # write, and with a destructive false arm behind it the two
-            # reconcilers must not disagree about what ``""`` means -- one
-            # writing empty-but-LOCKED where the other clears and unlocks.
-            # Both hashes already fold the value in as ``summary or ""``.
-            if summary:
-                _edit_collection_summary(collection, summary)
-            elif summary_asserted and _clear_collection_summary(collection):
-                # Row 187 (M-B): the summary is in the definition hash, so
-                # deleting ``summary:`` triggers exactly this pass -- which
-                # used to perform no summary edit at all and store the new
-                # hash as done. Only under ``summary_asserted``: see above for
-                # the two callers for whom an absent summary asserts nothing.
-                actions.append("cleared the summary of %r" % title)
-            settings_actions, settings_ok = apply_collection_settings(
-                section, collection, settings, label, config
+            written = await asyncio.to_thread(
+                _write, section, collection, collection_type, title, url, label,
+                summary, summary_asserted, settings, config,
             )
-            actions += settings_actions
+            if written.created:
+                # Back into the shared listing, exactly as ``lists.py`` does it:
+                # the map is the pass's, so a later definition reading it has to
+                # see a collection this pass created rather than a listing taken
+                # before it existed.
+                listing[title] = written.collection
+            collection = written.collection
+            actions += written.actions
+            settings_ok = written.settings_ok
 
             if record is None:
                 record = ManagedCollection(
                     library=library, title=title, kind="smart",
-                    plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
+                    plex_rating_key=written.rating_key,
                     definition_hash=wanted if settings_ok else "",
                 )
                 session.add(record)
             else:
                 record.definition_hash = wanted if settings_ok else ""
-                record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+                record.plex_rating_key = written.rating_key
                 # The row can predate this definition's SHAPE. ``shape_conflict``
                 # tells an operator switching a definition from a list builder to
                 # this one to delete the collection in Plex and let the next pass

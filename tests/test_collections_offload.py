@@ -13,8 +13,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from autoposter.collections import groups
+from autoposter.collections.buckets import derive_buckets
 from autoposter.collections.builders import REGISTRY, BuilderResult, register
 from autoposter.collections.engine import run_library
+from autoposter.collections.reconcile import reconcile_content_ratings, reconcile_separator
+from autoposter.collections.smart import reconcile_smart_collection
 from autoposter.config.schema import CollectionDefinition
 
 from plex_offload_doubles import (
@@ -228,4 +232,130 @@ async def test_a_dry_run_on_an_existing_list_collection_stays_off_the_event_loop
     )
 
     assert "would update 'Dry' with 1 item(s)" in run.actions
+    assert log.on_thread(loop_thread) == []
+
+
+# --- C1 phase 3: the smart, separator and Common Sense reconcilers -----------
+
+
+async def test_a_smart_collection_is_created_off_the_event_loop(session):
+    log = CallLog()
+    _, section, _ = _library(log)
+    loop_thread = threading.get_ident()
+
+    actions = await reconcile_smart_collection(
+        session, section, "Movies", "Movie", "Smart One", "?type=1&genre=5", LABEL,
+        dry_run=False, config=_config(),
+    )
+
+    assert actions == ["created 'Smart One' as a smart collection (3 item(s) match now)"]
+    assert {
+        "section.collections", "server.query", "section.collection",
+        "collection 'Smart One'.addLabel",
+    } <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_an_owned_smart_collection_is_updated_off_the_event_loop(session):
+    log = CallLog()
+    server, section, _ = _library(log)
+    section.add(BlockingCollection(log, server, "Smart Two", labels=[LABEL], smart=True))
+    loop_thread = threading.get_ident()
+
+    actions = await reconcile_smart_collection(
+        session, section, "Movies", "Movie", "Smart Two", "?type=1&genre=5", LABEL,
+        dry_run=False, config=_config(),
+    )
+
+    assert actions == ["updated 'Smart Two' from its definition (3 item(s) match now)"]
+    assert {
+        "collection 'Smart Two'.smart", "collection 'Smart Two'.subtype",
+        "collection 'Smart Two'.reload",
+    } <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_a_separator_is_written_off_the_event_loop(session):
+    log = CallLog()
+    _, section, _ = _library(log)
+    spec = groups.SeparatorSpec(
+        group="charts", title="Chart Collections", summary="Charts.",
+        sort_title="!010_", poster_key=None,
+    )
+    loop_thread = threading.get_ident()
+
+    actions = await reconcile_separator(
+        session, section, "Movies", "movie", LABEL, spec,
+        existing={}, stored={}, adopt=False, adopt_from=[],
+        adopt_removes_prior_label=False, dry_run=False, protect_labels=[],
+        http=None, config=_config(),
+    )
+
+    assert actions == ["created 'Chart Collections'"]
+    assert {
+        "server.query", "collection 'Chart Collections'.addLabel",
+        "collection 'Chart Collections'.editSortTitle",
+    } <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_the_common_sense_family_is_reconciled_off_the_event_loop(session):
+    log = CallLog()
+    _, section, _ = _library(
+        log, choices=[("G", "G"), ("PG", "PG"), ("PG-13", "PG-13"), ("R", "R")],
+    )
+    loop_thread = threading.get_ident()
+
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=False, config=_config(),
+    )
+
+    assert any(action.startswith("created ") for action in actions), actions
+    assert {"section.listFilterChoices", "section.collections"} <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_a_dry_run_on_an_existing_separator_stays_off_the_event_loop(session):
+    """"would update" for a divider that exists, decided without a truth test
+    on the plexapi object (whose ``__len__`` is a membership fetch). An
+    existing divider is always EMPTY, so a truth test would also have called
+    it a create."""
+    log = CallLog()
+    server, section, _ = _library(log)
+    spec = groups.SeparatorSpec(
+        group="charts", title="Chart Collections", summary="Charts.",
+        sort_title="!010_", poster_key=None,
+    )
+    divider = section.add(BlockingCollection(log, server, spec.title, labels=[LABEL]))
+    loop_thread = threading.get_ident()
+
+    actions = await reconcile_separator(
+        session, section, "Movies", "movie", LABEL, spec,
+        existing={spec.title: divider}, stored={}, adopt=False, adopt_from=[],
+        adopt_removes_prior_label=False, dry_run=True, protect_labels=[],
+        http=None, config=_config(),
+    )
+
+    assert actions == ["would update 'Chart Collections'"]
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_a_dry_run_on_an_existing_common_sense_bucket_stays_off_the_event_loop(
+    session,
+):
+    """The Common Sense family's dry run, for the same truth test: an owned
+    bucket that exists (and, as a smart collection's double, holds no members
+    here) is an update, decided without touching the object on the loop."""
+    ratings = ["G", "PG", "PG-13", "R"]
+    log = CallLog()
+    server, section, _ = _library(log, choices=[(rating, rating) for rating in ratings])
+    bucket = next(b for b in derive_buckets(set(ratings), "Movie") if b.values)
+    section.add(BlockingCollection(log, server, bucket.title, labels=[LABEL], smart=True))
+    loop_thread = threading.get_ident()
+
+    actions = await reconcile_content_ratings(
+        session, section, "Movies", "Movie", LABEL, dry_run=True, config=_config(),
+    )
+
+    assert "would update %r -> %s" % (bucket.title, ", ".join(bucket.values)) in actions
     assert log.on_thread(loop_thread) == []
