@@ -524,7 +524,7 @@ async def test_build_reads_the_store_when_there_is_no_configuration_file(
 
     monkeypatch.setattr(main_module, "CONFIG_PATH", tmp_path / "nothing.yaml")
     monkeypatch.setattr(main_module, "Secrets", _Secrets)
-    monkeypatch.setattr(main_module, "make_engine", lambda url: object())
+    monkeypatch.setattr(main_module, "make_engine", lambda url, **kwargs: object())
     monkeypatch.setattr(main_module, "spa_dist", lambda: None)
 
     app = main_module.build()
@@ -644,7 +644,7 @@ def _stub_build(monkeypatch, main_module, *, path, database_url: str) -> None:
 
     monkeypatch.setattr(main_module, "CONFIG_PATH", path)
     monkeypatch.setattr(main_module, "Secrets", _Secrets)
-    monkeypatch.setattr(main_module, "make_engine", lambda url: object())
+    monkeypatch.setattr(main_module, "make_engine", lambda url, **kwargs: object())
     monkeypatch.setattr(main_module, "spa_dist", lambda: None)
 
 
