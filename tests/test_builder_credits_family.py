@@ -20,6 +20,7 @@ returns a FLOOR, not a census: the phase-B probe measured a server-side cap of
 are what the cache holds, which is the only thing this builder can be right
 about.
 """
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -876,3 +877,22 @@ async def test_the_limit_sentence_does_not_fire_when_the_vocabulary_narrowed_alo
     assert not any(
         "most-credited" in one and "(`limit`)" in one for one in actions
     ), actions
+
+
+async def test_the_vocabulary_check_runs_off_the_event_loop(session):
+    """perf C1: the ranking's ``resolver.known`` is a ``listFilterChoices``
+    request on its first call; the whole check runs in one thread hop."""
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    class _Recording(FakeSection):
+        def listFilterChoices(self, field, libtype=None):
+            seen.append(threading.get_ident())
+            return super().listFilterChoices(field, libtype)
+
+    await _seed(session, {"Ann": 2, "Bob": 1})
+    await REGISTRY["credits_family"].apply(_ctx(
+        session, _Recording(), _definition(params={"type": "actor", "depth": 1}),
+    ))
+
+    assert seen and loop_thread not in seen

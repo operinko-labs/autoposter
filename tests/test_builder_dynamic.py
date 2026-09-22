@@ -7,6 +7,7 @@ reconciler ``smart_filter`` uses -- so there is one write path, one query
 grammar and one drift hash for every smart collection this service manages.
 """
 import datetime as dt
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -1507,3 +1508,27 @@ async def test_a_windowed_family_asks_plex_for_the_year_and_the_pinned_top_ten(
         "?type=1&limit=10&sort=rating%3Adesc"
         "&push=1&year=2026&pop=1"
     ]
+
+
+async def test_the_enumeration_and_the_counts_run_off_the_event_loop(session):
+    """perf C1: ``resolver.choices`` is a ``listFilterChoices`` request and
+    ``count_matches`` a container read; both run in threads."""
+    loop_thread = threading.get_ident()
+    seen: list[tuple[str, int]] = []
+
+    class _Recording(FakeSection):
+        def listFilterChoices(self, field, libtype=None):
+            seen.append(("listFilterChoices", threading.get_ident()))
+            return super().listFilterChoices(field, libtype)
+
+        def fetchItems(self, path, **kw):
+            seen.append(("fetchItems", threading.get_ident()))
+            return super().fetchItems(path, **kw)
+
+    await REGISTRY["dynamic"].apply(_ctx(
+        session, _Recording(),
+        _definition(params={"type": "genre", "minimum_items": 1}),
+    ))
+
+    assert {name for name, _ in seen} == {"listFilterChoices", "fetchItems"}
+    assert loop_thread not in {ident for _, ident in seen}

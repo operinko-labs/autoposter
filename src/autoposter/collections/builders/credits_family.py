@@ -45,6 +45,7 @@ A single person's collection is the opposite case, not frozen but silently
 dropped: see the row-224 comment at the record seed below for how a vocabulary
 narrowing becomes a delete.
 """
+import asyncio
 import logging
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -238,6 +239,20 @@ class CreditsFamilyParams(BaseModel):
         return self
 
 
+def _searchable(resolver, attribute: str, eligible: list) -> list:
+    """The eligible people this library's tag vocabulary knows, in rank order.
+
+    The thread side of the ranking's vocabulary check (perf C1): the first
+    ``known`` is a ``listFilterChoices`` request and the rest are memo hits,
+    so the whole comprehension is one ``asyncio.to_thread`` hop. The resolver's
+    ``PlexSearchUnavailable`` propagates unchanged, for the caller's fallback.
+    """
+    return [
+        (person, count) for person, count in eligible
+        if resolver.known(attribute, person)
+    ]
+
+
 class CreditsFamilyBuilder:
     """A family of smart collections, one per sufficiently-credited person."""
 
@@ -366,10 +381,9 @@ class CreditsFamilyBuilder:
         # the same reason -- it is the same object, asked earlier.
         resolver = LibraryTagResolver(ctx, ctx.section, libtype)
         try:
-            searchable = [
-                (person, count) for person, count in eligible
-                if resolver.known(params.type, person)
-            ]
+            searchable = await asyncio.to_thread(
+                _searchable, resolver, params.type, eligible
+            )
         except PlexSearchUnavailable as refusal:
             # ``engine.py:1158``'s own clause, for its reason. This is the
             # resolver's ONLY memoised failure -- "Plex has no such filter for
@@ -526,7 +540,8 @@ class CreditsFamilyBuilder:
                 actions.append("refused %r: %s" % (unit.title, refusal))
                 continue
             try:
-                url = build_search_url(
+                url = await asyncio.to_thread(
+                    build_search_url,
                     parsed, libtype=libtype, sort_by=params.sort_by,
                     # No limit, deliberately: a person's collection is all of
                     # their films in this library, not the first fifty of them.

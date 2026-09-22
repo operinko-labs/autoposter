@@ -15,7 +15,15 @@ import pytest
 
 from autoposter.collections import groups
 from autoposter.collections.buckets import derive_buckets
-from autoposter.collections.builders import REGISTRY, BuilderResult, register
+from autoposter.collections.builders import (
+    REGISTRY,
+    BuilderContext,
+    BuilderResult,
+    PlexSectionAccess,
+    SourceClients,
+    register,
+)
+from autoposter.collections.builders.plex_search import PlexSearchBuilder
 from autoposter.collections.engine import _sweep, run_library
 from autoposter.collections.playlists import reconcile_playlists
 from autoposter.collections.reconcile import reconcile_content_ratings, reconcile_separator
@@ -476,3 +484,62 @@ async def test_the_playlists_pass_builds_every_owned_index_off_the_event_loop(
     assert walks(log.names()).count("section.all") == 2
     assert {"item 101.guids", "item 201.guids"} <= set(walks(log.names()))
     assert walks(log.on_thread(loop_thread)) == []
+
+
+# --- C1 phase 4: the builders --------------------------------------------------
+
+
+async def test_a_plex_search_resolves_and_fetches_off_the_event_loop():
+    log = CallLog()
+    _, section, _ = _library(log, choices=[("1138", "Horror")])
+    ctx = BuilderContext(
+        library="Movies", library_type="Movie", config={"all": {"genre": "Horror"}},
+        run_cache={}, sources=SourceClients(plex=PlexSectionAccess(section, returning({}))),
+    )
+    loop_thread = threading.get_ident()
+
+    result = await PlexSearchBuilder().build(ctx)
+
+    assert result.ids == [("plex", "101"), ("plex", "102"), ("plex", "103")]
+    assert {"section.listFilterChoices", "section.fetchItems"} <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_the_filter_vocabulary_check_runs_off_the_event_loop(session, registry_entry):
+    registry_entry(_Ids("test_offload_vocab", [("imdb", "tt101"), ("imdb", "tt102")]))
+    log = CallLog()
+    _, section, items = _library(log, choices=[("1138", "Horror")])
+    items[0].genres = [SimpleNamespace(tag="Horror")]
+    loop_thread = threading.get_ident()
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="Scary", builder="test_offload_vocab", filters={"genre": "Horror"},
+        )],
+        _config(),
+    )
+
+    [result] = [r for r in run.definitions if r.title == "Scary"]
+    assert result.failed is False and result.filtered == 1
+    assert "section.listFilterChoices" in log.names()
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_a_smart_filter_definition_resolves_its_vocabulary_off_the_event_loop(session):
+    log = CallLog()
+    _, section, _ = _library(log, choices=[("1138", "Horror")])
+    loop_thread = threading.get_ident()
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="Scary Smart", builder="smart_filter",
+            params={"all": {"genre": "Horror"}},
+        )],
+        _config(),
+    )
+
+    assert any("created 'Scary Smart' as a smart collection" in a for a in run.actions)
+    assert "section.listFilterChoices" in log.names()
+    assert log.on_thread(loop_thread) == []

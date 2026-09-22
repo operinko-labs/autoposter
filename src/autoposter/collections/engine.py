@@ -944,8 +944,12 @@ async def _run_one(
         # filter that is not going to run would be noise about a definition
         # nothing is applying.
         if not filter_failed and parsed is not None:
-            parsed, vocabulary_actions = _known_tag_values(
-                parsed, ctx, section, library, definition
+            # One thread hop for the whole check (perf C1): the first ``known``
+            # per attribute is a ``listFilterChoices`` request, and the rest
+            # are memo hits on the pass's ``run_cache``, which nothing else
+            # writes while this coroutine waits.
+            parsed, vocabulary_actions = await asyncio.to_thread(
+                _known_tag_values, parsed, ctx, section, library, definition
             )
             outcome.actions += vocabulary_actions
         if not filter_failed:
