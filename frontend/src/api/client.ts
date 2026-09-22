@@ -245,11 +245,17 @@ export async function apiPostForImage(
  * when the server ends the stream and rejects on a transport error, so the
  * caller owns reconnecting. The signal aborts the read mid-stream -- an
  * abort resolves rather than rejects, because the caller asked for it.
+ *
+ * `onChunk`, when given, runs once after each network read's complete lines
+ * have gone to `onValue`. A caller that renders can then make one state update
+ * per read instead of one per line -- the log tail's backlog replay is a
+ * thousand lines, often in one read.
  */
 export async function apiFetchNdjson(
   path: string,
   onValue: (value: unknown) => void,
   signal: AbortSignal,
+  onChunk?: () => void,
 ): Promise<void> {
   const headers = new Headers();
   if (token !== null) headers.set("Authorization", `Bearer ${token}`);
@@ -298,6 +304,7 @@ export async function apiFetchNdjson(
         }
         onValue(value);
       }
+      onChunk?.();
     }
   } catch (caught) {
     if (signal.aborted) return;

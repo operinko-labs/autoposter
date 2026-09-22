@@ -307,6 +307,32 @@ describe("apiFetchNdjson", () => {
     expect(onValue.mock.calls).toEqual([[{ a: 1 }], [{ b: 2 }], [{ c: 3 }]]);
   });
 
+  it("marks the end of each read, after the values that read carried", async () => {
+    const { reader, push, end } = controllableReader();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ status: 200, ok: true, body: { getReader: () => reader } }),
+    );
+    const events: unknown[] = [];
+
+    const promise = apiFetchNdjson(
+      "/api/logs/stream",
+      (value) => events.push(value),
+      new AbortController().signal,
+      () => events.push("end of read"),
+    );
+    await flush();
+
+    push('{"a":1}\n{"b":2}\n{"c":');
+    await flush();
+    push("3}\n");
+    await flush();
+    end();
+    await promise;
+
+    expect(events).toEqual([{ a: 1 }, { b: 2 }, "end of read", { c: 3 }, "end of read"]);
+  });
+
   it("clears the session, notifies, and throws ApiError(401) on a 401", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 401, ok: false }));
     const onUnauthorized = vi.fn();
