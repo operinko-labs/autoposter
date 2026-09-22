@@ -158,6 +158,12 @@ async def apply_retention(session: AsyncSession) -> dict[str, int | None]:
 
     The statements are read from this module's globals at call time, so a
     test can swap one for a statement that fails.
+
+    Precondition: ``session`` carries no uncommitted work when this is
+    called. ``_prune`` commits after each table and rolls back on that
+    table's failure alone; anything left pending from before this call would
+    ride along with the first table's commit, or be discarded by the first
+    table's rollback.
     """
     plan = (
         ("jobs", _JOBS_SQL,

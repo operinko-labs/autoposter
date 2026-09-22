@@ -23,6 +23,14 @@ from autoposter.scheduler.run_history import open_run
 
 from conftest import seed_media_item
 
+from sqlalchemy import text
+
+from autoposter.db.models import Job
+from autoposter.scheduler import retention
+from autoposter.scheduler.retention import EVENT_RETENTION_DAYS, JOB_RETENTION_DAYS, PRUNED_EVENT_SOURCES
+
+from test_scheduler_retention import seed_event, seed_job
+
 _next_rating_key = iter(str(n) for n in range(1, 1_000_000))
 
 
@@ -528,3 +536,48 @@ async def test_the_trim_survives_a_raise_later_in_the_pass(
     async with session_factory() as fresh:
         remaining = (await fresh.execute(select(Run))).scalars().all()
     assert len(remaining) == 2, "the trim must survive a raise later in the same pass"
+
+
+async def test_the_cleanup_pass_applies_retention_even_when_it_refuses(session, tmp_path):
+    """Retention rides the trim's slot: first, ahead of every refusal. The
+    empty-renders refusal can hold for weeks, and the tables must not grow
+    for as long as it does."""
+    old = await seed_job(session, state="done", age_days=JOB_RETENTION_DAYS + 10)
+
+    assets_root = tmp_path / "assets"
+    backup_root = tmp_path / "backup"
+    (assets_root / "Movies" / "Some Movie (2020)").mkdir(parents=True)
+
+    config = _config(assets_root, backup_root, apply=True)
+    summary = await make_cleanup_job(ConfigHolder(config)).run(session)
+    await session.commit()
+
+    assert "refused" in summary
+    assert "retention removed 1 jobs row(s)" in summary
+    assert old not in set((await session.execute(select(Job.id))).scalars().all())
+
+
+async def test_a_failing_retention_table_does_not_stop_the_cleanup_walk(
+    session, session_factory, tmp_path, monkeypatch
+):
+    old = await seed_job(session, state="done", age_days=JOB_RETENTION_DAYS + 10)
+    await seed_event(
+        session, source=PRUNED_EVENT_SOURCES[0], age_days=EVENT_RETENTION_DAYS + 10
+    )
+    monkeypatch.setattr(retention, "_EVENTS_SQL", text("DELETE FROM no_such_table"))
+
+    assets_root = tmp_path / "assets"
+    backup_root = tmp_path / "backup"
+    kept = assets_root / "Movies" / "Kept Movie (2020)"
+    kept.mkdir(parents=True)
+    (kept / "poster.jpg").write_bytes(b"data")
+    await _make_render(session, kept / "poster.jpg")
+
+    config = _config(assets_root, backup_root, apply=False)
+    summary = await make_cleanup_job(ConfigHolder(config)).run(session)
+
+    assert "dry run:" in summary, "the orphan walk did not run after a retention failure"
+    assert "retention removed 1 jobs row(s)" in summary
+    assert "retention failed for events_log" in summary
+    async with session_factory() as fresh:
+        assert old not in set((await fresh.execute(select(Job.id))).scalars().all())
