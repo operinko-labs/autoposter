@@ -1,8 +1,9 @@
 import { lazy, Suspense } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import { SessionProvider, useSession } from "./auth/SessionContext";
 import { useSetupProbe } from "./auth/useSetupProbe";
+import { PageErrorBoundary } from "./shell/PageErrorBoundary";
 import { Sidebar } from "./shell/Sidebar";
 import "./shell/shell.css";
 
@@ -46,32 +47,36 @@ const Testing = lazy(() =>
 );
 
 function AuthenticatedApp() {
+  const { pathname } = useLocation();
   return (
     <div className="app-shell">
       <Sidebar />
       <main className="app-main">
         {/* One boundary for every page, inside the shell: the sidebar stays
-            put while a page's chunk arrives, and only the page area waits. */}
-        <Suspense fallback={<p className="muted">Loading…</p>}>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/actions" element={<ActionCenter />} />
-            <Route path="/library" element={<Library />} />
-            <Route path="/items/:itemId" element={<ItemDetail />} />
-            <Route path="/collections" element={<Collections />} />
-            <Route path="/jobs" element={<Jobs />} />
-            <Route path="/failures" element={<Failures />} />
-            <Route path="/files" element={<Files />} />
-            <Route path="/mismatches" element={<Mismatches />} />
-            <Route path="/modes" element={<Modes />} />
-            <Route path="/logs" element={<Logs />} />
-            <Route path="/testing" element={<Testing />} />
-            <Route path="/settings" element={<Settings />} />
-            {/* The server serves index.html for any unclaimed path, so an
-                unknown URL reaches the router rather than a 404 page. */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Suspense>
+            put while a page's chunk arrives, and only the page area waits --
+            or, if the chunk never arrives, only the page area says so. */}
+        <PageErrorBoundary resetKey={pathname}>
+          <Suspense fallback={<p className="muted">Loading…</p>}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/actions" element={<ActionCenter />} />
+              <Route path="/library" element={<Library />} />
+              <Route path="/items/:itemId" element={<ItemDetail />} />
+              <Route path="/collections" element={<Collections />} />
+              <Route path="/jobs" element={<Jobs />} />
+              <Route path="/failures" element={<Failures />} />
+              <Route path="/files" element={<Files />} />
+              <Route path="/mismatches" element={<Mismatches />} />
+              <Route path="/modes" element={<Modes />} />
+              <Route path="/logs" element={<Logs />} />
+              <Route path="/testing" element={<Testing />} />
+              <Route path="/settings" element={<Settings />} />
+              {/* The server serves index.html for any unclaimed path, so an
+                  unknown URL reaches the router rather than a 404 page. */}
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </PageErrorBoundary>
       </main>
     </div>
   );
@@ -80,6 +85,7 @@ function AuthenticatedApp() {
 function Gate() {
   const { authenticated } = useSession();
   const setupRequired = useSetupProbe();
+  const { pathname } = useLocation();
 
   if (authenticated) return <AuthenticatedApp />;
   // Nothing is rendered until the probe answers. Showing the login form first
@@ -89,21 +95,23 @@ function Gate() {
   if (setupRequired === null) return null;
   // Setup and Login are lazy chunks too, outside the shell, so they get their
   // own boundary -- drawing nothing while one loads, the same no-flicker rule
-  // as the probe wait just above.
+  // as the probe wait just above -- and their own error boundary.
   return (
-    <Suspense fallback={null}>
-      {setupRequired ? (
-        <Routes>
-          <Route path="/setup" element={<Setup />} />
-          {/* An unconfigured deployment has exactly one page. Any other URL --
-              a bookmark from a working install, a reload of /settings -- lands
-              on it rather than on a router miss. */}
-          <Route path="*" element={<Navigate to="/setup" replace />} />
-        </Routes>
-      ) : (
-        <Login />
-      )}
-    </Suspense>
+    <PageErrorBoundary resetKey={pathname}>
+      <Suspense fallback={null}>
+        {setupRequired ? (
+          <Routes>
+            <Route path="/setup" element={<Setup />} />
+            {/* An unconfigured deployment has exactly one page. Any other URL --
+                a bookmark from a working install, a reload of /settings -- lands
+                on it rather than on a router miss. */}
+            <Route path="*" element={<Navigate to="/setup" replace />} />
+          </Routes>
+        ) : (
+          <Login />
+        )}
+      </Suspense>
+    </PageErrorBoundary>
   );
 }
 

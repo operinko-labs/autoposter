@@ -120,3 +120,35 @@ it("mounts the routed shell when a session already exists", async () => {
 
   await act(async () => root.unmount());
 });
+
+it("reloads once for a chunk a deploy removed, never in a loop", async () => {
+  const reload = vi.fn();
+  vi.stubGlobal("location", { ...window.location, reload });
+  const root = await mountMain();
+
+  // What Vite dispatches when a lazy chunk's import fails.
+  const chunkError = () => {
+    const event = new Event("vite:preloadError", { cancelable: true });
+    window.dispatchEvent(event);
+    return event;
+  };
+
+  // Handled: the reload fetches the new entry, whose chunk names exist.
+  expect(chunkError().defaultPrevented).toBe(true);
+  expect(reload).toHaveBeenCalledTimes(1);
+
+  // A second failure inside the guard window -- the reload landed and the
+  // chunk is still missing -- is left to reject into the page's error
+  // boundary rather than reloading again.
+  expect(chunkError().defaultPrevented).toBe(false);
+  expect(reload).toHaveBeenCalledTimes(1);
+
+  // Once the window has passed (a later deploy in the same tab), it reloads
+  // again. A minute back rather than just over ten seconds, so a container
+  // clock that steps backwards a few seconds cannot make this flaky.
+  window.sessionStorage.setItem("autoposter.chunkReloadAt", String(Date.now() - 60_000));
+  expect(chunkError().defaultPrevented).toBe(true);
+  expect(reload).toHaveBeenCalledTimes(2);
+
+  await act(async () => root.unmount());
+});

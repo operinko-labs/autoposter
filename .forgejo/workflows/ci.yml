@@ -663,18 +663,20 @@ jobs:
         # Asserting index.html exists on disk is not enough: `mount_spa` also
         # has to be reachable, and a bundle whose JS is missing is a blank page
         # behind a 200. So this drives the real ASGI app and follows the shell
-        # to the script it references, checking the content type as
-        # tests/test_attribution_present.py does -- a path the /assets mount
-        # does not claim comes back as HTML with a 200, which asserting on the
-        # status code alone would not catch.
+        # to every script a browser can reach from it -- the entry, then each
+        # lazy page chunk its import() references name, and theirs in turn --
+        # checking each one's content type as tests/test_attribution_present.py
+        # does: a path the /assets mount does not claim comes back as HTML
+        # with a 200, which asserting on the status code alone would not catch.
         #
         # TMDB's required notice is checked here as well as in
         # tests/test_attribution_present.py, because that suite reads the
         # `frontend/dist` the *runner* built at "Build the frontend" -- same
         # source and same pinned Node, so equivalent in practice, but still one
-        # artefact standing in for another. This job already has each script's
-        # body in hand, so proving the licence condition against the bundle
-        # that ships costs one assertion.
+        # artefact standing in for another. This job already has every
+        # reachable chunk's body in hand -- the notice lives in a lazy one,
+        # not the entry -- so proving the licence condition against the
+        # bundle that ships costs one assertion.
         run: |
           docker run --rm ${{ env.CI_IMAGE }} python -c "
           import asyncio, os, re
