@@ -25,11 +25,13 @@ from pathlib import Path
 
 import httpx
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from plexapi.exceptions import PlexApiException
 from sqlalchemy import select
 
+from autoposter.api import thumbs
 from autoposter.api.auth import require_session
+from autoposter.api.thumbs import ThumbWidth
 from autoposter.db.models import MediaItem, Render
 from autoposter.db.models import Session as SessionModel
 from autoposter.db.refs import native_ids
@@ -57,10 +59,16 @@ FALLBACK_CONTENT_TYPE = "application/octet-stream"
 # one of them remote-controlled, so a browser must not be allowed to sniff its
 # way to a different interpretation of the body.
 NOSNIFF = {"X-Content-Type-Options": "nosniff"}
-# Behind a session, so no shared cache may keep a copy, and always revalidated
-# so a re-render is picked up immediately -- the revalidation is what the ETag
-# (_asset_etag) makes cheap: a 304 with no body, costing one stat and no read.
-CACHE_CONTROL = "private, max-age=0, must-revalidate"
+# Behind a session, so no shared cache may keep a copy. Fresh for five
+# minutes: the library grid asks for every tile on every visit and page flip,
+# and inside that window the browser now answers from its own cache without
+# asking; after it, revalidation is a bodyless 304 made from one stat (see
+# _asset_etag). The price is that a tile can show the previous render for up
+# to five minutes after a re-render -- which is why the item detail page,
+# where an operator looks at a render they have just made, fetches with
+# `cache: "no-cache"` (frontend/src/pages/ItemDetail.tsx) and so revalidates
+# every time.
+CACHE_CONTROL = "private, max-age=300"
 # What a Content-Type coming back from Plex is allowed to become on our own
 # response. Plex's header is remote input, and echoing it verbatim would let
 # whatever is at that URL choose how a browser interprets the body; anything
@@ -128,7 +136,7 @@ def _read_asset(resolved: Path) -> bytes:
     return resolved.read_bytes()
 
 
-def _asset_etag(file_stat: os.stat_result) -> str:
+def _asset_etag(file_stat: os.stat_result, width: int | None = None) -> str:
     """``W/"<size>-<mtime_ns>"`` for the file actually being served.
 
     Not ``renders.base_sha256``. For a pipeline render that column is the
@@ -144,8 +152,15 @@ def _asset_etag(file_stat: os.stat_result) -> str:
     Weak, because equal size and mtime is strong evidence of equal bytes
     rather than proof, and RFC 9110 reserves strong tags for proof.
     Nanoseconds, so two writes within one second still differ.
+
+    A thumbnail's tag adds ``-w<width>``: the full image and each thumbnail
+    are different bytes of one file, and each representation needs its own
+    tag. All of them come from the same stat, so all of them move together.
     """
-    return f'W/"{file_stat.st_size}-{file_stat.st_mtime_ns}"'
+    opaque = f"{file_stat.st_size}-{file_stat.st_mtime_ns}"
+    if width is not None:
+        opaque += f"-w{int(width)}"
+    return f'W/"{opaque}"'
 
 
 def _opaque_tag(tag: str) -> str:
@@ -173,23 +188,32 @@ def _if_none_match(header: str | None, etag: str) -> bool:
 
 
 def _load_asset(
-    asset_path: str, assets_root: Path, if_none_match: str | None
+    asset_path: str,
+    assets_root: Path,
+    if_none_match: str | None,
+    width: ThumbWidth | None,
 ) -> tuple[str, bytes | None]:
     """The ETag for a render's file, and its bytes unless the client has them.
 
     One thread hop for all of it. A 304 costs the containment check and one
-    stat; the file is opened only when the client's copy is missing or stale.
-    ``None`` in place of the bytes means "answer 304".
+    stat; the file is opened -- or decoded and resized, for a ``width`` --
+    only when the client's copy is missing or stale. ``None`` in place of the
+    bytes means "answer 304".
 
     A file rewritten between the stat and the read goes out under the old
     stat's tag. That heals itself: the next revalidation stats the new file,
-    the tags differ, and the new bytes are sent.
+    the tags differ, and the new bytes are sent. The thumbnail cache is keyed
+    on the same stat, so it cannot serve a predecessor's entry either.
     """
     resolved, file_stat = _stat_asset(asset_path, assets_root)
-    etag = _asset_etag(file_stat)
+    etag = _asset_etag(file_stat, width)
     if _if_none_match(if_none_match, etag):
         return etag, None
-    return etag, _read_asset(resolved)
+    if width is None:
+        return etag, _read_asset(resolved)
+    return etag, thumbs.thumbnail_bytes(
+        resolved, file_stat.st_size, file_stat.st_mtime_ns, int(width)
+    )
 
 
 @router.get("/items/{item_id}/artwork/{art_kind}")
@@ -197,6 +221,7 @@ async def base_artwork(
     item_id: int,
     art_kind: str,
     request: Request,
+    w: ThumbWidth | None = Query(default=None),
     _: SessionModel = Depends(require_session),
 ) -> Response:
     """The base image this project rendered for one item and art kind.
@@ -225,6 +250,14 @@ async def base_artwork(
     re-render rewrites the file. A 304 therefore also requires the file to
     still be on disk inside the tree: a deleted render is a 404, not a 304
     for bytes that are gone.
+
+    ``?w=320`` or ``?w=640`` returns a JPEG that width (never upscaled)
+    instead of the full render: the grid's tiles are a few hundred pixels
+    wide, and the full file is a 2000x3000 poster. Made in the same thread
+    hop, cached in memory (api/thumbs.py), and tagged with its own ETag. Any
+    other ``w`` is FastAPI's 422. Containment, the NULL-digest refusal and
+    the session requirement apply to thumbnails unchanged, because they run
+    before anything is decoded.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -248,7 +281,11 @@ async def base_artwork(
     assets_root = Path(request.app.state.config.assets_root)
     try:
         etag, content = await asyncio.to_thread(
-            _load_asset, render.asset_path, assets_root, request.headers.get("if-none-match")
+            _load_asset,
+            render.asset_path,
+            assets_root,
+            request.headers.get("if-none-match"),
+            w,
         )
     except OutsideAssetsRoot as exc:
         # Worth a warning rather than a silent 404: nothing this project
@@ -259,6 +296,14 @@ async def base_artwork(
         raise HTTPException(status_code=404, detail="artwork not found") from None
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="artwork not found") from None
+    except thumbs.UndecodableArtwork as exc:
+        # The file is ours (digest set, inside the tree) but Pillow cannot
+        # read it: a write still in progress, or a hand-placed override in a
+        # format it does not know. One warning and a fixed sentence, not a
+        # traceback per tile. A finished write stats differently, so the next
+        # request is a fresh attempt under a new cache key.
+        logger.warning("cannot make a %dpx thumbnail of render %d: %s", w, render.id, exc)
+        raise HTTPException(status_code=500, detail="artwork could not be decoded") from None
 
     headers = dict(NOSNIFF)
     headers["ETag"] = etag
@@ -266,12 +311,12 @@ async def base_artwork(
     if content is None:
         return Response(status_code=304, headers=headers)
 
-    suffix = Path(render.asset_path).suffix.lower()
-    return Response(
-        content=content,
-        media_type=CONTENT_TYPES.get(suffix, FALLBACK_CONTENT_TYPE),
-        headers=headers,
-    )
+    if w is not None:
+        media_type = "image/jpeg"
+    else:
+        suffix = Path(render.asset_path).suffix.lower()
+        media_type = CONTENT_TYPES.get(suffix, FALLBACK_CONTENT_TYPE)
+    return Response(content=content, media_type=media_type, headers=headers)
 
 
 @router.get("/items/{item_id}/artwork/{art_kind}/live")

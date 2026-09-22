@@ -14,6 +14,7 @@ fail stay three distinguishable statuses -- 404 for "Plex has nothing" against
 ``httpx.MockTransport``; conftest's ``no_outbound_network`` fails the test if
 one ever escapes.
 """
+import io
 import os
 import threading
 from pathlib import Path
@@ -23,12 +24,15 @@ import pytest
 import pytest_asyncio
 import requests
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 from plexapi.exceptions import BadRequest as PlexBadRequest
 from plexapi.exceptions import NotFound as PlexNotFound
 from test_spa_serving import _raw_asgi_get
 
 from autoposter.api import artwork as artwork_module
+from autoposter.api import thumbs as thumbs_module
 from autoposter.api.auth import hash_password
+from autoposter.api.thumbs import ThumbWidth
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
@@ -50,6 +54,8 @@ SECRET = "do not serve me"
 LIVE_BYTES = b"RIFF\x00\x00\x00\x00WEBP what plex is actually showing"
 PLEX_URL = "http://plex.local"
 PLEX_TOKEN = "plex-token-for-this-test"
+# Every width ?w= accepts, from the enum the route validates against.
+WIDTHS = [width.value for width in ThumbWidth]
 
 
 @pytest.fixture
@@ -113,6 +119,14 @@ async def _item_with_render(
     )
     await session.commit()
     return item.id
+
+
+def _write_jpeg(path: Path, size: tuple[int, int] = (1000, 1500)) -> Path:
+    """A real JPEG, for the ?w= tests: the resize decodes, so IMAGE_BYTES
+    (deliberately not an image) cannot stand in here."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, (200, 30, 30)).save(path, "JPEG", quality=92)
+    return path
 
 
 async def test_serves_the_base_image_for_a_render(client, auth_headers, session, assets_root):
@@ -494,6 +508,230 @@ async def test_artwork_requires_a_session(client, session, assets_root):
 
     assert response.status_code == 401
     assert IMAGE_BYTES not in response.content
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+@pytest.mark.parametrize("size", [(1000, 1500), (1920, 1080)], ids=["poster", "background"])
+async def test_w_serves_a_jpeg_that_fits_the_width_and_keeps_the_aspect_ratio(
+    client, auth_headers, session, assets_root, width, size
+):
+    asset = _write_jpeg(assets_root / "poster.jpg", size)
+    item_id = await _item_with_render(session, str(asset))
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster?w={width}", headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    thumb = Image.open(io.BytesIO(response.content))
+    assert thumb.format == "JPEG"
+    assert thumb.width == width
+    assert thumb.height == pytest.approx(size[1] * width / size[0], abs=1)
+
+
+@pytest.mark.parametrize("w", ["500", "0", "-320", "1280", "abc", "320px"])
+async def test_any_other_w_is_422(client, auth_headers, session, assets_root, w):
+    """Two sizes, so the cache holds at most two variants of a file and no
+    caller can make the server resize to arbitrary widths. A real row and file
+    exist, so a 404 cannot stand in for the refusal."""
+    asset = _write_jpeg(assets_root / "poster.jpg")
+    item_id = await _item_with_render(session, str(asset))
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster?w={w}", headers=auth_headers)
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "w"]
+
+
+async def test_each_representation_has_its_own_etag_naming_its_width(
+    client, auth_headers, session, assets_root
+):
+    """The full image and each thumbnail are different bytes, so RFC 9110
+    requires different tags. All of them come from the same stat, so all of
+    them change when the file does."""
+    asset = _write_jpeg(assets_root / "poster.jpg")
+    item_id = await _item_with_render(session, str(asset))
+    url = f"/api/items/{item_id}/artwork/poster"
+    stat = asset.stat()
+
+    full = await client.get(url, headers=auth_headers)
+    assert full.headers["etag"] == f'W/"{stat.st_size}-{stat.st_mtime_ns}"'
+    for width in WIDTHS:
+        thumb = await client.get(f"{url}?w={width}", headers=auth_headers)
+        assert thumb.headers["etag"] == f'W/"{stat.st_size}-{stat.st_mtime_ns}-w{width}"'
+
+
+async def test_the_full_images_etag_does_not_validate_a_thumbnail(
+    client, auth_headers, session, assets_root
+):
+    asset = _write_jpeg(assets_root / "poster.jpg")
+    item_id = await _item_with_render(session, str(asset))
+    url = f"/api/items/{item_id}/artwork/poster"
+    full = await client.get(url, headers=auth_headers)
+
+    response = await client.get(
+        f"{url}?w={WIDTHS[0]}",
+        headers={**auth_headers, "If-None-Match": full.headers["etag"]},
+    )
+
+    assert response.status_code == 200
+    assert Image.open(io.BytesIO(response.content)).width == WIDTHS[0]
+
+
+@pytest.mark.parametrize("width", WIDTHS)
+async def test_a_matching_if_none_match_on_a_thumbnail_is_304_and_resizes_nothing(
+    client, auth_headers, session, assets_root, monkeypatch, width
+):
+    asset = _write_jpeg(assets_root / "poster.jpg")
+    item_id = await _item_with_render(session, str(asset))
+    stat = asset.stat()
+    etag = f'W/"{stat.st_size}-{stat.st_mtime_ns}-w{width}"'
+
+    def must_not_resize(*args, **kwargs):
+        raise AssertionError("a thumbnail was made despite a matching If-None-Match")
+
+    monkeypatch.setattr(thumbs_module, "thumbnail_bytes", must_not_resize)
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster?w={width}",
+        headers={**auth_headers, "If-None-Match": etag},
+    )
+
+    assert response.status_code == 304
+    assert response.content == b""
+    assert response.headers["etag"] == etag
+
+
+async def test_the_thumbnail_resize_never_runs_on_the_event_loop(
+    client, auth_headers, session, assets_root, monkeypatch
+):
+    """A decode and a resize are tens of milliseconds of pure CPU, and a
+    page of tiles asks for dozens at once."""
+    asset = _write_jpeg(assets_root / "poster.jpg")
+    item_id = await _item_with_render(session, str(asset))
+    real = thumbs_module.thumbnail_bytes
+    ran_on = []
+
+    def recording(*args, **kwargs):
+        ran_on.append(threading.current_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(thumbs_module, "thumbnail_bytes", recording)
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster?w={WIDTHS[0]}", headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    assert ran_on, "the recording stand-in was never called"
+    assert ran_on[0] is not threading.current_thread(), (
+        f"the thumbnail was made on the event loop thread ({ran_on[0]!r})"
+    )
+
+
+async def test_w_does_not_reach_a_file_outside_assets_root(
+    client, auth_headers, session, assets_root
+):
+    """A real JPEG outside the tree, so broken containment would produce a
+    perfectly good thumbnail of it rather than failing for another reason."""
+    outside = _write_jpeg(assets_root.parent / "outside.jpg")
+    item_id = await _item_with_render(session, str(outside))
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster?w={WIDTHS[0]}", headers=auth_headers
+    )
+
+    assert response.status_code == 404
+    assert response.headers["content-type"] != "image/jpeg"
+
+
+async def test_w_does_not_follow_a_symlink_out_of_assets_root(
+    client, auth_headers, session, assets_root
+):
+    outside = _write_jpeg(assets_root.parent / "outside.jpg")
+    link = assets_root / "poster.jpg"
+    link.symlink_to(outside)
+    item_id = await _item_with_render(session, str(link))
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster?w={WIDTHS[0]}", headers=auth_headers
+    )
+
+    assert response.status_code == 404
+    assert response.headers["content-type"] != "image/jpeg"
+
+
+async def test_w_on_a_row_with_no_digest_is_404_and_resizes_nothing(
+    client, auth_headers, session, assets_root, monkeypatch
+):
+    asset = _write_jpeg(assets_root / "poster.jpg")
+    item_id = await _item_with_render(session, str(asset), base_sha256=None)
+
+    def must_not_resize(*args, **kwargs):
+        raise AssertionError("an unvalidated file was resized")
+
+    monkeypatch.setattr(thumbs_module, "thumbnail_bytes", must_not_resize)
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster?w={WIDTHS[0]}", headers=auth_headers
+    )
+
+    assert response.status_code == 404
+    assert "etag" not in response.headers
+
+
+async def test_w_still_requires_a_session(client, session, assets_root):
+    asset = _write_jpeg(assets_root / "poster.jpg")
+    item_id = await _item_with_render(session, str(asset))
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster?w={WIDTHS[0]}")
+
+    assert response.status_code == 401
+    assert response.headers["content-type"] != "image/jpeg"
+
+
+async def test_a_file_pillow_cannot_decode_is_a_500_with_a_fixed_sentence(
+    client, auth_headers, session, assets_root
+):
+    """Ours (digest set, inside the tree) but not an image Pillow can read --
+    a write still in progress, or a hand-placed file in an unknown format. A
+    fixed sentence, never the file's bytes or a traceback."""
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset))
+
+    response = await client.get(
+        f"/api/items/{item_id}/artwork/poster?w={WIDTHS[0]}", headers=auth_headers
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "artwork could not be decoded"}
+
+
+@pytest.mark.parametrize("query", ["", f"?w={WIDTHS[0]}"], ids=["full", "thumbnail"])
+async def test_responses_are_private_and_fresh_for_five_minutes(
+    client, auth_headers, session, assets_root, query
+):
+    """Within five minutes the browser answers a tile from its own cache
+    without asking; after that a revalidation is a bodyless 304. The item
+    detail page opts out with cache: "no-cache" (frontend), because that is
+    where an operator looks at a render they have just made."""
+    asset = _write_jpeg(assets_root / "poster.jpg")
+    item_id = await _item_with_render(session, str(asset))
+    url = f"/api/items/{item_id}/artwork/poster{query}"
+
+    response = await client.get(url, headers=auth_headers)
+    revalidated = await client.get(
+        url, headers={**auth_headers, "If-None-Match": response.headers["etag"]}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, max-age=300"
+    assert revalidated.status_code == 304
+    assert revalidated.headers["cache-control"] == "private, max-age=300"
+    assert revalidated.headers["etag"] == response.headers["etag"]
 
 
 # --- GET /api/items/{item_id}/artwork/{art_kind}/live -------------------------
