@@ -1059,6 +1059,78 @@ async def _pick_logo(
     )
 
 
+def _can_skip_source_download(render: Render, url: str) -> bool:
+    """Whether a provider candidate's bytes can wait (perf workstream B1).
+
+    True only when this row last rendered from exactly this URL AND recorded
+    both the digest of those bytes and the fingerprint they went into. The
+    stored digest then stands in for the download long enough to ask whether
+    anything ELSE moved. TMDB, fanart.tv and TVDB serve every image at a path
+    unique to that image, so the URL is the identity -- the spec's accepted
+    risk, with an explicit rerender or reprocess (which clears ``fingerprint``,
+    ``api/routes._clear_render_fingerprints``) as the way to re-verify the bytes.
+    """
+    return (
+        render.source_url == url
+        and bool(render.base_sha256)
+        and render.fingerprint is not None
+    )
+
+
+def _draws_text(
+    config: Config,
+    art_kind: str,
+    *,
+    has_logo: bool,
+    suppress_text: bool,
+    local_source: bool,
+    suppress_styling: bool,
+) -> bool:
+    """Whether the title text is drawn -- ``render_artifact``'s one rule for it.
+
+    Lifted out unchanged when perf workstream B1 gave the rule a second call
+    site: a provisional fingerprint is computed before the bytes arrive, and a
+    miss recomputes it after, and the two must agree on this input or the
+    recompute is comparing different things.
+    """
+    draw_text = not (art_kind == "poster" and (has_logo or suppress_text))
+    if local_source and not draw_text_for_local_source(config, art_kind):
+        draw_text = False
+    if suppress_styling:
+        draw_text = False
+    return draw_text
+
+
+async def _render_fingerprint(
+    config: Config,
+    item: ResolvedItem,
+    art_kind: str,
+    source_url: str | None,
+    base_sha: str | None,
+    *,
+    draw_text: bool,
+    logo_sha: str,
+    suppress_styling: bool,
+) -> str:
+    """``render_artifact``'s fingerprint for the inputs it has so far.
+
+    Called once with the stored digest(s) standing in for bytes not yet
+    downloaded, and again with the real ones when that provisional value
+    misses (perf workstream B1). One definition, so the two calls cannot drift.
+    """
+    text_inputs, asset_hashes = await gather_fingerprint_inputs(
+        config, item, art_kind, draw_text=draw_text, logo_sha=logo_sha,
+        suppress_styling=suppress_styling,
+    )
+    # render_version_for, not config.version (roadmap row 111): this art
+    # kind's own settings plus the shared roots, so retuning one kind's
+    # text block leaves the other three kinds' fingerprints byte-identical.
+    return compute_fingerprint(
+        render_version_for(art_kind, config), art_kind, source_url, base_sha,
+        text_inputs, asset_hashes,
+    )
+
+
 async def render_artifact(
     session: AsyncSession,
     config: Config,
@@ -1155,6 +1227,9 @@ async def render_artifact(
         plex_generated = False
         local_source = False
         chosen_candidate = None
+        # Perf workstream B1: the provider URL whose download was deferred on
+        # the strength of the stored digest, or None when nothing was.
+        deferred_source_url: str | None = None
         # Action Center quality facts (roadmap 11a). Each of these is already
         # decided somewhere below and, until this phase, thrown away: the
         # ladder returns is_fallback and nobody reads it, the logo branch
@@ -1279,9 +1354,21 @@ async def render_artifact(
             else:
                 candidate = selection.candidate
                 chosen_candidate = candidate
-                base_sha = await _download(
-                    http, candidate.url, working, stage=f"the {art_kind} source"
-                )
+                if _can_skip_source_download(render, candidate.url):
+                    # Perf workstream B1. The stored digest stands in for the
+                    # bytes; if the fingerprint below still matches and the
+                    # target exists, nothing is downloaded at all. On a miss
+                    # the download happens there instead -- compose needs the
+                    # bytes -- and the fingerprint is recomputed from the real
+                    # digest. This arm only: a manual override (above) is a file
+                    # operators overwrite in place, and the Plex frame's URL is a
+                    # synthetic key on purpose, so both are always read.
+                    base_sha = render.base_sha256
+                    deferred_source_url = candidate.url
+                else:
+                    base_sha = await _download(
+                        http, candidate.url, working, stage=f"the {art_kind} source"
+                    )
                 source_url = candidate.url
                 provider_name = candidate.provider
                 textless = candidate.is_textless
@@ -1347,28 +1434,35 @@ async def render_artifact(
         suppress_styling = (
             settings.skip_add_text_when_with_text and known_with_text(chosen_candidate)
         )
-        draw_text = not (art_kind == "poster" and (logo_path is not None or suppress_text))
-        if local_source and not draw_text_for_local_source(config, art_kind):
-            draw_text = False
-        if suppress_styling:
-            draw_text = False
-
-        text_inputs, asset_hashes = await gather_fingerprint_inputs(
-            config, item, art_kind, draw_text=draw_text, logo_sha=logo_sha,
-            suppress_styling=suppress_styling,
+        draw_text = _draws_text(
+            config, art_kind, has_logo=logo_path is not None, suppress_text=suppress_text,
+            local_source=local_source, suppress_styling=suppress_styling,
         )
-
-        # render_version_for, not config.version (roadmap row 111): this art
-        # kind's own settings plus the shared roots, so retuning one kind's
-        # text block leaves the other three kinds' fingerprints byte-identical.
-        fingerprint = compute_fingerprint(
-            render_version_for(art_kind, config), art_kind, source_url, base_sha,
-            text_inputs, asset_hashes,
+        fingerprint = await _render_fingerprint(
+            config, item, art_kind, source_url, base_sha,
+            draw_text=draw_text, logo_sha=logo_sha, suppress_styling=suppress_styling,
         )
         # target.exists() offloaded (it's a stat() against assets_root, which
         # can be an NFS mount) — only reached once a fingerprint already
         # matches, so the short-circuit still skips it entirely otherwise.
-        if render.fingerprint == fingerprint and await asyncio.to_thread(target.exists):
+        unchanged = render.fingerprint == fingerprint and await asyncio.to_thread(target.exists)
+        if not unchanged and deferred_source_url is not None:
+            # The provisional fingerprint missed, or the target is gone: this
+            # render composes, so it needs the real bytes, and the stored
+            # fingerprint must be the one those bytes produce -- which is also
+            # the comparison every pass made before B1 (a provider that served
+            # new bytes at an old URL surfaces here as a moved digest).
+            base_sha = await _download(
+                http, deferred_source_url, working, stage=f"the {art_kind} source"
+            )
+            fingerprint = await _render_fingerprint(
+                config, item, art_kind, source_url, base_sha,
+                draw_text=draw_text, logo_sha=logo_sha, suppress_styling=suppress_styling,
+            )
+            unchanged = (
+                render.fingerprint == fingerprint and await asyncio.to_thread(target.exists)
+            )
+        if unchanged:
             render.status = "rendered"
             render.detail = "unchanged"
             await session.commit()
