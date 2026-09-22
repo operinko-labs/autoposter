@@ -70,7 +70,12 @@ it("mounts the application at #root, not a placeholder", async () => {
 
   // No session, so the gate renders the login form. Any of this is only in
   // the document if main.tsx mounted App.
-  expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  // Login is its own lazy chunk (perf spec A3), and beforeEach's
+  // vi.resetModules() makes this file load it cold every time -- hence the
+  // explicit budget rather than findBy's one-second default.
+  expect(
+    await screen.findByLabelText("Password", {}, { timeout: 5000 }),
+  ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
 
   await act(async () => root.unmount());
@@ -108,7 +113,10 @@ it("mounts the routed shell when a session already exists", async () => {
   expect(screen.getByRole("link", { name: "Library" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Failures" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+  // The sidebar is part of the entry; the page is a lazy chunk.
+  expect(
+    await screen.findByRole("heading", { name: "Dashboard" }, { timeout: 5000 }),
+  ).toBeInTheDocument();
 
   await act(async () => root.unmount());
 });

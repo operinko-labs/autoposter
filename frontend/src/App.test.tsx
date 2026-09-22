@@ -1,7 +1,14 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+
+// Login and Setup are lazy chunks (perf spec A3). Loading them once here
+// keeps a cold module transform -- Setup pulls in every wizard pane -- out of
+// each test's one-second waitFor budget.
+beforeAll(async () => {
+  await Promise.all([import("./pages/Login"), import("./pages/Setup")]);
+}, 20000);
 
 afterEach(() => {
   vi.unstubAllGlobals();

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
 import { apiFetch, apiFetchNdjson } from "../api/client";
 import {
@@ -11,9 +11,15 @@ import {
 } from "../api/types";
 import { formatTime } from "../format";
 import { NOT_SCHEDULED_TITLE, requestedNote } from "../scheduledRuns";
-import { RunCharts } from "./RunCharts";
 import { ScheduledRunStatusPill } from "./ScheduledRunStatus";
 import "./dashboard.css";
+
+/** Lazy, so recharts -- the largest dependency in the bundle, used by this
+ * one component -- leaves the entry chunk and downloads only when a dashboard
+ * is actually drawn (perf spec A3). */
+const RunCharts = lazy(() =>
+  import("./RunCharts").then((module) => ({ default: module.RunCharts })),
+);
 
 /** How long to wait before reconnecting a dropped stream -- the log tail's
  * interval, for the same reason. */
@@ -195,7 +201,9 @@ export function Dashboard() {
         ))}
       </div>
 
-      <RunCharts />
+      <Suspense fallback={<p className="muted">Loading run history…</p>}>
+        <RunCharts />
+      </Suspense>
 
       <div className="dashboard-columns">
         <section className="panel">

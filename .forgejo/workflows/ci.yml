@@ -703,8 +703,20 @@ jobs:
                   assert index.headers['content-type'].startswith('text/html'), index.headers
                   scripts = re.findall(r'[\"\'](/assets/[^\"\']+\.js)[\"\']', index.text)
                   assert scripts, f'the shell references no bundled script: {index.text!r}'
+                  # Every page is a lazy chunk (perf spec A3), reachable only
+                  # through the import() references inside scripts already
+                  # served. So this walks them -- limited to the chunk names
+                  # dist/assets really holds, so a library string that merely
+                  # looks like a file name is not fetched -- and the notice
+                  # below is looked for in everything a browser can load.
+                  emitted = {p.name for p in (dist / 'assets').glob('*.js')}
                   served = [index.text]
-                  for path in scripts:
+                  pending, seen = list(scripts), set()
+                  while pending:
+                      path = pending.pop()
+                      if path in seen:
+                          continue
+                      seen.add(path)
                       asset = await client.get(path)
                       assert asset.status_code == 200, f'{path}: {asset.status_code}'
                       content_type = asset.headers['content-type']
@@ -712,13 +724,16 @@ jobs:
                           f'{path} was answered with the SPA shell, not the file'
                       )
                       served.append(asset.text)
+                      for name in re.findall(r'[A-Za-z0-9_.-]+[.]js', asset.text):
+                          if name in emitted:
+                              pending.append('/assets/' + name)
                   assert any(notice in text for text in served), (
                       'the image serves a bundle without TMDB required notice, '
                       'which their terms make a condition of using their API. '
                       'Either the Settings page was reworded or nothing routes '
                       'to it in the bundle this image ships'
                   )
-                  print('SPA served from', dist, 'with', len(scripts), 'script(s)')
+                  print('SPA served from', dist, 'with', len(seen), 'script(s) reachable from the shell')
 
           asyncio.run(main())
           "

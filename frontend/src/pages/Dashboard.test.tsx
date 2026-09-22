@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
 import type { ScheduledRun } from "../api/types";
@@ -154,6 +154,13 @@ function snapshotWithScheduledJobs(jobs: ScheduledRun[]) {
     events: EVENTS.events,
   };
 }
+
+// RunCharts is a lazy chunk inside the page (perf spec A3) and pulls in
+// recharts. Loaded once here so no single test's findBy budget pays for the
+// cold transform.
+beforeAll(async () => {
+  await import("./RunCharts");
+}, 20000);
 
 beforeEach(() => {
   setToken(null);
@@ -432,6 +439,9 @@ describe("Dashboard", () => {
 
     render(<Dashboard />);
     await screen.findByText("collections_reconcile");
+    // The chart's own mount fetch has happened (and answered) once its empty
+    // state is on screen; it now waits for a lazy chunk first.
+    await screen.findByText("No runs recorded yet.");
     expect(statValue("pending")).toBe("3");
 
     await act(async () => {
@@ -479,6 +489,8 @@ describe("Dashboard", () => {
 
     render(<Dashboard />);
     await screen.findByText("collections_reconcile");
+    // RunCharts' one mount fetch, counted below, has landed.
+    await screen.findByText("No runs recorded yet.");
 
     // The server ended the stream -- a restart, a proxy timeout.
     await act(async () => {
