@@ -420,14 +420,18 @@ async def _managed_section(request: Request, library: str):
         )
     server = await _connect(request)
     try:
-        section = await asyncio.to_thread(server.library.section, library)
+        # ``library_section``, so ``server.library`` -- a plexapi cached
+        # property whose first read is a request -- is read on the thread
+        # (perf C2); ``to_thread(server.library.section, ...)`` evaluated it
+        # here, on the event loop.
+        section, kind = await asyncio.to_thread(library_section, server, library)
     except Exception as error:
         logger.exception("could not open the %r section", library)
         raise HTTPException(
             status_code=502,
             detail="could not open %r on Plex (%s)" % (library, type(error).__name__),
         ) from None
-    library_type = LIBRARY_TYPES.get(section.type)
+    library_type = LIBRARY_TYPES.get(kind)
     if library_type is None:
         raise HTTPException(
             status_code=422, detail="%r is not a movie or show library" % library

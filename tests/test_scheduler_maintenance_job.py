@@ -8,6 +8,7 @@ that signal.
 """
 import asyncio
 import logging
+import threading
 from pathlib import Path
 
 from sqlalchemy import select
@@ -286,3 +287,27 @@ async def test_a_same_value_library_override_still_narrows_the_sweep(session):
     await job.run(session)
     assert server.library.calls == ["section:Movies", "section:TV Shows"]
     assert server.library.sections_asked == ["Movies", "TV Shows"]
+
+
+async def test_the_server_library_is_read_off_the_event_loop(session):
+    """perf C2: plexapi's ``PlexServer.library`` is a ``cached_data_property``
+    whose first read is a request (``self.query('/library')``). Building the
+    call list as ``server.library.emptyTrash`` or ``getattr(server.library,
+    method)`` made that request on the loop, before the ``to_thread`` hop."""
+    loop_thread = threading.get_ident()
+    seen = []
+    library = RecordingLibrary()
+
+    class _Server:
+        @property
+        def library(self):
+            seen.append(threading.get_ident())
+            return library
+
+    job = make_maintenance_job(
+        _holder(clean_bundles=True, empty_trash=True, optimize=True), _Server
+    )
+    summary = await job.run(session)
+
+    assert summary == "ran clean_bundles, empty_trash, optimize"
+    assert seen and loop_thread not in seen

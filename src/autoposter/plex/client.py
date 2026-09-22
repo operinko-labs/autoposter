@@ -319,6 +319,13 @@ PLEX_CAPABILITIES = frozenset({
 })
 
 
+def _label_tags(item) -> list[str]:
+    """``item.labels``' tag names. Read in a thread by ``PlexClient.item_labels``,
+    because ``labels`` on a partial plexapi object can trigger a synchronous
+    ``reload()`` (perf C2)."""
+    return [t.tag for t in getattr(item, "labels", None) or []]
+
+
 class PlexClient:
     """Resolves render intents to Plex items, and conforms to ``MediaServer``.
 
@@ -655,7 +662,13 @@ class PlexClient:
         """
         for attempt in range(FETCH_ITEM_RETRIES + 1):
             try:
-                return await asyncio.to_thread(self._server.fetchItem, int(rating_key))
+                # A lambda, so ``self._server.fetchItem`` is dereferenced ON THE
+                # THREAD (perf C2): passing the bound method evaluated it here,
+                # and a ``_LazyPlexServer``'s first attribute access connects --
+                # a blocking ``PlexServer()`` on the event loop.
+                return await asyncio.to_thread(
+                    lambda: self._server.fetchItem(int(rating_key))
+                )
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                 if attempt == FETCH_ITEM_RETRIES:
                     raise
@@ -893,7 +906,7 @@ class PlexClient:
 
     async def item_labels(self, ref: ServerItemRef) -> list[str]:
         item = await self.fetch_item(ref.native_id)
-        return [t.tag for t in getattr(item, "labels", None) or []]
+        return await asyncio.to_thread(_label_tags, item)
 
     async def apply_facts(
         self, ref: ServerItemRef, facts, operations=None,

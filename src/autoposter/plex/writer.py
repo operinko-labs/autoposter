@@ -815,7 +815,12 @@ async def apply_facts(
     but still land inside the same ``batchEdits()``/``saveEdits()`` block, so
     it's still a single request.
     """
-    edits = plan_edits(item, facts, operations, parental_categories, overrides)
+    # In a thread (perf C2): planning reads the item's current values --
+    # ``rating``, ``contentRating``, ``genres``, ``fields`` -- and any read of a
+    # partial plexapi object can reload it, a blocking GET on the event loop.
+    edits = await asyncio.to_thread(
+        plan_edits, item, facts, operations, parental_categories, overrides
+    )
     if not edits:
         return {}
 

@@ -11,6 +11,7 @@ measured a server-side cap of 200 ``Role`` children per item
 exactly), so a scanned item's actor rows are what Plex returned, not
 necessarily everyone who appeared in it.
 """
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -76,7 +77,12 @@ def config():
 
 
 async def _item(session, rating_key, *, library="Movies", kind="movie", title="X"):
-    return await seed_media_item(session, rating_key, library=library, kind=kind, title=title)
+    # Committed, not only flushed: ``scan_library_credits`` ends its read
+    # transaction before the threaded Plex fetch (perf C2), and that rollback
+    # would take a flushed-only seed with it.
+    item = await seed_media_item(session, rating_key, library=library, kind=kind, title=title)
+    await session.commit()
+    return item
 
 
 def _movies(*items) -> FakeServer:
@@ -104,8 +110,10 @@ async def _stamps(session) -> dict[str, object]:
 async def test_scan_writes_rows_and_stamps_the_attempt(session, config):
     """Found-no-credits IS an answer: both items carry the stamp, and only the
     one Plex credited carries rows."""
-    credited = await _item(session, "1", title="Credited")
-    bare = await _item(session, "2", title="Bare")
+    # Ids read before the scan: its rollback (perf C2) expires every loaded
+    # ORM object, and an expired ``.id`` would lazy-load outside the greenlet.
+    credited_id = (await _item(session, "1", title="Credited")).id
+    bare_id = (await _item(session, "2", title="Bare")).id
     server = _movies(
         FakeItem(1, actors=("Ann", "Bob"), directors=("Dee",),
                  writers=("Wes",), producers=("Pat",)),
@@ -118,14 +126,14 @@ async def test_scan_writes_rows_and_stamps_the_attempt(session, config):
     stamps = await _stamps(session)
     assert stamps["1"] is not None
     assert stamps["2"] is not None
-    assert await _rows(session, credited.id) == [
+    assert await _rows(session, credited_id) == [
         ("actor", "Ann"),
         ("actor", "Bob"),
         ("director", "Dee"),
         ("producer", "Pat"),
         ("writer", "Wes"),
     ]
-    assert await _rows(session, bare.id) == []
+    assert await _rows(session, bare_id) == []
 
 
 async def test_an_unanswered_key_is_neither_stamped_nor_written(session, config):
@@ -134,7 +142,7 @@ async def test_an_unanswered_key_is_neither_stamped_nor_written(session, config)
     honestly unvisited rather than looking like "we looked and found none"."""
     await _item(session, "1")
     await _item(session, "2")
-    silent = await _item(session, "3", title="Not Answered")
+    silent_id = (await _item(session, "3", title="Not Answered")).id
     server = _movies(FakeItem(1, actors=("Ann",)), FakeItem(2, actors=("Bob",)))
 
     summary = await scan_credits(session, server, config)
@@ -144,20 +152,20 @@ async def test_an_unanswered_key_is_neither_stamped_nor_written(session, config)
     assert stamps["1"] is not None
     assert stamps["2"] is not None
     assert stamps["3"] is None
-    assert await _rows(session, silent.id) == []
+    assert await _rows(session, silent_id) == []
 
 
 async def test_rescan_replaces_an_items_rows(session, config):
     """Stale credits do not accumulate: a person Plex no longer credits is
     gone from the cache on the next pass, not merged with the new answer."""
-    item = await _item(session, "1")
+    item_id = (await _item(session, "1")).id
 
     await scan_credits(session, _movies(FakeItem(1, actors=("A", "B"))), config)
-    assert await _rows(session, item.id) == [("actor", "A"), ("actor", "B")]
+    assert await _rows(session, item_id) == [("actor", "A"), ("actor", "B")]
 
     await scan_credits(session, _movies(FakeItem(1, actors=("A",))), config)
 
-    assert await _rows(session, item.id) == [("actor", "A")]
+    assert await _rows(session, item_id) == [("actor", "A")]
 
 
 async def test_two_plex_refs_on_one_item_cannot_double_insert_a_credit(session, config):
@@ -166,15 +174,15 @@ async def test_two_plex_refs_on_one_item_cannot_double_insert_a_credit(session, 
     pairs, so if it ever did, Plex answering for BOTH ids would hand the
     identical (item_id, kind, person) triple to ``insert(ItemCredit)`` twice
     and the UniqueViolation would fail the whole scan. Guarded, not assumed."""
-    item = await _item(session, "1")
-    session.add(MediaItemServerRef(item_id=item.id, server="plex", native_id="2", library="Movies"))
-    await session.flush()
+    item_id = (await _item(session, "1")).id
+    session.add(MediaItemServerRef(item_id=item_id, server="plex", native_id="2", library="Movies"))
+    await session.commit()
     server = _movies(FakeItem(1, actors=("Ann",)), FakeItem(2, actors=("Ann",)))
 
     summary = await scan_credits(session, server, config)
 
     assert summary == "Movies: 1 item(s) scanned, 1 credit(s)"
-    assert await _rows(session, item.id) == [("actor", "Ann")]
+    assert await _rows(session, item_id) == [("actor", "Ann")]
 
 
 async def test_enumerate_credits_counts_most_first_ties_on_name(session, config):
@@ -263,18 +271,18 @@ async def test_a_shows_credits_are_the_shows_not_its_episodes(session, config):
     only on a real server (probe D1: zero director/writer/producer in the
     batch, in a single-key fetch and in ``listFilterChoices``), so nothing here
     synthesises the three kinds Plex does not answer for."""
-    show = await _item(session, "1", library="TV Shows", kind="show", title="A Show")
-    episode = await _item(
+    show_id = (await _item(session, "1", library="TV Shows", kind="show", title="A Show")).id
+    episode_id = (await _item(
         session, "2", library="TV Shows", kind="episode", title="An Episode"
-    )
+    )).id
     section = FakeSection("11", "show", [FakeItem(1, actors=("Ann",)), FakeItem(2)])
     server = FakeServer({"TV Shows": section})
     config.collections.libraries = ["TV Shows"]
 
     await scan_credits(session, server, config)
 
-    assert await _rows(session, show.id) == [("actor", "Ann")]
-    assert await _rows(session, episode.id) == []
+    assert await _rows(session, show_id) == [("actor", "Ann")]
+    assert await _rows(session, episode_id) == []
     assert (await _stamps(session))["2"] is None
     assert section.calls == [[1]]
     assert await enumerate_credits(
@@ -329,3 +337,43 @@ async def test_counts_never_claim_a_complete_cast(session, config):
         credits_module.credits_coverage.__doc__,
     ):
         assert "200" in text, text
+
+
+async def test_the_read_transaction_ends_before_the_threaded_fetch(session):
+    """perf C2: the rows are plain tuples, so nothing needs the SELECT's
+    transaction while Plex answers the batched reads; holding it idle pinned a
+    pooled connection and the vacuum horizon for the whole walk."""
+    await _item(session, "1")
+    in_transaction = []
+
+    class _Watching(FakeSection):
+        def fetchItems(self, ekey):
+            in_transaction.append(session.in_transaction())
+            return super().fetchItems(ekey)
+
+    section = _Watching("10", "movie", [FakeItem(1, actors=("Ann",))])
+
+    assert await scan_library_credits(session, section, "Movies", "Movie") == (1, 1)
+    assert in_transaction == [False]
+
+
+async def test_the_server_library_is_read_off_the_event_loop(session, config):
+    """perf C2: plexapi's ``PlexServer.library`` is a ``cached_data_property``
+    whose first read is a request (``self.query('/library')``), so
+    ``to_thread(server.library.section, name)`` made that request on the loop
+    while it built the call's arguments."""
+    await _item(session, "1")
+    loop_thread = threading.get_ident()
+    seen = []
+    library = FakeLibrary({"Movies": FakeSection("10", "movie", [FakeItem(1)])})
+
+    class _Server:
+        @property
+        def library(self):
+            seen.append(threading.get_ident())
+            return library
+
+    assert await scan_credits(session, _Server(), config) == (
+        "Movies: 1 item(s) scanned, 0 credit(s)"
+    )
+    assert seen and loop_thread not in seen

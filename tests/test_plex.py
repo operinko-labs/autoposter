@@ -1,4 +1,6 @@
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -19,6 +21,7 @@ from autoposter.plex.client import (
     parse_guids,
 )
 from autoposter.render.pipeline import title_text_for
+from autoposter.servers.base import ServerItemRef
 
 EXAMPLE_CONFIG = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
 
@@ -1410,3 +1413,44 @@ async def test_keys_resolve_refuses_an_intent_with_no_stored_key(server):
 
     assert await client.keys_resolve([intent]) == [False]
     assert await client.keys_resolve([]) == []
+
+
+async def test_fetch_item_dereferences_the_server_off_the_event_loop():
+    """perf C2: ``to_thread(self._server.fetchItem, ...)`` evaluated
+    ``self._server.fetchItem`` on the loop, and on a ``_LazyPlexServer`` the
+    first attribute access CONNECTS -- a blocking ``PlexServer()`` call."""
+    loop_thread = threading.get_ident()
+    marker = object()
+
+    class _Recording:
+        def __init__(self):
+            self.touched = []
+
+        def __getattr__(self, name):
+            self.touched.append((name, threading.get_ident()))
+            if name == "fetchItem":
+                return lambda key: marker
+            raise AttributeError(name)
+
+    server = _Recording()
+    client = PlexClient(server=server, excluded_libraries=[])
+
+    assert await client.fetch_item("7") is marker
+    assert server.touched
+    assert loop_thread not in {ident for _, ident in server.touched}
+
+
+async def test_item_labels_reads_the_labels_off_the_event_loop():
+    loop_thread = threading.get_ident()
+    seen = []
+
+    class _Item:
+        @property
+        def labels(self):
+            seen.append(threading.get_ident())
+            return [SimpleNamespace(tag="Keep")]
+
+    client = PlexClient(server=FakeServer([], items_by_key={7: _Item()}), excluded_libraries=[])
+
+    assert await client.item_labels(ServerItemRef("plex", "7", "Movies", "movie")) == ["Keep"]
+    assert seen and loop_thread not in seen
