@@ -20,6 +20,7 @@ the detail view can put the two side by side. That one reads nothing from disk
 import asyncio
 import logging
 import os
+import stat
 from pathlib import Path
 
 import httpx
@@ -58,7 +59,7 @@ FALLBACK_CONTENT_TYPE = "application/octet-stream"
 NOSNIFF = {"X-Content-Type-Options": "nosniff"}
 # Behind a session, so no shared cache may keep a copy, and always revalidated
 # so a re-render is picked up immediately -- the revalidation is what the ETag
-# below makes cheap (a 304 with no body and no file read).
+# (_asset_etag) makes cheap: a 304 with no body, costing one stat and no read.
 CACHE_CONTROL = "private, max-age=0, must-revalidate"
 # What a Content-Type coming back from Plex is allowed to become on our own
 # response. Plex's header is remote input, and echoing it verbatim would let
@@ -73,8 +74,13 @@ class OutsideAssetsRoot(Exception):
     """A renders row whose asset_path resolves outside the asset tree."""
 
 
-def resolve_asset(asset_path: str, assets_root: Path) -> Path:
-    """Return ``asset_path`` resolved, having proven it is a file inside the tree.
+def _stat_asset(asset_path: str, assets_root: Path) -> tuple[Path, os.stat_result]:
+    """``asset_path`` resolved and proven to be a file inside the tree, with its stat.
+
+    The containment check and the one ``stat`` the ETag is made from, in a
+    single pass: the stat that proves "this is a regular file" is the same one
+    whose size and mtime become the tag, so a 304 costs one ``realpath`` walk
+    and one ``stat`` and never opens the file.
 
     Both sides are put through ``realpath`` before being compared, so a
     symlink planted inside ``assets_root`` and pointing at ``/etc/passwd`` is
@@ -84,45 +90,106 @@ def resolve_asset(asset_path: str, assets_root: Path) -> Path:
     Synchronous, and called from a thread: ``assets_root`` can be an NFS
     mount, so the ``realpath`` walk and the ``stat`` have to stay off the event
     loop that also carries the workers, the scheduler and the liveness probe.
-
-    Separate from :func:`_read_asset` so a caller that only needs to know
-    *whether* a render's base is on disk -- the revert mode's dry run, which
-    plans across a whole library -- can ask without reading every file's bytes.
     """
     root = Path(os.path.realpath(assets_root))
     resolved = Path(os.path.realpath(asset_path))
     if resolved == root or not resolved.is_relative_to(root):
         raise OutsideAssetsRoot(f"{asset_path!r} resolves to {resolved}, outside {root}")
-    # A path that is not a regular file -- missing, or a directory -- is the
-    # 404 below rather than the IsADirectoryError/FileNotFoundError a bare
-    # read_bytes() would turn into a 500.
-    if not resolved.is_file():
+    # A path that is not a regular file -- missing, a directory, a component
+    # that is not a directory -- is the 404 below rather than the
+    # IsADirectoryError/FileNotFoundError a bare read_bytes() would turn into
+    # a 500. Exactly the errors `Path.is_file()` answers "no" for (it swallows
+    # OSError and ValueError), so resolve_asset's callers see no difference.
+    try:
+        file_stat = resolved.stat()
+    except (OSError, ValueError):
+        raise FileNotFoundError(str(resolved)) from None
+    if not stat.S_ISREG(file_stat.st_mode):
         raise FileNotFoundError(str(resolved))
-    return resolved
+    return resolved, file_stat
 
 
-def _read_asset(asset_path: str, assets_root: Path) -> bytes:
-    """Return the bytes of ``asset_path``, having proven it is inside the tree."""
-    return resolve_asset(asset_path, assets_root).read_bytes()
+def resolve_asset(asset_path: str, assets_root: Path) -> Path:
+    """Return ``asset_path`` resolved, having proven it is a file inside the tree.
+
+    :func:`_stat_asset` without the stat, for a caller that only needs to know
+    *whether* a render's base is on disk and where -- the revert mode's dry
+    run, which plans across a whole library -- without reading every file's
+    bytes. Synchronous; call it from a thread.
+    """
+    return _stat_asset(asset_path, assets_root)[0]
+
+
+def _read_asset(resolved: Path) -> bytes:
+    """The bytes of a file :func:`_stat_asset` has already proven is ours.
+
+    A function of its own so the tests can prove a 304 never gets this far.
+    """
+    return resolved.read_bytes()
+
+
+def _asset_etag(file_stat: os.stat_result) -> str:
+    """``W/"<size>-<mtime_ns>"`` for the file actually being served.
+
+    Not ``renders.base_sha256``. For a pipeline render that column is the
+    digest of the downloaded *source* image (render/pipeline.py), not of the
+    composite written to ``asset_path``. A re-render caused by a text, font,
+    overlay or config change rewrites the file from the same source and leaves
+    the column -- and any tag built from it -- unchanged, so the browser was
+    answered 304 for an image that no longer existed. Only verbatim and
+    adopted rows ever carried the served bytes' digest.
+
+    A stat describes whatever is at the path now, including a file replaced on
+    the shared NFS mount without the database knowing, and costs no read.
+    Weak, because equal size and mtime is strong evidence of equal bytes
+    rather than proof, and RFC 9110 reserves strong tags for proof.
+    Nanoseconds, so two writes within one second still differ.
+    """
+    return f'W/"{file_stat.st_size}-{file_stat.st_mtime_ns}"'
+
+
+def _opaque_tag(tag: str) -> str:
+    """An entity tag without its weakness indicator: ``W/"x"`` becomes ``"x"``."""
+    tag = tag.strip()
+    return tag[2:].strip() if tag.startswith("W/") else tag
 
 
 def _if_none_match(header: str | None, etag: str) -> bool:
     """Does the client's ``If-None-Match`` name the entity we would serve?
 
-    The weak comparison RFC 9110 requires for this header: ``W/"x"`` and
-    ``"x"`` match each other, and ``*`` matches anything we have.
+    The weak comparison RFC 9110 (13.1.2) requires for this header: ``W/`` is
+    ignored on *both* sides, so ``W/"x"`` and ``"x"`` match whichever of them
+    we sent. Ours is always weak, so stripping only the client's prefix would
+    never match at all. ``*`` matches anything we have.
     """
     if not header:
         return False
+    ours = _opaque_tag(etag)
     for candidate in header.split(","):
         candidate = candidate.strip()
-        if candidate == "*":
-            return True
-        if candidate.startswith("W/"):
-            candidate = candidate[2:].strip()
-        if candidate == etag:
+        if candidate == "*" or _opaque_tag(candidate) == ours:
             return True
     return False
+
+
+def _load_asset(
+    asset_path: str, assets_root: Path, if_none_match: str | None
+) -> tuple[str, bytes | None]:
+    """The ETag for a render's file, and its bytes unless the client has them.
+
+    One thread hop for all of it. A 304 costs the containment check and one
+    stat; the file is opened only when the client's copy is missing or stale.
+    ``None`` in place of the bytes means "answer 304".
+
+    A file rewritten between the stat and the read goes out under the old
+    stat's tag. That heals itself: the next revalidation stats the new file,
+    the tags differ, and the new bytes are sent.
+    """
+    resolved, file_stat = _stat_asset(asset_path, assets_root)
+    etag = _asset_etag(file_stat)
+    if _if_none_match(if_none_match, etag):
+        return etag, None
+    return etag, _read_asset(resolved)
 
 
 @router.get("/items/{item_id}/artwork/{art_kind}")
@@ -151,10 +218,13 @@ async def base_artwork(
     it showed foreign badged art on tiles whose status honestly said no_art.
 
     The library browser's grid calls this once per tile, so a matching
-    ``If-None-Match`` answers 304 before the file is opened at all. The ETag is
-    ``renders.base_sha256`` -- the digest of the very bytes served, already on
-    the row -- so it changes exactly when a re-render changes the image, and
-    it exists on every response, since a row without one is refused above.
+    ``If-None-Match`` answers 304 without opening the file. One worker-thread
+    hop resolves the path, proves containment and stats it, and the ETag is
+    made from that stat -- see :func:`_asset_etag` for why it is not
+    ``base_sha256``, which is the *source* digest and does not change when a
+    re-render rewrites the file. A 304 therefore also requires the file to
+    still be on disk inside the tree: a deleted render is a 404, not a 304
+    for bytes that are gone.
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -175,15 +245,11 @@ async def base_artwork(
         # a file exists.
         raise HTTPException(status_code=404, detail="artwork not found")
 
-    headers = dict(NOSNIFF)
-    headers["ETag"] = f'"{render.base_sha256}"'
-    headers["Cache-Control"] = CACHE_CONTROL
-    if _if_none_match(request.headers.get("if-none-match"), headers["ETag"]):
-        return Response(status_code=304, headers=headers)
-
     assets_root = Path(request.app.state.config.assets_root)
     try:
-        content = await asyncio.to_thread(_read_asset, render.asset_path, assets_root)
+        etag, content = await asyncio.to_thread(
+            _load_asset, render.asset_path, assets_root, request.headers.get("if-none-match")
+        )
     except OutsideAssetsRoot as exc:
         # Worth a warning rather than a silent 404: nothing this project
         # writes can produce such a row, so seeing one means either the
@@ -193,6 +259,12 @@ async def base_artwork(
         raise HTTPException(status_code=404, detail="artwork not found") from None
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="artwork not found") from None
+
+    headers = dict(NOSNIFF)
+    headers["ETag"] = etag
+    headers["Cache-Control"] = CACHE_CONTROL
+    if content is None:
+        return Response(status_code=304, headers=headers)
 
     suffix = Path(render.asset_path).suffix.lower()
     return Response(

@@ -14,6 +14,7 @@ fail stay three distinguishable statuses -- 404 for "Plex has nothing" against
 ``httpx.MockTransport``; conftest's ``no_outbound_network`` fails the test if
 one ever escapes.
 """
+import os
 import threading
 from pathlib import Path
 
@@ -252,40 +253,6 @@ async def test_a_path_shaped_art_kind_is_404_not_a_file_read(
     assert SECRET not in body.decode("utf-8", "replace")
 
 
-async def test_the_asset_read_never_runs_on_the_event_loop(
-    client, auth_headers, session, assets_root, monkeypatch
-):
-    """assets_root can be an NFS mount, and the realpath walk, the stat and
-    the read are all blocking. This loop also carries the queue workers, the
-    scheduler and the Plex liveness probe, so a read done on it stalls all
-    three -- and nothing about the response would show it, which is how a
-    later "simplification" to FileResponse(resolved) or a bare read_bytes()
-    would pass every other test in this file."""
-    asset = assets_root / "poster.jpg"
-    asset.write_bytes(IMAGE_BYTES)
-    item_id = await _item_with_render(session, str(asset))
-    real_read = artwork_module._read_asset
-    read_on = []
-
-    def recording(*args, **kwargs):
-        read_on.append(threading.current_thread())
-        return real_read(*args, **kwargs)
-
-    monkeypatch.setattr(artwork_module, "_read_asset", recording)
-
-    response = await client.get(f"/api/items/{item_id}/artwork/poster", headers=auth_headers)
-
-    assert response.status_code == 200
-    assert response.content == IMAGE_BYTES
-    # Against the thread this test body runs on -- the one hosting the event
-    # loop -- rather than against main_thread(), so this holds whichever
-    # thread the loop happens to be on.
-    assert read_on, "the recording stand-in was never called"
-    assert read_on[0] is not threading.current_thread(), (
-        f"the asset was read on the event loop thread ({read_on[0]!r})"
-    )
-
-
 async def test_the_base_image_carries_nosniff(client, auth_headers, session, assets_root):
     """The suffix whitelist is the entire defence for this body: there is no
     security-headers middleware anywhere in src/, and this is the first
@@ -299,36 +266,142 @@ async def test_the_base_image_carries_nosniff(client, auth_headers, session, ass
     assert response.headers["x-content-type-options"] == "nosniff"
 
 
-async def test_the_base_image_carries_its_digest_as_a_private_etag(
+@pytest.mark.parametrize("rewrite", ["new-size-same-mtime", "same-size-new-mtime"])
+async def test_rewriting_the_served_file_changes_the_etag_so_the_old_one_gets_200(
+    client, auth_headers, session, assets_root, rewrite
+):
+    """The stale-artwork bug.
+
+    base_sha256 is the digest of the *source* image the pipeline downloaded
+    (render/pipeline.py), not of the composite it wrote to asset_path. A
+    re-render caused by a text, font, overlay or config change rewrites the
+    file at the same path from the same source, so the row -- base_sha256
+    included -- does not change at all. An ETag taken from the row stayed the
+    same, the browser's If-None-Match matched, and the operator got a 304 for
+    an image that no longer existed. Nothing in the database is touched here;
+    only the file is.
+
+    Each parameter changes exactly one of the two things the tag is made of,
+    so a tag that dropped either would fail one of them. The mtime is set
+    explicitly rather than by sleeping: the development Docker host's clock
+    steps backwards, so "written later" need not read as a later mtime.
+    """
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset), base_sha256="e" * 64)
+    url = f"/api/items/{item_id}/artwork/poster"
+
+    first = await client.get(url, headers=auth_headers)
+    assert first.status_code == 200
+    old_etag = first.headers["etag"]
+    before = asset.stat()
+
+    if rewrite == "new-size-same-mtime":
+        rewritten = IMAGE_BYTES + b" -- re-rendered with a new title font"
+        asset.write_bytes(rewritten)
+        os.utime(asset, ns=(before.st_atime_ns, before.st_mtime_ns))
+    else:
+        rewritten = IMAGE_BYTES.replace(b"these", b"THESE")
+        assert len(rewritten) == len(IMAGE_BYTES)
+        asset.write_bytes(rewritten)
+        os.utime(asset, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+
+    second = await client.get(url, headers={**auth_headers, "If-None-Match": old_etag})
+
+    assert second.status_code == 200
+    assert second.content == rewritten
+    assert second.headers["etag"] != old_etag
+
+
+async def test_the_asset_stat_and_read_never_run_on_the_event_loop(
+    client, auth_headers, session, assets_root, monkeypatch
+):
+    """assets_root can be an NFS mount, and the realpath walk, the stat and
+    the read are all blocking. This loop also carries the queue workers, the
+    scheduler and the Plex liveness probe, so any of them done on it stalls
+    all three -- and nothing about the response would show it, which is how a
+    later "simplification" to FileResponse(resolved), a bare read_bytes(), or
+    an ETag stat taken before the thread hop would pass every other test in
+    this file."""
+    asset = assets_root / "poster.jpg"
+    asset.write_bytes(IMAGE_BYTES)
+    item_id = await _item_with_render(session, str(asset))
+    real_stat = artwork_module._stat_asset
+    real_read = artwork_module._read_asset
+    ran_on: dict[str, threading.Thread] = {}
+
+    def recording_stat(*args, **kwargs):
+        ran_on["stat"] = threading.current_thread()
+        return real_stat(*args, **kwargs)
+
+    def recording_read(*args, **kwargs):
+        ran_on["read"] = threading.current_thread()
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(artwork_module, "_stat_asset", recording_stat)
+    monkeypatch.setattr(artwork_module, "_read_asset", recording_read)
+
+    response = await client.get(f"/api/items/{item_id}/artwork/poster", headers=auth_headers)
+
+    assert response.status_code == 200
+    assert response.content == IMAGE_BYTES
+    # Against the thread this test body runs on -- the one hosting the event
+    # loop -- rather than against main_thread(), so this holds whichever
+    # thread the loop happens to be on.
+    assert set(ran_on) == {"stat", "read"}, f"a stand-in was never called: {ran_on}"
+    for step, thread in ran_on.items():
+        assert thread is not threading.current_thread(), (
+            f"the {step} ran on the event loop thread ({thread!r})"
+        )
+
+
+async def test_the_etag_describes_the_file_on_disk_not_the_rows_digest(
     client, auth_headers, session, assets_root
 ):
-    """The grid asks for one of these per tile. base_sha256 is the digest of
-    the bytes being served and is already on the row, so it is a strong ETag
-    for free -- and it changes exactly when a re-render changes the image."""
+    """W/"<size>-<mtime_ns>" from one stat of the resolved file.
+
+    Not base_sha256. For a pipeline render that column is the digest of the
+    downloaded *source* image, while the file served is the composite made
+    from it: the two are different bytes, and the column does not move when a
+    re-render rewrites the file (the regression test above). Only verbatim
+    and adopted rows ever carried the served bytes' digest. A stat describes
+    whatever is actually at the path -- including a file replaced on the
+    shared NFS mount without the database knowing -- and costs no read. Weak,
+    because equal size and mtime is strong evidence of equal bytes, not proof.
+    """
     asset = assets_root / "poster.jpg"
     asset.write_bytes(IMAGE_BYTES)
     item_id = await _item_with_render(session, str(asset), base_sha256="a" * 64)
 
     response = await client.get(f"/api/items/{item_id}/artwork/poster", headers=auth_headers)
 
+    stat = asset.stat()
     assert response.status_code == 200
-    assert response.headers["etag"] == '"%s"' % ("a" * 64)
+    assert response.headers["etag"] == f'W/"{stat.st_size}-{stat.st_mtime_ns}"'
+    assert "a" * 64 not in response.headers["etag"]
     # Private: these bytes sit behind a session, so no shared cache may hold
     # them for the next caller.
     assert "private" in response.headers["cache-control"]
 
 
-@pytest.mark.parametrize("sent", ['"{etag}"', 'W/"{etag}"', '"other", "{etag}"', "*"])
+@pytest.mark.parametrize("sent", ["{etag}", "{opaque}", '"other", {etag}', "*"])
 async def test_a_matching_if_none_match_is_304_and_reads_no_file(
     client, auth_headers, session, assets_root, monkeypatch, sent
 ):
-    """The point of the ETag: the tile that is already in the browser's cache
-    costs a row lookup and nothing else. The file read is stubbed with a
-    failure, so a 304 answered *after* reading the file cannot pass here."""
-    digest = "b" * 64
+    """The point of the ETag: the tile already in the browser's cache costs a
+    row lookup and one stat, and the file is never opened. The read is stubbed
+    with a failure, so a 304 answered *after* reading cannot pass here.
+
+    ``{opaque}`` is our tag without its ``W/``: RFC 9110's weak comparison,
+    which If-None-Match requires, ignores the prefix on both sides. Our tag is
+    always weak, so a comparison that stripped only the client's prefix would
+    never match anything."""
     asset = assets_root / "poster.jpg"
     asset.write_bytes(IMAGE_BYTES)
-    item_id = await _item_with_render(session, str(asset), base_sha256=digest)
+    item_id = await _item_with_render(session, str(asset), base_sha256="b" * 64)
+    stat = asset.stat()
+    opaque = f'"{stat.st_size}-{stat.st_mtime_ns}"'
+    etag = f"W/{opaque}"
 
     def must_not_read(*args, **kwargs):
         raise AssertionError("the asset was read despite a matching If-None-Match")
@@ -337,25 +410,26 @@ async def test_a_matching_if_none_match_is_304_and_reads_no_file(
 
     response = await client.get(
         f"/api/items/{item_id}/artwork/poster",
-        headers={**auth_headers, "If-None-Match": sent.format(etag=digest)},
+        headers={**auth_headers, "If-None-Match": sent.format(etag=etag, opaque=opaque)},
     )
 
     assert response.status_code == 304
     assert response.content == b""
-    assert response.headers["etag"] == f'"{digest}"'
+    assert response.headers["etag"] == etag
 
 
 async def test_a_stale_if_none_match_serves_the_current_bytes(
     client, auth_headers, session, assets_root
 ):
-    """A re-render changes base_sha256, so the browser's copy has to lose."""
+    """A tag from a file that has since been replaced names a size and mtime
+    the file no longer has, so the browser's copy has to lose."""
     asset = assets_root / "poster.jpg"
     asset.write_bytes(IMAGE_BYTES)
     item_id = await _item_with_render(session, str(asset), base_sha256="c" * 64)
 
     response = await client.get(
         f"/api/items/{item_id}/artwork/poster",
-        headers={**auth_headers, "If-None-Match": '"%s"' % ("d" * 64)},
+        headers={**auth_headers, "If-None-Match": 'W/"1-1"'},
     )
 
     assert response.status_code == 200
