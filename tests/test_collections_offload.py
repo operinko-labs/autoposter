@@ -18,6 +18,7 @@ from autoposter.collections.engine import run_library
 from autoposter.config.schema import CollectionDefinition
 
 from plex_offload_doubles import (
+    BlockingCollection,
     BlockingItem,
     BlockingSection,
     BlockingServer,
@@ -132,3 +133,76 @@ async def test_a_one_second_library_walk_does_not_stall_the_event_loop(
     )
     assert run.definitions[0].failed is False
     assert lag < 0.5, "the library walk stalled the event loop for %.0f ms" % (lag * 1000)
+
+
+# --- C1 phase 2: the list reconciler's claim and write phases -----------------
+
+
+async def test_the_list_write_phase_runs_off_the_event_loop(session, registry_entry):
+    """Claim, diff, add, remove, reorder, settings and item labels -- every one
+    a Plex call, the reorder a reload plus a move per member, the item labels a
+    write per member per tag -- all in the write phase's thread hop."""
+    registry_entry(_Ids("test_offload_members", [("imdb", "tt102"), ("imdb", "tt101")]))
+    log = CallLog()
+    server, section, items = _library(log)
+    by_key = {item.ratingKey: item for item in items}
+    section.add(BlockingCollection(
+        log, server, "Members", items=[by_key["101"], by_key["103"]], labels=[LABEL],
+    ))
+    loop_thread = threading.get_ident()
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(
+            title="Members", builder="test_offload_members", item_label=["offloaded"],
+        )],
+        _config(),
+    )
+
+    [result] = [r for r in run.definitions if r.title == "Members"]
+    assert (result.added, result.removed) == (1, 1)
+    assert by_key["102"].labels_added == ["offloaded"]
+    assert {
+        "collection 'Members'.reload", "collection 'Members'.addItems",
+        "collection 'Members'.removeItems", "collection 'Members'.moveItem",
+        "item 102.addLabel",
+    } <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_a_created_list_collection_is_written_off_the_event_loop(
+    session, registry_entry
+):
+    registry_entry(_Ids("test_offload_create", [("imdb", "tt101")]))
+    log = CallLog()
+    _, section, _ = _library(log)
+    loop_thread = threading.get_ident()
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(title="Fresh", builder="test_offload_create")],
+        _config(),
+    )
+
+    assert "created 'Fresh' with 1 item(s)" in run.actions
+    assert {"section.createCollection", "collection 'Fresh'.addLabel"} <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_a_preview_reads_the_collection_off_the_event_loop(session, registry_entry):
+    registry_entry(_Ids("test_offload_preview", [("imdb", "tt102")]))
+    log = CallLog()
+    server, section, items = _library(log)
+    section.add(BlockingCollection(log, server, "Previewed", items=[items[0]], labels=[LABEL]))
+    loop_thread = threading.get_ident()
+
+    run = await run_library(
+        session, section, "Movies", "Movie",
+        [CollectionDefinition(title="Previewed", builder="test_offload_preview")],
+        _config(), dry_run=True, preview=True,
+    )
+
+    [result] = [r for r in run.definitions if r.title == "Previewed"]
+    assert (result.adding, result.removing) == (1, 1)
+    assert "collection 'Previewed'.items" in log.names()
+    assert log.on_thread(loop_thread) == []

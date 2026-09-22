@@ -1032,15 +1032,12 @@ async def _run_one(
             # the shape gate -- so it previewed counts for a write the pass
             # refuses. No message here either, for the identical reason: the
             # reconcile step reports the conflict once.
-            if shape_conflict(
-                collection, definition.title, want_smart=False
-            ) is None and would_proceed(
-                collection, label,
-                config.collections.adopt, config.collections.adopt_from,
-                config.collections.protect_labels,
-            ):
-                adding, removing = member_diff(collection, items, definition.sync_mode)
-                outcome.adding, outcome.removing = len(adding), len(removing)
+            counts = await asyncio.to_thread(
+                _preview_counts, collection, definition.title, items,
+                definition.sync_mode, label, config,
+            )
+            if counts is not None:
+                outcome.adding, outcome.removing = counts
 
     summary, summary_action = await _summary_for(definition, result, summaries)
     if summary_action:
@@ -1318,6 +1315,28 @@ def _known_tag_values(parsed, ctx, section, library, definition):
         lambda predicate, value: (predicate.attribute.name, str(value)) in unknown,
     )
     return pruned, actions
+
+
+def _preview_counts(collection, title, items, sync_mode, label, config):
+    """``(adding, removing)`` a real pass would apply to ``collection``, or None
+    when the shape or ownership rule would refuse it -- ``_run_one``'s preview
+    read, in ONE ``asyncio.to_thread`` hop (perf workstream C1).
+
+    Every step is Plex: ``shape_conflict`` reads ``smart``, ``would_proceed``
+    forces a ``reload()`` and reads ``labels``, and ``member_diff`` reads
+    ``items()``. The rule order is ``_run_one``'s own (shape first, then
+    ownership), which is ``lists.py``'s.
+    """
+    if shape_conflict(collection, title, want_smart=False) is not None:
+        return None
+    if not would_proceed(
+        collection, label,
+        config.collections.adopt, config.collections.adopt_from,
+        config.collections.protect_labels,
+    ):
+        return None
+    adding, removing = member_diff(collection, items, sync_mode)
+    return len(adding), len(removing)
 
 
 def _passing(
