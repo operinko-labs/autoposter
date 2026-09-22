@@ -369,3 +369,87 @@ describe("apiFetchNdjson", () => {
     expect(reader.releaseLock).toHaveBeenCalledOnce();
   });
 });
+
+describe("apiFetch coalescing", () => {
+  it("sends concurrent GETs of one path as one request, each caller its own copy", async () => {
+    // A fresh Response per call, so the un-coalesced code fails on the count
+    // below rather than hanging on a body read twice.
+    const fetchMock = vi.fn(async () => jsonResponse({ workers: 5, libraries: ["Movies"] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // All four are issued before any of them can settle: that is "concurrent".
+    const results = await Promise.all(
+      [1, 2, 3, 4].map(() => apiFetch<{ workers: number; libraries: string[] }>("/api/config")),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    for (const result of results) {
+      expect(result).toEqual({ workers: 5, libraries: ["Movies"] });
+    }
+    // structuredClone per caller: one panel mutating its copy cannot reach
+    // another panel's.
+    expect(new Set(results).size).toBe(4);
+    results[0].libraries.push("TV Shows");
+    expect(results[1].libraries).toEqual(["Movies"]);
+  });
+
+  it("fetches again once the shared request has settled", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ workers: 5 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiFetch("/api/config");
+    await apiFetch("/api/config");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("hands a failure to every caller", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ detail: "the database is unreachable" }, 500),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const outcomes = await Promise.allSettled(
+      [1, 2, 3, 4].map(() => apiFetch("/api/config")),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    for (const outcome of outcomes) {
+      expect(outcome.status).toBe("rejected");
+      const reason = (outcome as PromiseRejectedResult).reason;
+      expect(reason).toBeInstanceOf(ApiError);
+      expect(reason.message).toBe("the database is unreachable");
+    }
+  });
+
+  it("fails every caller on a 401 and drops the session once", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 401));
+    vi.stubGlobal("fetch", fetchMock);
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setToken("expired");
+
+    const outcomes = await Promise.allSettled([apiFetch("/api/status"), apiFetch("/api/status")]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(["rejected", "rejected"]);
+    expect(getToken()).toBeNull();
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  it("never joins a write, a request with its own options, or another path", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await Promise.all([
+      apiFetch("/api/config/overrides", { method: "PUT", body: "{}" }),
+      apiFetch("/api/config/overrides", { method: "PUT", body: "{}" }),
+      apiFetch("/api/config", { cache: "no-cache" }),
+      apiFetch("/api/config", { cache: "no-cache" }),
+      apiFetch("/api/status"),
+      apiFetch("/api/events"),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+});
