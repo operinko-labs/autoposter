@@ -1356,9 +1356,26 @@ async def test_the_scheduled_run_row_records_the_failure(
         stop = asyncio.Event()
         scheduler = Scheduler(session_factory, [job], poll_seconds=0.01)
         task = asyncio.create_task(scheduler.run(stop))
-        await asyncio.sleep(0.1)
-        stop.set()
-        await task
+        # The recorded outcome, not a fixed sleep: shutdown cancels a lane
+        # mid-run since perf C3, so a stop before the pass recorded would
+        # cancel it.
+        try:
+            async with asyncio.timeout(60):
+                while True:
+                    async with session_factory() as check:
+                        found = (
+                            await check.execute(
+                                select(ScheduledRun).where(
+                                    ScheduledRun.name == "collections_reconcile"
+                                )
+                            )
+                        ).scalar_one_or_none()
+                    if found is not None and found.last_finished_at is not None:
+                        break
+                    await asyncio.sleep(0.01)
+        finally:
+            stop.set()
+            await task
 
     async with session_factory() as verify:
         row = (

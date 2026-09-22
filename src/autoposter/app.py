@@ -595,6 +595,14 @@ def create_app(
                 health_task.cancel()
             imdb_task.cancel()
             version_task.cancel()
+            # The scheduler's lanes (perf C3: the heavy lane and each light
+            # job's task) are children of scheduler.run(), not of this
+            # function. Cancelling scheduler_task runs run()'s finally, which
+            # cancels every lane and awaits it, so the gather below returns only
+            # once no scheduled job is still executing on this loop. A job body
+            # inside asyncio.to_thread keeps running on its thread, but those
+            # bodies touch Plex, never the database, so the engine.dispose()
+            # below is still last.
             scheduler_task.cancel()
             lag_task.cancel()
             await asyncio.gather(

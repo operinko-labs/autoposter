@@ -38,6 +38,17 @@ from autoposter.scheduler.run_history import (
 
 logger = logging.getLogger(__name__)
 
+#: The jobs that each run as their OWN task when due (perf workstream C3). The
+#: queue-health passes: ``stale_job_reclaim`` (every 5 minutes, a single
+#: idempotent UPDATE), ``pending_deliveries`` (every 15 minutes) and
+#: ``catch_up_drain`` (every minute). Each is short, and each is what an
+#: operator waits on -- a claimed job going stale, an upload retried, a
+#: catch-up drained -- so none may sit behind a 13-minute prune walk. Every
+#: other job is heavy and runs in the one heavy lane, one at a time, exactly as
+#: the whole list used to. Names from api/routes.py's SCHEDULED_JOB_NAMES
+#: (tests/test_scheduler_lanes.py holds this set to that one).
+LIGHT_JOBS = frozenset({"stale_job_reclaim", "pending_deliveries", "catch_up_drain"})
+
 
 @dataclass(frozen=True)
 class Job:
@@ -152,28 +163,103 @@ class Scheduler:
         # nothing else references could be garbage-collected mid-flight. The
         # done-callback drops each reference on completion.
         self._notify_tasks: set[asyncio.Task] = set()
-        # The scheduled job currently running, for the event-loop lag monitor
-        # (loop_lag.py) to name in its WARNING. Public because the lifespan
-        # hands the monitor ``lambda: scheduler.current_job`` and nothing else
-        # about this object. One name, not a set: ``run`` below executes due
-        # jobs one after another, so at most one is ever in flight here.
-        # Set only between a successful claim and the end of that run's
-        # result write (see ``_maybe_run``); None the rest of the time.
-        self.current_job: str | None = None
+        # The lanes (perf C3). One heavy-lane task at a time, running the heavy
+        # jobs serially: prune, merge, collections and credits still never
+        # overlap one another. One task per light job, and ``_running`` is the
+        # in-process guard that stops a light job overlapping itself (the claim
+        # is not a lease -- ``claim_due``). Strong references, for the reason
+        # ``_notify_tasks`` keeps them.
+        self._heavy_lane: asyncio.Task | None = None
+        self._light_tasks: set[asyncio.Task] = set()
+        self._running: set[str] = set()
+        # The scheduled jobs whose claimed run is in flight, for the event-loop
+        # lag monitor (loop_lag.py) to name in its WARNING via ``current_job``.
+        # Not ``_running``: that is the light lanes' dispatch guard, set from
+        # before the claim, so it would name a light job that turned out not
+        # to be due. This one holds a name only between a successful claim and
+        # the end of that run's result write (see ``_maybe_run``).
+        self._claimed: set[str] = set()
+
+    @property
+    def current_job(self) -> str | None:
+        """The scheduled job(s) running now, for the lag monitor's WARNING.
+
+        Public because the lifespan hands the monitor
+        ``lambda: scheduler.current_job`` and nothing else about this object.
+        With lanes (perf C3) a heavy job and up to three light jobs can be in
+        flight at once, and a stall cannot be pinned on one of them from here,
+        so every one is named -- sorted, so the same set always reads the same
+        -- and ``None`` when nothing is running."""
+        return ", ".join(sorted(self._claimed)) or None
 
     async def run(self, stop_event: asyncio.Event) -> None:
-        while not stop_event.is_set():
-            await self._close_drained_runs()
-            for job in self._jobs:
-                if stop_event.is_set():
-                    break
-                await self._maybe_run(job)
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=self._poll_seconds)
-            except asyncio.TimeoutError:
+        try:
+            while not stop_event.is_set():
+                # First on every tick, before any job is dispatched: the
+                # full-pass closer (``_close_drained_runs``' docstring).
+                await self._close_drained_runs()
+                self._dispatch(stop_event)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=self._poll_seconds)
+                except asyncio.TimeoutError:
+                    continue
+                else:
+                    return
+        finally:
+            # On a stop AND on a cancel of this task (the lifespan does both):
+            # every lane is cancelled and awaited here, so nothing scheduled is
+            # still executing on this loop once ``run`` has returned. A run
+            # cancelled mid-flight is closed as "interrupted" by the next
+            # ``open_run`` of its name, as before.
+            await self._stop_lanes()
+
+    def _dispatch(self, stop_event: asyncio.Event) -> None:
+        """Start whatever this tick owes (perf C3).
+
+        The heavy lane starts only when the previous one has finished. A heavy
+        job that became due mid-lane is claimed when the lane reaches it, or
+        on a later tick -- never while it is only waiting, so a waiting job is
+        not stamped as run. Each light job gets its own task unless it is
+        still running; its ``_maybe_run`` does the claim, as every job's does.
+        """
+        if self._heavy_lane is None or self._heavy_lane.done():
+            heavy = [job for job in self._jobs if job.name not in LIGHT_JOBS]
+            if heavy:
+                self._heavy_lane = asyncio.create_task(
+                    self._run_heavy_lane(heavy, stop_event), name="scheduler-heavy-lane"
+                )
+        for job in self._jobs:
+            if job.name not in LIGHT_JOBS or job.name in self._running:
                 continue
-            else:
+            self._running.add(job.name)
+            task = asyncio.create_task(self._run_light(job), name="scheduler-%s" % job.name)
+            self._light_tasks.add(task)
+            task.add_done_callback(self._light_tasks.discard)
+
+    async def _run_heavy_lane(self, jobs: list[Job], stop_event: asyncio.Event) -> None:
+        for job in jobs:
+            if stop_event.is_set():
                 return
+            await self._maybe_run(job)
+
+    async def _run_light(self, job: Job) -> None:
+        try:
+            await self._maybe_run(job)
+        finally:
+            self._running.discard(job.name)
+
+    async def _stop_lanes(self) -> None:
+        lanes = [
+            task for task in (self._heavy_lane, *self._light_tasks)
+            if task is not None and not task.done()
+        ]
+        for lane in lanes:
+            lane.cancel()
+        if lanes:
+            await asyncio.gather(*lanes, return_exceptions=True)
+        # A light task cancelled before its first step never reaches its
+        # ``finally``, so the set is cleared here rather than left to it.
+        self._running.clear()
 
     async def _close_drained_runs(self) -> None:
         """Close any full pass that has finished draining (roadmap row 53).
@@ -291,12 +377,14 @@ class Scheduler:
         # for a body that blocks the loop is the result write's first
         # database await inside _run_claimed -- so clearing it straight after
         # the body would name "none" for exactly the stalls it exists to
-        # attribute.
-        self.current_job = job.name
+        # attribute. A set entry rather than one attribute since perf C3: the
+        # lanes run several jobs at once, and one name's clear must not erase
+        # another's.
+        self._claimed.add(job.name)
         try:
             await self._run_claimed(job)
         finally:
-            self.current_job = None
+            self._claimed.discard(job.name)
 
     async def _run_claimed(self, job: Job) -> None:
         """Everything ``_maybe_run`` does once ``job`` is claimed: the run-history
