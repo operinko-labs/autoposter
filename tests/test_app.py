@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -140,6 +141,10 @@ def stubbed_background_services(monkeypatch):
             await stop_event.wait()
 
     class _FakeLoop:
+        # Stands in for Scheduler too, whose running-job name the lifespan
+        # hands the event-loop lag monitor. No job is ever running here.
+        current_job = None
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -1264,3 +1269,75 @@ async def test_the_lifespan_does_not_queue_a_server_it_delivers_nothing_to(
             "catch-up that can only close as a no-op, and would be queued "
             f"again on every restart ({app.state.catch_up_requests!r})"
         )
+
+
+def _lag_warnings(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "autoposter.loop_lag" and record.levelno == logging.WARNING
+    ]
+
+
+async def test_the_lifespan_runs_the_lag_monitor_naming_the_running_job(
+    session_factory, secrets, stubbed_background_services, monkeypatch, caplog
+):
+    """Perf spec A9, through the real entry point: the monitor is only useful
+    if the deployed lifespan starts it and hands it THIS process's scheduler.
+    Every other test of the monitor builds its own; deleting the lifespan's
+    create_task leaves them all green and production silent."""
+
+    class _BusyScheduler:
+        current_job = "collections_reconcile"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run(self, stop_event) -> None:
+            await stop_event.wait()
+
+    monkeypatch.setattr("autoposter.app.Scheduler", _BusyScheduler)
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
+
+    with caplog.at_level(logging.WARNING, logger="autoposter.loop_lag"):
+        async with app.router.lifespan_context(app):
+            # Let the monitor take its first step (it is created just before
+            # the lifespan yields), then hold the loop the way a synchronous
+            # plexapi call would.
+            await asyncio.sleep(0)
+            time.sleep(0.6)
+            async with asyncio.timeout(5):
+                while not _lag_warnings(caplog):
+                    await asyncio.sleep(0.01)
+
+    assert any(
+        "scheduled job running: collections_reconcile" in message
+        for message in _lag_warnings(caplog)
+    ), _lag_warnings(caplog)
+
+
+async def test_the_lifespan_cancels_and_awaits_the_lag_monitor_on_shutdown(
+    session_factory, secrets, stubbed_background_services, monkeypatch
+):
+    """"Cancelled and awaited" (spec A9), the way every other background task
+    here is. The stand-in takes a while to unwind after its cancellation, so
+    its "unwound" record exists at lifespan exit only if the shutdown actually
+    awaited it -- a bare cancel() returns long before."""
+    events = []
+
+    async def fake_monitor(current_job):
+        events.append(("started", current_job()))
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.2)
+            events.append(("unwound", None))
+            raise
+
+    monkeypatch.setattr("autoposter.app.monitor_loop_lag", fake_monitor)
+    app = _background_app(load_config(EXAMPLE), session_factory, secrets)
+
+    async with app.router.lifespan_context(app):
+        await asyncio.sleep(0)
+
+    assert events == [("started", None), ("unwound", None)], events

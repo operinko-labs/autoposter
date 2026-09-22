@@ -36,6 +36,7 @@ from autoposter.intake.arr import RenderIntent
 from autoposter.intake.routes import router
 from autoposter.jellyfin.client import JellyfinApi, JellyfinClient
 from autoposter.jellyfin.health import JellyfinHealth
+from autoposter.loop_lag import monitor_loop_lag
 from autoposter.notify.dispatch import NullNotifier, build_notifier
 from autoposter.plex.client import PlexClient
 from autoposter.plex.health import PlexHealth
@@ -569,6 +570,14 @@ def create_app(
             config_holder=app.state.config_holder,
         )
         scheduler_task = asyncio.create_task(scheduler.run(stop_event))
+        # Perf spec A9: a task that notices when the shared event loop was
+        # held -- by a synchronous call in a scheduled pass, a worker or a
+        # request -- and logs it, naming the scheduled job running at the
+        # time (loop_lag.py). Handed a callable, not the name, so it reads
+        # the scheduler's CURRENT job at each late wake-up. No stop_event:
+        # it holds nothing that needs a clean exit, so the cancel below is
+        # its whole shutdown.
+        lag_task = asyncio.create_task(monitor_loop_lag(lambda: scheduler.current_job))
 
         task = asyncio.create_task(
             run_workers(
@@ -587,8 +596,9 @@ def create_app(
             imdb_task.cancel()
             version_task.cancel()
             scheduler_task.cancel()
+            lag_task.cancel()
             await asyncio.gather(
-                task, *health_tasks, imdb_task, version_task, scheduler_task,
+                task, *health_tasks, imdb_task, version_task, scheduler_task, lag_task,
                 return_exceptions=True,
             )
             imdb_module.configure_miss_refresh(http, 0)
