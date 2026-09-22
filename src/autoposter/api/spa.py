@@ -44,8 +44,8 @@ IMMUTABLE_ASSET_CACHE = "public, max-age=31536000, immutable"
 # The shell is the opposite: it is the one file whose name never changes and
 # whose content names the hashed files of the build that produced it. Cached,
 # a shell from the previous deploy asks the new pod for assets it no longer
-# has. `no-cache` still lets the browser keep a copy -- it just revalidates
-# every load, which a FileResponse's ETag makes a 304.
+# has. `no-cache` still lets the browser keep a copy -- it just re-fetches it
+# on every load, which is fine because the shell is tiny (~0.5 kB).
 SHELL_CACHE = "no-cache"
 
 

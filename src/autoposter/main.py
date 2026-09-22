@@ -6,8 +6,8 @@ import httpx
 import uvicorn
 from fastapi import FastAPI
 
-from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.api.compression import install_compression
+from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
 from autoposter.boot import StoredDocument, stored_config_document
 from autoposter.config.loader import DEFAULT_CONFIG_PATH, load_config

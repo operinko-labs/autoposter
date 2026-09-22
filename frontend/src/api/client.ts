@@ -70,19 +70,22 @@ export class ApiError extends Error {
   }
 }
 
-/** GETs on the wire right now, by path. Nothing stays here once a request
- * settles: this coalesces concurrent reads, it never caches (perf spec A6). */
+/** GETs on the wire right now, keyed by session token and path. Nothing stays
+ * here once a request settles: this coalesces concurrent reads, it never
+ * caches (perf spec A6). Keying on the token too matters across a re-login: a
+ * GET started under an expired token must not be joined by one made after
+ * `setToken` moved on to a new session, or the old request's eventual 401
+ * would drop the new token out from under it. */
 const inFlight = new Map<string, Promise<unknown>>();
 
 /** Whether a call may share another caller's request: a plain GET that
- * carries nothing of its own but headers. A body, a signal, a cache mode or
- * any other option is something one caller asked for and another did not, so
- * it gets a request of its own. */
+ * carries nothing of its own. A body, a signal, a cache mode, headers or any
+ * other option is something one caller asked for and another did not -- and
+ * headers join but are not part of the key below -- so it gets a request of
+ * its own. */
 function joinable(init: RequestInit): boolean {
   return Object.keys(init).every(
-    (key) =>
-      key === "headers" ||
-      (key === "method" && (init.method ?? "GET").toUpperCase() === "GET"),
+    (key) => key === "method" && (init.method ?? "GET").toUpperCase() === "GET",
   );
 }
 
@@ -97,12 +100,13 @@ function joinable(init: RequestInit): boolean {
  * network. */
 export function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!joinable(init)) return request<T>(path, init);
-  let shared = inFlight.get(path);
+  const key = `${token ?? ""}\u0000${path}`;
+  let shared = inFlight.get(key);
   if (shared === undefined) {
     const started: Promise<unknown> = request<unknown>(path, init).finally(() => {
-      if (inFlight.get(path) === started) inFlight.delete(path);
+      if (inFlight.get(key) === started) inFlight.delete(key);
     });
-    inFlight.set(path, started);
+    inFlight.set(key, started);
     shared = started;
   }
   return shared.then((value) => structuredClone(value) as T);

@@ -478,4 +478,23 @@ describe("apiFetch coalescing", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(6);
   });
+
+  it("does not join a GET across a re-login", () => {
+    // A GET started under the old token must not be joined by one made after
+    // a fresh setToken: joining it would mean the OLD request's eventual 401
+    // calls setToken(null), wiping the session the second call just set. The
+    // request never has to settle to prove this -- only that it was not
+    // coalesced, and that the second carries the new token.
+    const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    setToken("a");
+    void apiFetch("/api/config");
+    setToken("b");
+    void apiFetch("/api/config");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const secondHeaders = fetchMock.mock.calls[1][1].headers as Headers;
+    expect(secondHeaders.get("Authorization")).toBe("Bearer b");
+  });
 });
