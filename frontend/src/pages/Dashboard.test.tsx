@@ -66,6 +66,40 @@ function snapshotWithPending(pending: number) {
   };
 }
 
+/** Two recorded runs, newest first as /api/stats/runs answers: enough for
+ * RunCharts to draw both charts, and so to run its per-bar label formatter. */
+const RUNS = {
+  generated_at: "2026-09-05T12:40:00Z",
+  runs: [
+    {
+      id: 2,
+      kind: "full_pass",
+      name: "full_pass",
+      started_at: "2026-09-05T09:00:00Z",
+      finished_at: "2026-09-05T12:31:04Z",
+      status: "ok",
+      duration_seconds: 12664,
+      rendered: { poster: 12, season_poster: 0, background: 3, title_card: 0 },
+      processed: 15940,
+      failed: 12,
+      deferred: 8,
+    },
+    {
+      id: 1,
+      kind: "scheduled",
+      name: "plex_prune",
+      started_at: "2026-09-05T08:00:00Z",
+      finished_at: "2026-09-05T08:00:42Z",
+      status: "ok",
+      duration_seconds: 42,
+      rendered: null,
+      processed: null,
+      failed: null,
+      deferred: null,
+    },
+  ],
+};
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -456,6 +490,43 @@ describe("Dashboard", () => {
     expect(fetchMock.mock.calls.map(([path]) => path).sort()).toEqual(
       ["/api/dashboard/stream", "/api/stats/runs?limit=50"].sort(),
     );
+  });
+
+  it("leaves the run charts alone when a snapshot does not change run history", async () => {
+    // Perf spec A4. Every stream tick re-rendered the page and, with it,
+    // RunCharts -- which re-derived both series, one toLocaleTimeString per
+    // bar, from a history that had not moved. The formatter is the probe: it
+    // runs only when the series are derived, and nothing else here calls it.
+    let push!: (value: unknown) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        if (path === "/api/dashboard/stream") {
+          const stream = ndjsonStream(init!.signal as AbortSignal, SNAPSHOT);
+          push = stream.push;
+          return stream.response;
+        }
+        if (path.startsWith("/api/stats/runs")) return json(RUNS);
+        return json({ detail: `nothing declared for ${path}` }, 500);
+      }),
+    );
+    const labels = vi.spyOn(Date.prototype, "toLocaleTimeString");
+    try {
+      render(<Dashboard />);
+      await screen.findByText("Run duration");
+      await screen.findByText("collections_reconcile");
+      const derived = labels.mock.calls.length;
+      expect(derived).toBeGreaterThan(0);
+
+      await act(async () => {
+        push(snapshotWithPending(9));
+      });
+      await waitFor(() => expect(statValue("pending")).toBe("9"));
+
+      expect(labels.mock.calls.length).toBe(derived);
+    } finally {
+      labels.mockRestore();
+    }
   });
 
   it("ignores heartbeat lines rather than treating them as snapshots", async () => {
