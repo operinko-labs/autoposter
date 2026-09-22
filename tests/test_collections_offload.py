@@ -16,10 +16,13 @@ import pytest
 from autoposter.collections import groups
 from autoposter.collections.buckets import derive_buckets
 from autoposter.collections.builders import REGISTRY, BuilderResult, register
-from autoposter.collections.engine import run_library
+from autoposter.collections.engine import _sweep, run_library
+from autoposter.collections.playlists import reconcile_playlists
 from autoposter.collections.reconcile import reconcile_content_ratings, reconcile_separator
+from autoposter.collections.service import reconcile_libraries
 from autoposter.collections.smart import reconcile_smart_collection
-from autoposter.config.schema import CollectionDefinition
+from autoposter.config.schema import CollectionDefinition, PlaylistsConfig
+from autoposter.db.models import ManagedCollection
 
 from plex_offload_doubles import (
     BlockingCollection,
@@ -28,6 +31,7 @@ from plex_offload_doubles import (
     BlockingServer,
     CallLog,
     max_loop_lag,
+    returning,
 )
 
 LABEL = "autoposter"
@@ -359,3 +363,116 @@ async def test_a_dry_run_on_an_existing_common_sense_bucket_stays_off_the_event_
 
     assert "would update %r -> %s" % (bucket.title, ", ".join(bucket.values)) in actions
     assert log.on_thread(loop_thread) == []
+
+
+# --- C1 phase 3: the delete sweep and the library loop -------------------------
+
+
+async def test_the_delete_sweep_reads_and_deletes_off_the_event_loop(session):
+    log = CallLog()
+    server, section, _ = _library(log)
+    orphan = section.add(BlockingCollection(log, server, "Orphan", labels=[LABEL]))
+    session.add(ManagedCollection(
+        library="Movies", title="Orphan", kind="manual",
+        plex_rating_key="c-Orphan", definition_hash="",
+    ))
+    await session.flush()
+    loop_thread = threading.get_ident()
+
+    results = await _sweep(
+        session, section, "Movies", "Movie", [], _config(delete_unconfigured=True),
+        label=LABEL, dry_run=False, listing=returning({"Orphan": orphan}), run_cache={},
+    )
+
+    assert orphan.deleted is True
+    assert any(
+        "deleted 'Orphan'" in action for result in results for action in result.actions
+    )
+    assert {"collection 'Orphan'.reload", "collection 'Orphan'.delete"} <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+async def test_a_whole_library_pass_touches_plex_only_off_the_event_loop(
+    session, registry_entry
+):
+    """Through the real entry point: the section lookup, the pass (with its
+    Common Sense family and its sweep), and the prior-tool leftovers scan."""
+    registry_entry(_Ids("test_offload_pass", [("imdb", "tt101")]))
+    log = CallLog()
+    server, section, _ = _library(log)
+    server.add_section("Movies", section)
+    section.add(BlockingCollection(log, server, "Left Behind", labels=["Kometa"]))
+    config = _config(definitions=[
+        CollectionDefinition(title="Whole Pass", builder="test_offload_pass"),
+    ])
+    loop_thread = threading.get_ident()
+
+    result = await reconcile_libraries(session, server, config, None)
+
+    [outcome] = result.libraries
+    assert outcome.error is None
+    assert outcome.leftovers == ["Left Behind"]
+    assert {"server.section", "collection 'Left Behind'.reload"} <= set(log.names())
+    assert log.on_thread(loop_thread) == []
+
+
+# --- C1: the playlists pass's owned indexes -----------------------------------
+
+
+class _PrimaryIndexIds:
+    """A playlist builder that reads the primary library's index through the
+    bound ``PlexSectionAccess.owned_index`` accessor, as a Plex-sourced
+    builder does, and then answers the ids it was given."""
+
+    def __init__(self, type_name, ids):
+        self.type_name = type_name
+        self._ids = ids
+        self.indexed: list[str] | None = None
+
+    async def build(self, ctx) -> BuilderResult:
+        index = await ctx.sources.plex.owned_index()
+        self.indexed = sorted(index["plex"])
+        return BuilderResult(ids=list(self._ids))
+
+
+async def test_the_playlists_pass_builds_every_owned_index_off_the_event_loop(
+    session, config_factory, registry_entry
+):
+    """Both index builds a playlist pays for, each a whole-library walk plus a
+    ``guids`` read per item: the one a builder asks for through the primary
+    library's bound accessor, and the resolution's per-scoped-library index --
+    here the second library's, which no builder asked for, so the resolution
+    is what builds it. The section lookups and ``server.playlists()`` are not
+    what this pins."""
+    builder = registry_entry(_PrimaryIndexIds(
+        "test_offload_playlist", [("imdb", "tt101"), ("imdb", "tt201")],
+    ))
+    log = CallLog()
+    server, movies, _ = _library(log)
+    films = BlockingSection(
+        log, server, items=[BlockingItem(log, "201", ["imdb://tt201"])], key="2",
+    )
+    server.add_section("Movies", movies)
+    server.add_section("Films", films)
+    server.playlists = lambda **kwargs: []
+    config = config_factory()
+    config.playlists = PlaylistsConfig.model_validate({"definitions": [{
+        "title": "Offloaded", "builder": "test_offload_playlist", "params": {},
+        "libraries": ["Movies", "Films"],
+    }]})
+    loop_thread = threading.get_ident()
+
+    run = await reconcile_playlists(session, server, config)
+
+    [result] = [r for r in run.playlists if r.title == "Offloaded"]
+    assert result.actions == [
+        "would create 'Offloaded' with 2 item(s) from Movies, Films"
+    ]
+    assert builder.indexed == ["101", "102", "103"]
+
+    def walks(names):
+        return [n for n in names if n == "section.all" or n.endswith(".guids")]
+
+    assert walks(log.names()).count("section.all") == 2
+    assert {"item 101.guids", "item 201.guids"} <= set(walks(log.names()))
+    assert walks(log.on_thread(loop_thread)) == []

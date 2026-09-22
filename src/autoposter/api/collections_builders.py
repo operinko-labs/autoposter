@@ -60,6 +60,7 @@ from autoposter.collections.service import (
     LIBRARY_TYPES,
     build_source_clients,
     library_definitions,
+    library_section,
 )
 from autoposter.collections.source_urls import SourceUrlRefused, parse_source
 from autoposter.config.overrides import load_overrides_document
@@ -320,8 +321,8 @@ async def preview_collections(
                     build_source_clients(config, secrets, http, cache)
                     if secrets is not None else None
                 )
-                section = server.library.section(name)
-                library_type = LIBRARY_TYPES.get(section.type)
+                section, kind = await asyncio.to_thread(library_section, server, name)
+                library_type = LIBRARY_TYPES.get(kind)
                 if library_type is None:
                     continue
 

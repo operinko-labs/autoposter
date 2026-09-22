@@ -570,9 +570,13 @@ async def _reconcile_one(
             )
             return outcome
 
-    resolved = resolve_external_across(
-        [index_for(name, level) for name in libraries], result.ids
-    )
+    # One ``asyncio.to_thread`` hop per scoped library, the same shape as
+    # ``primary_index`` above (perf C1): an index nobody has built yet is a
+    # whole-library walk plus a ``guids`` read per item, and one a builder
+    # already paid for comes back from ``index_for``'s memo. The hops run one
+    # at a time, so the memo is never written from two threads at once.
+    indexes = [await asyncio.to_thread(index_for, name, level) for name in libraries]
+    resolved = resolve_external_across(indexes, result.ids)
     outcome.unresolved = resolved.unresolved
     if resolved.unresolved:
         logger.info(

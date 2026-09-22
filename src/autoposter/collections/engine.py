@@ -1656,53 +1656,44 @@ async def _sweep(
             "were considered for deletion" % family_title
         )))
 
-    for title, collection in existing.items():
-        if title in managed or title not in rows:
-            continue
-        if rows[title].kind in ("operator", LOCAL_ASSET_KIND):
+    entries = [
+        (title, collection, rows[title].kind in ("operator", LOCAL_ASSET_KIND))
+        for title, collection in existing.items()
+        if title not in managed and title in rows
+    ]
+    verdicts = await asyncio.to_thread(
+        _sweep_verdicts, entries, config.collections.protect_labels or [],
+        families, generated, label,
+    )
+    for (title, collection, _), (verdict, detail) in zip(entries, verdicts):
+        if verdict == "operator":
             # An operator created this directly (``ops/blank``) -- no
             # definition enumerates its title, so it always lands here, and
             # it must never be swept just because nothing builds it. Reported
             # rather than silently skipped, and regardless of
             # ``delete_unconfigured``: that setting decides what an
             # unattended pass may delete, and this was never such a
-            # candidate in the first place.
-            # ...and a LOCAL_ASSET_KIND row is a poster-hash record for a
-            # collection this service never owned (row 37) -- deleting it
-            # would delete somebody else's collection over a bookkeeping row.
+            # candidate in the first place. A LOCAL_ASSET_KIND row is a
+            # poster-hash record for a collection this service never owned
+            # (row 37) -- deleting it would delete somebody else's collection
+            # over a bookkeeping row.
             results.append(_swept(title, library, (
                 "%r was created by an operator, not any definition; "
                 "the sweep never deletes it" % title
             )))
-            continue
-        load_labels(collection)
-        protecting = protected_label(collection, config.collections.protect_labels or [])
-        if protecting is not None:
+        elif verdict == "protected":
             results.append(_swept(title, library, (
-                "protected: %r carries %r; leaving it untouched" % (title, protecting)
+                "protected: %r carries %r; leaving it untouched" % (title, detail)
             )))
-            continue
-        matched = [one for one in families if has_label(collection, one)]
-        family_title: str | None = None
-        if matched:
-            # A collection can carry more than one family's label (both
-            # reconciled it additively in the same or an earlier pass), so
-            # every matching family must protect it, not just the first one
-            # iteration happens to reach: a candidate only when EVERY family
-            # that labels it ran and NONE of them built it this pass.
-            if any(
-                one not in generated or title in generated[one]
-                for one in matched
-            ):
-                continue
-            family_title = families[matched[0]]
-        if not has_label(collection, label):
+        elif verdict == "unlabelled":
             logger.info(
                 "%s: %r has a managed row but not the %r label; not ours to delete",
                 library, title, label,
             )
-            continue
-        candidates.append((title, collection, rows[title], family_title))
+        elif verdict == "candidate":
+            candidates.append((title, collection, rows[title], detail))
+        # "rebuilt": a family that labels it built it this pass -- managed,
+        # so neither reported nor a candidate.
 
     if not config.collections.delete_unconfigured:
         for title, _, _, family_title in candidates:
@@ -1731,7 +1722,7 @@ async def _sweep(
             ))
             continue
         try:
-            collection.delete()
+            plex_rating_key = await asyncio.to_thread(_delete_collection, collection)
         except Exception:
             # A later candidate's Plex delete is not this candidate's
             # problem: it must not stop the remaining candidates from being
@@ -1744,7 +1735,6 @@ async def _sweep(
             ))
             continue
         await session.delete(row)
-        plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
         # {} rather than {"plex": ""} when Plex gave no ratingKey: an empty
         # string is not a native id, and a reader trusting "refs" at face
         # value must not be handed a fake one.
@@ -1804,6 +1794,63 @@ def _swept(title: str, library: str, action: str, deleting: int = 0) -> Definiti
     return DefinitionResult(
         title=title, library=library, deleting=deleting, skipped=True, actions=[action]
     )
+
+
+def _sweep_verdicts(entries, protect_labels, families, generated, label):
+    """The sweep's candidate scan, Plex side: ``(verdict, detail)`` per entry,
+    in order, in ONE ``asyncio.to_thread`` hop (perf workstream C1).
+
+    ``load_labels`` is a ``reload()`` GET per candidate, and every rule after
+    it reads ``labels`` off the plexapi object, so the reload and the reads run
+    together on the thread and only plain verdicts come back. The database
+    half of the decision -- is this an operator's collection -- is answered on
+    the loop before the hop and handed in as the entry's third element.
+
+    Verdicts:
+
+    - ``operator``: created by an operator (``ops/blank``) or a row-37
+      bookkeeping row; never swept, and not even reloaded;
+    - ``protected``: a protected label wins, checked before ownership; the
+      detail is the label as the server spells it;
+    - ``rebuilt``: a family that labels it built it this pass. A collection
+      can carry more than one family's label (both reconciled it additively in
+      the same or an earlier pass), so EVERY matching family must protect it:
+      a candidate only when every family that labels it ran and none of them
+      built it this pass;
+    - ``unlabelled``: a managed row without our label -- not ours to delete;
+    - ``candidate``: the detail is the family title, or None for an ordinary
+      orphan.
+    """
+    verdicts: list[tuple[str, str | None]] = []
+    for title, collection, operator in entries:
+        if operator:
+            verdicts.append(("operator", None))
+            continue
+        load_labels(collection)
+        protecting = protected_label(collection, protect_labels)
+        if protecting is not None:
+            verdicts.append(("protected", protecting))
+            continue
+        matched = [one for one in families if has_label(collection, one)]
+        family_title: str | None = None
+        if matched:
+            if any(one not in generated or title in generated[one] for one in matched):
+                verdicts.append(("rebuilt", None))
+                continue
+            family_title = families[matched[0]]
+        if not has_label(collection, label):
+            verdicts.append(("unlabelled", None))
+            continue
+        verdicts.append(("candidate", family_title))
+    return verdicts
+
+
+def _delete_collection(collection) -> str:
+    """Delete one swept collection and return its rating key ("" when Plex gave
+    none), in one ``asyncio.to_thread`` hop (perf C1). The DELETE is a request,
+    and the key is read here so the loop never touches the plexapi object."""
+    collection.delete()
+    return str(getattr(collection, "ratingKey", "") or "")
 
 
 async def _separators(
