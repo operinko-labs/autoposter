@@ -7,13 +7,24 @@ section per guid) even for an item this service has resolved a hundred times.
 the full pass carries; ``PlexClient`` already falls back to the walk when the
 hint is refused or NotFound (tests/test_plex.py pins that half).
 """
+from autoposter import deliveries
+from autoposter.config.loader import load_config
 from autoposter.db.refs import native_id_by_external_ids
+from autoposter.facts.mdblist import NullMDBListClient
 from autoposter.intake.arr import RenderIntent
 from autoposter.render import pipeline as pipeline_module
+from autoposter.servers.presence import ABSENT_DETAIL
 from autoposter.servers.registry import Servers
 from conftest import seed_media_item
 from media_server_doubles import FakeMediaServer, resolved as fake_resolved
-from test_pipeline import _fake_compose, _fake_render_artifact
+from test_pipeline import (
+    EXAMPLE,
+    INTENT,
+    _MinimalTMDBFacts,
+    _fake_compose,
+    _fake_render_artifact,
+    _two_servers,
+)
 
 
 def _ids(**overrides):
@@ -44,6 +55,15 @@ async def test_an_episode_matches_on_its_numbers(session):
         session, "plex", **_ids(kind="episode", tvdb_id=4203, season_number=1, episode_number=2),
     )
     assert found == "e2"
+
+
+async def test_a_show_sharing_a_movies_tmdb_number_does_not_hide_the_movie(session):
+    """TMDB numbers movies and TV separately, so one number can name both a
+    movie and a show. The kind keeps them apart: a movie lookup finds only
+    the movie, and the show's row does not make the answer ambiguous."""
+    await seed_media_item(session, "s1", kind="show", library="TV", title="S", tmdb_id=4205)
+    await seed_media_item(session, "m1", title="M", tmdb_id=4205)
+    assert await native_id_by_external_ids(session, "plex", **_ids(tmdb_id=4205)) == "m1"
 
 
 async def test_no_external_id_answers_nothing(session):
@@ -83,6 +103,32 @@ async def test_a_webhook_intent_reaches_plex_with_its_stored_ref(
     )
 
     assert [intent.refs for intent in seen] == [{"plex": "p1"}]
+
+
+async def test_a_webhook_intent_skips_a_server_whose_row_is_absent(session, monkeypatch):
+    """B3's side effect, pinned: with the stored ref on the intent, the absent
+    set is read BEFORE the resolve fan-out for a webhook too (spec §1), so a
+    server that does not carry the item's library is asked nothing -- the
+    full pass's behaviour, now also the webhook's."""
+    config = load_config(EXAMPLE)
+    config.operations.write_to_jellyfin = True
+    config.badges.enabled = False
+    servers, plex, jf = _two_servers()
+    media_item = await pipeline_module._upsert_media_item(session, plex.items[INTENT.dedupe_key])
+    await deliveries.record_metadata(
+        session, media_item.id, "jellyfin", "absent", detail=ABSENT_DETAIL
+    )
+    await session.commit()
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+
+    assert INTENT.refs == {}, "the intent must be webhook-shaped: no refs of its own"
+    await pipeline_module.process_item(
+        session, config, None, servers, [], INTENT,
+        tmdb_facts=_MinimalTMDBFacts(), mdblist=NullMDBListClient(),
+    )
+
+    assert jf.resolve_calls == 0, "an absent server is asked nothing, webhook or not"
+    assert plex.resolve_calls == 1
 
 
 async def test_an_intent_that_carries_a_ref_keeps_it(session, config_with_badges, monkeypatch):

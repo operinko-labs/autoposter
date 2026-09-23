@@ -3144,10 +3144,9 @@ async def process_item(
         # `absent_servers` is subtracted HERE and not left to the resolve
         # loop's own `continue`: that loop reads the set keyed off the refs
         # the INTENT carries, and a webhook intent without the B3 hint carries
-        # none -- so an
-        # absent server is asked anyway on those passes, misses, and would be
-        # reported as not found. By the time this block runs the set has been
-        # re-read for the item itself, which is the honest one.
+        # none -- so an absent server is asked anyway on those passes, misses,
+        # and would be reported as not found. By the time this block runs the
+        # set has been re-read for the item itself, which is the honest one.
         #
         # `media_item_id`, not `media_item.id`: see the capture above.
         considered = (set(resolved_on) | set(misses)) - absent_servers

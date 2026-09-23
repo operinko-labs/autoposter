@@ -467,19 +467,28 @@ class PlexClient:
         an episode intent's own ids are only ever the *series'* ids here
         (the adoption walk takes the show's guids, mirroring what
         ``_search_sync`` builds from the show container), and a row adopted
-        before that alignment can still carry episode-level ids of its own.
-        Those either match nothing (the job retries as "waiting for Plex"
-        until it parks) or match an unrelated item that happens to carry the
-        same number.
+        before that alignment carried episode-level ids of its own until its
+        next resolve rewrote them. Those either matched nothing (the job
+        retried as "waiting for Plex" until it parked) or matched an unrelated
+        item that happened to carry the same number.
 
         Returning None rather than raising is the whole contract here: a
         rating key is a *hint*. Plex renumbers on a library rebuild, so a
         stored key can name nothing, or name something else entirely --
         including a real item of the same type, in the same library, that is
         simply not the one the intent means. That is why type+library is not
-        treated as identity: the season/episode numbers or external ids are
-        checked too. Every such case degrades to the GUID search rather than
-        failing the job.
+        treated as identity: a movie or show must share an external id with
+        the intent, and a season or episode must carry the intent's numbers
+        AND sit under a show that shares one. The show check matters: after a
+        Plex database restore a key can be reused, and without it a webhook
+        for show A would land on show B's episode with the same numbers -- B's
+        episode rendered, and the ref moved onto B's row. The ids compared are
+        the show's on both sides: ``_upsert_media_item`` rewrites a row's ids
+        from the show on every resolve, so a row's intent no longer carries
+        episode-level ids of its own. A show Plex has re-matched to different
+        ids therefore has its season and episode keys refused, exactly as its
+        own key already is. Every such case degrades to the GUID search rather
+        than failing the job.
 
         The result deliberately mirrors what the GUID search would have built
         for the same intent, field for field, so that a key going stale
@@ -521,6 +530,16 @@ class PlexClient:
         # season/episode numbers onto the wrong item, or write a wrong
         # movie/show's identity onto an unrelated row. Any mismatch here
         # falls back to the GUID search, same as every other refusal above.
+        # Built the same way `_search_sync`'s own `wanted` list is below.
+        wanted_ids = [
+            guid
+            for guid in (
+                f"tmdb://{intent.tmdb_id}" if intent.tmdb_id else None,
+                f"tvdb://{intent.tvdb_id}" if intent.tvdb_id else None,
+                f"imdb://{intent.imdb_id}" if intent.imdb_id else None,
+            )
+            if guid is not None
+        ]
         if intent.kind == "season":
             if getattr(item, "index", None) != intent.season_number:
                 return None
@@ -531,17 +550,7 @@ class PlexClient:
             ):
                 return None
         else:
-            # movie/show: identity comes from the external ids, built the
-            # same way `_search_sync`'s own `wanted` list is below.
-            wanted_ids = [
-                guid
-                for guid in (
-                    f"tmdb://{intent.tmdb_id}" if intent.tmdb_id else None,
-                    f"tvdb://{intent.tvdb_id}" if intent.tvdb_id else None,
-                    f"imdb://{intent.imdb_id}" if intent.imdb_id else None,
-                )
-                if guid is not None
-            ]
+            # movie/show: identity comes from the external ids.
             if wanted_ids:
                 item_guids = {g.id for g in getattr(item, "guids", [])}
                 if item_guids.isdisjoint(wanted_ids):
@@ -560,6 +569,14 @@ class PlexClient:
             try:
                 container = item.show()
             except PlexNotFound:
+                return None
+            # The numbers alone are not identity either: after a Plex database
+            # restore a reused key can name ANOTHER show's episode with the
+            # same numbers. The show must share an external id with the
+            # intent, which carries the show's ids (see the docstring).
+            if wanted_ids and {
+                g.id for g in getattr(container, "guids", [])
+            }.isdisjoint(wanted_ids):
                 return None
             parent_rating_key = (
                 str(container.ratingKey)
