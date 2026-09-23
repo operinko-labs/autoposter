@@ -2958,6 +2958,69 @@ async def test_a_background_delivery_row_never_turns_a_pass_into_a_warning(
     assert warnings == []
 
 
+@pytest.mark.parametrize("badges_enabled", [True, False])
+async def test_a_new_background_reads_skipped_and_the_poster_does_not(
+    session, config_with_badges, monkeypatch, badges_enabled,
+):
+    """A background is owed no delivery, so its roll-up must say so from the
+    moment its row exists: ``skipped``, which is what ``deliveries.rollup``
+    answers for a render with nothing owed. Before this every background sat
+    at the column default ``pending`` forever -- 2,253 of them in production
+    on 2026-09-23 -- because ``deliver`` returns before it records anything,
+    so no roll-up ever ran for one. Both badge settings, because the gate
+    that skips a background sits beside the badges-off gate and neither may
+    be what decides it. The poster alongside it keeps the ordinary path."""
+    config_with_badges.badges.enabled = badges_enabled
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    plex = FakeMediaServer(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+
+    renders = await pipeline_module.process_item(
+        session, config_with_badges, None, Servers({"plex": plex}), [], INTENT,
+    )
+
+    statuses = dict((await session.execute(
+        select(Render.art_kind, Render.upload_status)
+        .where(Render.id.in_([r.id for r in renders]))
+    )).all())
+    assert statuses["background"] == "skipped"
+    assert statuses["poster"] == ("uploaded" if badges_enabled else "pending")
+
+
+async def test_a_second_pass_leaves_an_existing_backgrounds_roll_up_alone(
+    session, config_with_badges, monkeypatch,
+):
+    """`_get_or_create_render` stamps `skipped` on INSERT only: once the row
+    exists, its roll-up is whatever its delivery rows say (the kept
+    background with an `uploaded_at` that `d4b7e1a9c250` spared, say), and a
+    later pass through the conflict branch must not rewrite it back to
+    `skipped`. A non-default value is planted after the first pass, and the
+    second pass must leave it standing."""
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    plex = FakeMediaServer(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    servers = Servers({"plex": plex})
+    renders = await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+    background_id = next(r.id for r in renders if r.art_kind == "background")
+
+    def status():
+        return session.execute(
+            select(Render.upload_status).where(Render.id == background_id)
+        )
+
+    assert (await status()).scalar_one() == "skipped"
+    await session.execute(
+        update(Render).where(Render.id == background_id).values(upload_status="uploaded")
+    )
+    await session.commit()
+
+    await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+
+    assert (await status()).scalar_one() == "uploaded"
+
+
 async def test_process_item_reports_a_failed_metadata_write_as_a_warning(
     session, config_with_badges, monkeypatch,
 ):
