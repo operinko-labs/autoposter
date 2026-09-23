@@ -81,7 +81,10 @@ _sleep = asyncio.sleep
 #: probe made afresh -- once per item per full pass -- for a list that changes
 #: when an operator adds or edits a library. A resolve that misses re-reads it
 #: at once (``_search_sync``), so a library added inside the window costs one
-#: failed walk, never a deferred job.
+#: failed walk, never a deferred job; ``resolve`` re-reads the same way when a
+#: root folder added inside the window leaves an item outside the cached roots.
+#: A renamed library keeps its old title here for up to this long -- library
+#: names, exclusions and ``ResolvedItem.library`` all read the cached title.
 SECTIONS_TTL_SECONDS = 60.0
 
 #: Bound to a module-level name for ``_sleep``'s reason: a test moves the clock
@@ -99,6 +102,17 @@ def _section_signature(sections) -> list[tuple]:
         )
         for s in sections
     ]
+
+
+def _derive_root(library_roots, target_path: str, is_directory: bool) -> str | None:
+    """The root folder of ``target_path`` under the first library root that
+    contains it, or None when none does."""
+    for library_root in library_roots:
+        try:
+            return derive_root_folder(library_root, target_path, is_directory=is_directory)
+        except ValueError:
+            continue
+    return None
 
 
 class PlexPathMismatch(PathMismatch):
@@ -423,19 +437,17 @@ class PlexClient:
             if s.title not in self._excluded and s.type in wanted_types
         ]
 
-    def _sections_changed_on_reread(self) -> bool:
-        """Re-read the section list; True when it differs from the cached one.
-
-        A resolve's miss is the one moment a stale list can cost something --
-        the item may sit in a library added since the cached read -- so a miss
-        re-reads, and the walk runs again only when the list really moved. A
-        genuine miss therefore costs the one listing GET every resolve paid
-        before the cache existed, and nothing more.
-        """
-        cached = self._sections_cache
-        before = cached[1] if cached is not None else None
-        after = self._library_sections(refresh=True)
-        return before is not None and _section_signature(before) != _section_signature(after)
+    def _fresh_section_locations(self, title: str) -> list[str] | None:
+        """One non-excluded section's locations from a list read just now, or
+        None when no such section exists any more."""
+        return next(
+            (
+                list(s.locations)
+                for s in self._sections("movie", "show", refresh=True)
+                if s.title == title
+            ),
+            None,
+        )
 
     def _library_names_sync(self) -> set[str]:
         return {s.title for s in self._sections("movie", "show")}
@@ -581,7 +593,9 @@ class PlexClient:
             ),
         )
 
-    def _search_sync(self, intent: RenderIntent, *, _reread: bool = False) -> _RawMatch | None:
+    def _search_sync(
+        self, intent: RenderIntent, *, _fresh_sections: list | None = None,
+    ) -> _RawMatch | None:
         wanted = []
         if intent.tmdb_id:
             wanted.append(f"tmdb://{intent.tmdb_id}")
@@ -594,7 +608,9 @@ class PlexClient:
         # resolve by matching the *show*, so all three need a show library.
         # Mirrors resolve()'s own movie/else split below.
         wanted_type = "movie" if intent.kind == "movie" else "show"
-        sections = self._sections(wanted_type)
+        sections = (
+            _fresh_sections if _fresh_sections is not None else self._sections(wanted_type)
+        )
 
         if intent.native_id_on("plex"):
             match = self._fetch_by_rating_key_sync(intent, sections)
@@ -699,11 +715,21 @@ class PlexClient:
                     )
         # Perf workstream B3: `sections` may be up to SECTIONS_TTL_SECONDS old.
         # An item in a library added since then misses above; re-read once and,
-        # only if the list moved, walk again. Every caller -- resolve, the
-        # pruner's exists_many -- therefore reaches "not found" only against a
-        # list read just now, exactly as before the cache.
-        if not _reread and self._sections_changed_on_reread():
-            return self._search_sync(intent, _reread=True)
+        # only if the list moved, walk again -- over the list just read, passed
+        # down rather than re-fetched from the cache. Every caller -- resolve,
+        # the pruner's exists_many -- therefore reaches "not found" only against
+        # a list read just now, exactly as before the cache. A genuine miss
+        # costs the one listing GET every resolve paid before the cache.
+        #
+        # Compared with `sections`, the list THIS walk used, never with the
+        # cache: another worker thread may have refreshed the cache while this
+        # walk ran, and the cache would then already hold the new list and
+        # read as "unchanged" -- a live item reported absent, which a resolve
+        # defers and the pruner deletes.
+        if _fresh_sections is None:
+            fresh = self._sections(wanted_type, refresh=True)
+            if _section_signature(fresh) != _section_signature(sections):
+                return self._search_sync(intent, _fresh_sections=fresh)
         return None
 
     async def fetch_item(self, rating_key: str):
@@ -923,17 +949,24 @@ class PlexClient:
             target_path = file_path or match.item_locations[0]
             is_directory = True
 
-        root_folder = None
-        for library_root in match.section_locations:
-            try:
-                root_folder = derive_root_folder(library_root, target_path, is_directory=is_directory)
-                break
-            except ValueError:
-                continue
+        section_locations = match.section_locations
+        root_folder = _derive_root(section_locations, target_path, is_directory)
+        if root_folder is None:
+            # Perf workstream B3: `section_locations` came off a section list up
+            # to SECTIONS_TTL_SECONDS old, while the GUID lookup that matched is
+            # live. An operator who adds a root folder and has Plex scan an item
+            # into it inside that window would otherwise park the job here.
+            # Re-read once, and derive again only if the library's roots moved.
+            fresh_locations = await asyncio.to_thread(
+                self._fresh_section_locations, match.library
+            )
+            if fresh_locations is not None and fresh_locations != section_locations:
+                section_locations = fresh_locations
+                root_folder = _derive_root(section_locations, target_path, is_directory)
         if root_folder is None:
             raise PlexPathMismatch(
                 f"Plex item {match.rating_key} ({target_path!r}) is not inside any of the "
-                f"library roots {match.section_locations!r} for library {match.library!r}"
+                f"library roots {section_locations!r} for library {match.library!r}"
             )
 
         return ResolvedItem(

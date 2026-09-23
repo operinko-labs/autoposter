@@ -12,7 +12,7 @@ import pytest
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex import client as client_module
 from autoposter.plex import writer as writer_module
-from autoposter.plex.client import ItemNotFound, PlexClient
+from autoposter.plex.client import ItemNotFound, PlexClient, PlexPathMismatch
 from autoposter.queue import job_memo
 from autoposter.queue.worker import run_once
 from autoposter.servers.base import ServerItemRef
@@ -102,6 +102,93 @@ async def test_a_genuine_miss_re_reads_once_and_walks_the_guids_once():
         await client.resolve(RenderIntent(kind="movie", title="Nope", tmdb_id=999))
 
     assert movies.getguid_calls == ["tmdb://999"]
+    assert server.section_reads == 2
+
+
+class _HookedSection(FakeSection):
+    """A section whose first ``getGuid`` runs ``hook`` before answering: another
+    worker thread refreshing the shared section cache in the middle of this
+    thread's walk."""
+
+    def __init__(self, *args, hook=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._hook = hook
+
+    def getGuid(self, guid):
+        hook, self._hook = self._hook, None
+        if hook is not None:
+            hook()
+        return super().getGuid(guid)
+
+
+async def _client_whose_cache_moves_mid_walk():
+    """The walk runs over [Movies]; while it runs, another thread stores
+    [Movies, New Movies]. The re-read must be compared with the list the walk
+    used, not with whatever the cache holds by then."""
+    movie = FakeItem(
+        "777", "New", 2026, "/mnt/Media/New Movies/New (2026)/new.mkv", ["tmdb://4242"],
+    )
+    new = FakeSection("New Movies", "/mnt/Media/New Movies", [movie])
+    server = _CountingServer([])
+    client = PlexClient(server=server, excluded_libraries=[])
+
+    def another_thread_refreshes():
+        server._sections = [old, new]
+        client._library_sections(refresh=True)
+
+    old = _HookedSection("Movies", "/mnt/Media/Movies", [], hook=another_thread_refreshes)
+    server._sections = [old]
+    assert await client.library_names() == {"Movies"}
+    return client, RenderIntent(kind="movie", title="New", tmdb_id=4242)
+
+
+async def test_a_cache_refreshed_by_another_thread_mid_walk_still_re_walks():
+    client, intent = await _client_whose_cache_moves_mid_walk()
+
+    resolved = await client.resolve(intent)
+
+    assert resolved.library == "New Movies"
+
+
+async def test_the_pruner_never_reads_a_mid_walk_refresh_as_absence():
+    client, intent = await _client_whose_cache_moves_mid_walk()
+
+    assert await client.exists_many([intent]) == [True]
+
+
+async def test_a_root_folder_added_inside_the_ttl_is_found_by_the_mismatch_re_read():
+    movie = FakeItem(
+        "888", "Rooted", 2026, "/mnt/Media/Movies 2/Rooted (2026)/rooted.mkv",
+        ["tmdb://5151"],
+    )
+    # The cached section object's lookups are live GETs, so it finds the item
+    # Plex just scanned into the new root -- but its `locations` were read
+    # before the operator added that root.
+    cached = FakeSection("Movies", "/mnt/Media/Movies", [movie])
+    server = _CountingServer([cached])
+    client = PlexClient(server=server, excluded_libraries=[])
+    assert await client.library_names() == {"Movies"}
+
+    fresh = FakeSection("Movies", "/mnt/Media/Movies", [movie])
+    fresh.locations.append("/mnt/Media/Movies 2")
+    server._sections = [fresh]
+    resolved = await client.resolve(RenderIntent(kind="movie", title="Rooted", tmdb_id=5151))
+
+    assert resolved.native_id == "888"
+    assert resolved.library == "Movies"
+    assert server.section_reads == 2
+
+
+async def test_a_genuine_path_mismatch_re_reads_once_and_still_raises():
+    movie = FakeItem(
+        "889", "Stray", 2026, "/elsewhere/Stray (2026)/stray.mkv", ["tmdb://5152"],
+    )
+    server = _CountingServer([FakeSection("Movies", "/mnt/Media/Movies", [movie])])
+    client = PlexClient(server=server, excluded_libraries=[])
+
+    with pytest.raises(PlexPathMismatch):
+        await client.resolve(RenderIntent(kind="movie", title="Stray", tmdb_id=5152))
+
     assert server.section_reads == 2
 
 
