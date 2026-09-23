@@ -493,11 +493,16 @@ describe("Dashboard", () => {
 
     await waitFor(() => expect(statValue("pending")).toBe("9"));
     // The whole point of the stream: the page no longer re-reads /api/status
-    // or /api/events, per tick or at all. RunCharts' own one-time mount fetch
-    // is the only other request, order-independent since child effects and
-    // the stream's own connect effect are not sequenced against each other.
+    // or /api/events, per tick or at all. RunCharts' two mount fetches (the
+    // recent page and the counted page) are the only other requests,
+    // order-independent since child effects and the stream's own connect
+    // effect are not sequenced against each other.
     expect(fetchMock.mock.calls.map(([path]) => path).sort()).toEqual(
-      ["/api/dashboard/stream", "/api/stats/runs?limit=50"].sort(),
+      [
+        "/api/dashboard/stream",
+        "/api/stats/runs?limit=50",
+        "/api/stats/runs?limit=50&counted=true",
+      ].sort(),
     );
   });
 
@@ -582,14 +587,14 @@ describe("Dashboard", () => {
     // few seconds old, so the last snapshot stays put.
     expect(statValue("pending")).toBe("3");
     expect(screen.getByText(/4 workers/)).toBeInTheDocument();
-    // The stream's own connect plus RunCharts' one-time mount fetch.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The stream's own connect plus RunCharts' two mount fetches.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     await waitFor(() => expect(statValue("pending")).toBe("9"));
     expect(screen.getByText("live")).toBeInTheDocument();
   });
@@ -600,10 +605,10 @@ describe("Dashboard", () => {
 
     const { unmount } = render(<Dashboard />);
     await screen.findByText("collections_reconcile");
-    // The stream's own connect plus RunCharts' one-time mount fetch --
+    // The stream's own connect plus RunCharts' two mount fetches --
     // RunCharts' own effect is not sequenced against the stream's, so it can
     // lag the text this page just rendered by a tick.
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
     // Found by path rather than assumed to be calls[0]: RunCharts' own effect
     // and the stream's connect effect are not sequenced against each other.
     const streamCall = fetchMock.mock.calls.find(([path]) => path === "/api/dashboard/stream");
@@ -617,7 +622,7 @@ describe("Dashboard", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30000);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("closes the stream while the tab is hidden and reconnects when it is shown", async () => {

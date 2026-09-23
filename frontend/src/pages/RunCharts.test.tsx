@@ -55,7 +55,7 @@ describe("RunCharts", () => {
   });
 
   it("reads the run history once on mount and draws both charts", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(json(RUNS));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => json(RUNS));
 
     const { container } = render(<RunCharts />);
 
@@ -68,13 +68,42 @@ describe("RunCharts", () => {
     // renders each series' swatch as its own tiny <svg> too (one per Bar in
     // the stacked chart), which is decoration, not a chart.
     expect(container.querySelectorAll('svg[role="application"]').length).toBe(2);
-    // One request, on mount -- this page is NOT on the dashboard stream.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toBe("/api/stats/runs?limit=50");
+    // Two requests, both on mount -- this page is NOT on the dashboard stream.
+    // The recent page feeds the duration chart; the counted page feeds the
+    // counts chart, so a busy scheduled job cannot push every counted run out
+    // of view.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((call) => String(call[0])).sort()).toEqual([
+      "/api/stats/runs?limit=50",
+      "/api/stats/runs?limit=50&counted=true",
+    ]);
+  });
+
+  it("draws the counts chart from counted runs even when the recent page has none", async () => {
+    // Production shape: the newest fifty runs are all a fifteen-minute
+    // scheduled job, and the only full pass sits far behind them.
+    const recent: RunsResponse = {
+      generated_at: RUNS.generated_at,
+      runs: Array.from({ length: 50 }, (_, index) => ({
+        ...RUNS.runs[1],
+        id: 1000 - index,
+        name: "pending_deliveries",
+      })),
+    };
+    const counted: RunsResponse = { generated_at: RUNS.generated_at, runs: [RUNS.runs[0]] };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      json(String(input).includes("counted=true") ? counted : recent),
+    );
+
+    const { container } = render(<RunCharts />);
+
+    await waitFor(() => expect(screen.getByText("Run duration")).toBeInTheDocument());
+    expect(screen.queryByText("No full pass has completed yet.")).not.toBeInTheDocument();
+    expect(container.querySelectorAll('svg[role="application"]').length).toBe(2);
   });
 
   it("says so rather than drawing an empty chart when there is no history", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
       json({ runs: [], generated_at: "2026-09-05T12:40:00Z" }),
     );
 
@@ -85,7 +114,7 @@ describe("RunCharts", () => {
   });
 
   it("plots only attributed runs in the counts chart, never a null as a zero", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(json(RUNS));
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => json(RUNS));
 
     render(<RunCharts />);
 

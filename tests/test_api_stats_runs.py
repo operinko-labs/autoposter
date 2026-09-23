@@ -146,6 +146,28 @@ async def test_the_newest_runs_come_first_and_limit_bounds_the_page(client, sess
     assert ids == sorted(ids, reverse=True), "the newest run must be first"
 
 
+async def test_counted_serves_the_runs_with_counts_however_deep_they_sit(
+    client, session_headers, session
+):
+    """The dashboard's counts chart asks for the runs that carry counts, and
+    has to get them however many scheduled runs came after -- in production
+    ``pending_deliveries`` records one every fifteen minutes, which buried the
+    only completed full pass 1,337 rows deep and left the chart saying no full
+    pass had ever completed. The unfiltered page is unchanged."""
+    await _seed(session)
+    for _ in range(5):
+        session.add(Run(kind="scheduled", name="pending_deliveries", status="ok"))
+        await session.commit()
+
+    counted = (
+        await client.get("/api/stats/runs?limit=2&counted=true", headers=session_headers)
+    ).json()
+    plain = (await client.get("/api/stats/runs?limit=2", headers=session_headers)).json()
+
+    assert [run["name"] for run in counted["runs"]] == ["full_pass"]
+    assert [run["name"] for run in plain["runs"]] == ["pending_deliveries"] * 2
+
+
 async def test_an_absurd_limit_is_clamped_rather_than_refused(client, session_headers, session):
     """A widget's misconfiguration must not be able to ask for the whole
     table, and must not be answered with a 422 an operator then has to debug
