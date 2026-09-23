@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from autoposter.plex.writer import _PLEX_FIELD_NAMES, WRITABLE_BY_KIND, plan_edits
+from autoposter.plex.writer import _PLEX_FIELD_NAMES, WRITABLE_BY_KIND, _item_label, plan_edits
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +231,7 @@ class _DtoView:
 
     @property
     def grandparentTitle(self):  # noqa: N802
-        return None  # episode label enrichment out of scope for this task
+        return self._dto.get("SeriesName")
 
     @property
     def parentIndex(self):  # noqa: N802
@@ -374,13 +374,16 @@ async def apply_facts(
 
     await api.update_item(ref.native_id, dto)  # capture -> "/Items/{itemId}" -> post (UpdateItem)
     # Names, not a count, for the reason plex/writer.py's _edited_fields gives:
-    # a count cannot say which field a full pass keeps rewriting.
+    # a count cannot say which field a full pass keeps rewriting. The item is
+    # named the way the Plex line names it, so one item's two write lines read
+    # alike; the native id stays for looking it up in Jellyfin.
     logger.info(
-        "jellyfin: wrote %s to %s",
+        "jellyfin: wrote %s to %s [%s]",
         ", ".join(
             f"{field} ({how})" if how in ("locked", "unlocked") else field
             for field, how in sorted(written.items())
         ),
+        _item_label(view),
         ref.native_id,
     )
     return written
