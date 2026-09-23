@@ -26,6 +26,7 @@ promise it could not keep:
   looking at it: every guard before it awaits, and a mode that acquired the
   lock inside one of those windows would be execed mid-write.
 """
+import asyncio
 import logging
 import os
 from datetime import timedelta
@@ -137,7 +138,16 @@ async def _exec_or_release(app) -> None:
     The CLASS NAME only, and nothing else: the exception's own message on these
     paths is about the environment block this process publishes its credentials
     into, and no part of that may reach a log.
+
+    One trip round the event loop comes first. The response body was sent in
+    this same iteration, and uvicorn[standard] runs on uvloop, which queues a
+    transport write and only puts it on the socket at the end of the
+    iteration. An exec with no yield before it replaces the process while the
+    answer is still in that queue: the gateway sees the connection drop and
+    reports a 502 for a restart that worked. The asyncio loop the tests use
+    writes at once, so only the yield's own test can tell the two apart.
     """
+    await asyncio.sleep(0)
     try:
         _exec_boot()
     except Exception as exc:

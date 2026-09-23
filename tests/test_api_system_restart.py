@@ -82,6 +82,28 @@ async def test_a_restart_answers_and_then_execs(client, auth_headers, no_exec):
     assert no_exec == [1], "the route answered but scheduled no exec"
 
 
+async def test_the_exec_lets_the_loop_flush_the_response_first(monkeypatch):
+    """The answer has to leave the process before the process is replaced.
+
+    uvicorn[standard] runs on uvloop, which queues a transport write and puts
+    it on the socket at the end of the loop iteration. The background task
+    runs in the same iteration the response body was sent in, so an exec that
+    never yields replaces the process with the answer still queued: the
+    gateway sees the connection drop and the page reports a 502 for a restart
+    that worked. A callback queued before the task runs stands in for that
+    flush -- if it has not run by the time of the exec, neither has uvloop's.
+    """
+    loop = asyncio.get_running_loop()
+    flushed: list[bool] = []
+    loop.call_soon(flushed.append, True)
+    seen: list[bool] = []
+    monkeypatch.setattr(system, "_exec_boot", lambda: seen.append(bool(flushed)))
+
+    await system._exec_or_release(SimpleNamespace(state=SimpleNamespace()))
+
+    assert seen == [True], "the exec ran before the loop could flush the answer"
+
+
 def test_the_exec_is_the_wizard_s_own(monkeypatch):
     """One mechanism, not two that look alike.
 
