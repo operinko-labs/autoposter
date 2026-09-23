@@ -562,7 +562,7 @@ async def test_config_returns_the_configuration_shape(client, auth_headers):
     body = response.json()
     # From config/autoposter.example.yaml -- proves this is the real config,
     # not an empty stub.
-    assert body["workers"] == 5
+    assert body["workers"] == load_config(EXAMPLE).workers
     assert "plex" in body
     assert "artwork" in body
 

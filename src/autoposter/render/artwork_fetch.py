@@ -9,7 +9,8 @@ business loading; and ``render/pipeline`` cannot import a helper that lives in
 ``artwork_modes`` either. Until this module existed the only ways to close the
 updater's door were a second copy of the walk or an import cycle.
 
-This module is a LEAF: it imports the provider ladder and nothing else of ours.
+This module is a LEAF: it imports the provider ladder and render/slots.py
+(stdlib-only) and nothing else of ours.
 ``render/pipeline`` re-exports every name it used to own, so ``api/candidates``,
 ``app.py`` and the two guard suites keep importing them from there unchanged.
 
@@ -29,6 +30,7 @@ from PIL import Image, UnidentifiedImageError
 
 from autoposter.providers.base import ArtRequest
 from autoposter.providers.ladder import Selection, select_artwork
+from autoposter.render.slots import render_slot
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +93,8 @@ def _looks_like_svg(path: Path) -> bool:
 # (``Image.MAX_IMAGE_PIXELS`` = 89,478,485; the error only fires above double
 # that, 178,956,970px, and the band in between just warns and decodes in
 # full). Without this, that warn band is a ~537-716MB decode with no cap of
-# its own, and five workers (``queue/worker.run_workers``) can each be doing
-# one in the same process.
+# its own, and before render/slots.py every worker (``queue/worker.run_workers``)
+# could be doing one in the same process; RENDER_SLOTS now caps that.
 _ARTWORK_MAX_PIXELS = 64_000_000
 
 
@@ -206,7 +208,10 @@ async def _download(
                         )
                     digest.update(chunk)
                     handle.write(chunk)
-        await asyncio.to_thread(_validate_image, destination, stage)
+        # One of RENDER_SLOTS (perf workstream B4, render/slots.py): the full
+        # decode is the memory-heavy half of a download.
+        async with render_slot():
+            await asyncio.to_thread(_validate_image, destination, stage)
     except BaseException:
         destination.unlink(missing_ok=True)
         raise

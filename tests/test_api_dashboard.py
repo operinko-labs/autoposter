@@ -210,7 +210,7 @@ async def test_status_reports_a_null_interval_for_a_job_the_scheduler_never_regi
 
 async def test_status_reports_worker_count(client, auth_headers):
     response = await client.get("/api/status", headers=auth_headers)
-    assert response.json()["workers"] == 5  # config/autoposter.example.yaml
+    assert response.json()["workers"] == load_config(EXAMPLE).workers
 
 
 # --- derived scheduled-job status ---

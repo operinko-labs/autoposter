@@ -4,7 +4,7 @@ backup_root: /assetsbackup
 fonts_root: /app/assets/fonts
 overlays_root: /app/assets/overlays
 library_folders: true
-workers: 5
+workers: 10
 settle_seconds: 30
 magick_binary: magick
 skip_tba: true

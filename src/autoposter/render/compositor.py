@@ -10,8 +10,9 @@ BACKGROUND_SIZE = "3840x2160"
 # height). The stamp is the FIRST magick call on a freshly downloaded source
 # and, until this bound existed, decoded and re-encoded it at whatever
 # resolution the provider served -- at Q16-HDRI's 16 bytes per RGBA pixel, held
-# twice, a 10000x10000 source is 3.2 GB in one process, and the pipeline runs
-# five of them concurrently. That is the demand side of the production OOM.
+# twice, a 10000x10000 source is 3.2 GB in one process, and the pipeline ran
+# one per worker concurrently -- the demand side of the production OOM, and
+# why render/slots.py now caps composites at RENDER_SLOTS whatever `workers` is.
 #
 # Enforced with ImageMagick's ``>`` flag -- "resize only if larger than this" --
 # so a source already inside the box is not resized at all and the stamp writes
@@ -190,7 +191,7 @@ def run(argv: list[str]) -> None:
     stdout is DISCARDED rather than buffered (roadmap row 238, surface 2).
     This function returns None and no call site reads a stream from it, so
     `capture_output=True` held whatever a composite step chose to print in
-    this process's memory for no reader -- with five workers doing it at once.
+    this process's memory for no reader -- with every render slot doing it at once.
     The one magick call whose output IS read is `textfit._run`, which keeps
     its pipe.
 

@@ -52,6 +52,7 @@ from autoposter.plex.writer import exemption_reason
 from autoposter.providers import base as art
 from autoposter.providers.ladder import Selection, language_rank, normalise_language, select_artwork
 from autoposter.render import compositor, naming
+from autoposter.render.slots import render_slot
 # Re-exported, not merely used: these lived here until the mass-ops logo
 # updater needed the same guard and could not import this module to get it (see
 # render/artwork_fetch.py's own docstring). `api/candidates.py`, `app.py` and
@@ -913,6 +914,33 @@ class ComposeResult:
 
 
 async def compose_styled(
+    config: Config,
+    art_kind: str,
+    working: Path,
+    *,
+    primary_text: str | None,
+    secondary_text: str | None,
+    draw_text: bool,
+    logo_path: Path | None = None,
+    suppress_styling: bool = False,
+) -> ComposeResult:
+    """``_compose_styled`` inside one of ``RENDER_SLOTS`` (perf workstream B4).
+
+    Every caller -- the pipeline and api/testing.py's preview -- styles
+    through here, so none of them can run more magick processes at once than
+    the cap allows, however many workers are running. A preview pressed
+    during a full pass waits for a slot like a render does.
+    """
+    async with render_slot():
+        return await _compose_styled(
+            config, art_kind, working,
+            primary_text=primary_text, secondary_text=secondary_text,
+            draw_text=draw_text, logo_path=logo_path,
+            suppress_styling=suppress_styling,
+        )
+
+
+async def _compose_styled(
     config: Config,
     art_kind: str,
     working: Path,
@@ -2429,11 +2457,14 @@ async def compose_badged_bytes(
             resolved_images[definition.name] = path
         usable_definitions.append(definition)
 
-    data = await asyncio.to_thread(
-        compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint,
-        definitions=usable_definitions, resolved_images=resolved_images,
-        fonts_root=config.fonts_root,
-    )
+    # One of RENDER_SLOTS (perf workstream B4): the Pillow badge compose holds
+    # a full-size decode of the published artifact.
+    async with render_slot():
+        data = await asyncio.to_thread(
+            compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint,
+            definitions=usable_definitions, resolved_images=resolved_images,
+            fonts_root=config.fonts_root,
+        )
     if not force:
         # A forced compose is a compose FOR
         # DELIVERY -- one server is owed bytes the others already have -- and
