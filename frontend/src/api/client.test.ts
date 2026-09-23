@@ -485,7 +485,7 @@ describe("apiFetch coalescing", () => {
     // calls setToken(null), wiping the session the second call just set. The
     // request never has to settle to prove this -- only that it was not
     // coalesced, and that the second carries the new token.
-    const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>(() => {}));
     vi.stubGlobal("fetch", fetchMock);
 
     setToken("a");
