@@ -105,12 +105,11 @@ async def test_compose_styled_runs_at_most_render_slots_at_once(tmp_path, monkey
 
 
 def _spy_slot(monkeypatch, module):
-    state = {"held": 0, "entered": 0}
+    state = {"held": 0}
 
     @contextlib.asynccontextmanager
     async def spy():
         state["held"] += 1
-        state["entered"] += 1
         try:
             yield
         finally:

@@ -48,16 +48,30 @@ async def test_sections_are_listed_once_per_ttl(monkeypatch):
     server = _CountingServer([FakeSection("Movies", "/mnt/Media/Movies", [])])
     client = PlexClient(server=server, excluded_libraries=[])
 
-    await client.library_names()
-    await client.library_names()
+    client._library_sections()
+    client._library_sections()
     assert server.section_reads == 1
 
     clock[0] += client_module.SECTIONS_TTL_SECONDS - 1
-    await client.library_names()
+    client._library_sections()
     assert server.section_reads == 1
 
     clock[0] += 2
-    await client.library_names()
+    client._library_sections()
+    assert server.section_reads == 2
+
+
+async def test_library_names_never_answers_from_the_cache():
+    """Presence stamps a library absent when its name is missing here, so a
+    library added or renamed inside the TTL must not be missed."""
+    old = FakeSection("Movies", "/mnt/Media/Movies", [])
+    server = _CountingServer([old])
+    client = PlexClient(server=server, excluded_libraries=[])
+    assert await client.library_names() == {"Movies"}
+
+    server._sections = [old, FakeSection("New Movies", "/mnt/Media/New Movies", [])]
+
+    assert await client.library_names() == {"Movies", "New Movies"}
     assert server.section_reads == 2
 
 

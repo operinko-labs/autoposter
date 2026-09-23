@@ -450,7 +450,10 @@ class PlexClient:
         )
 
     def _library_names_sync(self) -> set[str]:
-        return {s.title for s in self._sections("movie", "show")}
+        # Always a fresh list: presence stamps every library missing from this
+        # answer absent, so a name added or renamed inside the cache's TTL
+        # must not be missed.
+        return {s.title for s in self._sections("movie", "show", refresh=True)}
 
     async def library_names(self) -> set[str]:
         # plexapi's sections() is a blocking HTTP call of up to several

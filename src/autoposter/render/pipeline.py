@@ -908,8 +908,8 @@ class ComposeResult:
     # FitResult). Carried out because render_artifact records it as a quality
     # fact and the value is otherwise computed inside the loop below and
     # dropped. None when no title was drawn at all. Optional with a default so
-    # every other caller of compose_styled -- api/testing.py, api/manual.py,
-    # the artwork modes -- is untouched by its arrival.
+    # the other caller of compose_styled -- api/testing.py -- is untouched by
+    # its arrival.
     point_size: int | None = None
 
 
@@ -1739,8 +1739,19 @@ def _publish(working: Path, target: Path, backup_root: Path | None, assets_root:
     full relative path — not just the immediate parent folder name — keeps two
     libraries that happen to share a folder name (e.g. "Movies" and "4K Movies"
     both holding "Dune (2024)") from clobbering each other's backup.
+
+    When the target already holds exactly these bytes, nothing is written --
+    neither the backup nor the target. A forced rerender (Re-run clears the
+    fingerprint) that reproduces the published art must not rotate the one
+    backup generation, or the rollback point is lost to a copy of itself.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
+    if (
+        target.exists()
+        and target.stat().st_size == working.stat().st_size
+        and target.read_bytes() == working.read_bytes()
+    ):
+        return
     if backup_root is not None and target.exists():
         relative = target.relative_to(Path(assets_root))
         backup = Path(backup_root) / relative
