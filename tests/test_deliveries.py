@@ -1719,6 +1719,35 @@ async def test_outcome_warnings_orders_a_miss_among_the_other_servers(session):
     assert sentence == "jellyfin: not found; plex: metadata failed (error: X)"
 
 
+async def test_outcome_warnings_never_names_a_background_row(session):
+    """A background is never delivered (``deliver`` and
+    ``compose_badged_bytes`` both return before a server is asked), so a row
+    for one is owed nothing -- yet the 2026-09-23 full pass finished 2,246
+    jobs ``done_with_warnings`` on ``plex: artwork pending``, every one of
+    them a background's row left by ``c1d2e3f4a5b6``'s backfill. The
+    poster's own unsettled row is still named: the guard is about the art
+    kind, not about the server."""
+    render = await _render(session, native="w8")
+    background = await pipeline._get_or_create_render(
+        session, await session.get(MediaItem, render.item_id), "background", "/a/b.jpg",
+    )
+    await session.commit()
+    # The backfill's exact shape: pending, and no horizon at all.
+    session.add(RenderDelivery(render_id=background.id, server="plex", status="pending"))
+    await session.commit()
+
+    assert await deliveries.outcome_warnings(session, render.item_id, ["plex"]) is None
+
+    await deliveries.record(
+        session, render.id, "plex", "pending", detail="connect: ConnectError", retry_in=60,
+    )
+    await session.commit()
+
+    assert await deliveries.outcome_warnings(session, render.item_id, ["plex"]) == (
+        "plex: artwork pending (connect: ConnectError)"
+    )
+
+
 async def test_outcome_warnings_ignores_a_miss_on_a_server_it_was_not_given(session):
     render = await _render(session, native="w7")
     await session.commit()

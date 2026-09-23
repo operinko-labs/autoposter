@@ -986,10 +986,22 @@ async def outcome_warnings(
     if not wanted:
         return None
     missed = set(misses) & wanted
+    # `art_kind != 'background'`: a background is never delivered to any
+    # server (`pipeline.deliver` and `compose_badged_bytes` both return
+    # before one is asked), so no row for one is ever owed anything, and no
+    # pass could ever settle one. `c1d2e3f4a5b6`'s backfill nonetheless gave
+    # 2,249 backgrounds a `pending` plex row, and the 2026-09-23 full pass
+    # finished 2,246 jobs `done_with_warnings` on `plex: artwork pending`
+    # for them. `d4b7e1a9c250` deleted those rows; this is what keeps a row
+    # that ever reappears from being reported as work nobody will do.
     artwork = (await session.execute(
         select(RenderDelivery.server, RenderDelivery.status, RenderDelivery.detail)
         .join(Render, Render.id == RenderDelivery.render_id)
-        .where(Render.item_id == item_id, RenderDelivery.status.in_(_UNSETTLED))
+        .where(
+            Render.item_id == item_id,
+            Render.art_kind != "background",
+            RenderDelivery.status.in_(_UNSETTLED),
+        )
     )).all()
     metadata = (await session.execute(
         select(MetadataWrite.server, MetadataWrite.status, MetadataWrite.detail)

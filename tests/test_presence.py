@@ -75,6 +75,36 @@ async def test_a_reappearing_library_re_arms_its_absent_rows(session):
     assert metadata.status == "pending" and metadata.attempts == 0
 
 
+async def test_presence_never_arms_a_background(session):
+    """A background is never delivered, so presence owes it no row either
+    way. The absent stamp is harmless on its own, but the re-arm turns it
+    into a ``pending`` row the retry pass then spends a resolve on, and that
+    every pass names as ``artwork pending`` until it does -- the shape
+    ``c1d2e3f4a5b6``'s backfill left on 2,249 backgrounds in production."""
+    item = await seed_media_item(session, "rk12", library="Photos", title="P")
+    poster = await _rendered(session, item)
+    background = await pipeline._get_or_create_render(session, item, "background", "/a/b.jpg")
+    background.status = "rendered"
+    await session.commit()
+
+    await presence.apply_presence(session, "jellyfin", {"Movies"})
+    await session.commit()
+    rows = (await session.execute(select(RenderDelivery.render_id))).scalars().all()
+    assert rows == [poster.id], "the poster is stamped absent, the background is not"
+
+    # A background's absent row that predates the guard is not re-armed.
+    session.add(RenderDelivery(render_id=background.id, server="jellyfin", status="absent"))
+    await session.commit()
+    outcome = await presence.apply_presence(session, "jellyfin", {"Movies", "Photos"})
+    await session.commit()
+
+    assert outcome["artwork"] == {"absent": 0, "rearmed": 1}
+    statuses = dict((await session.execute(
+        select(RenderDelivery.render_id, RenderDelivery.status)
+    )).all())
+    assert statuses == {poster.id: "pending", background.id: "absent"}
+
+
 async def test_a_stale_pending_row_for_an_absent_library_is_reclassified(session):
     """Spec §1's first-pass reclassification: the retry queue a mismatched
     map leaves behind is cleared rather than retried forever."""

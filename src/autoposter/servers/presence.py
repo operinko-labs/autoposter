@@ -98,6 +98,14 @@ async def apply_presence(
             where=MetadataWrite.status.notin_(_KEEP_METADATA),
         )
     )).rowcount
+    # Backgrounds are left out of BOTH artwork statements, `deliver`'s own
+    # first gate repeated here the way `catchup.start_catch_up` repeats it: a
+    # background is never delivered to any server, so it is owed no row in
+    # either direction. The absent stamp alone would be harmless, but the
+    # re-arm below turns it into a `pending` row with a horizon -- one the
+    # retry pass spends a resolve on only to write `skipped`, and one every
+    # pass in between names as `artwork pending`. That is the shape
+    # `c1d2e3f4a5b6`'s backfill left on 2,249 backgrounds (`d4b7e1a9c250`).
     artwork["absent"] = (await session.execute(
         insert(RenderDelivery)
         .from_select(
@@ -107,7 +115,7 @@ async def apply_presence(
                 literal(ABSENT_DETAIL), literal(now),
             )
             .join(MediaItem, MediaItem.id == Render.item_id)
-            .where(not_carried),
+            .where(not_carried, Render.art_kind != "background"),
         )
         .on_conflict_do_update(
             constraint="uq_delivery_render_server",
@@ -139,7 +147,7 @@ async def apply_presence(
                 RenderDelivery.render_id.in_(
                     select(Render.id)
                     .join(MediaItem, MediaItem.id == Render.item_id)
-                    .where(MediaItem.library.in_(carried))
+                    .where(MediaItem.library.in_(carried), Render.art_kind != "background")
                 ),
             )
             .values(status="pending", detail=None, next_attempt_at=now, attempts=0)
