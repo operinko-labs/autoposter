@@ -414,10 +414,15 @@ def _label_text(category_text: str, severity_text: str) -> str:
     return f"{category_text}: {severity_text}"
 
 
+# IMDb's four-value ``severity.text`` contract (see
+# ``providers/imdb_parental_guide.py``).
+_SEVERITIES = ("None", "Mild", "Moderate", "Severe")
+
+
 def parental_label_edits(
     item, categories: list[tuple[str, str, str]] | None, operations
 ) -> dict[str, object]:
-    """Row 85: the labels IMDb's parental-guide categories add to this item.
+    """Row 85: the labels IMDb's parental-guide categories put on this item.
 
     ``categories`` is ``None`` or ``[]`` for "nothing to label" (see
     ``providers/imdb_parental_guide.py``'s module docstring for every reason)
@@ -428,13 +433,17 @@ def parental_label_edits(
     ``"None"`` is skipped unless ``operations.parental_labels_include_none``
     says otherwise.
 
-    Additive only, like ``collections/reconcile.py``'s ``_apply_labels``
-    without ``label_sync``: this op has no removal semantics stated anywhere
-    in its row, so it never strips a label IMDb's guide no longer supports.
+    A changed severity SWAPS the label, never duplicates it (operator ruling
+    2026-09-23): a label spelling a category IMDb reported this time with
+    any other of the four severities is removed. That is the whole of what
+    this op owns -- a category missing from this answer, and every label not
+    in the ``"{category}: {severity}"`` shape, are left alone, so missing
+    data never strips anything. A severity that dropped to ``"None"`` (with
+    ``include_none`` off) loses its label and gains none.
 
     Dry-run by default, the same split row 87's verbs draw: with
-    ``parental_labels_apply`` off, a wanted-but-missing label is LOGGED and
-    no edit is produced.
+    ``parental_labels_apply`` off, the labels it would add and remove are
+    LOGGED and no edit is produced.
     """
     if not categories:
         return {}
@@ -444,20 +453,37 @@ def parental_label_edits(
         for _category_id, category_text, severity_text in categories
         if severity_text != "None" or include_none
     ]
-    if not wanted:
-        return {}
+    owned = {
+        _label_text(category_text, severity).casefold()
+        for _category_id, category_text, _severity_text in categories
+        for severity in _SEVERITIES
+    }
     stored = _current_labels(item)
     missing = [tag for tag in wanted if tag.casefold() not in stored]
-    if not missing:
+    kept = {tag.casefold() for tag in wanted}
+    stale = [tag for folded, tag in stored.items() if folded in owned and folded not in kept]
+    if not missing and not stale:
         return {}
     if not getattr(operations, "parental_labels_apply", False):
-        logger.info(
-            "plex: would add parental-guide label(s) %s to %s "
-            "(operations.parental_labels_apply is off)",
-            ", ".join(missing), _item_label(item),
-        )
+        if missing:
+            logger.info(
+                "plex: would add parental-guide label(s) %s to %s "
+                "(operations.parental_labels_apply is off)",
+                ", ".join(missing), _item_label(item),
+            )
+        if stale:
+            logger.info(
+                "plex: would remove parental-guide label(s) %s from %s "
+                "(operations.parental_labels_apply is off)",
+                ", ".join(stale), _item_label(item),
+            )
         return {}
-    return {"labels.added": missing}
+    edits: dict[str, object] = {}
+    if missing:
+        edits["labels.added"] = missing
+    if stale:
+        edits["labels.removed"] = stale
+    return edits
 
 
 def override_edits(item, overrides: dict) -> dict[str, object]:
@@ -803,14 +829,35 @@ def _item_label(item) -> str:
     return label
 
 
-def _apply_label_edits(item, additions: list[str]) -> None:
-    """Queue label additions via plexapi's documented ``addLabel`` mixin
-    method. Must be called after ``item.batchEdits()`` and before
-    ``item.saveEdits()``, alongside ``_apply_genre_edits`` -- additions only,
-    since ``parental_label_edits`` never produces a removal.
+def _apply_label_edits(item, additions: list[str], removals: list[str] = ()) -> None:
+    """Queue label changes via plexapi's documented ``addLabel``/
+    ``removeLabel`` mixin methods. Must be called after ``item.batchEdits()``
+    and before ``item.saveEdits()``, alongside ``_apply_genre_edits``.
+
+    ONE ``addLabel`` call for the whole list. plexapi's ``editTags`` writes
+    the cached labels plus the new ones as ``label[0..N].tag.tag``, so inside
+    a batch a call per tag rewrites the same slot ``N`` each time and only
+    the last tag reaches Plex -- an item missing three labels took three
+    passes.
+
+    That re-listing is also why the removed labels are taken out of the
+    cached list for the ``addLabel`` call: left in, the request removing a
+    stale severity would list it as kept too (the genre path's gotcha, see
+    ``_genre_plan``). The caller's object is put back as it was found.
     """
-    for tag in additions:
-        item.addLabel(tag)
+    if removals:
+        item.removeLabel(list(removals), locked=True)
+    if additions:
+        original_labels = list(getattr(item, "labels", None) or [])
+        removed = {tag.casefold() for tag in removals}
+        try:
+            item.labels = [
+                label for label in original_labels
+                if getattr(label, "tag", label).casefold() not in removed
+            ]
+            item.addLabel(additions)
+        finally:
+            item.labels = original_labels
 
 
 async def apply_facts(
@@ -844,7 +891,7 @@ async def apply_facts(
         if field_edits:
             item.edit(**field_edits)
         _apply_genre_edits(item, edits.get("genres.added", []), edits.get("genres.removed", []))
-        _apply_label_edits(item, edits.get("labels.added", []))
+        _apply_label_edits(item, edits.get("labels.added", []), edits.get("labels.removed", []))
         item.saveEdits()
 
     await asyncio.to_thread(_write)

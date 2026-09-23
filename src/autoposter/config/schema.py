@@ -1607,14 +1607,15 @@ class OperationsConfig(BaseModel):
         description=(
             "Fetch IMDb's parental-guide categories (violence, profanity, "
             "nudity, alcohol, frightening) for each in-scope item and report "
-            "which labels would be added. Off makes no request."
+            "which labels would be added or swapped. Off makes no request."
         ),
     )
     parental_labels_apply: bool = Field(
         default=False,
         description=(
-            "Actually write the fetched parental-guide labels to Plex; off "
-            "only reports which labels it would add."
+            "Actually write the fetched parental-guide labels to Plex, "
+            "swapping a category's label when IMDb's severity changes; off "
+            "only reports what it would change."
         ),
     )
     parental_labels_include_none: bool = Field(
