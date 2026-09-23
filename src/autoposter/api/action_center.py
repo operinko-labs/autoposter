@@ -36,6 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import Row
 
 from autoposter.actions import flags
 from autoposter.api.auth import require_session
@@ -884,7 +885,35 @@ async def _parked_by_latest_job(session) -> set[str]:
     return {dedupe_key for dedupe_key, state in rows if state == "parked"}
 
 
-def _dedupe_key_for(item: MediaItem, plex_ids: dict[int, str]) -> str:
+# The media_items columns a backfill walk reads per row: the inputs of
+# RenderIntent's dedupe key and nothing else (perf spec A7). Selecting these
+# instead of whole MediaItem objects keeps the walk -- over every unscored
+# rendered row, 8214 of 17264 in the report that sized it -- from
+# materialising full ORM items it only ever reads nine attributes of.
+_KEY_COLUMNS = (
+    MediaItem.id,
+    MediaItem.kind,
+    MediaItem.title,
+    MediaItem.tmdb_id,
+    MediaItem.tvdb_id,
+    MediaItem.imdb_id,
+    MediaItem.year,
+    MediaItem.season_number,
+    MediaItem.episode_number,
+)
+
+
+def _dedupe_key_for(item: MediaItem | Row) -> str:
+    """The queue key ``_reprocess_entries`` enqueues this item under -- from a
+    ``MediaItem`` or a result row carrying ``_KEY_COLUMNS``.
+
+    Built through ``RenderIntent`` rather than by restating its id-precedence
+    here, so the skip test and the enqueue cannot drift apart. No ``refs``:
+    ``RenderIntent.dedupe_key`` never reads them (its docstring says why), so
+    the Plex id this used to look up for every row changed only the cost --
+    two ``native_ids`` reads per backfill call. The enqueue itself still
+    passes refs, because the job payload carries them.
+    """
     return RenderIntent(
         kind=item.kind,
         title=item.title,
@@ -894,7 +923,6 @@ def _dedupe_key_for(item: MediaItem, plex_ids: dict[int, str]) -> str:
         year=item.year,
         season_number=item.season_number,
         episode_number=item.episode_number,
-        refs={"plex": plex_ids[item.id]} if item.id in plex_ids else {},
     ).dedupe_key
 
 
@@ -998,32 +1026,29 @@ async def _backfill_state(session, config) -> tuple[int, int, int, int]:
     blocked = 0
     queued = 0
     if parked_keys or pending_keys:
-        unscored_items = (
-            (
-                await session.execute(
-                    _undismissed(
-                        select(MediaItem)
-                        .join(Render, Render.item_id == MediaItem.id)
-                        .where(
-                            Render.status == "rendered",
-                            Render.quality_scored_at.is_(None),
-                            excluded_rows,
-                        )
+        # One row per unscored render (an item with two unscored art kinds
+        # appears twice, exactly as the whole-object select it replaces
+        # did), carrying only the key columns.
+        unscored_rows = (
+            await session.execute(
+                _undismissed(
+                    select(*_KEY_COLUMNS)
+                    .join(Render, Render.item_id == MediaItem.id)
+                    .where(
+                        Render.status == "rendered",
+                        Render.quality_scored_at.is_(None),
+                        excluded_rows,
                     )
                 )
             )
-            .scalars()
-            .all()
-        )
-        # One query for the whole pass's Plex ids, not one per item.
-        plex_ids = await native_ids(session, [item.id for item in unscored_items], "plex")
-        for item in unscored_items:
-            key = _dedupe_key_for(item, plex_ids)
+        ).all()
+        for row in unscored_rows:
+            key = _dedupe_key_for(row)
             if key in parked_keys:
                 blocked += 1
             elif key in pending_keys:
                 queued += 1
-        unscored_count = len(unscored_items)
+        unscored_count = len(unscored_rows)
     else:
         unscored_count = (
             await session.execute(
@@ -1108,7 +1133,7 @@ async def _select_backfill_batch(session, batch_size: int, config) -> list[Rende
         page = (
             await session.execute(
                 _undismissed(
-                    select(Render, MediaItem)
+                    select(Render, *_KEY_COLUMNS)
                     .join(MediaItem, MediaItem.id == Render.item_id)
                     .where(
                         Render.status == "rendered",
@@ -1124,15 +1149,15 @@ async def _select_backfill_batch(session, batch_size: int, config) -> list[Rende
         if not page:
             break
         after_id = page[-1][0].id
-        # One query per page's Plex ids, not one per item.
-        plex_ids = await native_ids(session, [item.id for _, item in page], "plex")
-        for render, item in page:
+        for row in page:
             if len(selected) >= batch_size:
                 break
-            key = _dedupe_key_for(item, plex_ids)
+            # row[0] is the Render (it is written to by the caller); the
+            # rest of the row is the item's key columns.
+            key = _dedupe_key_for(row)
             if key in pending_keys or key in parked_keys:
                 continue
-            selected.append(render)
+            selected.append(row[0])
 
     return selected
 

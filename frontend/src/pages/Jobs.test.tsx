@@ -59,12 +59,20 @@ function list(...jobs: unknown[]): Response {
   return json({ jobs, total: jobs.length });
 }
 
+/** Flip `document.hidden` and announce it, as a browser does when the tab is
+ * backgrounded or brought back. */
+function setHidden(hidden: boolean) {
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
 beforeEach(() => {
   setToken(null);
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  Reflect.deleteProperty(document, "hidden");
 });
 
 describe("Jobs", () => {
@@ -229,6 +237,34 @@ describe("Jobs", () => {
       await vi.advanceTimersByTimeAsync(15000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops polling while the tab is hidden and re-reads as soon as it is shown", async () => {
+    // Perf spec A8. Fresh Responses per call: a body can be read only once.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = vi.fn(() => Promise.resolve(list(PENDING)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Jobs />);
+    await screen.findByText("Dune");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      setHidden(true);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      setHidden(false);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
   });
 
   it("contains the table, wraps the error and groups the actions", async () => {

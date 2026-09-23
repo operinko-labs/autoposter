@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
@@ -59,6 +59,42 @@ function rawResponse(signal: AbortSignal, ...lines: string[]): Response {
     controller.error(new DOMException("aborted", "AbortError"));
   });
   return new Response(body, { status: 200, headers: { "Content-Type": "text/html" } });
+}
+
+/** Every value in ONE chunk -- the server's backlog replay as a real fetch
+ * body tends to deliver it -- and a push() for lines after it. */
+function batchedStream(signal: AbortSignal, values: unknown[]) {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+      controller.enqueue(
+        encoder.encode(values.map((value) => JSON.stringify(value) + "\n").join("")),
+      );
+    },
+  });
+  signal.addEventListener("abort", () => {
+    controller.error(new DOMException("aborted", "AbortError"));
+  });
+  return {
+    response: new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "application/x-ndjson" },
+    }),
+    push(value: unknown) {
+      controller.enqueue(encoder.encode(JSON.stringify(value) + "\n"));
+    },
+  };
+}
+
+function numbered(n: number) {
+  return {
+    ts: "2026-08-23T10:11:12+00:00",
+    level: "INFO",
+    logger: "autoposter.queue.worker",
+    message: `line ${n}`,
+  };
 }
 
 beforeEach(() => {
@@ -157,6 +193,41 @@ describe("Logs", () => {
     ).toBeInTheDocument();
     expect(document.body.textContent ?? "").not.toContain("edge.internal");
     await waitFor(() => expect(screen.getByText("reconnecting…")).toBeInTheDocument());
+    unmount();
+  });
+
+  it("keeps each surviving line's element when the 2000-line cap trims the oldest", async () => {
+    // Perf spec A5. Keyed by index, trimming one line off the front shifted
+    // every key by one: React rewrote all 2000 rows' text in place instead of
+    // removing one element. With a stable id per line, the element showing
+    // "line 1999" is the same element before and after the trim.
+    let push!: (value: unknown) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init: RequestInit) => {
+        const stream = batchedStream(
+          init.signal as AbortSignal,
+          Array.from({ length: 2000 }, (_, n) => numbered(n)),
+        );
+        push = stream.push;
+        return Promise.resolve(stream.response);
+      }),
+    );
+
+    const { unmount } = render(<Logs />);
+    const survivor = (await screen.findByText("line 1999", {}, { timeout: 5000 })).closest(
+      ".log-line",
+    );
+    expect(screen.getByText("2000 of 2000 lines")).toBeInTheDocument();
+
+    await act(async () => {
+      push(numbered(2000));
+    });
+
+    expect(await screen.findByText("line 2000")).toBeInTheDocument();
+    expect(screen.queryByText("line 0")).toBeNull();
+    expect(screen.getByText("2000 of 2000 lines")).toBeInTheDocument();
+    expect(screen.getByText("line 1999").closest(".log-line")).toBe(survivor);
     unmount();
   });
 });

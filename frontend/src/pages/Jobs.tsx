@@ -69,10 +69,36 @@ export function Jobs() {
     }
   }, []);
 
+  // No poll from a hidden tab (perf spec A8): nobody is reading the list, and
+  // a forgotten tab otherwise asks the server for it every five seconds all
+  // day. Coming back reads once straight away -- the list may be minutes
+  // stale -- and resumes the cadence.
   useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), POLL_MS);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setInterval> | undefined;
+
+    function start() {
+      if (timer !== undefined) return;
+      void load();
+      timer = setInterval(() => void load(), POLL_MS);
+    }
+
+    function stop() {
+      if (timer === undefined) return;
+      clearInterval(timer);
+      timer = undefined;
+    }
+
+    function onVisibilityChange() {
+      if (document.hidden) stop();
+      else start();
+    }
+
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stop();
+    };
   }, [load]);
 
   async function cancel(job: QueuedJob) {

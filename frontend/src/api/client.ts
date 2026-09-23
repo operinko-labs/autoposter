@@ -8,6 +8,10 @@
  *    session has a server-side expiry -- and handling it per page means one
  *    page eventually forgets and renders an error where a login form belongs.
  *    `apiFetch` notifies a single subscriber instead.
+ *  - Concurrent identical reads. Several panels of one page mount together
+ *    and each asks for `/api/config` (the Collections page's four); `apiFetch`
+ *    sends one request for them all while it is on the wire and nothing is
+ *    kept once it settles.
  *
  * The live pages (the log tail and the dashboard) stream through
  * `apiFetchNdjson` below rather than through a WebSocket, because the session
@@ -66,7 +70,56 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+/** GETs on the wire right now, keyed by session token and path. Nothing stays
+ * here once a request settles: this coalesces concurrent reads, it never
+ * caches (perf spec A6). Keying on the token too matters across a re-login: a
+ * GET started under an expired token must not be joined by one made after
+ * `setToken` moved on to a new session, or the old request's eventual 401
+ * would drop the new token out from under it. */
+const inFlight = new Map<string, Promise<unknown>>();
+
+/** Whether a call may share another caller's request: a plain GET that
+ * carries nothing of its own. A body, a signal, a cache mode, headers or any
+ * other option is something one caller asked for and another did not -- and
+ * headers join but are not part of the key below -- so it gets a request of
+ * its own. */
+function joinable(init: RequestInit): boolean {
+  return Object.keys(init).every(
+    (key) => key === "method" && (init.method ?? "GET").toUpperCase() === "GET",
+  );
+}
+
+/** The API's JSON, with the session attached and the 401 handled centrally.
+ *
+ * Concurrent GETs of one path share a single request. The response is parsed
+ * once and each caller receives its own `structuredClone`, so one panel
+ * editing what it was handed cannot change another's; a failure -- a 401
+ * included, which still drops the session once -- reaches every caller. The
+ * shared entry is removed in the request's own `finally`, before any caller
+ * sees the result, so a call made after it settles always goes to the
+ * network. */
+export function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!joinable(init)) return request<T>(path, init);
+  const key = `${token ?? ""}\u0000${path}`;
+  let shared = inFlight.get(key);
+  if (shared === undefined) {
+    const started: Promise<unknown> = request<unknown>(path, init).finally(() => {
+      if (inFlight.get(key) === started) inFlight.delete(key);
+    });
+    inFlight.set(key, started);
+    shared = started;
+  }
+  return shared.then((value) => structuredClone(value) as T);
+}
+
+/** Drop every shared request. For the test harness only (test-setup.ts): a
+ * stub one test left pending forever must not be joined by the next test's
+ * first read of the same path. */
+export function forgetInFlightRequests(): void {
+  inFlight.clear();
+}
+
+async function request<T>(path: string, init: RequestInit): Promise<T> {
   const headers = new Headers(init.headers);
   if (token !== null) headers.set("Authorization", `Bearer ${token}`);
   // FormData is the exception, and it has to be: a multipart body is
@@ -207,11 +260,17 @@ export async function apiPostForImage(
  * when the server ends the stream and rejects on a transport error, so the
  * caller owns reconnecting. The signal aborts the read mid-stream -- an
  * abort resolves rather than rejects, because the caller asked for it.
+ *
+ * `onChunk`, when given, runs once after each network read's complete lines
+ * have gone to `onValue`. A caller that renders can then make one state update
+ * per read instead of one per line -- the log tail's backlog replay is a
+ * thousand lines, often in one read.
  */
 export async function apiFetchNdjson(
   path: string,
   onValue: (value: unknown) => void,
   signal: AbortSignal,
+  onChunk?: () => void,
 ): Promise<void> {
   const headers = new Headers();
   if (token !== null) headers.set("Authorization", `Bearer ${token}`);
@@ -260,6 +319,7 @@ export async function apiFetchNdjson(
         }
         onValue(value);
       }
+      onChunk?.();
     }
   } catch (caught) {
     if (signal.aborted) return;

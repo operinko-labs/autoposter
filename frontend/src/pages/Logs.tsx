@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { apiFetchNdjson } from "../api/client";
 import { isLogLine, type LogLine } from "../api/types";
@@ -21,8 +21,16 @@ function matchesLevel(line: LogLine, level: string): boolean {
   return true; // INFO and above is everything the server logs.
 }
 
+/** A line as this page keeps it: the server's fields plus an id of the page's
+ * own, used as the React key. The index used to be the key, and trimming the
+ * oldest line at the cap shifted every index by one -- React then rewrote all
+ * 2000 rows in place instead of removing one element (perf spec A5). */
+interface KeyedLine extends LogLine {
+  id: number;
+}
+
 export function Logs() {
-  const [lines, setLines] = useState<LogLine[]>([]);
+  const [lines, setLines] = useState<KeyedLine[]>([]);
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [search, setSearch] = useState("");
   const [connected, setConnected] = useState(false);
@@ -34,6 +42,10 @@ export function Logs() {
   const follow = useRef(true);
   const viewport = useRef<HTMLDivElement | null>(null);
 
+  /** The next line's id. Never reset -- not even by a reconnect's clean slate
+   * -- so no two lines this page ever renders share a key. */
+  const nextId = useRef(0);
+
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -42,6 +54,19 @@ export function Logs() {
       // The server replays its whole buffer on connect, so a reconnect
       // starts from a clean slate rather than appending a duplicate backlog.
       setLines([]);
+      // Lines parsed from the current network read and not yet on screen.
+      // One state update per read, not per line: the per-line update copied
+      // the whole array for every line of a thousand-line backlog.
+      let pending: KeyedLine[] = [];
+      const flush = () => {
+        if (pending.length === 0) return;
+        const batch = pending;
+        pending = [];
+        setLines((prev) => {
+          const next = prev.concat(batch);
+          return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
+        });
+      };
       try {
         setConnected(true);
         setError(null);
@@ -49,16 +74,15 @@ export function Logs() {
           "/api/logs/stream",
           (value) => {
             if (!isLogLine(value)) return; // heartbeat
-            setLines((prev) => {
-              const next = prev.length >= MAX_LINES ? prev.slice(-MAX_LINES + 1) : prev.slice();
-              next.push(value);
-              return next;
-            });
+            pending.push({ ...value, id: nextId.current++ });
           },
           controller.signal,
+          flush,
         );
       } catch (caught) {
         if (controller.signal.aborted) return;
+        // Lines the failed read had already parsed still belong on screen.
+        flush();
         setError((caught as Error).message);
       }
       if (controller.signal.aborted) return;
@@ -88,12 +112,19 @@ export function Logs() {
   }
 
   const needle = search.trim().toLowerCase();
-  const visible = lines.filter(
-    (line) =>
-      matchesLevel(line, level) &&
-      (needle === "" ||
-        line.message.toLowerCase().includes(needle) ||
-        line.logger.toLowerCase().includes(needle)),
+  // Memoised: a scroll or an unrelated state change re-renders the page, and
+  // re-filtering (and re-lowercasing) up to 2000 lines is only needed when the
+  // lines, the level or the search text changed.
+  const visible = useMemo(
+    () =>
+      lines.filter(
+        (line) =>
+          matchesLevel(line, level) &&
+          (needle === "" ||
+            line.message.toLowerCase().includes(needle) ||
+            line.logger.toLowerCase().includes(needle)),
+      ),
+    [lines, level, needle],
   );
 
   return (
@@ -133,8 +164,8 @@ export function Logs() {
         {visible.length === 0 ? (
           <p className="empty">Nothing yet.</p>
         ) : (
-          visible.map((line, index) => (
-            <div key={index} className={`log-line level-${line.level.toLowerCase()}`}>
+          visible.map((line) => (
+            <div key={line.id} className={`log-line level-${line.level.toLowerCase()}`}>
               <span className="log-ts">{line.ts.slice(11, 19)}</span>
               <span className="log-level">{line.level}</span>
               <span className="log-logger">{line.logger}</span>

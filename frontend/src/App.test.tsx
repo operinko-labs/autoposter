@@ -1,7 +1,14 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+
+// Login and Setup are lazy chunks (perf spec A3). Loading them once here
+// keeps a cold module transform -- Setup pulls in every wizard pane -- out of
+// each test's one-second waitFor budget.
+beforeAll(async () => {
+  await Promise.all([import("./pages/Login"), import("./pages/Setup")]);
+}, 20000);
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -57,5 +64,56 @@ describe("the gate", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument(),
     );
+  });
+});
+
+describe("a page whose chunk fails to load", () => {
+  afterEach(() => {
+    vi.doUnmock("./pages/Dashboard");
+    vi.restoreAllMocks();
+  });
+
+  it("says so in the page area and keeps the sidebar", async () => {
+    // What a tab still running the previous deploy's entry meets: the page's
+    // chunk name no longer exists on the server, so its import() rejects.
+    // A fresh App (and a fresh module graph) so its React.lazy has not
+    // already resolved Dashboard from the real module.
+    vi.resetModules();
+    vi.doMock("./pages/Dashboard", () => {
+      throw new Error("Failed to fetch dynamically imported module");
+    });
+    // React logs the error the boundary catches; that is expected here.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    window.sessionStorage.setItem("autoposter.token", "a-session-token");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            jobs_by_state: {},
+            workers: 1,
+            processed_last_24h: 0,
+            scheduled_jobs: [],
+          }),
+        }) as Response,
+      ),
+    );
+    const { App: FreshApp } = await import("./App");
+
+    render(<FreshApp />);
+
+    expect(
+      await screen.findByText("This page failed to load.", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    // Without a boundary React 19 unmounts the whole root: the sidebar going
+    // with it is the blank tab this guards against.
+    expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
+
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });
