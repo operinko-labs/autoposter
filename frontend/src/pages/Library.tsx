@@ -20,6 +20,20 @@ const PAGE_SIZE = 48;
  * a search feels laggy and above a fast typist's inter-key interval. */
 const SEARCH_DEBOUNCE_MS = 300;
 
+/** The thumbnail width a tile asks the artwork endpoint for.
+ *
+ * Tiles are `minmax(150px, 1fr)` (library.css), a few hundred CSS pixels at
+ * most, while the stored render is a 2000x3000 poster of most of a megabyte.
+ * 320 covers a tile at 1x; a high-density screen (2x, and the 1.5x of many
+ * laptops) needs twice the pixels to stay sharp, so it gets 640. Read per
+ * fetch rather than once, so a window dragged to another monitor asks for
+ * the right size from then on. Only 320 and 640 exist: ThumbWidth in
+ * src/autoposter/api/thumbs.py, which answers any other width with a 422.
+ */
+function tileWidth(): 320 | 640 {
+  return window.devicePixelRatio >= 1.5 ? 640 : 320;
+}
+
 /** One tile's image, or the title in place of it.
  *
  * Two things are unusual here and both come from the same fact: the artwork
@@ -34,6 +48,7 @@ const SEARCH_DEBOUNCE_MS = 300;
  * item this project has not reached yet, and the tile simply reads as a title
  * card; the page-level error line stays reserved for the listing itself.
  */
+
 function Artwork({
   itemId,
   artKind,
@@ -68,7 +83,7 @@ function Artwork({
     let cancelled = false;
     let objectUrl: string | null = null;
 
-    apiFetchImage(`/api/items/${itemId}/artwork/${artKind}`)
+    apiFetchImage(`/api/items/${itemId}/artwork/${artKind}?w=${tileWidth()}`)
       .then((blob) => {
         if (blob === null || cancelled) return;
         objectUrl = URL.createObjectURL(blob);

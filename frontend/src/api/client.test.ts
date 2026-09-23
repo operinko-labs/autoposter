@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiFetch,
+  apiFetchImage,
   apiFetchNdjson,
   apiPostForImage,
   getToken,
@@ -155,6 +156,40 @@ describe("apiFetch", () => {
     const headers = fetchMock.mock.calls[0][1].headers as Headers;
     expect(headers.has("Content-Type")).toBe(false);
     expect(fetchMock.mock.calls[0][1].body).toBe(body);
+  });
+});
+
+describe("apiFetchImage", () => {
+  function imageResponse(): Response {
+    return new Response("image-bytes", {
+      status: 200,
+      headers: { "Content-Type": "image/jpeg" },
+    });
+  }
+
+  it("passes a cache mode through to fetch, alongside the bearer header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(imageResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    setToken("abc123");
+
+    const blob = await apiFetchImage("/api/items/3/artwork/poster?w=640", {
+      cache: "no-cache",
+    });
+
+    expect(await blob!.text()).toBe("image-bytes");
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/items/3/artwork/poster?w=640");
+    expect(init.cache).toBe("no-cache");
+    expect((init.headers as Headers).get("Authorization")).toBe("Bearer abc123");
+  });
+
+  it("leaves the cache mode to the browser when none is given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(imageResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiFetchImage("/api/items/3/artwork/poster?w=320");
+
+    expect(fetchMock.mock.calls[0][1].cache).toBeUndefined();
   });
 });
 

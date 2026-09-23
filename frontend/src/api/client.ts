@@ -113,12 +113,23 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
  * legitimately has no file, and that is the common case in a library still
  * being worked through -- not an error a caller should have to distinguish
  * from a real one.
+ *
+ * `init.cache` goes straight to `fetch`. The artwork endpoint marks its
+ * responses fresh for five minutes (`Cache-Control: private, max-age=300`,
+ * src/autoposter/api/artwork.py), which is right for the Library grid and
+ * wrong for the item page, where an operator who has just re-rendered must
+ * see the new file: that page passes `"no-cache"`, which revalidates every
+ * time, and the ETag makes an unchanged image a bodyless 304. Left out, the
+ * browser's default applies.
  */
-export async function apiFetchImage(path: string): Promise<Blob | null> {
+export async function apiFetchImage(
+  path: string,
+  init: { cache?: RequestCache } = {},
+): Promise<Blob | null> {
   const headers = new Headers();
   if (token !== null) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(path, { headers });
+  const response = await fetch(path, { ...init, headers });
 
   if (response.status === 401) {
     // Same contract as apiFetch: the session is dead, so drop it and let the

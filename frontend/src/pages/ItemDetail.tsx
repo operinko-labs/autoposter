@@ -64,7 +64,10 @@ type ArtworkState =
  * on. So `apiFetchImage` fetches with the header and this turns the blob into
  * a URL the <img> can use.
  */
-function useArtwork(path: string): {
+function useArtwork(
+  path: string,
+  cache?: RequestCache,
+): {
   state: ArtworkState;
   onImageError: () => void;
 } {
@@ -75,7 +78,7 @@ function useArtwork(path: string): {
     let objectUrl: string | null = null;
     setState({ status: "loading" });
 
-    apiFetchImage(path)
+    apiFetchImage(path, { cache })
       .then((blob) => {
         // Before createObjectURL, never after: a URL created for an unmounted
         // pane has no one left to revoke it and leaks the decoded image for
@@ -101,7 +104,7 @@ function useArtwork(path: string): {
       cancelled = true;
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
     };
-  }, [path]);
+  }, [path, cache]);
 
   /** Corrupt or truncated bytes decode to nothing, and an <img> left pointing
    * at them paints the browser's broken-image icon -- the exact thing the
@@ -122,9 +125,21 @@ function useArtwork(path: string): {
   return { state, onImageError };
 }
 
-/** The image this project rendered and holds on disk. */
+/** The image this project rendered and holds on disk.
+ *
+ * At w=640 rather than full size: the pane is a few hundred CSS pixels wide
+ * and the stored poster is 2000x3000, most of a megabyte. `no-cache` because
+ * the artwork endpoint lets a browser reuse a copy for five minutes without
+ * asking (Cache-Control in src/autoposter/api/artwork.py). That suits the
+ * Library grid, but this pane is where an operator looks at a render they have
+ * just made, so it revalidates every time, and an unchanged image comes back
+ * as a bodyless 304. The live pane beside it is untouched.
+ */
 function BasePane({ itemId, artKind }: { itemId: number; artKind: string }) {
-  const { state, onImageError } = useArtwork(`/api/items/${itemId}/artwork/${artKind}`);
+  const { state, onImageError } = useArtwork(
+    `/api/items/${itemId}/artwork/${artKind}?w=640`,
+    "no-cache",
+  );
 
   return (
     <figure className="art-pane" data-ratio={ratioFor(artKind)}>
