@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import hashlib
 import logging
 import os
@@ -31,7 +32,7 @@ from autoposter import deliveries
 from autoposter.db.models import (
     ItemFacts, MediaItem, MediaItemServerRef, MetadataWrite, Render, RenderDelivery, Run,
 )
-from autoposter.db.refs import item_id_for
+from autoposter.db.refs import item_id_for, native_id_by_external_ids
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
@@ -2818,6 +2819,23 @@ async def process_item(
     # delivery, never a held job. Only when NO server resolves does the old
     # ItemNotFound/PathMismatch ladder fire, so the worker defers or parks
     # exactly as before.
+    # Perf workstream B3. A webhook intent carries no refs (Sonarr and Radarr
+    # know nothing about any server), so the Plex resolve below walked every
+    # section with `getGuid` -- a search, a match and a second search per
+    # section per guid -- even for an item resolved many times before. When
+    # exactly one stored item answers to these external ids, its rating key
+    # goes on the intent as the same HINT the full pass and reprocess carry
+    # (`RenderIntent.refs`): `PlexClient._fetch_by_rating_key_sync` checks
+    # type, library and numbers or guids, and anything it refuses -- a
+    # renumbered key, NotFound -- falls back to exactly today's search.
+    if not intent.refs and "plex" in servers:
+        stored = await native_id_by_external_ids(
+            session, "plex", kind=intent.kind, tmdb_id=intent.tmdb_id,
+            tvdb_id=intent.tvdb_id, season_number=intent.season_number,
+            episode_number=intent.episode_number,
+        )
+        if stored is not None:
+            intent = dataclasses.replace(intent, refs={"plex": stored})
     # Spec §1, read ONCE and before any resolve: a server whose row for this
     # item is `absent` does not carry its library, so it is asked nothing --
     # not resolved, not delivered to, not written to. The guards in
@@ -2828,8 +2846,9 @@ async def process_item(
     # row cannot be found before it resolves: the full pass, reprocess and
     # discovery all build their intents from a `media_items` row (see
     # `RenderIntent.refs`), and those are the passes whose cost this is. A
-    # webhook intent carries none; its item's set is read below, once the
-    # identity is established, exactly as before.
+    # webhook intent carries only the B3 hint above, when one stored item
+    # matched; without it, its item's set is read below, once the identity is
+    # established, exactly as before.
     known_item_id = None
     for name, native_id in intent.refs.items():
         known_item_id = await item_id_for(session, name, native_id)
@@ -3124,7 +3143,8 @@ async def process_item(
         #
         # `absent_servers` is subtracted HERE and not left to the resolve
         # loop's own `continue`: that loop reads the set keyed off the refs
-        # the INTENT carries, and a webhook intent carries none -- so an
+        # the INTENT carries, and a webhook intent without the B3 hint carries
+        # none -- so an
         # absent server is asked anyway on those passes, misses, and would be
         # reported as not found. By the time this block runs the set has been
         # re-read for the item itself, which is the honest one.
