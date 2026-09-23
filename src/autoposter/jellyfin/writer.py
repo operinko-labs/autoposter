@@ -372,5 +372,14 @@ async def apply_facts(
         return {}
 
     await api.update_item(ref.native_id, dto)  # capture -> "/Items/{itemId}" -> post (UpdateItem)
-    logger.info("jellyfin: wrote %d field(s) to %s", len(written), ref.native_id)
+    # Names, not a count, for the reason plex/writer.py's _edited_fields gives:
+    # a count cannot say which field a full pass keeps rewriting.
+    logger.info(
+        "jellyfin: wrote %s to %s",
+        ", ".join(
+            f"{field} ({how})" if how in ("locked", "unlocked") else field
+            for field, how in sorted(written.items())
+        ),
+        ref.native_id,
+    )
     return written
