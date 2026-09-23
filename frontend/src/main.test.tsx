@@ -70,7 +70,12 @@ it("mounts the application at #root, not a placeholder", async () => {
 
   // No session, so the gate renders the login form. Any of this is only in
   // the document if main.tsx mounted App.
-  expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  // Login is its own lazy chunk (perf spec A3), and beforeEach's
+  // vi.resetModules() makes this file load it cold every time -- hence the
+  // explicit budget rather than findBy's one-second default.
+  expect(
+    await screen.findByLabelText("Password", {}, { timeout: 5000 }),
+  ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
 
   await act(async () => root.unmount());
@@ -108,7 +113,42 @@ it("mounts the routed shell when a session already exists", async () => {
   expect(screen.getByRole("link", { name: "Library" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Failures" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+  // The sidebar is part of the entry; the page is a lazy chunk.
+  expect(
+    await screen.findByRole("heading", { name: "Dashboard" }, { timeout: 5000 }),
+  ).toBeInTheDocument();
+
+  await act(async () => root.unmount());
+});
+
+it("reloads once for a chunk a deploy removed, never in a loop", async () => {
+  const reload = vi.fn();
+  vi.stubGlobal("location", { ...window.location, reload });
+  const root = await mountMain();
+
+  // What Vite dispatches when a lazy chunk's import fails.
+  const chunkError = () => {
+    const event = new Event("vite:preloadError", { cancelable: true });
+    window.dispatchEvent(event);
+    return event;
+  };
+
+  // Handled: the reload fetches the new entry, whose chunk names exist.
+  expect(chunkError().defaultPrevented).toBe(true);
+  expect(reload).toHaveBeenCalledTimes(1);
+
+  // A second failure inside the guard window -- the reload landed and the
+  // chunk is still missing -- is left to reject into the page's error
+  // boundary rather than reloading again.
+  expect(chunkError().defaultPrevented).toBe(false);
+  expect(reload).toHaveBeenCalledTimes(1);
+
+  // Once the window has passed (a later deploy in the same tab), it reloads
+  // again. A minute back rather than just over ten seconds, so a container
+  // clock that steps backwards a few seconds cannot make this flaky.
+  window.sessionStorage.setItem("autoposter.chunkReloadAt", String(Date.now() - 60_000));
+  expect(chunkError().defaultPrevented).toBe(true);
+  expect(reload).toHaveBeenCalledTimes(2);
 
   await act(async () => root.unmount());
 });

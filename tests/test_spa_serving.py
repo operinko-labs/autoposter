@@ -386,3 +386,36 @@ def test_the_dockerfile_ships_the_built_spa():
         "npm install would ignore package-lock.json and rewrite it, defeating "
         "the point of a committed lockfile"
     )
+
+
+# --- cache headers (perf spec A2) ---
+
+
+async def test_built_assets_are_cached_as_immutable(client_with_spa):
+    """Vite names every file under /assets by its content hash, so the bytes
+    behind one URL never change: a browser may keep it for a year without
+    even revalidating."""
+    response = await client_with_spa.get("/assets/app.js")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+async def test_a_missing_asset_is_not_cached_as_immutable(client_with_spa):
+    """A 404 held for a year would outlive the deploy that fixes it."""
+    response = await client_with_spa.get("/assets/not-built.js")
+
+    assert response.status_code == 404
+    assert "immutable" not in response.headers.get("cache-control", "")
+
+
+@pytest.mark.parametrize("path", ["/", "/failures"])
+async def test_the_shell_is_revalidated_on_every_load(client_with_spa, path):
+    """index.html names the hashed files of the build that produced it. A
+    cached shell from the previous deploy would ask the new pod for files it
+    no longer has -- a blank page until the cache expired."""
+    response = await client_with_spa.get(path)
+
+    assert response.status_code == 200
+    assert INDEX_MARKER in response.text
+    assert response.headers["cache-control"] == "no-cache"

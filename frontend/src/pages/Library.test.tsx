@@ -48,7 +48,11 @@ const ARTWORK: Record<string, string> = {
   "3/poster": "jpeg-bytes-for-ghostbusters",
 };
 
-const ARTWORK_PATH = /^\/api\/items\/(\d+)\/artwork\/([a-z_]+)$/;
+/** A tile's artwork request. `?w=` is required: a tile asking for the full
+ * 2000x3000 render is the thing this suite exists to catch, so such a request
+ * falls through to the stub's "unexpected path" throw. 320/640 mirror
+ * ThumbWidth in src/autoposter/api/thumbs.py. */
+const ARTWORK_PATH = /^\/api\/items\/(\d+)\/artwork\/([a-z_]+)\?w=(320|640)$/;
 
 /** Must equal SEARCH_DEBOUNCE_MS in Library.tsx. Held here as a number the
  * tests do arithmetic on -- one tick short of it must still be silent. */
@@ -62,7 +66,9 @@ function json(body: unknown, status = 200): Response {
 }
 
 function stubFetch() {
-  const fetchMock = vi.fn(async (path: string) => {
+  // `init` is unread here but part of the signature on purpose: it is how a
+  // test reaches the cache mode a call was made with.
+  const fetchMock = vi.fn(async (path: string, _init?: RequestInit) => {
     if (path === "/api/items/filters") return json(FILTERS);
     if (path.startsWith("/api/items?")) return json(ITEMS);
     const artwork = ARTWORK_PATH.exec(path);
@@ -179,8 +185,8 @@ describe("Library", () => {
     expect(tileFor("Arcane")).toHaveAttribute("href", "/items/7");
 
     expect(pathsMatching(fetchMock, (path) => ARTWORK_PATH.test(path))).toEqual([
-      "/api/items/3/artwork/poster",
-      "/api/items/7/artwork/poster",
+      "/api/items/3/artwork/poster?w=320",
+      "/api/items/7/artwork/poster?w=320",
     ]);
 
     // Not "the src equals what the stub returned" -- that would only prove the
@@ -192,6 +198,39 @@ describe("Library", () => {
     const blob = objectUrls.get(image!.getAttribute("src") ?? "");
     expect(blob).toBeDefined();
     expect(await blob!.text()).toBe("jpeg-bytes-for-ghostbusters");
+  });
+
+  it.each([
+    [1, "320"],
+    [1.25, "320"],
+    [1.5, "640"],
+    [2, "640"],
+  ])(
+    "asks for a thumbnail sized for a devicePixelRatio of %s (w=%s)",
+    async (ratio, width) => {
+      // Restored after each test by `unstubGlobals: true` in vite.config.ts.
+      vi.stubGlobal("devicePixelRatio", ratio);
+      const fetchMock = stubFetch();
+
+      await renderLibrary();
+
+      expect(pathsMatching(fetchMock, (path) => ARTWORK_PATH.test(path))).toEqual([
+        `/api/items/3/artwork/poster?w=${width}`,
+        `/api/items/7/artwork/poster?w=${width}`,
+      ]);
+    },
+  );
+
+  it("leaves tile caching to the browser rather than forcing a revalidation", async () => {
+    // The server marks artwork fresh for five minutes; the grid is where that
+    // is meant to save requests. Only the item page opts out.
+    const fetchMock = stubFetch();
+
+    await renderLibrary();
+
+    const artworkCalls = fetchMock.mock.calls.filter(([path]) => ARTWORK_PATH.test(path));
+    expect(artworkCalls).toHaveLength(2);
+    for (const [, init] of artworkCalls) expect(init?.cache).toBeUndefined();
   });
 
   it("captions each tile with one chip per art kind, not a single status", async () => {
@@ -447,7 +486,10 @@ describe("Library", () => {
     // Both tiles are watching -- so this is the gate holding the requests back,
     // not the observers having failed to register at all.
     expect(observed).toHaveLength(2);
-    expect(pathsMatching(fetchMock, (path) => ARTWORK_PATH.test(path))).toEqual([]);
+    // path.includes rather than ARTWORK_PATH: the latter now requires `?w=`,
+    // so a premature request missing it would slip past ARTWORK_PATH and make
+    // this assertion vacuous.
+    expect(pathsMatching(fetchMock, (path) => path.includes("/artwork/"))).toEqual([]);
   });
 
   it("reports a failed listing instead of an endless spinner", async () => {

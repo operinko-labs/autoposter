@@ -1102,12 +1102,14 @@ async def run_scheduled_job_now(
     carries the scheduler's poll interval so the UI can say when it will be
     picked up rather than pretending the work is done.
 
-    Pressing this while the job is ALREADY running starts a second copy:
-    the claim is not a lease (claim_due's own note), so nulling the column
-    mid-run makes the row due again on the next poll. The jobs are
-    reconciliation passes, so a double run wastes work rather than
-    corrupting anything, and the UI is told to present the button
-    accordingly -- but do not read this endpoint as idempotent.
+    Pressing this while the job is ALREADY running queues one more run, not
+    a concurrent one, in this process: the scheduler's lanes (perf C3) never
+    start a job that is still running -- a light job is held by the in-process
+    running set, a heavy one by its lane running jobs one at a time -- so the
+    nulled column makes the row due again and the job runs once more after
+    the current run finishes. The claim is still not a lease (claim_due's own
+    note), so a second REPLICA could start a copy; the deployment pins one.
+    Do not read this endpoint as idempotent.
 
     An INSERT ... ON CONFLICT rather than a read-then-write: the row may not
     exist yet -- the scheduler creates it on its first claim -- and an

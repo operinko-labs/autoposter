@@ -6,6 +6,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI
 
+from autoposter.api.compression import install_compression
 from autoposter.api.spa import mount_spa, spa_dist
 from autoposter.app import create_app
 from autoposter.boot import StoredDocument, stored_config_document
@@ -218,6 +219,13 @@ def build() -> FastAPI:
     # what keeps the lifespan's overrides merge over the same file, including
     # when the suite repoints CONFIG_PATH.
     app.state.config_path = CONFIG_PATH
+    # Perf spec A1. Production wiring, like the SPA mount below and for the
+    # same reason: create_app's applications -- every test's -- keep
+    # answering with exactly the bytes and headers the suite was written
+    # against. Its position against mount_spa does not matter (middleware
+    # wraps the whole application); it only has to precede the first request,
+    # which build() returning guarantees.
+    install_compression(app)
     # Last, and here rather than in create_app(): the SPA's catch-all matches
     # whatever no router claimed, so anything mounted afterwards is
     # unreachable. Keeping it out of the factory also keeps it out of the test

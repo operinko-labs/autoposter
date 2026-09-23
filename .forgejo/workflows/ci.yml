@@ -42,7 +42,7 @@ env:
   # renovate: datasource=docker depName=python versioning=docker
   PYTHON_VERSION: "3.14.7"
   # renovate: datasource=docker depName=node versioning=docker
-  NODE_VERSION: "26.8.2"
+  NODE_VERSION: "26.10.0"
   # renovate: datasource=docker depName=postgres versioning=docker
   POSTGRES_VERSION: "18.6"
   IMAGE_NAME: autoposter
@@ -663,18 +663,20 @@ jobs:
         # Asserting index.html exists on disk is not enough: `mount_spa` also
         # has to be reachable, and a bundle whose JS is missing is a blank page
         # behind a 200. So this drives the real ASGI app and follows the shell
-        # to the script it references, checking the content type as
-        # tests/test_attribution_present.py does -- a path the /assets mount
-        # does not claim comes back as HTML with a 200, which asserting on the
-        # status code alone would not catch.
+        # to every script a browser can reach from it -- the entry, then each
+        # lazy page chunk its import() references name, and theirs in turn --
+        # checking each one's content type as tests/test_attribution_present.py
+        # does: a path the /assets mount does not claim comes back as HTML
+        # with a 200, which asserting on the status code alone would not catch.
         #
         # TMDB's required notice is checked here as well as in
         # tests/test_attribution_present.py, because that suite reads the
         # `frontend/dist` the *runner* built at "Build the frontend" -- same
         # source and same pinned Node, so equivalent in practice, but still one
-        # artefact standing in for another. This job already has each script's
-        # body in hand, so proving the licence condition against the bundle
-        # that ships costs one assertion.
+        # artefact standing in for another. This job already has every
+        # reachable chunk's body in hand -- the notice lives in a lazy one,
+        # not the entry -- so proving the licence condition against the
+        # bundle that ships costs one assertion.
         run: |
           docker run --rm ${{ env.CI_IMAGE }} python -c "
           import asyncio, os, re
@@ -703,8 +705,20 @@ jobs:
                   assert index.headers['content-type'].startswith('text/html'), index.headers
                   scripts = re.findall(r'[\"\'](/assets/[^\"\']+\.js)[\"\']', index.text)
                   assert scripts, f'the shell references no bundled script: {index.text!r}'
+                  # Every page is a lazy chunk (perf spec A3), reachable only
+                  # through the import() references inside scripts already
+                  # served. So this walks them -- limited to the chunk names
+                  # dist/assets really holds, so a library string that merely
+                  # looks like a file name is not fetched -- and the notice
+                  # below is looked for in everything a browser can load.
+                  emitted = {p.name for p in (dist / 'assets').glob('*.js')}
                   served = [index.text]
-                  for path in scripts:
+                  pending, seen = list(scripts), set()
+                  while pending:
+                      path = pending.pop()
+                      if path in seen:
+                          continue
+                      seen.add(path)
                       asset = await client.get(path)
                       assert asset.status_code == 200, f'{path}: {asset.status_code}'
                       content_type = asset.headers['content-type']
@@ -712,13 +726,16 @@ jobs:
                           f'{path} was answered with the SPA shell, not the file'
                       )
                       served.append(asset.text)
+                      for name in re.findall(r'[A-Za-z0-9_.-]+[.]js', asset.text):
+                          if name in emitted:
+                              pending.append('/assets/' + name)
                   assert any(notice in text for text in served), (
                       'the image serves a bundle without TMDB required notice, '
                       'which their terms make a condition of using their API. '
                       'Either the Settings page was reworded or nothing routes '
                       'to it in the bundle this image ships'
                   )
-                  print('SPA served from', dist, 'with', len(scripts), 'script(s)')
+                  print('SPA served from', dist, 'with', len(seen), 'script(s) reachable from the shell')
 
           asyncio.run(main())
           "

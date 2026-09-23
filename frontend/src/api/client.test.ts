@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiFetch,
+  apiFetchImage,
   apiFetchNdjson,
   apiPostForImage,
   getToken,
@@ -158,6 +159,40 @@ describe("apiFetch", () => {
   });
 });
 
+describe("apiFetchImage", () => {
+  function imageResponse(): Response {
+    return new Response("image-bytes", {
+      status: 200,
+      headers: { "Content-Type": "image/jpeg" },
+    });
+  }
+
+  it("passes a cache mode through to fetch, alongside the bearer header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(imageResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    setToken("abc123");
+
+    const blob = await apiFetchImage("/api/items/3/artwork/poster?w=640", {
+      cache: "no-cache",
+    });
+
+    expect(await blob!.text()).toBe("image-bytes");
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/items/3/artwork/poster?w=640");
+    expect(init.cache).toBe("no-cache");
+    expect((init.headers as Headers).get("Authorization")).toBe("Bearer abc123");
+  });
+
+  it("leaves the cache mode to the browser when none is given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(imageResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiFetchImage("/api/items/3/artwork/poster?w=320");
+
+    expect(fetchMock.mock.calls[0][1].cache).toBeUndefined();
+  });
+});
+
 describe("apiPostForImage", () => {
   it("posts the body as JSON with the bearer header", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
@@ -307,6 +342,32 @@ describe("apiFetchNdjson", () => {
     expect(onValue.mock.calls).toEqual([[{ a: 1 }], [{ b: 2 }], [{ c: 3 }]]);
   });
 
+  it("marks the end of each read, after the values that read carried", async () => {
+    const { reader, push, end } = controllableReader();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ status: 200, ok: true, body: { getReader: () => reader } }),
+    );
+    const events: unknown[] = [];
+
+    const promise = apiFetchNdjson(
+      "/api/logs/stream",
+      (value) => events.push(value),
+      new AbortController().signal,
+      () => events.push("end of read"),
+    );
+    await flush();
+
+    push('{"a":1}\n{"b":2}\n{"c":');
+    await flush();
+    push("3}\n");
+    await flush();
+    end();
+    await promise;
+
+    expect(events).toEqual([{ a: 1 }, { b: 2 }, "end of read", { c: 3 }, "end of read"]);
+  });
+
   it("clears the session, notifies, and throws ApiError(401) on a 401", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 401, ok: false }));
     const onUnauthorized = vi.fn();
@@ -367,5 +428,108 @@ describe("apiFetchNdjson", () => {
     });
     expect(onValue).not.toHaveBeenCalled();
     expect(reader.releaseLock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("apiFetch coalescing", () => {
+  it("sends concurrent GETs of one path as one request, each caller its own copy", async () => {
+    // A fresh Response per call, so the un-coalesced code fails on the count
+    // below rather than hanging on a body read twice.
+    const fetchMock = vi.fn(async () => jsonResponse({ workers: 5, libraries: ["Movies"] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // All four are issued before any of them can settle: that is "concurrent".
+    const results = await Promise.all(
+      [1, 2, 3, 4].map(() => apiFetch<{ workers: number; libraries: string[] }>("/api/config")),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    for (const result of results) {
+      expect(result).toEqual({ workers: 5, libraries: ["Movies"] });
+    }
+    // structuredClone per caller: one panel mutating its copy cannot reach
+    // another panel's.
+    expect(new Set(results).size).toBe(4);
+    results[0].libraries.push("TV Shows");
+    expect(results[1].libraries).toEqual(["Movies"]);
+  });
+
+  it("fetches again once the shared request has settled", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ workers: 5 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiFetch("/api/config");
+    await apiFetch("/api/config");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("hands a failure to every caller", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ detail: "the database is unreachable" }, 500),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const outcomes = await Promise.allSettled(
+      [1, 2, 3, 4].map(() => apiFetch("/api/config")),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    for (const outcome of outcomes) {
+      expect(outcome.status).toBe("rejected");
+      const reason = (outcome as PromiseRejectedResult).reason;
+      expect(reason).toBeInstanceOf(ApiError);
+      expect(reason.message).toBe("the database is unreachable");
+    }
+  });
+
+  it("fails every caller on a 401 and drops the session once", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}, 401));
+    vi.stubGlobal("fetch", fetchMock);
+    const onUnauthorized = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setToken("expired");
+
+    const outcomes = await Promise.allSettled([apiFetch("/api/status"), apiFetch("/api/status")]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(["rejected", "rejected"]);
+    expect(getToken()).toBeNull();
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  it("never joins a write, a request with its own options, or another path", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await Promise.all([
+      apiFetch("/api/config/overrides", { method: "PUT", body: "{}" }),
+      apiFetch("/api/config/overrides", { method: "PUT", body: "{}" }),
+      apiFetch("/api/config", { cache: "no-cache" }),
+      apiFetch("/api/config", { cache: "no-cache" }),
+      apiFetch("/api/status"),
+      apiFetch("/api/events"),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("does not join a GET across a re-login", () => {
+    // A GET started under the old token must not be joined by one made after
+    // a fresh setToken: joining it would mean the OLD request's eventual 401
+    // calls setToken(null), wiping the session the second call just set. The
+    // request never has to settle to prove this -- only that it was not
+    // coalesced, and that the second carries the new token.
+    const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    setToken("a");
+    void apiFetch("/api/config");
+    setToken("b");
+    void apiFetch("/api/config");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const secondHeaders = fetchMock.mock.calls[1][1].headers as Headers;
+    expect(secondHeaders.get("Authorization")).toBe("Bearer b");
   });
 });

@@ -1,4 +1,7 @@
 import "@testing-library/jest-dom/vitest";
+import { afterEach } from "vitest";
+
+import { forgetInFlightRequests } from "./api/client";
 
 /** No test may make a real outbound request.
  *
@@ -20,3 +23,12 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
       "Stub it with vi.stubGlobal(\"fetch\", ...).",
   );
 }) as typeof fetch;
+
+/** `apiFetch` shares one request among concurrent GETs of a path until it
+ * settles. A test that leaves a stubbed GET pending forever -- Sidebar.test's
+ * default does, for every test -- would otherwise hand that promise to the
+ * next test's first read of the same path, whose own stub would then never be
+ * called. */
+afterEach(() => {
+  forgetInFlightRequests();
+});

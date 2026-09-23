@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setToken } from "../api/client";
 import type { ScheduledRun } from "../api/types";
@@ -65,6 +65,40 @@ function snapshotWithPending(pending: number) {
     events: EVENTS.events,
   };
 }
+
+/** Two recorded runs, newest first as /api/stats/runs answers: enough for
+ * RunCharts to draw both charts, and so to run its per-bar label formatter. */
+const RUNS = {
+  generated_at: "2026-09-05T12:40:00Z",
+  runs: [
+    {
+      id: 2,
+      kind: "full_pass",
+      name: "full_pass",
+      started_at: "2026-09-05T09:00:00Z",
+      finished_at: "2026-09-05T12:31:04Z",
+      status: "ok",
+      duration_seconds: 12664,
+      rendered: { poster: 12, season_poster: 0, background: 3, title_card: 0 },
+      processed: 15940,
+      failed: 12,
+      deferred: 8,
+    },
+    {
+      id: 1,
+      kind: "scheduled",
+      name: "plex_prune",
+      started_at: "2026-09-05T08:00:00Z",
+      finished_at: "2026-09-05T08:00:42Z",
+      status: "ok",
+      duration_seconds: 42,
+      rendered: null,
+      processed: null,
+      failed: null,
+      deferred: null,
+    },
+  ],
+};
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -155,12 +189,28 @@ function snapshotWithScheduledJobs(jobs: ScheduledRun[]) {
   };
 }
 
+/** Flip `document.hidden` and announce it, as a browser does when the tab is
+ * backgrounded or brought back. An own property shadows jsdom's getter;
+ * afterEach deletes it again. */
+function setHidden(hidden: boolean) {
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
+// RunCharts is a lazy chunk inside the page (perf spec A3) and pulls in
+// recharts. Loaded once here so no single test's findBy budget pays for the
+// cold transform.
+beforeAll(async () => {
+  await import("./RunCharts");
+}, 20000);
+
 beforeEach(() => {
   setToken(null);
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  Reflect.deleteProperty(document, "hidden");
 });
 
 describe("Dashboard", () => {
@@ -432,6 +482,9 @@ describe("Dashboard", () => {
 
     render(<Dashboard />);
     await screen.findByText("collections_reconcile");
+    // The chart's own mount fetch has happened (and answered) once its empty
+    // state is on screen; it now waits for a lazy chunk first.
+    await screen.findByText("No runs recorded yet.");
     expect(statValue("pending")).toBe("3");
 
     await act(async () => {
@@ -446,6 +499,43 @@ describe("Dashboard", () => {
     expect(fetchMock.mock.calls.map(([path]) => path).sort()).toEqual(
       ["/api/dashboard/stream", "/api/stats/runs?limit=50"].sort(),
     );
+  });
+
+  it("leaves the run charts alone when a snapshot does not change run history", async () => {
+    // Perf spec A4. Every stream tick re-rendered the page and, with it,
+    // RunCharts -- which re-derived both series, one toLocaleTimeString per
+    // bar, from a history that had not moved. The formatter is the probe: it
+    // runs only when the series are derived, and nothing else here calls it.
+    let push!: (value: unknown) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        if (path === "/api/dashboard/stream") {
+          const stream = ndjsonStream(init!.signal as AbortSignal, SNAPSHOT);
+          push = stream.push;
+          return stream.response;
+        }
+        if (path.startsWith("/api/stats/runs")) return json(RUNS);
+        return json({ detail: `nothing declared for ${path}` }, 500);
+      }),
+    );
+    const labels = vi.spyOn(Date.prototype, "toLocaleTimeString");
+    try {
+      render(<Dashboard />);
+      await screen.findByText("Run duration");
+      await screen.findByText("collections_reconcile");
+      const derived = labels.mock.calls.length;
+      expect(derived).toBeGreaterThan(0);
+
+      await act(async () => {
+        push(snapshotWithPending(9));
+      });
+      await waitFor(() => expect(statValue("pending")).toBe("9"));
+
+      expect(labels.mock.calls.length).toBe(derived);
+    } finally {
+      labels.mockRestore();
+    }
   });
 
   it("ignores heartbeat lines rather than treating them as snapshots", async () => {
@@ -479,6 +569,8 @@ describe("Dashboard", () => {
 
     render(<Dashboard />);
     await screen.findByText("collections_reconcile");
+    // RunCharts' one mount fetch, counted below, has landed.
+    await screen.findByText("No runs recorded yet.");
 
     // The server ended the stream -- a restart, a proxy timeout.
     await act(async () => {
@@ -526,6 +618,55 @@ describe("Dashboard", () => {
       await vi.advanceTimersByTimeAsync(30000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes the stream while the tab is hidden and reconnects when it is shown", async () => {
+    // Perf spec A8: a background tab held a stream open, and the server kept
+    // polling the database every two seconds for a page nobody could see.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const signals: AbortSignal[] = [];
+    stubFetch(undefined, undefined, async (_path, init) => {
+      signals.push(init!.signal as AbortSignal);
+      return ndjsonStream(
+        init!.signal as AbortSignal,
+        signals.length === 1 ? SNAPSHOT : snapshotWithPending(9),
+      ).response;
+    });
+
+    render(<Dashboard />);
+    await screen.findByText("collections_reconcile");
+
+    await act(async () => {
+      setHidden(true);
+    });
+    expect(signals[0].aborted).toBe(true);
+    // Far past the three-second reconnect: a hidden tab opens nothing.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+    });
+    expect(signals).toHaveLength(1);
+    // The last snapshot stays on screen meanwhile.
+    expect(statValue("pending")).toBe("3");
+
+    await act(async () => {
+      setHidden(false);
+    });
+    await waitFor(() => expect(signals).toHaveLength(2));
+    await waitFor(() => expect(statValue("pending")).toBe("9"));
+  });
+
+  it("opens no stream while mounted in a hidden tab, and connects once shown", async () => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    const fetchMock = stubFetch();
+
+    render(<Dashboard />);
+    await act(async () => {});
+    expect(fetchMock.mock.calls.some(([path]) => path === "/api/dashboard/stream")).toBe(false);
+
+    await act(async () => {
+      setHidden(false);
+    });
+    expect(await screen.findByText("collections_reconcile")).toBeInTheDocument();
   });
 
   it("runs a full pass and shows the server's outcome, not an optimistic one", async () => {

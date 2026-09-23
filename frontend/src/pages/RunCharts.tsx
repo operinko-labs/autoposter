@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -37,7 +37,33 @@ function label(run: RunEntry): string {
   return `${run.name} ${time}`.trim();
 }
 
-export function RunCharts() {
+/** Both charts' series from the endpoint's newest-first list.
+ *
+ * The endpoint answers newest first, which is right for a list and wrong for
+ * a time axis: reversed here rather than server-side so the JSON stays in the
+ * order a widget reading `runs.0` expects. The counts chart takes attributed
+ * runs only: a null is "not measured", and plotting it as a zero would claim
+ * a full pass's neighbours did nothing. */
+function deriveSeries(runs: RunEntry[]) {
+  const chronological = [...runs].reverse();
+  const durations = chronological
+    .filter((run) => run.duration_seconds !== null)
+    .map((run) => ({ label: label(run), seconds: run.duration_seconds as number }));
+  const counts = chronological
+    .filter((run) => run.processed !== null)
+    .map((run) => ({
+      label: label(run),
+      processed: run.processed as number,
+      failed: run.failed as number,
+      status: run.status,
+    }));
+  return { durations, counts };
+}
+
+/** `memo`, with no props: the dashboard re-renders on every stream snapshot,
+ * and nothing in a snapshot is an input to these charts (perf spec A4). The
+ * component still re-renders on its own state -- the one fetch settling. */
+export const RunCharts = memo(function RunCharts() {
   const [runs, setRuns] = useState<RunEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,27 +94,14 @@ export function RunCharts() {
     void load();
   }, []);
 
+  // Above the early returns (a hook), and keyed on the history alone.
+  const series = useMemo(() => (runs === null ? null : deriveSeries(runs)), [runs]);
+
   if (error !== null) return <p className="page-error">{error}</p>;
-  if (runs === null) return <p className="muted">Loading run history…</p>;
+  if (runs === null || series === null) return <p className="muted">Loading run history…</p>;
   if (runs.length === 0) return <p className="empty">No runs recorded yet.</p>;
 
-  // The endpoint answers newest first, which is right for a list and wrong for
-  // a time axis: reversed here rather than server-side so the JSON stays in the
-  // order a widget reading `runs.0` expects.
-  const chronological = [...runs].reverse();
-  const durations = chronological
-    .filter((run) => run.duration_seconds !== null)
-    .map((run) => ({ label: label(run), seconds: run.duration_seconds as number }));
-  // Only attributed runs. A null is "not measured", and plotting it as a zero
-  // would claim a full pass's neighbours did nothing.
-  const counts = chronological
-    .filter((run) => run.processed !== null)
-    .map((run) => ({
-      label: label(run),
-      processed: run.processed as number,
-      failed: run.failed as number,
-      status: run.status,
-    }));
+  const { durations, counts } = series;
 
   return (
     <div className="run-charts">
@@ -153,4 +166,4 @@ export function RunCharts() {
       </section>
     </div>
   );
-}
+});
