@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
@@ -914,6 +914,28 @@ async def dismiss_job(
     return {"id": job.id, "state": job.state}
 
 
+async def _clear_render_fingerprints(session, item_id: int) -> None:
+    """Null ``fingerprint`` on every render row of one item: an explicit re-check.
+
+    Perf workstream B1: ``render_artifact`` skips downloading a provider image
+    whose URL has not moved, trusting the stored digest, for as long as the row
+    keeps its fingerprint. An operator pressing reprocess or re-search is asking
+    for exactly the check that skip avoids -- ``actions/flags.py``'s promise that
+    "a rerender retries the same source" -- so both clear it first. Every art
+    kind, because the one ``process_item`` job they queue renders every kind of
+    the item. ``badge_fingerprint`` is left alone: the spec names only the
+    base fingerprint, and a recompose that lands the same base computes the
+    same badge fingerprint anyway.
+
+    Not committed here. ``enqueue()`` commits, so the clear lands with the job
+    it exists for -- and a press the pending dedupe swallows still clears,
+    because the job already waiting reads the row when it runs.
+    """
+    await session.execute(
+        update(Render).where(Render.item_id == item_id).values(fingerprint=None)
+    )
+
+
 async def _enqueue_reprocess(session, item: MediaItem) -> int | None:
     """Queue a process_item job for one item; the job id, or None if deduped.
 
@@ -967,6 +989,7 @@ async def reprocess_item(
         if item is None:
             raise HTTPException(status_code=404, detail="item not found")
 
+        await _clear_render_fingerprints(session, item.id)
         job_id = await _enqueue_reprocess(session, item)
     return {"queued": job_id is not None, "job_id": job_id, "note": None}
 
@@ -986,8 +1009,11 @@ async def clear_manual_override(
     so a ``.disabled`` left by an earlier clear does not make this fail.
 
     Then the render row's fingerprints are cleared, because the rename alone
-    changes nothing the next pass would notice in time: the fingerprint
-    short-circuit returns "unchanged" before the override is even consulted.
+    changes nothing an ADOPTED row's next pass would notice: its short-circuit
+    returns "adopted" before the override is even consulted (render_artifact).
+    Any other row would move on its own -- the override's path and digest are
+    fingerprint inputs -- but one rule for both is cheaper than knowing which a
+    row is.
     That ordering matters in the other direction too -- if the rename fails,
     nothing else happens, since a cleared fingerprint with the override still
     in place would re-render straight back to the override while this endpoint
