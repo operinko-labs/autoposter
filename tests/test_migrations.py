@@ -698,3 +698,94 @@ async def test_the_perf_index_migration_is_reversible():
             await maint.execute(f'DROP DATABASE IF EXISTS "{SCRATCH_DB_NAME}{suffix}"')
         finally:
             await maint.close()
+
+
+LOGO_COLUMNS_REVISION = "5b9e2c7d4a18"
+
+
+async def test_the_render_logo_columns_migration_is_reversible():
+    """Perf workstream B1's two nullable columns, up -> down -> up on a
+    scratch database, against a POPULATED renders row -- the shape a deployed
+    instance has. ``down_revision`` is read off the script rather than typed
+    here, so the test follows whatever revision this one was stacked on."""
+    if not await _postgres_reachable():
+        _unreachable_postgres()
+
+    script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
+    before_logo = script.get_revision(LOGO_COLUMNS_REVISION).down_revision
+    name = f"{SCRATCH_DB_NAME}_logo"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        await maint.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, name)
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    async def connect():
+        return await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+
+    async def columns() -> set[str]:
+        conn = await connect()
+        try:
+            rows = await conn.fetch(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'renders'"
+            )
+            return {row["column_name"] for row in rows}
+        finally:
+            await conn.close()
+
+    try:
+        up = alembic("upgrade", before_logo)
+        assert up.returncode == 0, up.stdout + up.stderr
+        conn = await connect()
+        try:
+            item_id = await conn.fetchval(
+                "INSERT INTO media_items (identity_key, library, kind, title) "
+                "VALUES ('movie:updown:1', 'Movies', 'movie', 'Populated') RETURNING id"
+            )
+            await conn.execute(
+                "INSERT INTO renders (item_id, art_kind, source_mode, status, asset_path, "
+                "source_url, base_sha256, fingerprint) VALUES ($1, 'poster', 'generate', "
+                "'rendered', '/assets/p.jpg', 'https://img/p.jpg', $2, $3)",
+                item_id, "a" * 64, "f" * 64,
+            )
+        finally:
+            await conn.close()
+
+        head = alembic("upgrade", "head")
+        assert head.returncode == 0, head.stdout + head.stderr
+        assert {"logo_source_url", "logo_sha256"} <= await columns()
+        conn = await connect()
+        try:
+            row = await conn.fetchrow(
+                "SELECT fingerprint, logo_source_url, logo_sha256 FROM renders"
+            )
+        finally:
+            await conn.close()
+        assert row["fingerprint"] == "f" * 64, "the pre-existing row was disturbed"
+        assert row["logo_source_url"] is None and row["logo_sha256"] is None
+
+        down = alembic("downgrade", before_logo)
+        assert down.returncode == 0, down.stdout + down.stderr
+        assert not {"logo_source_url", "logo_sha256"} & await columns()
+
+        again = alembic("upgrade", "head")
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert {"logo_source_url", "logo_sha256"} <= await columns()
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        finally:
+            await maint.close()

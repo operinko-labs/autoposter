@@ -49,7 +49,7 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.plex.item_overrides import load_overrides, overlaid_badge_facts
 from autoposter.plex.writer import exemption_reason
 from autoposter.providers import base as art
-from autoposter.providers.ladder import language_rank, normalise_language, select_artwork
+from autoposter.providers.ladder import Selection, language_rank, normalise_language, select_artwork
 from autoposter.render import compositor, naming
 # Re-exported, not merely used: these lived here until the mass-ops logo
 # updater needed the same guard and could not import this module to get it (see
@@ -1022,18 +1022,36 @@ def _provider_rank(providers: list, provider_name: str | None) -> int | None:
     return names.index(provider_name)
 
 
+def _logo_request(config: Config, item: ResolvedItem) -> art.ArtRequest:
+    """The ``ArtRequest`` a poster asks the logo ladder with: the season and
+    episode numbers and ``prefer_clearart`` that a mass-ops row has no
+    equivalent of. One definition for the first ask in ``render_artifact`` and
+    the guard walk ``_pick_logo`` runs, which must be the same question."""
+    return art.ArtRequest(
+        art_kind=art.LOGO,
+        is_movie=item.kind == "movie",
+        tmdb_id=item.tmdb_id,
+        tvdb_id=item.tvdb_id,
+        imdb_id=item.imdb_id,
+        season_number=item.season_number,
+        episode_number=item.episode_number,
+        prefer_clearart=config.artwork.use_clearart,
+    )
+
+
 async def _pick_logo(
     http: httpx.AsyncClient,
     config: Config,
     item: ResolvedItem,
     providers: list,
     tmpdir: Path,
-) -> tuple[Path | None, str, int]:
+    *,
+    first: Selection | None = None,
+) -> tuple[Path | None, str, int, str | None]:
     """This poster's clearlogo, through the shared guard. See
     ``render/artwork_fetch.pick_guarded_logo`` for the three rules and why they
-    exist; this is only the render path's half of the call -- the ``ArtRequest``
-    a poster asks with, which carries the season/episode numbers and
-    ``prefer_clearart`` that a mass-ops row has no equivalent of.
+    exist; this is only the render path's half of the call -- ``_logo_request``
+    and the ladder answer ``render_artifact`` already has (``first``).
 
     ``raster_only`` is left at its default: ImageMagick rasterises an SVG
     clearlogo while compositing (``compositor.build_logo_argv``'s
@@ -1044,19 +1062,46 @@ async def _pick_logo(
         http,
         providers,
         config.artwork.logo_language_order,
-        art.ArtRequest(
-            art_kind=art.LOGO,
-            is_movie=item.kind == "movie",
-            tmdb_id=item.tmdb_id,
-            tvdb_id=item.tvdb_id,
-            imdb_id=item.imdb_id,
-            season_number=item.season_number,
-            episode_number=item.episode_number,
-            prefer_clearart=config.artwork.use_clearart,
-        ),
+        _logo_request(config, item),
         tmpdir,
         native_id=item.native_id,
+        first=first,
     )
+
+
+def _no_logo_outcome(
+    config: Config, item: ResolvedItem, skipped_logos: int
+) -> tuple[bool, bool]:
+    """``(suppress_text, logo_text_fallback_taken)`` for a poster the guard
+    walk found nothing usable for.
+
+    Lifted out of ``render_artifact`` unchanged when perf workstream B1 gave
+    the walk a second call site (a reused logo that has to be fetched after
+    all, because the fingerprint moved).
+    """
+    if skipped_logos:
+        # The aggregate line, once per poster: the pod log is
+        # the trusted sink for the item's own identity, and
+        # `_pick_logo` has already logged each refusal. No
+        # URL here either.
+        logger.warning(
+            "no usable clearlogo for %s %r: skipped %d candidate(s) "
+            "over the %dpx ceiling or refused after download; "
+            "rendering the poster without one",
+            item.native_id, item.title, skipped_logos,
+            _ARTWORK_MAX_PIXELS,
+        )
+    if not config.artwork.logo_text_fallback:
+        return True, False
+    # The other half of the same decision, which until now
+    # had no variable at all: no logo on any provider AND
+    # logo_text_fallback on, so this poster is wearing its
+    # title text in a logo's place. That is the fact
+    # roadmap 103 calls "logo-to-text fallback taken".
+    # Reached identically whether the ladder had nothing
+    # or everything it had was unusable -- a poster with
+    # no logo is a poster with no logo.
+    return False, True
 
 
 def _can_skip_source_download(render: Render, url: str) -> bool:
@@ -1384,6 +1429,12 @@ async def render_artifact(
         # clearlogos). Other art kinds are unaffected.
         logo_path: Path | None = None
         logo_sha = ""
+        # Perf workstream B1: the provider URL of the logo in use (None for an
+        # operator-picked one or none at all), the ladder's first answer (kept
+        # for a deferred walk), and whether the stored digest stood in for it.
+        logo_url: str | None = None
+        logo_first: Selection | None = None
+        logo_deferred = False
         suppress_text = False
         if art_kind == "poster" and config.artwork.use_logo and settings.text is not None:
             # An operator's picked logo comes first, and stops the ladder from
@@ -1402,41 +1453,42 @@ async def render_artifact(
                     _stage_override, picked_logo, logo_path, stage="the clearlogo"
                 )
             elif not online_fetch_disabled(config, art_kind):
-                logo_path, logo_sha, skipped_logos = await _pick_logo(
-                    http, config, item, providers, Path(tmpdir),
+                logo_first = await select_artwork(
+                    providers, config.artwork.logo_language_order, _logo_request(config, item),
                 )
-                if logo_path is None:
-                    if skipped_logos:
-                        # The aggregate line, once per poster: the pod log is
-                        # the trusted sink for the item's own identity, and
-                        # `_pick_logo` has already logged each refusal. No
-                        # URL here either.
-                        logger.warning(
-                            "no usable clearlogo for %s %r: skipped %d candidate(s) "
-                            "over the %dpx ceiling or refused after download; "
-                            "rendering the poster without one",
-                            item.native_id, item.title, skipped_logos,
-                            _ARTWORK_MAX_PIXELS,
+                first_logo = logo_first.candidate
+                if (
+                    first_logo is not None
+                    and render.logo_sha256
+                    and first_logo.url == render.logo_source_url
+                ):
+                    # Perf workstream B1: the ladder's first answer is the logo
+                    # this poster last composited, so its stored digest stands
+                    # in for the download. A miss below runs the guard walk from
+                    # this same answer; anything else -- a different first
+                    # candidate, no stored digest -- runs it right here exactly
+                    # as before. A first candidate the guard REJECTS is never
+                    # stored, so that item keeps paying for the download
+                    # (persisting guard verdicts is out of scope).
+                    logo_sha = render.logo_sha256
+                    logo_url = first_logo.url
+                    logo_deferred = True
+                else:
+                    logo_path, logo_sha, skipped_logos, logo_url = await _pick_logo(
+                        http, config, item, providers, Path(tmpdir), first=logo_first,
+                    )
+                    if logo_path is None:
+                        suppress_text, logo_text_fallback_taken = _no_logo_outcome(
+                            config, item, skipped_logos,
                         )
-                    if not config.artwork.logo_text_fallback:
-                        suppress_text = True
-                    else:
-                        # The other half of the same decision, which until now
-                        # had no variable at all: no logo on any provider AND
-                        # logo_text_fallback on, so this poster is wearing its
-                        # title text in a logo's place. That is the fact
-                        # roadmap 103 calls "logo-to-text fallback taken".
-                        # Reached identically whether the ladder had nothing
-                        # or everything it had was unusable -- a poster with
-                        # no logo is a poster with no logo.
-                        logo_text_fallback_taken = True
 
         suppress_styling = (
             settings.skip_add_text_when_with_text and known_with_text(chosen_candidate)
         )
         draw_text = _draws_text(
-            config, art_kind, has_logo=logo_path is not None, suppress_text=suppress_text,
-            local_source=local_source, suppress_styling=suppress_styling,
+            config, art_kind, has_logo=logo_path is not None or logo_deferred,
+            suppress_text=suppress_text, local_source=local_source,
+            suppress_styling=suppress_styling,
         )
         fingerprint = await _render_fingerprint(
             config, item, art_kind, source_url, base_sha,
@@ -1446,15 +1498,33 @@ async def render_artifact(
         # can be an NFS mount) — only reached once a fingerprint already
         # matches, so the short-circuit still skips it entirely otherwise.
         unchanged = render.fingerprint == fingerprint and await asyncio.to_thread(target.exists)
-        if not unchanged and deferred_source_url is not None:
+        if not unchanged and (deferred_source_url is not None or logo_deferred):
             # The provisional fingerprint missed, or the target is gone: this
-            # render composes, so it needs the real bytes, and the stored
-            # fingerprint must be the one those bytes produce -- which is also
-            # the comparison every pass made before B1 (a provider that served
-            # new bytes at an old URL surfaces here as a moved digest).
-            base_sha = await _download(
-                http, deferred_source_url, working, stage=f"the {art_kind} source"
-            )
+            # render composes, so it needs the real bytes of whatever was
+            # deferred, and the stored fingerprint must be the one those bytes
+            # produce -- which is also the comparison every pass made before B1
+            # (a provider that served new bytes at an old URL surfaces here as
+            # a moved digest).
+            if deferred_source_url is not None:
+                base_sha = await _download(
+                    http, deferred_source_url, working, stage=f"the {art_kind} source"
+                )
+            if logo_deferred:
+                # The guard walk, from the same first answer: exactly the walk
+                # a pass without B1 would have run.
+                logo_path, logo_sha, skipped_logos, logo_url = await _pick_logo(
+                    http, config, item, providers, Path(tmpdir), first=logo_first,
+                )
+                logo_deferred = False
+                if logo_path is None:
+                    suppress_text, logo_text_fallback_taken = _no_logo_outcome(
+                        config, item, skipped_logos,
+                    )
+                draw_text = _draws_text(
+                    config, art_kind, has_logo=logo_path is not None,
+                    suppress_text=suppress_text, local_source=local_source,
+                    suppress_styling=suppress_styling,
+                )
             fingerprint = await _render_fingerprint(
                 config, item, art_kind, source_url, base_sha,
                 draw_text=draw_text, logo_sha=logo_sha, suppress_styling=suppress_styling,
@@ -1463,6 +1533,12 @@ async def render_artifact(
                 render.fingerprint == fingerprint and await asyncio.to_thread(target.exists)
             )
         if unchanged:
+            if logo_url is not None:
+                # Recorded even though nothing else is written on this path: a
+                # row older than the columns downloads its logo once, here, and
+                # must remember it or a settled library would never stop paying.
+                render.logo_source_url = logo_url
+                render.logo_sha256 = logo_sha
             render.status = "rendered"
             render.detail = "unchanged"
             await session.commit()
@@ -1522,6 +1598,11 @@ async def render_artifact(
     # below: the app and database clocks drift.
     render.quality_scored_at = func.now()
     render.base_sha256 = base_sha
+    # Perf workstream B1: what the next pass compares the logo ladder's first
+    # answer against. Cleared for a poster that composited no provider logo
+    # (an operator's pick, none found), so a stale URL cannot stand in later.
+    render.logo_source_url = logo_url
+    render.logo_sha256 = logo_sha if logo_url is not None else None
     render.fingerprint = fingerprint
     render.status = "rendered"
     render.detail = (

@@ -93,6 +93,17 @@ class Render(Base):
     source_url: Mapped[str | None] = mapped_column(Text)
     textless: Mapped[bool | None] = mapped_column(Boolean)
     base_sha256: Mapped[str | None] = mapped_column(String(64))
+    # The provider clearlogo this poster last composited, and the digest of its
+    # bytes (perf workstream B1). A logo used to be downloaded on every pass
+    # before the fingerprint could be compared, because only its digest enters
+    # the fingerprint and nothing kept it. When the logo ladder's FIRST
+    # candidate is this URL, render_artifact reuses this digest instead;
+    # anything else runs the guard walk exactly as before. NULL for a poster
+    # with no provider logo (none found, an operator-picked one, use_logo off)
+    # and for every row older than the columns -- which pays one download on
+    # its next pass and is recorded then, "unchanged" or not.
+    logo_source_url: Mapped[str | None] = mapped_column(Text)
+    logo_sha256: Mapped[str | None] = mapped_column(String(64))
     fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     # Separate from `fingerprint`, which covers the base image only. A rating
     # changing must re-badge and re-upload without re-fetching or
