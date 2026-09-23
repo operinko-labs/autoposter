@@ -808,9 +808,14 @@ def _apply_label_edits(item, additions: list[str]) -> None:
     method. Must be called after ``item.batchEdits()`` and before
     ``item.saveEdits()``, alongside ``_apply_genre_edits`` -- additions only,
     since ``parental_label_edits`` never produces a removal.
+
+    ONE call for the whole list. plexapi's ``editTags`` writes the cached
+    labels plus the new ones as ``label[0..N].tag.tag``, so inside a batch a
+    call per tag rewrites the same slot ``N`` each time and only the last tag
+    reaches Plex -- an item missing three labels took three passes.
     """
-    for tag in additions:
-        item.addLabel(tag)
+    if additions:
+        item.addLabel(additions)
 
 
 async def apply_facts(

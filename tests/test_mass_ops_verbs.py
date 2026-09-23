@@ -296,12 +296,12 @@ class RecordingPlexItem(LockableItem):
     def edit(self, **fields):
         self.edits.append(fields)
 
-    def addLabel(self, tag):  # noqa: N802 - plexapi name
-        self._pending_labels.append(tag)
+    def addLabel(self, tags):  # noqa: N802 - plexapi name
+        self._pending_labels.extend(tags)
 
     def saveEdits(self):  # noqa: N802 - plexapi name
-        # Row 85's label additions are queued one at a time via addLabel
-        # (see plex/writer._apply_label_edits), so they are gathered here into
+        # Row 85's label additions are queued through addLabel (see
+        # plex/writer._apply_label_edits), so they are gathered here into
         # the same single-entry-per-write shape `edit()` already records.
         if self._pending_labels:
             self.edits.append({"labels.added": list(self._pending_labels)})

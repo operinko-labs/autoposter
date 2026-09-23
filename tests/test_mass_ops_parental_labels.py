@@ -127,11 +127,11 @@ def test_plan_edits_folds_in_parental_labels():
     assert edits["labels.added"] == ["Sex & Nudity: Mild", "Violence & Gore: Severe"]
 
 
-async def test_apply_facts_calls_addlabel_for_each_addition():
+async def test_apply_facts_adds_every_label_in_one_addlabel_call():
     class RecordingLabelItem(LabelledItem):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
-            self.added_labels = []
+            self.addlabel_calls = []
             self.saved = 0
 
         def batchEdits(self):  # noqa: N802 - plexapi name
@@ -140,8 +140,8 @@ async def test_apply_facts_calls_addlabel_for_each_addition():
         def edit(self, **fields):
             pass
 
-        def addLabel(self, tag):  # noqa: N802 - plexapi name
-            self.added_labels.append(tag)
+        def addLabel(self, tags):  # noqa: N802 - plexapi name
+            self.addlabel_calls.append(tags)
 
         def saveEdits(self):  # noqa: N802 - plexapi name
             self.saved += 1
@@ -151,8 +151,42 @@ async def test_apply_facts_calls_addlabel_for_each_addition():
     edits = await apply_facts(item, GatheredFacts(), operations, parental_categories=CATEGORIES)
 
     assert edits["labels.added"] == ["Sex & Nudity: Mild", "Violence & Gore: Severe"]
-    assert item.added_labels == ["Sex & Nudity: Mild", "Violence & Gore: Severe"]
+    assert item.addlabel_calls == [["Sex & Nudity: Mild", "Violence & Gore: Severe"]]
     assert item.saved == 1
+
+
+def test_every_missing_label_reaches_the_payload_against_real_plexapi():
+    """Against plexapi's *real* ``Movie`` -- ``batchEdits()`` accumulates into
+    ``item._edits`` with no network I/O, and ``saveEdits()`` is never called.
+
+    One ``addLabel`` per tag inside a batch wrote every tag to the same
+    ``label[N]`` slot, so only the last one landed and the item was written
+    again on every pass until it had them all.
+    """
+    import xml.etree.ElementTree as ET
+
+    from plexapi.video import Movie
+
+    from autoposter.plex.writer import _apply_label_edits
+
+    xml = (
+        '<Video ratingKey="1" key="/library/metadata/1" type="movie" title="T">'
+        '<Label tag="Overlay" /><Label tag="Profanity: Mild" /></Video>'
+    )
+    item = Movie(server=None, data=ET.fromstring(xml))
+    item.batchEdits()
+    _apply_label_edits(item, ["Sex & Nudity: Mild", "Violence & Gore: Severe"])
+
+    # The held labels ride along as plexapi ``Label`` objects, which the
+    # request's query string renders with ``str()`` -- their tag.
+    sent = sorted(
+        str(value) for key, value in item._edits.items()
+        if key.startswith("label[") and key.endswith("].tag.tag")
+    )
+    assert sent == sorted(
+        ["Overlay", "Profanity: Mild", "Sex & Nudity: Mild", "Violence & Gore: Severe"]
+    )
+    assert isinstance(item._edits, dict)
 
 
 @pytest.fixture
