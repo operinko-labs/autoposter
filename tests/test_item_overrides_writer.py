@@ -174,6 +174,14 @@ def test_an_audience_rating_override_uses_the_audience_formatter():
     ) == {"audienceRating.value": 9.1, "audienceRating.locked": 1}
 
 
+def test_an_audience_rating_override_this_writer_stored_is_never_rewritten():
+    """The override path's copy of the plan_edits fix: an override of 8.68 is
+    stored as 8.7, and 8.7 must then compare equal to 8.68 -- the truncating
+    formatter on the raw override said '86%' against Plex's '87%' forever."""
+    locked = LockableItem(audienceRating=8.7, locks=[("audienceRating", True)])
+    assert override_edits(locked, {"audience_rating": 8.68}) == {}
+
+
 def test_a_date_override_compares_on_the_iso_string():
     locked = LockableItem(
         originallyAvailableAt=date(1995, 12, 15),

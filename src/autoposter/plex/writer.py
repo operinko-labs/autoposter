@@ -518,7 +518,11 @@ def override_edits(item, overrides: dict) -> dict[str, object]:
                 _ensure_locked(edits, item, plex_field)
             continue
         if field == "audience_rating":
-            if format_audience(getattr(item, attribute, None)) != format_audience(value):
+            # Against the value this writer STORES, not the raw one -- see
+            # ``plan_edits`` for the every-pass rewrite comparing raw cost.
+            if format_audience(getattr(item, attribute, None)) != format_audience(
+                _one_decimal(value)
+            ):
                 put(plex_field, _one_decimal(value))
             else:
                 _ensure_locked(edits, item, plex_field)
@@ -618,9 +622,16 @@ def plan_edits(
             put("rating", _one_decimal(facts.critic_rating))
 
     if "audience_rating" in writable and facts.audience_rating is not None:
+        # Compared on the value this writer STORES, not the raw fact. The
+        # formatter truncates (8.68 -> "86%") while the write rounds (8.68 ->
+        # 8.7, which reads back "87%"), so comparing the raw fact against what
+        # Plex holds rewrote every rating whose second decimal was 5 or more on
+        # every pass, forever -- 3,373 items in production on 2026-09-23. The
+        # critic branch above never had the gap: format_critic rounds too.
+        stored = _one_decimal(facts.audience_rating)
         current = format_audience(getattr(item, "audienceRating", None))
-        if current != format_audience(facts.audience_rating):
-            put("audienceRating", _one_decimal(facts.audience_rating))
+        if current != format_audience(stored):
+            put("audienceRating", stored)
 
     if "content_rating" in writable and content_rating:
         if getattr(item, "contentRating", None) != content_rating:
@@ -837,5 +848,24 @@ async def apply_facts(
         item.saveEdits()
 
     await asyncio.to_thread(_write)
-    logger.info("plex: wrote %d field(s) to %s", len(edits), _item_label(item))
+    logger.info("plex: wrote %s to %s", _edited_fields(edits), _item_label(item))
     return edits
+
+
+def _edited_fields(edits: dict[str, object]) -> str:
+    """The field names an edit payload touches, for the write log line.
+
+    Names rather than a count: "wrote 2 field(s)" on every episode of a full
+    pass could not say WHICH field was being rewritten every pass (it was one
+    field, audienceRating -- its ``.value`` and ``.locked`` keys counted as
+    two). A field whose only key is its lock is marked, because a lock-only
+    write repeating every pass would be a different bug from a value
+    repeating."""
+    keys: dict[str, set[str]] = {}
+    for key in edits:
+        field, _, part = key.partition(".")
+        keys.setdefault(field, set()).add(part)
+    return ", ".join(
+        f"{field} (lock)" if parts == {"locked"} else field
+        for field, parts in sorted(keys.items())
+    )

@@ -83,9 +83,46 @@ def test_plan_is_empty_when_nothing_changed():
 
 
 def test_ratings_are_compared_on_the_formatted_value():
-    """8.65 and 8.6 both render '86%', so they are not a change worth writing."""
-    item = FakeItem(audienceRating=8.6)
-    assert plan_edits(item, GatheredFacts(audience_rating=8.65)) == {}
+    """A difference a viewer cannot see is not a change worth writing: Plex
+    holding 8.7 and a fact of 8.66 both render '87%' once the fact is stored
+    the way this writer stores it (rounded to one decimal)."""
+    item = FakeItem(audienceRating=8.7)
+    assert plan_edits(item, GatheredFacts(audience_rating=8.66)) == {}
+
+
+@pytest.mark.parametrize("fact", [8.65, 8.68, 7.25, 6.95, 5.55])
+def test_an_audience_rating_this_writer_stored_is_never_rewritten(fact):
+    """The comparison must use the value this writer WOULD store, not the raw
+    fact. It compared ``format_audience(raw)`` -- a truncation, 8.68 -> '86%'
+    -- against Plex holding the rounded value this writer had written, 8.7 ->
+    '87%', so every fact whose second decimal was 5 or more was rewritten on
+    every pass, forever: 3,373 items in production on 2026-09-23."""
+    stored = plan_edits(FakeItem(), GatheredFacts(audience_rating=fact))
+    written = stored["audienceRating.value"]
+
+    assert plan_edits(FakeItem(audienceRating=written), GatheredFacts(audience_rating=fact)) == {}
+
+
+def test_the_write_log_names_fields_and_marks_lock_only_edits():
+    """The log line named a COUNT of payload keys ("2 field(s)"), which on a
+    full pass could not say which field kept being rewritten."""
+    from autoposter.plex.writer import _edited_fields
+
+    edits = {
+        "audienceRating.value": 8.7,
+        "audienceRating.locked": 1,
+        "rating.locked": 1,
+        "genres.added": ["Drama"],
+    }
+    assert _edited_fields(edits) == "audienceRating, genres, rating (lock)"
+
+
+def test_a_stale_audience_rating_is_rewritten_to_the_rounded_value_once():
+    """Plex holding the truncated 8.6 for a fact of 8.65 is not what this
+    writer stores (it rounds, matching the tool it replaces), so it writes
+    8.7 once -- and the test above proves it is left alone after that."""
+    edits = plan_edits(FakeItem(audienceRating=8.6), GatheredFacts(audience_rating=8.65))
+    assert edits["audienceRating.value"] == pytest.approx(8.7)
 
 
 def test_none_values_are_never_written():
