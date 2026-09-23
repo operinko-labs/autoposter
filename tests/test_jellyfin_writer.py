@@ -95,6 +95,39 @@ async def test_apply_facts_locks_only_the_lockable_fields_and_echoes_the_rest(ca
 
 
 @pytest.mark.asyncio
+async def test_the_write_line_names_an_episode_like_the_plex_line_does(caplog):
+    """The same item, the same shape of line on both servers: title, show,
+    season and episode, then the native id for looking it up in Jellyfin."""
+    dto = {
+        "Id": "9fdc32e6", "Type": "Episode", "Name": "Gordon & Spencer",
+        "SeriesName": "Thomas the Tank Engine & Friends",
+        "ParentIndexNumber": 7, "IndexNumber": 23, "CriticRating": 70.0,
+        "LockedFields": [],
+    }
+    with caplog.at_level(logging.INFO, logger="autoposter.jellyfin.writer"):
+        await _apply(dto, GatheredFacts(critic_rating=8.3))
+
+    assert [r.getMessage() for r in caplog.records if "wrote" in r.getMessage()] == [
+        "jellyfin: wrote critic_rating to episode 'Gordon & Spencer' "
+        "(Thomas the Tank Engine & Friends S07E23) [m1]"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_write_line_names_a_movie_with_its_year(caplog):
+    dto = {
+        "Id": "m1", "Type": "Movie", "Name": "Heat", "ProductionYear": 1995,
+        "CriticRating": 70.0, "LockedFields": [],
+    }
+    with caplog.at_level(logging.INFO, logger="autoposter.jellyfin.writer"):
+        await _apply(dto, GatheredFacts(critic_rating=8.3))
+
+    assert [r.getMessage() for r in caplog.records if "wrote" in r.getMessage()] == [
+        "jellyfin: wrote critic_rating to movie 'Heat' (1995) [m1]"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_an_unchanged_dto_produces_no_post():
     dto = {
         "Id": "m1", "Type": "Movie", "Name": "Old", "Overview": "o",
