@@ -178,8 +178,18 @@ def _rendered(row) -> dict | None:
     }
 
 
-async def runs_snapshot(session, limit: int = _DEFAULT_RUNS) -> dict:
+async def runs_snapshot(
+    session, limit: int = _DEFAULT_RUNS, counted: bool = False
+) -> dict:
     """The most recent runs, newest first, with their durations and counts.
+
+    ``counted`` keeps only the runs whose window was attributed -- the ones
+    with a ``processed`` count, which is full passes and catch-ups. The
+    dashboard's counts chart asks for exactly that, because the plain page is
+    the newest ``limit`` runs of any kind, and a scheduled job that records
+    every fifteen minutes fills fifty rows in half a day: in production it
+    buried the only completed full pass 1,337 rows deep, and the chart said no
+    full pass had ever completed.
 
     Two round trips: the page itself, and ``generated_at`` from the DATABASE
     clock -- never ``datetime.now()``, the rule every timestamp this API
@@ -195,9 +205,12 @@ async def runs_snapshot(session, limit: int = _DEFAULT_RUNS) -> dict:
     The session is the caller's and nothing here writes, so nothing commits.
     """
     bounded = max(1, min(int(limit), _MAX_RUNS))
+    query = select(Run)
+    if counted:
+        query = query.where(Run.processed.is_not(None))
     rows = (
         await session.execute(
-            select(Run).order_by(Run.started_at.desc(), Run.id.desc()).limit(bounded)
+            query.order_by(Run.started_at.desc(), Run.id.desc()).limit(bounded)
         )
     ).scalars().all()
 
@@ -265,6 +278,7 @@ async def storage_stats(
 async def run_stats(
     request: Request,
     limit: int = Query(default=_DEFAULT_RUNS),
+    counted: bool = Query(default=False),
     _: SessionModel | ApiKeyPrincipal = Depends(api_key_or_session),
 ) -> dict:
     """Recent run history: duration, outcome and per-window counts.
@@ -285,4 +299,4 @@ async def run_stats(
     """
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
-        return await runs_snapshot(session, limit)
+        return await runs_snapshot(session, limit, counted)

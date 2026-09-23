@@ -43,13 +43,17 @@ function label(run: RunEntry): string {
  * a time axis: reversed here rather than server-side so the JSON stays in the
  * order a widget reading `runs.0` expects. The counts chart takes attributed
  * runs only: a null is "not measured", and plotting it as a zero would claim
- * a full pass's neighbours did nothing. */
-function deriveSeries(runs: RunEntry[]) {
-  const chronological = [...runs].reverse();
-  const durations = chronological
+ * a full pass's neighbours did nothing. Those come from their own counted
+ * page rather than from the recent one, because a scheduled job that records
+ * every fifteen minutes fills the recent page in half a day and pushes every
+ * full pass out of it. */
+function deriveSeries(recent: RunEntry[], counted: RunEntry[]) {
+  const durations = [...recent]
+    .reverse()
     .filter((run) => run.duration_seconds !== null)
     .map((run) => ({ label: label(run), seconds: run.duration_seconds as number }));
-  const counts = chronological
+  const counts = [...counted]
+    .reverse()
     .filter((run) => run.processed !== null)
     .map((run) => ({
       label: label(run),
@@ -65,6 +69,7 @@ function deriveSeries(runs: RunEntry[]) {
  * component still re-renders on its own state -- the one fetch settling. */
 export const RunCharts = memo(function RunCharts() {
   const [runs, setRuns] = useState<RunEntry[] | null>(null);
+  const [countedRuns, setCountedRuns] = useState<RunEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // The dashboard's own live/unmounted guard: this fetch resolves into a
@@ -85,8 +90,14 @@ export const RunCharts = memo(function RunCharts() {
   useEffect(() => {
     async function load() {
       try {
-        const body = await apiFetch<RunsResponse>(`/api/stats/runs?limit=${LIMIT}`);
-        if (live.current) setRuns(body.runs);
+        const [recent, counted] = await Promise.all([
+          apiFetch<RunsResponse>(`/api/stats/runs?limit=${LIMIT}`),
+          apiFetch<RunsResponse>(`/api/stats/runs?limit=${LIMIT}&counted=true`),
+        ]);
+        if (live.current) {
+          setRuns(recent.runs);
+          setCountedRuns(counted.runs);
+        }
       } catch (caught) {
         if (live.current) setError((caught as Error).message);
       }
@@ -95,7 +106,10 @@ export const RunCharts = memo(function RunCharts() {
   }, []);
 
   // Above the early returns (a hook), and keyed on the history alone.
-  const series = useMemo(() => (runs === null ? null : deriveSeries(runs)), [runs]);
+  const series = useMemo(
+    () => (runs === null || countedRuns === null ? null : deriveSeries(runs, countedRuns)),
+    [runs, countedRuns],
+  );
 
   if (error !== null) return <p className="page-error">{error}</p>;
   if (runs === null || series === null) return <p className="muted">Loading run history…</p>;
