@@ -80,6 +80,9 @@ async def scan_library_credits(
     ORM identity-map interaction at all -- a rescan re-inserting the same
     (item, kind, person) key must not depend on the DELETE above having
     evicted the previous pass's persistent instance from the session.
+
+    It ends the caller's transaction (``rollback()``) before the threaded
+    fetch, so a caller must commit anything pending before calling it.
     """
     rows = (
         await session.execute(

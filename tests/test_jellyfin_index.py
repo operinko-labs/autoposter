@@ -378,6 +378,29 @@ async def test_two_concurrent_resolves_of_one_series_share_one_listing():
     assert api.season_calls == ["s1"]
 
 
+async def test_cancelling_one_waiter_does_not_cancel_the_shared_listing():
+    """The ``asyncio.shield`` in ``_children_of``: one resolve's job timing
+    out must not cancel the fetch another resolve of the same series is
+    waiting on."""
+    api = _GatedApi([SIMPSONS])
+    index = LibraryIndex(api, excluded=set())
+    first = asyncio.create_task(index.resolve(_season(71663, "The Simpsons")))
+    second = asyncio.create_task(index.resolve(_season(71663, "The Simpsons")))
+    await asyncio.wait_for(api.asked["s1"].wait(), timeout=5)
+    for _ in range(10):
+        await asyncio.sleep(0)  # let the second resolve reach the listing
+
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
+    api.gates["s1"].set()
+    item = await asyncio.wait_for(second, timeout=5)
+
+    assert item.native_id == "se2-s1"
+    assert api.season_calls == ["s1"]
+    assert first.cancelled()
+    assert index._listing == {}
+
+
 async def test_a_slow_series_listing_does_not_hold_up_another_series():
     api = _GatedApi([SIMPSONS, FUTURAMA])
     api.gates["s2"].set()

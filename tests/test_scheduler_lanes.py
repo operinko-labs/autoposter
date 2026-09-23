@@ -83,17 +83,27 @@ async def test_a_blocking_heavy_job_does_not_delay_a_light_job(session_factory):
 
 
 async def test_heavy_jobs_never_overlap(session_factory):
+    """Each heavy body stays open across two scheduler ticks (counted by a
+    light job that runs every tick), so a tick that started a second heavy
+    lane while the first was mid-job would be seen here as two heavy bodies
+    in flight at once. Interval 0 keeps each heavy job due throughout, so a
+    second lane would have one to claim."""
     active = 0
     peak = 0
     runs = {"one": 0, "two": 0}
+    ticks: list[bool] = []
+
+    async def tick(session):
+        ticks.append(True)
+        return "tick"
 
     def body(name):
         async def run(session):
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
-            await asyncio.sleep(0)
-            await asyncio.sleep(0)
+            seen = len(ticks)
+            await _until(lambda: len(ticks) >= seen + 2)
             active -= 1
             runs[name] += 1
             return name
@@ -102,12 +112,16 @@ async def test_heavy_jobs_never_overlap(session_factory):
     stop = asyncio.Event()
     scheduler = Scheduler(
         session_factory,
-        [_job("one", interval=0, run=body("one")), _job("two", interval=0, run=body("two"))],
+        [
+            _job(LIGHT_A, interval=0, run=tick),
+            _job("one", interval=0, run=body("one")),
+            _job("two", interval=0, run=body("two")),
+        ],
         poll_seconds=0.01,
     )
     task = asyncio.create_task(scheduler.run(stop))
     try:
-        await _until(lambda: runs["one"] >= 3 and runs["two"] >= 3)
+        await _until(lambda: runs["one"] >= 2 and runs["two"] >= 2)
     finally:
         await _shutdown(stop, task)
 

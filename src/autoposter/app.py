@@ -601,8 +601,8 @@ def create_app(
             # cancels every lane and awaits it, so the gather below returns only
             # once no scheduled job is still executing on this loop. A job body
             # inside asyncio.to_thread keeps running on its thread, but those
-            # bodies touch Plex, never the database, so the engine.dispose()
-            # below is still last.
+            # bodies touch Plex or the filesystem, never the database, so the
+            # engine.dispose() below is still last.
             scheduler_task.cancel()
             lag_task.cancel()
             await asyncio.gather(

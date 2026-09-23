@@ -433,7 +433,7 @@ class Scheduler:
         # completion send's reason -- an awaited send's worst case is ~31.5s
         # on the default retry config against an ordinary target, up to ~50s
         # against one answering 429 with a Retry-After clamped to the timeout
-        # (notify/dispatch.py), and this loop runs every job sequentially, so
+        # (notify/dispatch.py), and this lane runs its jobs sequentially, so
         # awaiting it here would delay the work the notification is
         # announcing.
         self._start_notification(
@@ -494,7 +494,7 @@ class Scheduler:
         # own, not awaited: one send's worst case is ~31.5s on the default
         # retry config against an ordinary target, up to ~50s against one
         # answering 429 with a Retry-After clamped to the timeout (see
-        # notify/dispatch.py), while this loop runs every job sequentially --
+        # notify/dispatch.py), while this lane runs its jobs sequentially --
         # an awaited send would stall every job behind it and the poll
         # cadence. The truncated detail matches what the row
         # recorded. send's boolean is deliberately ignored: the Notifier does

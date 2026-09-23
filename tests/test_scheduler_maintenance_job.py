@@ -11,6 +11,7 @@ import logging
 import threading
 from pathlib import Path
 
+import requests
 from sqlalchemy import select
 
 from autoposter.config.holder import ConfigHolder
@@ -311,3 +312,30 @@ async def test_the_server_library_is_read_off_the_event_loop(session):
 
     assert summary == "ran clean_bundles, empty_trash, optimize"
     assert seen and loop_thread not in seen
+
+
+async def test_an_unreachable_server_fails_every_operation_by_class_name_only(session):
+    """perf C2 moved the ``server.library`` read onto the thread, so a Plex
+    that cannot be reached now fails INSIDE each operation's call rather than
+    before the loop: every enabled operation is reported failed, none ran,
+    and the served summary still carries the class name only -- never the URL
+    a requests failure's str() embeds (row 213's rule)."""
+    url = "http://plex:32400/library"
+
+    class _Unreachable:
+        @property
+        def library(self):
+            raise requests.exceptions.ConnectionError(url)
+
+    job = make_maintenance_job(
+        _holder(clean_bundles=True, empty_trash=True, optimize=True), _Unreachable
+    )
+    summary = await job.run(session)
+
+    # The order is the job body's own ``wanted`` list.
+    assert summary == (
+        "ran nothing; clean_bundles failed (ConnectionError); "
+        "empty_trash failed (ConnectionError); optimize failed (ConnectionError)"
+    )
+    assert "plex:32400" not in summary
+    assert url not in summary
