@@ -888,7 +888,7 @@ async def _get_or_create_render(
         # walk), and because nothing downstream ever rolls a background up:
         # `deliver` records nothing for one, so without this it sat at the
         # column default `pending` forever (2,253 of them on 2026-09-23;
-        # `d4b7e1a9c250` settled those). Stamping it on every pass from
+        # `e8c3f5a2b691` settled those). Stamping it on every pass from
         # `deliver`'s early return instead would cost an UPDATE per
         # background per pass, and only while badges are on.
         #
