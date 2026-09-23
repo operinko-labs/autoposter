@@ -9,6 +9,7 @@ that ``conftest.py`` drops and recreates on every test.
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import asyncpg
@@ -783,6 +784,167 @@ async def test_the_render_logo_columns_migration_is_reversible():
         again = alembic("upgrade", "head")
         assert again.returncode == 0, again.stdout + again.stderr
         assert {"logo_source_url", "logo_sha256"} <= await columns()
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        finally:
+            await maint.close()
+
+
+BACKGROUND_DELIVERIES_REVISION = "d4b7e1a9c250"
+
+
+async def test_the_background_deliveries_migration_settles_exactly_the_stranded_rows():
+    """The 2026-09-23 production shape, seeded on a scratch database at the
+    revision before the fix: ``c1d2e3f4a5b6``'s backfill copied every render's
+    old ``upload_status`` into a ``plex`` delivery row with no horizon, so
+    2,249 background renders -- which are never delivered by design -- each
+    carried a ``pending`` row every full pass then named as ``plex: artwork
+    pending``, and 5 title cards carried one the retry pass could never pick
+    up (it selects ``next_attempt_at <= now``, and NULL is never that).
+
+    Every other row is a control that must come through byte-for-byte: the
+    upgrade is compared against a whole-table snapshot, so a clause that
+    reached one row too far fails here rather than in production. Then the
+    documented no-op downgrade, and a second upgrade that must find nothing
+    left to do. ``down_revision`` is read off the script, like the logo
+    columns test above."""
+    if not await _postgres_reachable():
+        _unreachable_postgres()
+
+    script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
+    before = script.get_revision(BACKGROUND_DELIVERIES_REVISION).down_revision
+    name = f"{SCRATCH_DB_NAME}_bgdeliv"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        await maint.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, name)
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    async def connect():
+        return await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+
+    async def snapshot() -> tuple[dict, dict]:
+        conn = await connect()
+        try:
+            deliveries = {
+                row["id"]: dict(row) for row in await conn.fetch(
+                    "SELECT id, render_id, server, status, attempted_at, uploaded_at, "
+                    "next_attempt_at, attempts, fingerprint, detail FROM render_deliveries"
+                )
+            }
+            writes = {
+                row["id"]: dict(row) for row in await conn.fetch(
+                    "SELECT id, item_id, server, status, attempted_at, written_at, "
+                    "next_attempt_at, attempts, detail FROM metadata_writes"
+                )
+            }
+        finally:
+            await conn.close()
+        return deliveries, writes
+
+    try:
+        step = alembic("upgrade", before)
+        assert step.returncode == 0, step.stdout + step.stderr
+
+        conn = await connect()
+        try:
+            async def item(key: str, kind: str = "movie") -> int:
+                return await conn.fetchval(
+                    "INSERT INTO media_items (identity_key, library, kind, title) "
+                    "VALUES ($1, 'Movies', $2, $1) RETURNING id", key, kind,
+                )
+
+            async def render(item_id: int, art_kind: str) -> int:
+                return await conn.fetchval(
+                    "INSERT INTO renders (item_id, art_kind, source_mode, status, asset_path) "
+                    "VALUES ($1, $2, 'generate', 'rendered', '/assets/x.jpg') RETURNING id",
+                    item_id, art_kind,
+                )
+
+            async def delivery(render_id: int, status: str, *, uploaded: bool = False,
+                               horizon: datetime | None = None) -> int:
+                return await conn.fetchval(
+                    "INSERT INTO render_deliveries (render_id, server, status, uploaded_at, "
+                    "next_attempt_at) VALUES ($1, 'plex', $2, "
+                    "CASE WHEN $3 THEN now() - interval '3 days' END, "
+                    "$4::timestamptz) RETURNING id",
+                    render_id, status, uploaded, horizon,
+                )
+
+            movie = await item("movie:bg:1")
+            other = await item("movie:bg:2")
+            episode = await item("episode:tc:1", "episode")
+            # The backfill's shape exactly: pending, no horizon, no timestamps.
+            bg_pending = await delivery(await render(movie, "background"), "pending")
+            # Kept: should a background ever HAVE been delivered, that is a
+            # fact about what the server serves, not noise.
+            bg_uploaded = await delivery(await render(other, "background"), "uploaded", uploaded=True)
+            stranded = await delivery(await render(episode, "title_card"), "pending")
+            horizon = datetime(2030, 1, 1, tzinfo=timezone.utc)
+            normal = await delivery(await render(movie, "poster"), "pending", horizon=horizon)
+            uploaded = await delivery(await render(other, "poster"), "uploaded", uploaded=True)
+            stranded_write = await conn.fetchval(
+                "INSERT INTO metadata_writes (item_id, server, status) "
+                "VALUES ($1, 'plex', 'pending') RETURNING id", movie,
+            )
+            await conn.execute(
+                "INSERT INTO metadata_writes (item_id, server, status, written_at) "
+                "VALUES ($1, 'plex', 'written', now())", other,
+            )
+        finally:
+            await conn.close()
+
+        seeded_deliveries, seeded_writes = await snapshot()
+
+        head = alembic("upgrade", "head")
+        assert head.returncode == 0, head.stdout + head.stderr
+        after_deliveries, after_writes = await snapshot()
+
+        assert set(after_deliveries) == set(seeded_deliveries) - {bg_pending}, (
+            "exactly the never-delivered background row must be deleted"
+        )
+        assert bg_uploaded in after_deliveries
+        armed = after_deliveries[stranded]
+        assert armed["status"] == "pending" and armed["next_attempt_at"] is not None, (
+            "the stranded title card must be given a horizon the retry pass can reach"
+        )
+        assert {**armed, "next_attempt_at": None} == seeded_deliveries[stranded], (
+            "arming may change the horizon and nothing else"
+        )
+        for untouched in (bg_uploaded, normal, uploaded):
+            assert after_deliveries[untouched] == seeded_deliveries[untouched], untouched
+
+        armed_write = after_writes[stranded_write]
+        assert armed_write["next_attempt_at"] is not None
+        assert {**armed_write, "next_attempt_at": None} == seeded_writes[stranded_write]
+        assert {k: v for k, v in after_writes.items() if k != stranded_write} == {
+            k: v for k, v in seeded_writes.items() if k != stranded_write
+        }
+
+        down = alembic("downgrade", before)
+        assert down.returncode == 0, down.stdout + down.stderr
+        assert await snapshot() == (after_deliveries, after_writes), (
+            "the downgrade is a documented no-op and must leave every row as it is"
+        )
+
+        again = alembic("upgrade", "head")
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert await snapshot() == (after_deliveries, after_writes), (
+            "a second upgrade must find nothing left to settle"
+        )
     finally:
         maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
         try:

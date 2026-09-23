@@ -2931,6 +2931,33 @@ async def test_an_absent_only_deliver_does_no_rollup_and_no_commit(
     assert row.status == "absent" and row.detail == ABSENT_DETAIL
 
 
+async def test_a_background_delivery_row_never_turns_a_pass_into_a_warning(
+    session, config_with_badges, monkeypatch,
+):
+    """The 2026-09-23 full pass, through the real entry point: 2,246 jobs
+    finished ``done_with_warnings`` on ``plex: artwork pending``, each naming
+    a background's delivery row that ``c1d2e3f4a5b6``'s backfill left
+    ``pending`` with no horizon. ``deliver`` never touches a background, so
+    nothing in a pass could ever settle that row -- the sentence has to be
+    the thing that knows a background is owed nothing."""
+    monkeypatch.setattr(pipeline_module, "render_artifact", _fake_render_artifact)
+    monkeypatch.setattr(pipeline_module, "compose_badged_bytes", _fake_compose)
+    plex = FakeMediaServer(name="plex")
+    plex.items[INTENT.dedupe_key] = fake_resolved("plex", "p1", file_path="/plex/m.mkv")
+    servers = Servers({"plex": plex})
+    renders = await pipeline_module.process_item(session, config_with_badges, None, servers, [], INTENT)
+    background = next(r for r in renders if r.art_kind == "background")
+    session.add(RenderDelivery(render_id=background.id, server="plex", status="pending"))
+    await session.commit()
+
+    warnings: list[str] = []
+    await pipeline_module.process_item(
+        session, config_with_badges, None, servers, [], INTENT, warnings=warnings,
+    )
+
+    assert warnings == []
+
+
 async def test_process_item_reports_a_failed_metadata_write_as_a_warning(
     session, config_with_badges, monkeypatch,
 ):
