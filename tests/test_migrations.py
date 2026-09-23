@@ -951,3 +951,114 @@ async def test_the_background_deliveries_migration_settles_exactly_the_stranded_
             await maint.execute(f'DROP DATABASE IF EXISTS "{name}"')
         finally:
             await maint.close()
+
+
+BACKGROUND_UPLOAD_STATUS_REVISION = "e8c3f5a2b691"
+
+
+async def test_the_background_upload_status_migration_touches_only_pending_backgrounds():
+    """Every background render read ``renders.upload_status = 'pending'`` --
+    the column default, since ``deliver`` records nothing for one and so no
+    roll-up ever ran -- and this revision settles them to ``skipped``, the
+    word ``deliveries.rollup`` gives a render owed nothing. Seeded at the
+    revision before it with a pending background (-> ``skipped``), a pending
+    poster and a pending title card (real owed work: unchanged), and a
+    background whose roll-up already says ``uploaded`` (a real delivery's
+    truth: unchanged). Compared as a whole-table snapshot, then the
+    documented no-op downgrade and a second upgrade that finds nothing left.
+    ``down_revision`` is read off the script, like the tests above."""
+    if not await _postgres_reachable():
+        _unreachable_postgres()
+
+    script = ScriptDirectory.from_config(Config(str(REPO_ROOT / "alembic.ini")))
+    before = script.get_revision(BACKGROUND_UPLOAD_STATUS_REVISION).down_revision
+    name = f"{SCRATCH_DB_NAME}_bgstatus"
+
+    maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+    try:
+        await maint.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        await maint.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await maint.close()
+
+    url = SCRATCH_DB_URL.replace(SCRATCH_DB_NAME, name)
+    env = dict(os.environ, AUTOPOSTER_DATABASE_URL=url)
+
+    def alembic(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+
+    async def connect():
+        return await asyncpg.connect(url.replace("postgresql+asyncpg", "postgresql"), timeout=5)
+
+    async def snapshot() -> dict:
+        conn = await connect()
+        try:
+            return {
+                row["id"]: dict(row) for row in await conn.fetch(
+                    "SELECT id, item_id, art_kind, status, upload_status, uploaded_at "
+                    "FROM renders"
+                )
+            }
+        finally:
+            await conn.close()
+
+    try:
+        step = alembic("upgrade", before)
+        assert step.returncode == 0, step.stdout + step.stderr
+
+        conn = await connect()
+        try:
+            async def item(key: str, kind: str = "movie") -> int:
+                return await conn.fetchval(
+                    "INSERT INTO media_items (identity_key, library, kind, title) "
+                    "VALUES ($1, 'Movies', $2, $1) RETURNING id", key, kind,
+                )
+
+            async def render(item_id: int, art_kind: str, upload_status: str) -> int:
+                return await conn.fetchval(
+                    "INSERT INTO renders (item_id, art_kind, source_mode, status, asset_path, "
+                    "upload_status) VALUES ($1, $2, 'generate', 'rendered', '/assets/x.jpg', $3) "
+                    "RETURNING id",
+                    item_id, art_kind, upload_status,
+                )
+
+            movie = await item("movie:bgstatus:1")
+            other = await item("movie:bgstatus:2")
+            episode = await item("episode:bgstatus:1", "episode")
+            bg_pending = await render(movie, "background", "pending")
+            await render(other, "background", "uploaded")
+            await render(movie, "poster", "pending")
+            await render(episode, "title_card", "pending")
+        finally:
+            await conn.close()
+
+        seeded = await snapshot()
+
+        head = alembic("upgrade", "head")
+        assert head.returncode == 0, head.stdout + head.stderr
+        after = await snapshot()
+
+        assert after[bg_pending]["upload_status"] == "skipped"
+        assert {**after[bg_pending], "upload_status": "pending"} == seeded[bg_pending]
+        assert {k: v for k, v in after.items() if k != bg_pending} == {
+            k: v for k, v in seeded.items() if k != bg_pending
+        }, "only the pending background may change"
+
+        down = alembic("downgrade", before)
+        assert down.returncode == 0, down.stdout + down.stderr
+        assert await snapshot() == after, (
+            "the downgrade is a documented no-op and must leave every row as it is"
+        )
+
+        again = alembic("upgrade", "head")
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert await snapshot() == after, "a second upgrade must find nothing left to settle"
+    finally:
+        maint = await asyncpg.connect(MAINTENANCE_DB_URL, timeout=3)
+        try:
+            await maint.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        finally:
+            await maint.close()

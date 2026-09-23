@@ -875,9 +875,28 @@ async def _get_or_create_render(
     ``(item_id, art_kind)`` carries a real unique constraint; see
     ``_upsert_media_item`` for why select-then-insert is unsafe here.
     """
-    stmt = insert(Render).values(
-        item_id=media_item.id, art_kind=art_kind, asset_path=str(asset_path)
-    )
+    values: dict[str, object] = {
+        "item_id": media_item.id, "art_kind": art_kind, "asset_path": str(asset_path),
+    }
+    if art_kind == "background":
+        # A background is owed no delivery to any server (`deliver` and
+        # `compose_badged_bytes` return before one is asked), so its roll-up
+        # is `skipped` -- `deliveries.rollup`'s own word for a render with
+        # nothing owed -- from the moment the row exists. HERE, at birth,
+        # because this is the one place every renders row is created
+        # (`render_artifact`, `process_item`'s refusal branch, the adopt
+        # walk), and because nothing downstream ever rolls a background up:
+        # `deliver` records nothing for one, so without this it sat at the
+        # column default `pending` forever (2,253 of them on 2026-09-23;
+        # `d4b7e1a9c250` settled those). Stamping it on every pass from
+        # `deliver`'s early return instead would cost an UPDATE per
+        # background per pass, and only while badges are on.
+        #
+        # INSERT only, not the conflict branch: an existing row's roll-up
+        # is whatever its delivery rows say, and this function has no
+        # business rewriting it.
+        values["upload_status"] = "skipped"
+    stmt = insert(Render).values(**values)
     stmt = stmt.on_conflict_do_update(
         index_elements=["item_id", "art_kind"], set_={"asset_path": str(asset_path)}
     )
