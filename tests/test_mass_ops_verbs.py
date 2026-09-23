@@ -289,6 +289,7 @@ class RecordingPlexItem(LockableItem):
         self.edits = []
         self.saved = 0
         self._pending_labels = []
+        self._pending_label_removals = []
 
     def batchEdits(self):  # noqa: N802 - plexapi name
         pass
@@ -299,13 +300,22 @@ class RecordingPlexItem(LockableItem):
     def addLabel(self, tags):  # noqa: N802 - plexapi name
         self._pending_labels.extend(tags)
 
+    def removeLabel(self, tags, locked=True):  # noqa: N802 - plexapi name
+        self._pending_label_removals.extend(tags)
+
     def saveEdits(self):  # noqa: N802 - plexapi name
-        # Row 85's label additions are queued through addLabel (see
+        # Row 85's label changes are queued through addLabel/removeLabel (see
         # plex/writer._apply_label_edits), so they are gathered here into
         # the same single-entry-per-write shape `edit()` already records.
+        labels = {}
         if self._pending_labels:
-            self.edits.append({"labels.added": list(self._pending_labels)})
+            labels["labels.added"] = list(self._pending_labels)
+        if self._pending_label_removals:
+            labels["labels.removed"] = list(self._pending_label_removals)
+        if labels:
+            self.edits.append(labels)
             self._pending_labels = []
+            self._pending_label_removals = []
         self.saved += 1
         # What Plex would report on the next read: every field just written is
         # now in the state we asked for. This is what makes the second-pass

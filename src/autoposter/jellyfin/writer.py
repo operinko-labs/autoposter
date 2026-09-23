@@ -327,10 +327,11 @@ async def apply_facts(
     # Parental-guide labels (roadmap row 85) have no Jellyfin DTO home this
     # task writes to -- Tags is the nearest concept and is not what a Plex
     # label maps to; dropped rather than mis-written.
-    if edits.get("labels.added"):
+    label_changes = len(edits.get("labels.added", [])) + len(edits.get("labels.removed", []))
+    if label_changes:
         logger.debug(
             "jellyfin: parental-guide labels have no writable DTO property on this server; "
-            "dropping %d label(s)", len(edits["labels.added"]),
+            "dropping %d label change(s)", label_changes,
         )
 
     # --- LockedFields: existing membership, plus/minus what the edits ask for.
