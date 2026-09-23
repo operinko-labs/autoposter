@@ -9,6 +9,7 @@ the whole library, which is the thing adoption exists to avoid.
 """
 
 import hashlib
+import os
 from pathlib import Path
 
 import httpx
@@ -174,6 +175,12 @@ async def test_gather_reflects_the_overlay_file_bytes(tmp_path):
     overlay.write_bytes(b"overlay-v1")
     _, before = await gather_fingerprint_inputs(config, item(), "poster")
     overlay.write_bytes(b"overlay-v2")
+    # The same size as v1, and two writes inside one filesystem timestamp
+    # tick share an mtime -- the one thing render/pipeline.py's stat-keyed
+    # asset hash cache (perf workstream B2) cannot see. A real replacement
+    # moves the mtime, so this test does too.
+    stat = overlay.stat()
+    os.utime(overlay, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     _, after = await gather_fingerprint_inputs(config, item(), "poster")
     assert before != after
 

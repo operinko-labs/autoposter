@@ -130,6 +130,39 @@ def _file_sha256(path: Path) -> str:
         return ""
 
 
+# Perf workstream B2. `gather_fingerprint_inputs` hashes the overlay and up to
+# three fonts for every art kind of every item -- tens of thousands of
+# whole-file reads of the same handful of files per full pass, off a mount that
+# may be NFS. Keyed on (path, st_mtime_ns, st_size), so a file written over the
+# old name still changes the key and is read again. The one thing the key
+# cannot see is a rewrite that keeps both the size and the nanosecond mtime,
+# which an operator replacing a font or an overlay does not produce.
+# Unbounded on purpose: the key space is the overlay and font files a config
+# names, times the edits made to them in one process's life.
+_ASSET_HASHES: dict[tuple[str, int, int], str] = {}
+
+
+def _asset_sha256(path: Path) -> str:
+    """``_file_sha256`` for a font or overlay, memoised on the file's stat.
+
+    Synchronous and called through ``asyncio.to_thread`` like the uncached
+    function it wraps, so the ``stat`` and any read share one thread hop.
+    Only the fingerprint's asset inputs come through here: the adopted
+    short-circuit's whole-target hash stays on ``_file_sha256``, uncached,
+    because that hash exists to notice a file replaced behind the row's back.
+    """
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return ""
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    digest = _ASSET_HASHES.get(key)
+    if digest is None:
+        digest = _file_sha256(path)
+        _ASSET_HASHES[key] = digest
+    return digest
+
+
 def _stage_override(override: Path, working: Path, *, stage: str) -> str:
     """Copy the manual-override file into the working directory and hash it.
 
@@ -541,7 +574,7 @@ async def gather_fingerprint_inputs(
     text_inputs = [t for t in (primary_text, secondary_text) if t] if draw_text else []
     overlay_hash = (
         await asyncio.to_thread(
-            _file_sha256, Path(config.overlays_root) / settings.overlay_file
+            _asset_sha256, Path(config.overlays_root) / settings.overlay_file
         )
         if settings.add_overlay and not suppress_styling
         else ""
@@ -550,13 +583,13 @@ async def gather_fingerprint_inputs(
     if draw_text and settings.text is not None and primary_text:
         font_hashes.append(
             await asyncio.to_thread(
-                _file_sha256, Path(config.fonts_root) / settings.text.font
+                _asset_sha256, Path(config.fonts_root) / settings.text.font
             )
         )
     if art_kind == "title_card" and settings.episode_text is not None and secondary_text:
         font_hashes.append(
             await asyncio.to_thread(
-                _file_sha256, Path(config.fonts_root) / settings.episode_text.font
+                _asset_sha256, Path(config.fonts_root) / settings.episode_text.font
             )
         )
     # Row 78's block, gated the same three ways `compose_styled` gates it --
@@ -572,7 +605,7 @@ async def gather_fingerprint_inputs(
     ):
         font_hashes.append(
             await asyncio.to_thread(
-                _file_sha256, Path(config.fonts_root) / settings.show_title.font
+                _asset_sha256, Path(config.fonts_root) / settings.show_title.font
             )
         )
     return text_inputs, [overlay_hash, *font_hashes, logo_sha]
