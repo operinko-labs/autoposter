@@ -4,10 +4,10 @@ The one place every reader outside ``render/pipeline.py`` goes to translate
 between a ``media_items`` row and the per-server native id it has on each
 server it is known to. ``pipeline.upsert_server_ref`` is the only writer.
 """
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from autoposter.db.models import MediaItemServerRef
+from autoposter.db.models import MediaItem, MediaItemServerRef
 
 # asyncpg caps one statement at 32,767 bind parameters. A full-library caller
 # (a run_full_pass over every media_items row, the artwork/metadata backup
@@ -84,3 +84,50 @@ async def refs_for_items(session: AsyncSession, item_ids: list[int]) -> dict[int
         for item_id, server, native_id in rows.all():
             result[item_id].setdefault(server, native_id)
     return result
+
+
+async def native_id_by_external_ids(
+    session: AsyncSession,
+    server: str,
+    *,
+    kind: str,
+    tmdb_id: int | None,
+    tvdb_id: int | None,
+    season_number: int | None,
+    episode_number: int | None,
+) -> str | None:
+    """The stored ``server`` id of the ONE item these external ids name, or None.
+
+    Perf workstream B3's webhook shortcut (``render/pipeline.process_item``).
+    ``media_items.tmdb_id``/``tvdb_id`` are both indexed; the kind and the
+    season/episode numbers narrow a show's id down to one season or episode.
+    More than one matching item -- one movie filed in "Movies" and "4K Movies"
+    -- answers None: which of them a webhook means is decided by the resolver's
+    own section walk today, and a hint must not change that answer. Newest ref
+    per item, the ``id DESC`` + ``setdefault`` rule the other readers here use.
+    """
+    id_matches = []
+    if tmdb_id:
+        id_matches.append(MediaItem.tmdb_id == tmdb_id)
+    if tvdb_id:
+        id_matches.append(MediaItem.tvdb_id == tvdb_id)
+    if not id_matches:
+        return None
+    rows = await session.execute(
+        select(MediaItemServerRef.item_id, MediaItemServerRef.native_id)
+        .join(MediaItem, MediaItem.id == MediaItemServerRef.item_id)
+        .where(
+            MediaItemServerRef.server == server,
+            MediaItem.kind == kind,
+            or_(*id_matches),
+            MediaItem.season_number.is_not_distinct_from(season_number),
+            MediaItem.episode_number.is_not_distinct_from(episode_number),
+        )
+        .order_by(MediaItemServerRef.id.desc())
+    )
+    by_item: dict[int, str] = {}
+    for item_id, native_id in rows.all():
+        by_item.setdefault(item_id, native_id)
+    if len(by_item) != 1:
+        return None
+    return next(iter(by_item.values()))

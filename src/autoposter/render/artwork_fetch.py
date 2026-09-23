@@ -9,7 +9,8 @@ business loading; and ``render/pipeline`` cannot import a helper that lives in
 ``artwork_modes`` either. Until this module existed the only ways to close the
 updater's door were a second copy of the walk or an import cycle.
 
-This module is a LEAF: it imports the provider ladder and nothing else of ours.
+This module is a LEAF: it imports the provider ladder and render/slots.py
+(stdlib-only) and nothing else of ours.
 ``render/pipeline`` re-exports every name it used to own, so ``api/candidates``,
 ``app.py`` and the two guard suites keep importing them from there unchanged.
 
@@ -28,7 +29,8 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 
 from autoposter.providers.base import ArtRequest
-from autoposter.providers.ladder import select_artwork
+from autoposter.providers.ladder import Selection, select_artwork
+from autoposter.render.slots import render_slot
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +93,8 @@ def _looks_like_svg(path: Path) -> bool:
 # (``Image.MAX_IMAGE_PIXELS`` = 89,478,485; the error only fires above double
 # that, 178,956,970px, and the band in between just warns and decodes in
 # full). Without this, that warn band is a ~537-716MB decode with no cap of
-# its own, and five workers (``queue/worker.run_workers``) can each be doing
-# one in the same process.
+# its own, and before render/slots.py every worker (``queue/worker.run_workers``)
+# could be doing one in the same process; RENDER_SLOTS now caps that.
 _ARTWORK_MAX_PIXELS = 64_000_000
 
 
@@ -206,7 +208,10 @@ async def _download(
                         )
                     digest.update(chunk)
                     handle.write(chunk)
-        await asyncio.to_thread(_validate_image, destination, stage)
+        # One of RENDER_SLOTS (perf workstream B4, render/slots.py): the full
+        # decode is the memory-heavy half of a download.
+        async with render_slot():
+            await asyncio.to_thread(_validate_image, destination, stage)
     except BaseException:
         destination.unlink(missing_ok=True)
         raise
@@ -233,8 +238,9 @@ async def pick_guarded_logo(
     *,
     native_id: str,
     raster_only: bool = False,
-) -> tuple[Path | None, str, int]:
-    """The clearlogo for this item: ``(path, sha256, candidates skipped)``.
+    first: Selection | None = None,
+) -> tuple[Path | None, str, int, str | None]:
+    """The clearlogo for this item: ``(path, sha256, candidates skipped, url)``.
 
     Was ``render/pipeline._pick_logo``, generalised in exactly two ways so the
     mass-ops logo updater can share it rather than grow a second copy: the
@@ -267,10 +273,18 @@ async def pick_guarded_logo(
       unusable; ``_validate_image`` returns early for an SVG, so that download
       is the whole cost.
 
-    ``(None, "", n)`` when nothing usable was found. Every caller treats that
+    ``(None, "", n, None)`` when nothing usable was found. Every caller treats that
     as a FALL-THROUGH, never a failure of the wider unit of work: the render
     path renders the poster without a logo, and the updater skips the item and
     moves to the next one. The refusal outcome stays for the BASE image alone.
+
+    ``first`` (perf workstream B1) is the ladder's answer to the walk's FIRST
+    question, when the caller already has it: the render path asks once to
+    learn whether the first candidate is the logo it composited last time, and
+    handing that answer in keeps the walk from asking the providers the same
+    question twice. ``None`` -- the mass-ops updater -- asks as before.
+    ``url`` is the accepted candidate's URL, which the render path records
+    beside the digest; ``None`` when nothing was accepted.
 
     Non-``SourceRefused`` exceptions -- a 404, a connect error -- are NOT
     caught here and never trigger a re-ask. They propagate to the caller's own
@@ -289,10 +303,13 @@ async def pick_guarded_logo(
     """
     tried: set[str] = set()
     skipped = 0
-    for _ in range(_MAX_LOGO_ATTEMPTS):
-        selection = await select_artwork(
-            providers, language_order, request, exclude_urls=tried
-        )
+    for attempt in range(_MAX_LOGO_ATTEMPTS):
+        if attempt == 0 and first is not None:
+            selection = first
+        else:
+            selection = await select_artwork(
+                providers, language_order, request, exclude_urls=tried
+            )
         candidate = selection.candidate
         if candidate is None:
             break
@@ -324,5 +341,5 @@ async def pick_guarded_logo(
                 "field cannot take", native_id,
             )
             continue
-        return logo_path, logo_sha, skipped
-    return None, "", skipped
+        return logo_path, logo_sha, skipped, candidate.url
+    return None, "", skipped, None

@@ -179,6 +179,8 @@ class RenderIntent:
     (from a ``media_items`` row we already resolved once), and discovery in
     ``arr/sync.py`` (from the Plex item it just listed). The webhook paths
     below leave it empty: Sonarr and Radarr know nothing about any server.
+    ``render/pipeline.process_item`` may then add a stored-ref hint to such an
+    empty intent, when exactly one stored item matches its external ids.
     """
 
     kind: str  # movie | show | season | episode

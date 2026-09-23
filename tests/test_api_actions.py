@@ -10,7 +10,7 @@ from autoposter.api.auth import hash_password
 from autoposter.app import create_app
 from autoposter.config.loader import load_config
 from autoposter.config.schema import Secrets
-from autoposter.db.models import Job
+from autoposter.db.models import Job, Render
 from autoposter.queue.jobs import fail
 
 from conftest import seed_media_item
@@ -485,6 +485,69 @@ async def test_reprocess_note_is_always_null(client, auth_headers, session):
     assert body["note"] is None
 
 
+# --- reprocess re-verifies the source (perf workstream B1) ---
+
+
+async def test_reprocess_clears_the_fingerprint_of_every_render_of_the_item(
+    client, auth_headers, session
+):
+    """render_artifact now trusts a stored fingerprint enough to skip
+    downloading an unmoved provider image, so an operator's reprocess clears
+    it: that is the explicit "re-check the bytes" the spec keeps. Every art
+    kind of the item, because the job renders every one; nothing of another
+    item; and not badge_fingerprint, which the spec leaves alone."""
+    item = await seed_media_item(
+        session, "rk-fp", library="Movies", kind="movie", title="A", tmdb_id=4101,
+    )
+    other = await seed_media_item(
+        session, "rk-other", library="Movies", kind="movie", title="B", tmdb_id=4102,
+    )
+    renders = [
+        Render(item_id=item.id, art_kind="poster", status="rendered",
+               asset_path="/assets/p.jpg", fingerprint="f" * 64, badge_fingerprint="b" * 64),
+        Render(item_id=item.id, art_kind="background", status="rendered",
+               asset_path="/assets/b.jpg", fingerprint="f" * 64),
+        Render(item_id=other.id, art_kind="poster", status="rendered",
+               asset_path="/assets/o.jpg", fingerprint="k" * 64),
+    ]
+    session.add_all(renders)
+    await session.commit()
+
+    response = await client.post(f"/api/items/{item.id}/reprocess", headers=auth_headers)
+    assert response.status_code == 200
+
+    for render in renders:
+        await session.refresh(render)
+    poster, background, untouched = renders
+    assert poster.fingerprint is None
+    assert background.fingerprint is None
+    assert poster.badge_fingerprint == "b" * 64
+    assert untouched.fingerprint == "k" * 64
+
+
+async def test_a_deduped_reprocess_still_clears_the_fingerprint(client, auth_headers, session):
+    """The second press queues nothing (the first job is still pending) but
+    the operator still asked for a re-check, and the pending job reads the row
+    when it runs."""
+    item = await seed_media_item(
+        session, "rk-dd", library="Movies", kind="movie", title="A", tmdb_id=4103,
+    )
+    render = Render(item_id=item.id, art_kind="poster", status="rendered",
+                    asset_path="/assets/p.jpg", fingerprint="f" * 64)
+    session.add(render)
+    await session.commit()
+
+    first = await client.post(f"/api/items/{item.id}/reprocess", headers=auth_headers)
+    assert first.json()["queued"] is True
+    render.fingerprint = "g" * 64
+    await session.commit()
+
+    second = await client.post(f"/api/items/{item.id}/reprocess", headers=auth_headers)
+    assert second.json()["queued"] is False
+    await session.refresh(render)
+    assert render.fingerprint is None
+
+
 # --- GET /api/config ---
 
 
@@ -499,7 +562,7 @@ async def test_config_returns_the_configuration_shape(client, auth_headers):
     body = response.json()
     # From config/autoposter.example.yaml -- proves this is the real config,
     # not an empty stub.
-    assert body["workers"] == 5
+    assert body["workers"] == load_config(EXAMPLE).workers
     assert "plex" in body
     assert "artwork" in body
 

@@ -430,7 +430,7 @@ class LogoMode:
         """
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                logo_path, _sha, skipped = await pick_guarded_logo(
+                logo_path, _sha, skipped, _url = await pick_guarded_logo(
                     self._http,
                     self._providers,
                     self._config.artwork.logo_language_order,

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from autoposter.config.live import FROZEN_SECTIONS
 from autoposter.config.state import read_secrets_file, secrets_file_path
 from autoposter.overlays.schema import OverlayDefinition
+from autoposter.render.slots import RENDER_SLOTS
 
 _LANG_RE = re.compile(r"^[a-z]{2}$")
 
@@ -4492,7 +4493,16 @@ class Config(BaseModel):
         default=True,
         description="Lay out assets_root in per-library, per-title folders; off uses a flat naming scheme instead.",
     )
-    workers: int = Field(default=5, description="How many render workers run in parallel.")
+    workers: int = Field(
+        default=10,
+        description=(
+            "How many render workers run in parallel. Heavy image work -- "
+            "compositing, badge drawing and decoding a downloaded source -- is "
+            f"capped separately, at most {RENDER_SLOTS} at a time however many "
+            "workers run, so this mostly buys concurrent provider and Plex "
+            "requests."
+        ),
+    )
     settle_seconds: int = Field(
         default=30,
         description=(

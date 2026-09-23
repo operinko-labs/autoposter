@@ -530,9 +530,12 @@ async def pick_candidate(
             )
         ).scalar_one_or_none()
         if render is not None:
-            # The fingerprint short-circuit sits above the override lookup, so
-            # without this the next pass answers "unchanged" and the picked
-            # image never reaches a pixel.
+            # An ADOPTED row's short-circuit sits above the override lookup
+            # (render_artifact), so without this its next pass answers
+            # "adopted" and the picked image never reaches a pixel. Any other
+            # row would move on its own -- the override's path and digest are
+            # fingerprint inputs -- but one rule for both is cheaper than
+            # knowing which a row is.
             render.fingerprint = None
             render.badge_fingerprint = None
 

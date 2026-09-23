@@ -480,6 +480,26 @@ async def test_a_re_search_for_an_unknown_item_is_a_404(client, auth_headers):
     assert response.status_code == 404
 
 
+async def test_a_re_search_clears_the_items_render_fingerprints(client, auth_headers, session):
+    """actions/flags.py promises "a rerender retries the same source". Since
+    perf workstream B1 an unmoved provider URL is not downloaded again unless
+    the fingerprint is gone, so the single re-search clears it (and only it --
+    badge_fingerprint is left alone, as for /items/{id}/reprocess)."""
+    item, render = await _seed(
+        session, rating_key="1", status="failed",
+        fingerprint="f" * 64, badge_fingerprint="b" * 64,
+    )
+
+    response = await client.post(
+        "/api/actions/rerender", headers=auth_headers, json={"item_id": item.id}
+    )
+
+    assert response.status_code == 200
+    await session.refresh(render)
+    assert render.fingerprint is None
+    assert render.badge_fingerprint == "b" * 64
+
+
 async def test_the_bulk_dry_run_counts_and_writes_nothing(client, auth_headers, session):
     await _seed(session, rating_key="1", status="no_art")
     await _seed(session, rating_key="2", status="no_art")

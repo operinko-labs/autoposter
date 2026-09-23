@@ -38,9 +38,11 @@ SECRET_SUFFIXES = (
 
 
 def test_example_config_loads():
+    import yaml
+
     cfg = load_config(EXAMPLE)
     assert cfg.assets_root == Path("/assets")
-    assert cfg.workers == 5
+    assert cfg.workers == yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))["workers"]
     assert cfg.providers.order == ["TMDB", "TVDB", "Fanart"]
     assert cfg.artwork.poster.language_order == ["xx", "en", "fi"]
     assert "Muskarit" in cfg.plex.excluded_libraries

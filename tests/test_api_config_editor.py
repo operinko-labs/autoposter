@@ -60,6 +60,7 @@ from autoposter.render.pipeline import compute_fingerprint, gather_fingerprint_i
 from conftest import seed_media_item
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "autoposter.example.yaml"
+EXAMPLE_WORKERS = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))["workers"]
 PASSWORD = "correct horse battery staple"
 
 
@@ -497,7 +498,7 @@ async def test_a_rejected_document_changes_nothing(client, auth_headers, session
     # The example config's value, not the -1 the refused document asked for.
     # Read off the response rather than off `app.state.config`, which is what
     # the response was dumped from and so cannot disagree with it.
-    assert body["workers"] == 5
+    assert body["workers"] == EXAMPLE_WORKERS
 
 
 async def test_an_unknown_key_is_a_422_at_full_depth(client, auth_headers, session):
@@ -672,9 +673,11 @@ async def test_omitting_a_key_reverts_it_to_the_file(client, auth_headers, app):
         headers=auth_headers,
         json={"document": {}, "confirm": True},
     )
-    assert app.state.config.workers == 5, "the example config's value did not come back"
+    assert app.state.config.workers == EXAMPLE_WORKERS, (
+        "the example config's value did not come back"
+    )
     body = (await client.get("/api/config", headers=auth_headers)).json()
-    assert body["workers"] == 5, "the served config still shows the cleared value"
+    assert body["workers"] == EXAMPLE_WORKERS, "the served config still shows the cleared value"
 
 
 # --- saving ---
@@ -1859,7 +1862,7 @@ async def test_the_incident_restore_body_is_refused_rather_than_written_as_empty
     named = {tuple(entry["loc"]) for entry in response.json()["detail"]}
     assert ("body", "workers") in named, response.text
     assert (await session.execute(select(ConfigOverride))).scalars().all() == []
-    assert app.state.config.workers == 5, "a refused body must not swap anything"
+    assert app.state.config.workers == EXAMPLE_WORKERS, "a refused body must not swap anything"
 
 
 async def test_a_correctly_wrapped_body_is_untouched_by_the_shape_guard(
@@ -1977,7 +1980,9 @@ async def test_emptying_a_non_empty_store_is_allowed_with_confirm(
 
     assert response.status_code == 200
     assert (await session.execute(select(ConfigOverride))).scalar_one().document == {}
-    assert app.state.config.workers == 5, "the example config's value did not come back"
+    assert app.state.config.workers == EXAMPLE_WORKERS, (
+        "the example config's value did not come back"
+    )
 
 
 async def test_confirm_alone_cannot_stand_in_for_a_document(

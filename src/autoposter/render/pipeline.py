@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import hashlib
 import logging
 import os
@@ -31,7 +32,7 @@ from autoposter import deliveries
 from autoposter.db.models import (
     ItemFacts, MediaItem, MediaItemServerRef, MetadataWrite, Render, RenderDelivery, Run,
 )
-from autoposter.db.refs import item_id_for
+from autoposter.db.refs import item_id_for, native_id_by_external_ids
 from autoposter.facts.gather import gather_facts, persist_facts
 from autoposter.facts.mdblist import MDBListLimitReached
 from autoposter.facts.models import GatheredFacts
@@ -49,8 +50,9 @@ from autoposter.plex.client import ResolvedItem
 from autoposter.plex.item_overrides import load_overrides, overlaid_badge_facts
 from autoposter.plex.writer import exemption_reason
 from autoposter.providers import base as art
-from autoposter.providers.ladder import language_rank, normalise_language, select_artwork
+from autoposter.providers.ladder import Selection, language_rank, normalise_language, select_artwork
 from autoposter.render import compositor, naming
+from autoposter.render.slots import render_slot
 # Re-exported, not merely used: these lived here until the mass-ops logo
 # updater needed the same guard and could not import this module to get it (see
 # render/artwork_fetch.py's own docstring). `api/candidates.py`, `app.py` and
@@ -128,6 +130,39 @@ def _file_sha256(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except FileNotFoundError:
         return ""
+
+
+# Perf workstream B2. `gather_fingerprint_inputs` hashes the overlay and up to
+# three fonts for every art kind of every item -- tens of thousands of
+# whole-file reads of the same handful of files per full pass, off a mount that
+# may be NFS. Keyed on (path, st_mtime_ns, st_size), so a file written over the
+# old name still changes the key and is read again. The one thing the key
+# cannot see is a rewrite that keeps both the size and the nanosecond mtime,
+# which an operator replacing a font or an overlay does not produce.
+# Unbounded on purpose: the key space is the overlay and font files a config
+# names, times the edits made to them in one process's life.
+_ASSET_HASHES: dict[tuple[str, int, int], str] = {}
+
+
+def _asset_sha256(path: Path) -> str:
+    """``_file_sha256`` for a font or overlay, memoised on the file's stat.
+
+    Synchronous and called through ``asyncio.to_thread`` like the uncached
+    function it wraps, so the ``stat`` and any read share one thread hop.
+    Only the fingerprint's asset inputs come through here: the adopted
+    short-circuit's whole-target hash stays on ``_file_sha256``, uncached,
+    because that hash exists to notice a file replaced behind the row's back.
+    """
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return ""
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    digest = _ASSET_HASHES.get(key)
+    if digest is None:
+        digest = _file_sha256(path)
+        _ASSET_HASHES[key] = digest
+    return digest
 
 
 def _stage_override(override: Path, working: Path, *, stage: str) -> str:
@@ -541,7 +576,7 @@ async def gather_fingerprint_inputs(
     text_inputs = [t for t in (primary_text, secondary_text) if t] if draw_text else []
     overlay_hash = (
         await asyncio.to_thread(
-            _file_sha256, Path(config.overlays_root) / settings.overlay_file
+            _asset_sha256, Path(config.overlays_root) / settings.overlay_file
         )
         if settings.add_overlay and not suppress_styling
         else ""
@@ -550,13 +585,13 @@ async def gather_fingerprint_inputs(
     if draw_text and settings.text is not None and primary_text:
         font_hashes.append(
             await asyncio.to_thread(
-                _file_sha256, Path(config.fonts_root) / settings.text.font
+                _asset_sha256, Path(config.fonts_root) / settings.text.font
             )
         )
     if art_kind == "title_card" and settings.episode_text is not None and secondary_text:
         font_hashes.append(
             await asyncio.to_thread(
-                _file_sha256, Path(config.fonts_root) / settings.episode_text.font
+                _asset_sha256, Path(config.fonts_root) / settings.episode_text.font
             )
         )
     # Row 78's block, gated the same three ways `compose_styled` gates it --
@@ -572,7 +607,7 @@ async def gather_fingerprint_inputs(
     ):
         font_hashes.append(
             await asyncio.to_thread(
-                _file_sha256, Path(config.fonts_root) / settings.show_title.font
+                _asset_sha256, Path(config.fonts_root) / settings.show_title.font
             )
         )
     return text_inputs, [overlay_hash, *font_hashes, logo_sha]
@@ -873,12 +908,39 @@ class ComposeResult:
     # FitResult). Carried out because render_artifact records it as a quality
     # fact and the value is otherwise computed inside the loop below and
     # dropped. None when no title was drawn at all. Optional with a default so
-    # every other caller of compose_styled -- api/testing.py, api/manual.py,
-    # the artwork modes -- is untouched by its arrival.
+    # the other caller of compose_styled -- api/testing.py -- is untouched by
+    # its arrival.
     point_size: int | None = None
 
 
 async def compose_styled(
+    config: Config,
+    art_kind: str,
+    working: Path,
+    *,
+    primary_text: str | None,
+    secondary_text: str | None,
+    draw_text: bool,
+    logo_path: Path | None = None,
+    suppress_styling: bool = False,
+) -> ComposeResult:
+    """``_compose_styled`` inside one of ``RENDER_SLOTS`` (perf workstream B4).
+
+    Every caller -- the pipeline and api/testing.py's preview -- styles
+    through here, so none of them can run more magick processes at once than
+    the cap allows, however many workers are running. A preview pressed
+    during a full pass waits for a slot like a render does.
+    """
+    async with render_slot():
+        return await _compose_styled(
+            config, art_kind, working,
+            primary_text=primary_text, secondary_text=secondary_text,
+            draw_text=draw_text, logo_path=logo_path,
+            suppress_styling=suppress_styling,
+        )
+
+
+async def _compose_styled(
     config: Config,
     art_kind: str,
     working: Path,
@@ -1022,18 +1084,36 @@ def _provider_rank(providers: list, provider_name: str | None) -> int | None:
     return names.index(provider_name)
 
 
+def _logo_request(config: Config, item: ResolvedItem) -> art.ArtRequest:
+    """The ``ArtRequest`` a poster asks the logo ladder with: the season and
+    episode numbers and ``prefer_clearart`` that a mass-ops row has no
+    equivalent of. One definition for the first ask in ``render_artifact`` and
+    the guard walk ``_pick_logo`` runs, which must be the same question."""
+    return art.ArtRequest(
+        art_kind=art.LOGO,
+        is_movie=item.kind == "movie",
+        tmdb_id=item.tmdb_id,
+        tvdb_id=item.tvdb_id,
+        imdb_id=item.imdb_id,
+        season_number=item.season_number,
+        episode_number=item.episode_number,
+        prefer_clearart=config.artwork.use_clearart,
+    )
+
+
 async def _pick_logo(
     http: httpx.AsyncClient,
     config: Config,
     item: ResolvedItem,
     providers: list,
     tmpdir: Path,
-) -> tuple[Path | None, str, int]:
+    *,
+    first: Selection | None = None,
+) -> tuple[Path | None, str, int, str | None]:
     """This poster's clearlogo, through the shared guard. See
     ``render/artwork_fetch.pick_guarded_logo`` for the three rules and why they
-    exist; this is only the render path's half of the call -- the ``ArtRequest``
-    a poster asks with, which carries the season/episode numbers and
-    ``prefer_clearart`` that a mass-ops row has no equivalent of.
+    exist; this is only the render path's half of the call -- ``_logo_request``
+    and the ladder answer ``render_artifact`` already has (``first``).
 
     ``raster_only`` is left at its default: ImageMagick rasterises an SVG
     clearlogo while compositing (``compositor.build_logo_argv``'s
@@ -1044,18 +1124,117 @@ async def _pick_logo(
         http,
         providers,
         config.artwork.logo_language_order,
-        art.ArtRequest(
-            art_kind=art.LOGO,
-            is_movie=item.kind == "movie",
-            tmdb_id=item.tmdb_id,
-            tvdb_id=item.tvdb_id,
-            imdb_id=item.imdb_id,
-            season_number=item.season_number,
-            episode_number=item.episode_number,
-            prefer_clearart=config.artwork.use_clearart,
-        ),
+        _logo_request(config, item),
         tmpdir,
         native_id=item.native_id,
+        first=first,
+    )
+
+
+def _no_logo_outcome(
+    config: Config, item: ResolvedItem, skipped_logos: int
+) -> tuple[bool, bool]:
+    """``(suppress_text, logo_text_fallback_taken)`` for a poster the guard
+    walk found nothing usable for.
+
+    Lifted out of ``render_artifact`` unchanged when perf workstream B1 gave
+    the walk a second call site (a reused logo that has to be fetched after
+    all, because the fingerprint moved).
+    """
+    if skipped_logos:
+        # The aggregate line, once per poster: the pod log is
+        # the trusted sink for the item's own identity, and
+        # `_pick_logo` has already logged each refusal. No
+        # URL here either.
+        logger.warning(
+            "no usable clearlogo for %s %r: skipped %d candidate(s) "
+            "over the %dpx ceiling or refused after download; "
+            "rendering the poster without one",
+            item.native_id, item.title, skipped_logos,
+            _ARTWORK_MAX_PIXELS,
+        )
+    if not config.artwork.logo_text_fallback:
+        return True, False
+    # The other half of the same decision, which until now
+    # had no variable at all: no logo on any provider AND
+    # logo_text_fallback on, so this poster is wearing its
+    # title text in a logo's place. That is the fact
+    # roadmap 103 calls "logo-to-text fallback taken".
+    # Reached identically whether the ladder had nothing
+    # or everything it had was unusable -- a poster with
+    # no logo is a poster with no logo.
+    return False, True
+
+
+def _can_skip_source_download(render: Render, url: str) -> bool:
+    """Whether a provider candidate's bytes can wait (perf workstream B1).
+
+    True only when this row last rendered from exactly this URL AND recorded
+    both the digest of those bytes and the fingerprint they went into. The
+    stored digest then stands in for the download long enough to ask whether
+    anything ELSE moved. TMDB, fanart.tv and TVDB serve every image at a path
+    unique to that image, so the URL is the identity -- the spec's accepted
+    risk, with an explicit rerender or reprocess (which clears ``fingerprint``,
+    ``api/routes._clear_render_fingerprints``) as the way to re-verify the bytes.
+    """
+    return (
+        render.source_url == url
+        and bool(render.base_sha256)
+        and render.fingerprint is not None
+    )
+
+
+def _draws_text(
+    config: Config,
+    art_kind: str,
+    *,
+    has_logo: bool,
+    suppress_text: bool,
+    local_source: bool,
+    suppress_styling: bool,
+) -> bool:
+    """Whether the title text is drawn -- ``render_artifact``'s one rule for it.
+
+    Lifted out unchanged when perf workstream B1 gave the rule a second call
+    site: a provisional fingerprint is computed before the bytes arrive, and a
+    miss recomputes it after, and the two must agree on this input or the
+    recompute is comparing different things.
+    """
+    draw_text = not (art_kind == "poster" and (has_logo or suppress_text))
+    if local_source and not draw_text_for_local_source(config, art_kind):
+        draw_text = False
+    if suppress_styling:
+        draw_text = False
+    return draw_text
+
+
+async def _render_fingerprint(
+    config: Config,
+    item: ResolvedItem,
+    art_kind: str,
+    source_url: str | None,
+    base_sha: str | None,
+    *,
+    draw_text: bool,
+    logo_sha: str,
+    suppress_styling: bool,
+) -> str:
+    """``render_artifact``'s fingerprint for the inputs it has so far.
+
+    Called once with the stored digest(s) standing in for bytes not yet
+    downloaded, and again with the real ones when that provisional value
+    misses (perf workstream B1). One definition, so the two calls cannot drift.
+    """
+    text_inputs, asset_hashes = await gather_fingerprint_inputs(
+        config, item, art_kind, draw_text=draw_text, logo_sha=logo_sha,
+        suppress_styling=suppress_styling,
+    )
+    # render_version_for, not config.version (roadmap row 111): this art
+    # kind's own settings plus the shared roots, so retuning one kind's
+    # text block leaves the other three kinds' fingerprints byte-identical.
+    return compute_fingerprint(
+        render_version_for(art_kind, config), art_kind, source_url, base_sha,
+        text_inputs, asset_hashes,
     )
 
 
@@ -1155,6 +1334,9 @@ async def render_artifact(
         plex_generated = False
         local_source = False
         chosen_candidate = None
+        # Perf workstream B1: the provider URL whose download was deferred on
+        # the strength of the stored digest, or None when nothing was.
+        deferred_source_url: str | None = None
         # Action Center quality facts (roadmap 11a). Each of these is already
         # decided somewhere below and, until this phase, thrown away: the
         # ladder returns is_fallback and nobody reads it, the logo branch
@@ -1279,9 +1461,21 @@ async def render_artifact(
             else:
                 candidate = selection.candidate
                 chosen_candidate = candidate
-                base_sha = await _download(
-                    http, candidate.url, working, stage=f"the {art_kind} source"
-                )
+                if _can_skip_source_download(render, candidate.url):
+                    # Perf workstream B1. The stored digest stands in for the
+                    # bytes; if the fingerprint below still matches and the
+                    # target exists, nothing is downloaded at all. On a miss
+                    # the download happens there instead -- compose needs the
+                    # bytes -- and the fingerprint is recomputed from the real
+                    # digest. This arm only: a manual override (above) is a file
+                    # operators overwrite in place, and the Plex frame's URL is a
+                    # synthetic key on purpose, so both are always read.
+                    base_sha = render.base_sha256
+                    deferred_source_url = candidate.url
+                else:
+                    base_sha = await _download(
+                        http, candidate.url, working, stage=f"the {art_kind} source"
+                    )
                 source_url = candidate.url
                 provider_name = candidate.provider
                 textless = candidate.is_textless
@@ -1297,6 +1491,12 @@ async def render_artifact(
         # clearlogos). Other art kinds are unaffected.
         logo_path: Path | None = None
         logo_sha = ""
+        # Perf workstream B1: the provider URL of the logo in use (None for an
+        # operator-picked one or none at all), the ladder's first answer (kept
+        # for a deferred walk), and whether the stored digest stood in for it.
+        logo_url: str | None = None
+        logo_first: Selection | None = None
+        logo_deferred = False
         suppress_text = False
         if art_kind == "poster" and config.artwork.use_logo and settings.text is not None:
             # An operator's picked logo comes first, and stops the ladder from
@@ -1315,60 +1515,92 @@ async def render_artifact(
                     _stage_override, picked_logo, logo_path, stage="the clearlogo"
                 )
             elif not online_fetch_disabled(config, art_kind):
-                logo_path, logo_sha, skipped_logos = await _pick_logo(
-                    http, config, item, providers, Path(tmpdir),
+                logo_first = await select_artwork(
+                    providers, config.artwork.logo_language_order, _logo_request(config, item),
                 )
-                if logo_path is None:
-                    if skipped_logos:
-                        # The aggregate line, once per poster: the pod log is
-                        # the trusted sink for the item's own identity, and
-                        # `_pick_logo` has already logged each refusal. No
-                        # URL here either.
-                        logger.warning(
-                            "no usable clearlogo for %s %r: skipped %d candidate(s) "
-                            "over the %dpx ceiling or refused after download; "
-                            "rendering the poster without one",
-                            item.native_id, item.title, skipped_logos,
-                            _ARTWORK_MAX_PIXELS,
+                first_logo = logo_first.candidate
+                if (
+                    first_logo is not None
+                    and render.logo_sha256
+                    and first_logo.url == render.logo_source_url
+                ):
+                    # Perf workstream B1: the ladder's first answer is the logo
+                    # this poster last composited, so its stored digest stands
+                    # in for the download. A miss below runs the guard walk from
+                    # this same answer; anything else -- a different first
+                    # candidate, no stored digest -- runs it right here exactly
+                    # as before. A first candidate the guard REJECTS is never
+                    # stored, so that item keeps paying for the download
+                    # (persisting guard verdicts is out of scope).
+                    logo_sha = render.logo_sha256
+                    logo_url = first_logo.url
+                    logo_deferred = True
+                else:
+                    logo_path, logo_sha, skipped_logos, logo_url = await _pick_logo(
+                        http, config, item, providers, Path(tmpdir), first=logo_first,
+                    )
+                    if logo_path is None:
+                        suppress_text, logo_text_fallback_taken = _no_logo_outcome(
+                            config, item, skipped_logos,
                         )
-                    if not config.artwork.logo_text_fallback:
-                        suppress_text = True
-                    else:
-                        # The other half of the same decision, which until now
-                        # had no variable at all: no logo on any provider AND
-                        # logo_text_fallback on, so this poster is wearing its
-                        # title text in a logo's place. That is the fact
-                        # roadmap 103 calls "logo-to-text fallback taken".
-                        # Reached identically whether the ladder had nothing
-                        # or everything it had was unusable -- a poster with
-                        # no logo is a poster with no logo.
-                        logo_text_fallback_taken = True
 
         suppress_styling = (
             settings.skip_add_text_when_with_text and known_with_text(chosen_candidate)
         )
-        draw_text = not (art_kind == "poster" and (logo_path is not None or suppress_text))
-        if local_source and not draw_text_for_local_source(config, art_kind):
-            draw_text = False
-        if suppress_styling:
-            draw_text = False
-
-        text_inputs, asset_hashes = await gather_fingerprint_inputs(
-            config, item, art_kind, draw_text=draw_text, logo_sha=logo_sha,
+        draw_text = _draws_text(
+            config, art_kind, has_logo=logo_path is not None or logo_deferred,
+            suppress_text=suppress_text, local_source=local_source,
             suppress_styling=suppress_styling,
         )
-
-        # render_version_for, not config.version (roadmap row 111): this art
-        # kind's own settings plus the shared roots, so retuning one kind's
-        # text block leaves the other three kinds' fingerprints byte-identical.
-        fingerprint = compute_fingerprint(
-            render_version_for(art_kind, config), art_kind, source_url, base_sha,
-            text_inputs, asset_hashes,
+        fingerprint = await _render_fingerprint(
+            config, item, art_kind, source_url, base_sha,
+            draw_text=draw_text, logo_sha=logo_sha, suppress_styling=suppress_styling,
         )
         # target.exists() offloaded (it's a stat() against assets_root, which
         # can be an NFS mount) — only reached once a fingerprint already
         # matches, so the short-circuit still skips it entirely otherwise.
-        if render.fingerprint == fingerprint and await asyncio.to_thread(target.exists):
+        unchanged = render.fingerprint == fingerprint and await asyncio.to_thread(target.exists)
+        if not unchanged and (deferred_source_url is not None or logo_deferred):
+            # The provisional fingerprint missed, or the target is gone: this
+            # render composes, so it needs the real bytes of whatever was
+            # deferred, and the stored fingerprint must be the one those bytes
+            # produce -- which is also the comparison every pass made before B1
+            # (a provider that served new bytes at an old URL surfaces here as
+            # a moved digest).
+            if deferred_source_url is not None:
+                base_sha = await _download(
+                    http, deferred_source_url, working, stage=f"the {art_kind} source"
+                )
+            if logo_deferred:
+                # The guard walk, from the same first answer: exactly the walk
+                # a pass without B1 would have run.
+                logo_path, logo_sha, skipped_logos, logo_url = await _pick_logo(
+                    http, config, item, providers, Path(tmpdir), first=logo_first,
+                )
+                logo_deferred = False
+                if logo_path is None:
+                    suppress_text, logo_text_fallback_taken = _no_logo_outcome(
+                        config, item, skipped_logos,
+                    )
+                draw_text = _draws_text(
+                    config, art_kind, has_logo=logo_path is not None,
+                    suppress_text=suppress_text, local_source=local_source,
+                    suppress_styling=suppress_styling,
+                )
+            fingerprint = await _render_fingerprint(
+                config, item, art_kind, source_url, base_sha,
+                draw_text=draw_text, logo_sha=logo_sha, suppress_styling=suppress_styling,
+            )
+            unchanged = (
+                render.fingerprint == fingerprint and await asyncio.to_thread(target.exists)
+            )
+        if unchanged:
+            if logo_url is not None:
+                # Recorded even though nothing else is written on this path: a
+                # row older than the columns downloads its logo once, here, and
+                # must remember it or a settled library would never stop paying.
+                render.logo_source_url = logo_url
+                render.logo_sha256 = logo_sha
             render.status = "rendered"
             render.detail = "unchanged"
             await session.commit()
@@ -1428,6 +1660,11 @@ async def render_artifact(
     # below: the app and database clocks drift.
     render.quality_scored_at = func.now()
     render.base_sha256 = base_sha
+    # Perf workstream B1: what the next pass compares the logo ladder's first
+    # answer against. Cleared for a poster that composited no provider logo
+    # (an operator's pick, none found), so a stale URL cannot stand in later.
+    render.logo_source_url = logo_url
+    render.logo_sha256 = logo_sha if logo_url is not None else None
     render.fingerprint = fingerprint
     render.status = "rendered"
     render.detail = (
@@ -1502,8 +1739,19 @@ def _publish(working: Path, target: Path, backup_root: Path | None, assets_root:
     full relative path — not just the immediate parent folder name — keeps two
     libraries that happen to share a folder name (e.g. "Movies" and "4K Movies"
     both holding "Dune (2024)") from clobbering each other's backup.
+
+    When the target already holds exactly these bytes, nothing is written --
+    neither the backup nor the target. A forced rerender (Re-run clears the
+    fingerprint) that reproduces the published art must not rotate the one
+    backup generation, or the rollback point is lost to a copy of itself.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
+    if (
+        target.exists()
+        and target.stat().st_size == working.stat().st_size
+        and target.read_bytes() == working.read_bytes()
+    ):
+        return
     if backup_root is not None and target.exists():
         relative = target.relative_to(Path(assets_root))
         backup = Path(backup_root) / relative
@@ -2220,11 +2468,14 @@ async def compose_badged_bytes(
             resolved_images[definition.name] = path
         usable_definitions.append(definition)
 
-    data = await asyncio.to_thread(
-        compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint,
-        definitions=usable_definitions, resolved_images=resolved_images,
-        fonts_root=config.fonts_root,
-    )
+    # One of RENDER_SLOTS (perf workstream B4): the Pillow badge compose holds
+    # a full-size decode of the published artifact.
+    async with render_slot():
+        data = await asyncio.to_thread(
+            compose_badges, Path(render.asset_path), render.art_kind, inputs, fingerprint,
+            definitions=usable_definitions, resolved_images=resolved_images,
+            fonts_root=config.fonts_root,
+        )
     if not force:
         # A forced compose is a compose FOR
         # DELIVERY -- one server is owed bytes the others already have -- and
@@ -2610,6 +2861,23 @@ async def process_item(
     # delivery, never a held job. Only when NO server resolves does the old
     # ItemNotFound/PathMismatch ladder fire, so the worker defers or parks
     # exactly as before.
+    # Perf workstream B3. A webhook intent carries no refs (Sonarr and Radarr
+    # know nothing about any server), so the Plex resolve below walked every
+    # section with `getGuid` -- a search, a match and a second search per
+    # section per guid -- even for an item resolved many times before. When
+    # exactly one stored item answers to these external ids, its rating key
+    # goes on the intent as the same HINT the full pass and reprocess carry
+    # (`RenderIntent.refs`): `PlexClient._fetch_by_rating_key_sync` checks
+    # type, library and numbers or guids, and anything it refuses -- a
+    # renumbered key, NotFound -- falls back to exactly today's search.
+    if not intent.refs and "plex" in servers:
+        stored = await native_id_by_external_ids(
+            session, "plex", kind=intent.kind, tmdb_id=intent.tmdb_id,
+            tvdb_id=intent.tvdb_id, season_number=intent.season_number,
+            episode_number=intent.episode_number,
+        )
+        if stored is not None:
+            intent = dataclasses.replace(intent, refs={"plex": stored})
     # Spec §1, read ONCE and before any resolve: a server whose row for this
     # item is `absent` does not carry its library, so it is asked nothing --
     # not resolved, not delivered to, not written to. The guards in
@@ -2620,8 +2888,9 @@ async def process_item(
     # row cannot be found before it resolves: the full pass, reprocess and
     # discovery all build their intents from a `media_items` row (see
     # `RenderIntent.refs`), and those are the passes whose cost this is. A
-    # webhook intent carries none; its item's set is read below, once the
-    # identity is established, exactly as before.
+    # webhook intent carries only the B3 hint above, when one stored item
+    # matched; without it, its item's set is read below, once the identity is
+    # established, exactly as before.
     known_item_id = None
     for name, native_id in intent.refs.items():
         known_item_id = await item_id_for(session, name, native_id)
@@ -2916,10 +3185,10 @@ async def process_item(
         #
         # `absent_servers` is subtracted HERE and not left to the resolve
         # loop's own `continue`: that loop reads the set keyed off the refs
-        # the INTENT carries, and a webhook intent carries none -- so an
-        # absent server is asked anyway on those passes, misses, and would be
-        # reported as not found. By the time this block runs the set has been
-        # re-read for the item itself, which is the honest one.
+        # the INTENT carries, and a webhook intent without the B3 hint carries
+        # none -- so an absent server is asked anyway on those passes, misses,
+        # and would be reported as not found. By the time this block runs the
+        # set has been re-read for the item itself, which is the honest one.
         #
         # `media_item_id`, not `media_item.id`: see the capture above.
         considered = (set(resolved_on) | set(misses)) - absent_servers

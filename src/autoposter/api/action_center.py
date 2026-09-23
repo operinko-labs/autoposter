@@ -463,7 +463,7 @@ async def rerender_action(
     # imports this module's router, so the other direction is a cycle. Shared
     # rather than hand-built so the dedupe key cannot drift from the one every
     # other intake path uses.
-    from autoposter.api.routes import _enqueue_reprocess
+    from autoposter.api.routes import _clear_render_fingerprints, _enqueue_reprocess
 
     session_factory = request.app.state.session_factory
     async with session_factory() as session:
@@ -472,6 +472,9 @@ async def rerender_action(
         ).scalar_one_or_none()
         if item is None:
             raise HTTPException(status_code=404, detail="item not found")
+        # Perf workstream B1: see _clear_render_fingerprints -- this press is
+        # the "retries the same source" actions/flags.py promises.
+        await _clear_render_fingerprints(session, item.id)
         job_id = await _enqueue_reprocess(session, item)
     return {"queued": job_id is not None, "job_id": job_id}
 
@@ -662,9 +665,10 @@ async def rebuild_action(
     pipeline's unchanged-fingerprint short-circuit returns ABOVE the
     write-back (``render/pipeline.py:1448``), so an enqueue on its own
     re-renders nothing when the ladder picks the same artwork. That gap is
-    precisely what this action exists to serve; ``/actions/rerender`` already
-    covers the case where the inputs moved. ``badge_fingerprint`` goes with
-    it, exactly as ``/items/{id}/renders/{kind}/clear-override`` clears both.
+    precisely what this action exists to serve; ``/actions/rerender`` has
+    cleared ``fingerprint`` too since perf workstream B1, but one item at a
+    time and leaving ``badge_fingerprint`` alone; this is the filtered,
+    row-scoped form that clears both.
 
     Dismissals are NOT touched. A dismissal is scoped by the row's FACTS
     (``flags._EVIDENCE_COLUMNS``) and ``fingerprint`` is not one of them, so

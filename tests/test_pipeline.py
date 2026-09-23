@@ -736,6 +736,92 @@ async def test_poster_falls_back_to_text_when_no_logo_and_fallback_enabled(
     assert any(str(token).startswith("caption:") for token in flat)
 
 
+# --- a forced rerender and the one backup generation --------------------------
+#
+# Re-run / Re-search clear the fingerprint, so every art kind recomposes. When
+# the recomposed bytes are identical to what is already published, _publish
+# must leave BOTH the target and the backup alone -- otherwise the one rollback
+# point RevertMode restores from is overwritten with a copy of the current art.
+
+
+def _compose_serving(monkeypatch, outputs: list[bytes]):
+    """compose_styled stubbed to write the next of ``outputs`` as its result."""
+
+    async def fake_compose(config, art_kind, working, **kwargs):
+        out = working.with_name("styled.jpg")
+        out.write_bytes(outputs.pop(0))
+        return pipeline_module.ComposeResult(output=out, truncated=False)
+
+    monkeypatch.setattr(pipeline_module, "compose_styled", fake_compose)
+
+
+def _count_replaces(monkeypatch) -> list:
+    replaced = []
+    real_replace = pipeline_module.os.replace
+
+    def spy(src, dst):
+        replaced.append(Path(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(pipeline_module.os, "replace", spy)
+    return replaced
+
+
+async def _forced_rerender(session, config, render):
+    """What Re-run does to the row, then the pass it enqueues."""
+    render.fingerprint = None
+    await session.commit()
+    async with _fake_http() as http:
+        return await render_artifact(
+            session, config, http, item(), "poster", [_LogoAwareProvider(logo_url=None)],
+        )
+
+
+async def test_a_forced_rerender_of_identical_bytes_keeps_the_backup_and_target(
+    session, tmp_path, monkeypatch
+):
+    config = _logo_test_config(tmp_path)
+    _compose_serving(monkeypatch, [b"published art", b"published art"])
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, item(), "poster", [_LogoAwareProvider(logo_url=None)],
+        )
+    target = Path(render.asset_path)
+    backup = config.backup_root / target.relative_to(config.assets_root)
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_bytes(b"the rollback point")
+    replaced = _count_replaces(monkeypatch)
+
+    render = await _forced_rerender(session, config, render)
+
+    assert render.status == "rendered"
+    assert render.fingerprint is not None
+    assert backup.read_bytes() == b"the rollback point"
+    assert target.read_bytes() == b"published art"
+    assert replaced == []
+
+
+async def test_a_forced_rerender_of_new_bytes_still_rotates_the_backup(
+    session, tmp_path, monkeypatch
+):
+    config = _logo_test_config(tmp_path)
+    _compose_serving(monkeypatch, [b"first art", b"second art"])
+    async with _fake_http() as http:
+        render = await render_artifact(
+            session, config, http, item(), "poster", [_LogoAwareProvider(logo_url=None)],
+        )
+    target = Path(render.asset_path)
+    backup = config.backup_root / target.relative_to(config.assets_root)
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    backup.write_bytes(b"the rollback point")
+
+    render = await _forced_rerender(session, config, render)
+
+    assert render.status == "rendered"
+    assert target.read_bytes() == b"second art"
+    assert backup.read_bytes() == b"first art"
+
+
 # --- the picked-logo override -----------------------------------------------
 #
 # A logo has no art kind downstream -- no render row, no naming path, no
