@@ -904,13 +904,14 @@ async def test_an_episode_with_a_rating_key_resolves_without_any_guid_search():
     way. The rating key adoption also stored is the item's exact Plex
     identity, so it settles the question without asking any agent at all.
 
-    Those episode-level ids no longer reach this path: ``_upsert_media_item``
-    rewrites a row's ids from the show on every resolve, and the key is now
-    accepted only under a show sharing one of the intent's ids (perf B3 fix
-    round -- a reused key must not land on another show's episode; see
+    The key is now accepted only when the show, or the episode itself, shares
+    one of the intent's ids (perf B3 fix rounds -- a reused key must not land
+    on another show's episode; see
     ``test_a_reused_rating_key_landing_on_another_shows_episode_falls_back``).
-    So the intent carries the SHOW's id here, and the zero-``getGuid``
-    assertion is what proves the direct fetch answered.
+    This fixture's episode carries no guids of its own, so the intent carries
+    the SHOW's id here, and the zero-``getGuid`` assertion is what proves the
+    direct fetch answered. The episode-level-ids case is
+    ``test_an_episode_key_matching_the_episodes_own_ids_is_accepted``.
     """
     show = _show_with_season_and_episode()
     shows, server = _show_library(show)
@@ -1167,6 +1168,48 @@ async def test_an_episode_key_under_a_show_sharing_any_one_id_is_accepted():
     item = await client.resolve(intent)
 
     assert item.native_id == "557"
+    assert shows.getguid_calls == []
+
+
+def _adopted_episode_library():
+    """A show whose episode carries its OWN guids -- the episode-level ids an
+    adopted row that has not resolved since adoption still holds (tmdb 64677 /
+    tvdb 1123661), none of which the show's guids share."""
+    show = _show_with_season_and_episode()
+    episode = show.season(season=2)._episode(3)
+    episode.guids = [type("Guid", (), {"id": g})() for g in ("tvdb://1123661", "tmdb://64677")]
+    return _show_library(show)
+
+
+def _adopted_episode_intent():
+    return RenderIntent(
+        kind="episode", title="Who Is Alive?", tmdb_id=64677, tvdb_id=1123661,
+        season_number=2, episode_number=3, refs={"plex": "557"},
+    )
+
+
+async def test_an_episode_key_matching_the_episodes_own_ids_is_accepted():
+    """Perf B3 fix round 2. The show check must not refuse a VALID key whose
+    intent still carries episode-level ids: the walk cannot find those ids
+    (they are not the show's), so the key is the only way the item resolves.
+    The episode's own guids share one, and the direct fetch answers."""
+    shows, server = _adopted_episode_library()
+    client = PlexClient(server=server, excluded_libraries=[])
+
+    item = await client.resolve(_adopted_episode_intent())
+
+    assert item.native_id == "557"
+    assert shows.getguid_calls == []
+
+
+async def test_exists_many_keeps_an_adopted_episode_whose_ids_are_its_own():
+    """The pruner's half of the same case, and the one that deletes rows: a
+    refused key falls to the walk, the walk cannot find episode-level ids, and
+    a present episode would read as gone."""
+    shows, server = _adopted_episode_library()
+    client = PlexClient(server=server, excluded_libraries=[])
+
+    assert await client.exists_many([_adopted_episode_intent()]) == [True]
     assert shows.getguid_calls == []
 
 
