@@ -18,6 +18,7 @@ write, and unlike everything else in this service they write whatever
 in its place -- the ownership label, a managed row, a protected label winning
 over both, and ``confirm: true`` for the one that deletes.
 """
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -828,3 +829,29 @@ async def test_the_ops_ignore_apply_to_plex(app, client, auth_headers, section):
 
     assert response.status_code == 200
     assert len(section.blank_posts) == 1
+
+
+async def test_an_op_reads_the_server_library_off_the_event_loop(
+    app, client, auth_headers, section
+):
+    """perf C2: plexapi's ``PlexServer.library`` is a ``cached_data_property``
+    whose first read is a request (``self.query('/library')``), so
+    ``to_thread(server.library.section, library)`` made that request on the
+    loop while it built the call's arguments. ASGITransport runs the app on
+    this test's own loop, so the test's thread IS the loop's."""
+    loop_thread = threading.get_ident()
+    seen = []
+
+    class _Server:
+        @property
+        def library(self):
+            seen.append(threading.get_ident())
+            return SimpleNamespace(section=lambda name: {"Movies": section}[name])
+
+    app.state.plex_server_factory = _Server
+    response = await client.post(
+        BLANK, json={"library": "Movies", "title": "Divider"}, headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    assert seen and loop_thread not in seen

@@ -36,6 +36,7 @@ configuration meeting this library, not a write failing, and each must cost this
 one definition its pass and nothing else. What is not caught -- a failing label
 write, a failing summary PUT -- still reaches the rollback, unchanged.
 """
+import asyncio
 import datetime as dt
 import logging
 
@@ -221,7 +222,10 @@ class SmartFilterBuilder:
             )
         collections = ctx.config.collections
         try:
-            url = self.search_url(ctx)
+            # ``search_url`` resolves every tag through ``LibraryTagResolver``,
+            # whose first ``listFilterChoices`` per field is a request: one
+            # thread hop (perf C1). Its refusals propagate unchanged.
+            url = await asyncio.to_thread(self.search_url, ctx)
             logger.debug("smart_filter: %s -> %s", definition.title, url)
             return await reconcile_smart_collection(
                 ctx.session,
@@ -243,7 +247,7 @@ class SmartFilterBuilder:
                 # definition that refuses in ``search_url`` above costs
                 # nothing, and so a pass carrying no smart_filter definition
                 # never fetches it at all.
-                existing=ctx.listing() if ctx.listing is not None else None,
+                existing=await ctx.listing() if ctx.listing is not None else None,
                 adopt=collections.adopt,
                 adopt_from=collections.adopt_from,
                 adopt_removes_prior_label=collections.adopt_removes_prior_label,

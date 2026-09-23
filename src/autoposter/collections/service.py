@@ -14,6 +14,7 @@ the cheap no-op the hash gate is meant to give. Containing a failure to the
 library it happened on, rather than letting it end the pass, means one bad
 library cannot stop the rest of the configured libraries from being tried.
 """
+import asyncio
 import logging
 from dataclasses import dataclass, field
 
@@ -50,6 +51,18 @@ from autoposter.queue.jobs import enqueue_batch
 logger = logging.getLogger(__name__)
 
 LIBRARY_TYPES = {"movie": "Movie", "show": "Show"}
+
+
+def library_section(server, name: str) -> tuple[object, str]:
+    """``(section, its plexapi type)`` for one configured library name.
+
+    Both halves are plexapi: the lookup is a request, and ``type`` is read off
+    the object it returns. So the pair is one unit for ``asyncio.to_thread``
+    (perf workstream C1). The pass and the preview endpoint both call it
+    through one hop, and neither reads the section on the event loop.
+    """
+    section = server.library.section(name)
+    return section, section.type
 
 # How a failed library is written into the summary.
 FAILURE_MARKER = ": failed ("
@@ -436,10 +449,10 @@ async def reconcile_libraries(
     result = ReconcileResult()
     for name in config.collections.libraries:
         try:
-            section = server.library.section(name)
-            library_type = LIBRARY_TYPES.get(section.type)
+            section, kind = await asyncio.to_thread(library_section, server, name)
+            library_type = LIBRARY_TYPES.get(kind)
             if library_type is None:
-                logger.info("skipping %r: unsupported library type %r", name, section.type)
+                logger.info("skipping %r: unsupported library type %r", name, kind)
                 continue
 
             run = await run_library(
@@ -512,7 +525,11 @@ async def reconcile_libraries(
         # to prevent.
         leftovers: list[str] = []
         try:
-            leftovers = unmanaged_prior_collections(section, library_type, config)
+            # Wholly Plex -- one filtered listing per ``adopt_from`` entry and
+            # one reload per reported title -- so one thread hop (perf C1).
+            leftovers = await asyncio.to_thread(
+                unmanaged_prior_collections, section, library_type, config
+            )
         except Exception:
             logger.exception("failed scanning %r for prior-tool leftovers", name)
 

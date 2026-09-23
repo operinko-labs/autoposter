@@ -378,3 +378,26 @@ def _secrets():
         fanart_apikey="t", webhook_secret="t", radarr_apikey="radarr-key",
         sonarr_apikey="sonarr-key",
     )
+
+
+async def test_the_server_library_is_read_off_the_event_loop(session):
+    """perf C2: plexapi's ``PlexServer.library`` is a ``cached_data_property``
+    whose first read is a request (``self.query('/library')``), so
+    ``to_thread(server.library.sections)`` made that request on the loop while
+    it built the call's argument."""
+    loop_thread = threading.get_ident()
+    seen = []
+    library = FakeLibrary([FakeSection("Movies", "movie", [])])
+
+    class _Server:
+        @property
+        def library(self):
+            seen.append(threading.get_ident())
+            return library
+
+    config = _config(radarr=RadarrConfig(enabled=False), sonarr=SonarrConfig(enabled=False))
+    async with httpx.AsyncClient(transport=Unreachable()) as http:
+        job = make_arr_sync_job(ConfigHolder(config), _Server, http, _secrets())
+        await job.run(session)
+
+    assert seen and loop_thread not in seen

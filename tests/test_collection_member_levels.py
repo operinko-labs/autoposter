@@ -334,7 +334,7 @@ async def test_a_builder_reads_the_engines_episode_index_through_the_bundle(
         type_name = "test_level_walker"
 
         async def build(self, ctx: BuilderContext) -> BuilderResult:
-            index = ctx.sources.plex.owned_index("episode")
+            index = await ctx.sources.plex.owned_index("episode")
             seen["keys"] = sorted(index["plex"])
             return BuilderResult(
                 ids=[("plex", key) for key in sorted(index["plex"])], level="episode"

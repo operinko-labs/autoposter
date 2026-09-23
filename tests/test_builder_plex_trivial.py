@@ -59,7 +59,7 @@ def _library():
     ])
     index = {}
 
-    def owned_index(level: str = "item"):
+    async def owned_index(level: str = "item"):
         if not index:
             index.update(build_owned_index(section))
         return index
@@ -99,7 +99,7 @@ async def test_the_order_is_the_order_plex_lists_the_library_in():
     section = CountingSection([FakeItem(name) for name in ("C", "A", "B")])
     index = {}
 
-    def owned_index(level: str = "item"):
+    async def owned_index(level: str = "item"):
         if not index:
             index.update(build_owned_index(section))
         return index
@@ -116,7 +116,7 @@ async def test_plex_all_makes_no_plex_call_of_its_own():
     no ``search``. Mutation proof: add any ``access.section()`` call to
     ``PlexAllBuilder.build`` and this goes red."""
     section, access = _library()
-    access.owned_index()  # the engine resolving some earlier definition
+    await access.owned_index()  # the engine resolving some earlier definition
     before = list(section.calls)
 
     await REGISTRY["plex_all"].build(_ctx(access))
@@ -142,7 +142,7 @@ async def test_the_ids_resolve_against_the_index_they_came_from():
     _, access = _library()
     result = await REGISTRY["plex_all"].build(_ctx(access))
 
-    resolved = resolve_external(access.owned_index(), result.ids)
+    resolved = resolve_external(await access.owned_index(), result.ids)
     assert [item.title for item in resolved.items] == [
         "Shawshank", "Godfather", "NoGuids"
     ]

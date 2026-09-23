@@ -141,10 +141,16 @@ async def test_the_scheduler_runs_a_due_job_and_records_success(session_factory)
     # is swallowed so the assertion below reports the diagnosis rather than a
     # bare "5 seconds passed", and the `finally` keeps that honest by stopping
     # and awaiting the scheduler on both paths.
+    # Since perf C3 the wait is on the RECORDED outcome, not on the body's
+    # side effect: shutdown cancels a lane mid-run, so stopping as soon as the
+    # body ran could cancel the very bookkeeping write asserted below.
+    row = None
     try:
         async with asyncio.timeout(60):
-            while not ran:
+            while row is None or row.last_finished_at is None:
                 await asyncio.sleep(0.01)
+                async with session_factory() as check:
+                    row = (await check.execute(select(ScheduledRun))).scalar_one_or_none()
     except TimeoutError:
         pass
     finally:

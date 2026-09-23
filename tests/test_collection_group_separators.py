@@ -25,6 +25,8 @@ from autoposter.collections.posters import (
 from autoposter.collections.reconcile import reconcile_separator, separator_hash
 from autoposter.db.models import ManagedCollection
 
+from plex_offload_doubles import returning
+
 LABEL = "autoposter"
 
 SHIPPED_TITLE = "Ratings Collections"
@@ -442,7 +444,7 @@ async def test_the_engine_hands_a_separator_its_poster(session, config_factory, 
             session, section, "Movies", "Movie",
             [CollectionDefinition(title="Common Sense age ratings",
                                   builder="cs_bucket")],
-            config, label=LABEL, dry_run=False, listing=dict, http=http,
+            config, label=LABEL, dry_run=False, listing=returning({}), http=http,
         )
 
     # The fence (C5) reconciles alongside the group's divider and has no
@@ -518,7 +520,7 @@ async def test_a_switched_off_groups_separator_sweeps_like_any_other_orphan(sess
     results = await _sweep(
         session, FakeSection([orphan]), "Movies", "Movie", [], armed,
         label=LABEL, dry_run=False,
-        listing=lambda: {"Chart Collections": orphan}, run_cache={},
+        listing=returning({"Chart Collections": orphan}), run_cache={},
     )
 
     assert orphan.deleted is True
@@ -547,7 +549,7 @@ async def test_a_switched_off_groups_separator_sweeps_like_any_other_orphan(sess
     results = await _sweep(
         session, FakeSection([kept]), "Movies", "Movie", chart_definitions, armed,
         label=LABEL, dry_run=False,
-        listing=lambda: {"Chart Collections": kept}, run_cache={},
+        listing=returning({"Chart Collections": kept}), run_cache={},
     )
 
     assert kept.deleted is False

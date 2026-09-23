@@ -512,16 +512,20 @@ def make_maintenance_job(holder: ConfigHolder, server_factory: Callable[[], obje
         ran: list[str] = []
         failed: list[str] = []
         for setting, method in enabled:
+            # Lambdas throughout, so ``server.library`` is read ON THE THREAD
+            # (perf C2): plexapi's ``library`` is a cached property whose first
+            # read is a request, and ``server.library.emptyTrash`` or
+            # ``getattr(server.library, method)`` evaluated it here, on the loop.
             if setting == "empty_trash":
                 calls = (
-                    [server.library.emptyTrash] if trash is None
+                    [lambda: server.library.emptyTrash()] if trash is None
                     else [
                         (lambda n=name: server.library.section(n).emptyTrash())
                         for name in trash
                     ]
                 )
             else:
-                calls = [getattr(server.library, method)]
+                calls = [lambda m=method: getattr(server.library, m)()]
             for call in calls:
                 try:
                     await asyncio.to_thread(call)
@@ -648,7 +652,9 @@ def make_arr_sync_job(
         if not config.arr_sync.enabled:
             return "skipped: arr_sync disabled"
         server = await asyncio.to_thread(server_factory)
-        sections = await asyncio.to_thread(server.library.sections)
+        # A lambda, so ``server.library`` -- a plexapi cached property whose
+        # first read is a request -- is read on the thread (perf C2).
+        sections = await asyncio.to_thread(lambda: server.library.sections())
 
         parts: list[str] = []
         excluded = config.plex.excluded_libraries if config.plex else []

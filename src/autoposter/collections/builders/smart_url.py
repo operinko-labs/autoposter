@@ -390,7 +390,7 @@ class SmartUrlBuilder:
                 summary=ctx.summary if ctx.summary is not None else definition.summary,
                 summary_asserted=ctx.summary_asserted,
                 dry_run=ctx.dry_run,
-                existing=ctx.listing() if ctx.listing is not None else None,
+                existing=await ctx.listing() if ctx.listing is not None else None,
                 adopt=collections.adopt,
                 adopt_from=collections.adopt_from,
                 adopt_removes_prior_label=collections.adopt_removes_prior_label,

@@ -1,4 +1,5 @@
 import ast
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -444,3 +445,24 @@ async def test_an_equal_genre_list_writes_nothing_when_plex_reports_it_locked():
     written = await apply_facts(item, GatheredFacts(genres=["Drama", "Horror"]))
     assert written == {}
     assert item.batched is False
+
+
+async def test_planning_reads_the_item_off_the_event_loop():
+    """perf C2: ``plan_edits`` reads the item's current values, and any read of
+    a partial plexapi object can reload it -- a blocking GET."""
+    loop_thread = threading.get_ident()
+    seen = []
+
+    class _Watched(FakeItem):
+        @property
+        def contentRating(self):
+            seen.append(threading.get_ident())
+            return self._content_rating
+
+        @contentRating.setter
+        def contentRating(self, value):
+            self._content_rating = value
+
+    await apply_facts(_Watched(contentRating="PG"), GatheredFacts(content_rating="R"))
+
+    assert seen and loop_thread not in seen

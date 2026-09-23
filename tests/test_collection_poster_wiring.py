@@ -47,11 +47,13 @@ async def _separator_pass(session, section, http, config, dry_run=False):
     """
     from autoposter.collections.engine import _separators
 
+    async def listing():
+        return {c.title: c for c in section.collections()}
+
     results = await _separators(
         session, section, "Movies", "Movie",
         [CollectionDefinition(title="Common Sense age ratings", builder="cs_bucket")],
-        config, label=LABEL, dry_run=dry_run,
-        listing=lambda: {c.title: c for c in section.collections()}, http=http,
+        config, label=LABEL, dry_run=dry_run, listing=listing, http=http,
     )
     return [action for result in results for action in result.actions]
 
@@ -918,7 +920,7 @@ async def test_a_resolution_bucket_takes_its_poster_from_its_own_filter():
     from autoposter.collections.builders.plex_trivial import PlexAllBuilder
 
     class _Access:
-        def owned_index(self):
+        async def owned_index(self):
             return {"plex": ["1", "2"]}
 
     class _Sources:

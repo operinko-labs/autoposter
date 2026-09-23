@@ -32,7 +32,7 @@ validating ``ctx.config`` themselves regardless -- a builder is also called
 directly, by tests and by an expanding builder's constructed definitions --
 so the two are defence in depth, not one replacing the other.
 """
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -235,8 +235,9 @@ class SmartContext:
     resolves to, out of the same memo.
 
     ``listing`` is the pass's ``{title: collection}`` map of the section, as a
-    CALLABLE so it is fetched only if a smart builder asks for it. Every list
-    definition in a pass already shares one -- ``section.collections()`` returns
+    COROUTINE FUNCTION so it is fetched only if a smart builder asks for it --
+    and fetched in ``asyncio.to_thread`` when it is (perf workstream C1). Every
+    list definition in a pass already shares one -- ``section.collections()`` returns
     every collection in the library, 305 of them on the production Movies
     section -- and a smart builder that did not take it would pay for that
     listing once per definition, on every pass, unchanged definitions included.
@@ -278,7 +279,7 @@ class SmartContext:
     # caller, which reverts nothing it did not resolve.
     summary_asserted: bool = False
     run_cache: dict[str, Any] = field(default_factory=dict)
-    listing: Callable[[], dict] | None = None
+    listing: Callable[[], Awaitable[dict]] | None = None
 
 
 @runtime_checkable

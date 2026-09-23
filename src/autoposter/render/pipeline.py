@@ -1918,6 +1918,21 @@ async def _already_delivered(session, config, server, name, ref, render, fingerp
     return recorded is not None and recorded == fingerprint
 
 
+def _select_overlays(definitions, media, facts, plex_item):
+    """``select_overlay_definitions`` over this item's ``OverlayItemView``, for
+    ``asyncio.to_thread`` (perf C2).
+
+    The view already reads ``plex_item`` through ``filter_values``' reload-safe
+    accessors, but the predicates are the operator's, evaluated per definition
+    over a live plexapi object, and ``adopt/walk.py``'s rule keeps every read of
+    one on a thread. ``facts`` is a loaded row (or a ``GatheredFacts``); nothing
+    here queries the database.
+    """
+    return select_overlay_definitions(
+        definitions, OverlayItemView(media, facts=facts, plex_item=plex_item)
+    )
+
+
 async def compose_badged_bytes(
     session: AsyncSession,
     config: Config,
@@ -2051,9 +2066,14 @@ async def compose_badged_bytes(
     # `apply_metadata`. Skipped when there is no live `ref` to check labels
     # against -- the same degrade as the media read above.
     if config.operations.item_overrides_enabled and ref is not None:
+        # In a thread (perf C2): ``labels`` on a partial plexapi item can
+        # reload it, a blocking GET, once per badged render.
+        labels = (
+            await asyncio.to_thread(getattr, plex_item, "labels", None)
+            if plex_item is not None else None
+        )
         exempt = exemption_reason(
-            config.operations, ref.native_id, media_item.imdb_id,
-            getattr(plex_item, "labels", None),
+            config.operations, ref.native_id, media_item.imdb_id, labels,
         )
         if exempt is None:
             facts = overlaid_badge_facts(
@@ -2111,8 +2131,9 @@ async def compose_badged_bytes(
     # enabling a family has to re-badge exactly like adding a definition by
     # hand does.
     definitions = config.badges.all_definitions()
-    view = OverlayItemView(media, facts=facts, plex_item=plex_item)
-    matched_definitions, outcomes = select_overlay_definitions(definitions, view)
+    matched_definitions, outcomes = await asyncio.to_thread(
+        _select_overlays, definitions, media, facts, plex_item
+    )
 
     # render.fingerprint, not render.base_sha256: the badged image is composed
     # from the *base we rendered*, so the gate has to track what went into that

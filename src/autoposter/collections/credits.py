@@ -80,6 +80,9 @@ async def scan_library_credits(
     ORM identity-map interaction at all -- a rescan re-inserting the same
     (item, kind, person) key must not depend on the DELETE above having
     evicted the previous pass's persistent instance from the session.
+
+    It ends the caller's transaction (``rollback()``) before the threaded
+    fetch, so a caller must commit anything pending before calling it.
     """
     rows = (
         await session.execute(
@@ -95,6 +98,14 @@ async def scan_library_credits(
     if not rows:
         return (0, 0)
     by_key = {native_id: item_id for item_id, native_id in rows}
+    # No transaction across the fetch (perf C2). The SELECT above opened one,
+    # and holding it idle while Plex answers ``ceil(N/chunk)`` batched reads
+    # pins a pooled connection and the vacuum horizon for the whole walk: the
+    # defect ``scheduler/jobs.py``'s asset-stats pass and ``scheduler/prune.py``
+    # carry a ``rollback()`` for. ``rows`` are plain tuples, so nothing read
+    # below is expired by it, and the writes below open a fresh transaction
+    # the caller (``scan_credits``) commits.
+    await session.rollback()
     fetched = await asyncio.to_thread(
         fetch_credit_index, section, list(by_key), chunk_size
     )
@@ -146,7 +157,11 @@ async def scan_credits(session: AsyncSession, server, config) -> str:
     parts = []
     for name in config.collections.libraries:
         try:
-            section = await asyncio.to_thread(server.library.section, name)
+            # A lambda, so ``server.library`` is read ON THE THREAD (perf
+            # C2): plexapi's ``library`` is a cached property whose first read
+            # is a request, and passing ``server.library.section`` evaluated
+            # it here, on the event loop.
+            section = await asyncio.to_thread(lambda: server.library.section(name))
             library_type = _LIBRARY_TYPES.get(section.type)
             if library_type is None:
                 parts.append("%s: skipped (unsupported type)" % name)

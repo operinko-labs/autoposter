@@ -30,6 +30,7 @@ clean run (roadmap row 115). And, when the caller asks for it, the delete
 sweep (``_sweep``) -- the only code in this service that deletes a collection,
 off by default, capped, and refused outright past the cap.
 """
+import asyncio
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -202,6 +203,16 @@ def _due(definition: CollectionDefinition, run_index: int, now: datetime) -> boo
     if run_index % schedule.every_n_runs:
         return False
     return not (schedule.months and now.month not in schedule.months)
+
+
+def _collections_by_title(section) -> dict:
+    """``{title: collection}`` for the whole section.
+
+    One blocking request that returns every collection in the library (305 of
+    them on the production Movies section), so it is only ever called through
+    ``asyncio.to_thread`` -- ``run_library``'s ``listing`` below.
+    """
+    return {collection.title: collection for collection in section.collections()}
 
 
 # The fields an expanded definition inherits from the placeholder it came
@@ -385,15 +396,26 @@ async def run_library(
     indexes: dict[str, dict] = {}
     existing: dict | None = None
 
-    def owned_index(level: str = "item"):
+    # Both are coroutines since perf workstream C1. The index is a full
+    # ``section.all()`` -- 1,954 movies in 2.8 s against the production server,
+    # plus a synchronous reload for every unmatched item's ``guids`` -- and the
+    # listing is one request returning every collection in the library. On the
+    # event loop either one froze every worker, every request and the dashboard
+    # stream for its whole length. Each is now ONE ``asyncio.to_thread`` hop,
+    # and the memo stays on this side of the hop, so "built at most once per
+    # pass" is unchanged. The items and collections come back as objects the
+    # rest of the pass reads only loaded attributes off (``title``,
+    # ``ratingKey``); every lazy read happens in the reconcilers' own hops
+    # (``adopt/walk.py``'s rule: never touch a plexapi object outside the thread).
+    async def owned_index(level: str = "item") -> dict:
         if level not in indexes:
-            indexes[level] = build_owned_index(section, level)
+            indexes[level] = await asyncio.to_thread(build_owned_index, section, level)
         return indexes[level]
 
-    def listing() -> dict:
+    async def listing() -> dict:
         nonlocal existing
         if existing is None:
-            existing = {c.title: c for c in section.collections()}
+            existing = await asyncio.to_thread(_collections_by_title, section)
         return existing
 
     # The pass's bundle, with this library's Plex accessor bound onto it. The
@@ -681,7 +703,7 @@ async def run_library(
         }
         for action in await apply_local_posters_to_unmanaged(
             session, config, http, library,
-            {t: c for t, c in listing().items() if t not in owned_titles},
+            {t: c for t, c in (await listing()).items() if t not in owned_titles},
             dry_run=dry_run,
         ):
             actions.append(action)
@@ -792,7 +814,7 @@ async def _run_one(
             "shows; nothing was applied" % (definition.title, level)
         )
         return outcome
-    index = owned_index(level)
+    index = await owned_index(level)
     resolved = resolve_external(index, result.ids)
     outcome.unresolved = resolved.unresolved
     if resolved.unresolved:
@@ -922,8 +944,12 @@ async def _run_one(
         # filter that is not going to run would be noise about a definition
         # nothing is applying.
         if not filter_failed and parsed is not None:
-            parsed, vocabulary_actions = _known_tag_values(
-                parsed, ctx, section, library, definition
+            # One thread hop for the whole check (perf C1): the first ``known``
+            # per attribute is a ``listFilterChoices`` request, and the rest
+            # are memo hits on the pass's ``run_cache``, which nothing else
+            # writes while this coroutine waits.
+            parsed, vocabulary_actions = await asyncio.to_thread(
+                _known_tag_values, parsed, ctx, section, library, definition
             )
             outcome.actions += vocabulary_actions
         if not filter_failed:
@@ -986,7 +1012,7 @@ async def _run_one(
 
     outcome.skipped = not items
     if preview and definition.create_collection:
-        collection = listing().get(definition.title)
+        collection = (await listing()).get(definition.title)
         if collection is None:
             outcome.adding = len(items)
         elif items:
@@ -1010,15 +1036,12 @@ async def _run_one(
             # the shape gate -- so it previewed counts for a write the pass
             # refuses. No message here either, for the identical reason: the
             # reconcile step reports the conflict once.
-            if shape_conflict(
-                collection, definition.title, want_smart=False
-            ) is None and would_proceed(
-                collection, label,
-                config.collections.adopt, config.collections.adopt_from,
-                config.collections.protect_labels,
-            ):
-                adding, removing = member_diff(collection, items, definition.sync_mode)
-                outcome.adding, outcome.removing = len(adding), len(removing)
+            counts = await asyncio.to_thread(
+                _preview_counts, collection, definition.title, items,
+                definition.sync_mode, label, config,
+            )
+            if counts is not None:
+                outcome.adding, outcome.removing = counts
 
     summary, summary_action = await _summary_for(definition, result, summaries)
     if summary_action:
@@ -1076,7 +1099,7 @@ async def _run_one(
             summary_asserted=summary_action is None,
             sort=definition.sort,
             dry_run=dry_run,
-            existing=listing(),
+            existing=await listing(),
             adopt=config.collections.adopt,
             adopt_from=config.collections.adopt_from,
             adopt_removes_prior_label=config.collections.adopt_removes_prior_label,
@@ -1296,6 +1319,28 @@ def _known_tag_values(parsed, ctx, section, library, definition):
         lambda predicate, value: (predicate.attribute.name, str(value)) in unknown,
     )
     return pruned, actions
+
+
+def _preview_counts(collection, title, items, sync_mode, label, config):
+    """``(adding, removing)`` a real pass would apply to ``collection``, or None
+    when the shape or ownership rule would refuse it -- ``_run_one``'s preview
+    read, in ONE ``asyncio.to_thread`` hop (perf workstream C1).
+
+    Every step is Plex: ``shape_conflict`` reads ``smart``, ``would_proceed``
+    forces a ``reload()`` and reads ``labels``, and ``member_diff`` reads
+    ``items()``. The rule order is ``_run_one``'s own (shape first, then
+    ownership), which is ``lists.py``'s.
+    """
+    if shape_conflict(collection, title, want_smart=False) is not None:
+        return None
+    if not would_proceed(
+        collection, label,
+        config.collections.adopt, config.collections.adopt_from,
+        config.collections.protect_labels,
+    ):
+        return None
+    adding, removing = member_diff(collection, items, sync_mode)
+    return len(adding), len(removing)
 
 
 def _passing(
@@ -1587,8 +1632,9 @@ async def _sweep(
     as managing this one's titles, which is the safe direction for a report
     and the wrong one for a sweep.
     """
+    existing = await listing()
     managed = definition_titles_for(
-        definitions, listing().values(), library, library_type, config
+        definitions, existing.values(), library, library_type, config
     )
     families, generated = _family_state(definitions, library, run_cache)
     rows = {
@@ -1614,53 +1660,44 @@ async def _sweep(
             "were considered for deletion" % family_title
         )))
 
-    for title, collection in listing().items():
-        if title in managed or title not in rows:
-            continue
-        if rows[title].kind in ("operator", LOCAL_ASSET_KIND):
+    entries = [
+        (title, collection, rows[title].kind in ("operator", LOCAL_ASSET_KIND))
+        for title, collection in existing.items()
+        if title not in managed and title in rows
+    ]
+    verdicts = await asyncio.to_thread(
+        _sweep_verdicts, entries, config.collections.protect_labels or [],
+        families, generated, label,
+    )
+    for (title, collection, _), (verdict, detail) in zip(entries, verdicts):
+        if verdict == "operator":
             # An operator created this directly (``ops/blank``) -- no
             # definition enumerates its title, so it always lands here, and
             # it must never be swept just because nothing builds it. Reported
             # rather than silently skipped, and regardless of
             # ``delete_unconfigured``: that setting decides what an
             # unattended pass may delete, and this was never such a
-            # candidate in the first place.
-            # ...and a LOCAL_ASSET_KIND row is a poster-hash record for a
-            # collection this service never owned (row 37) -- deleting it
-            # would delete somebody else's collection over a bookkeeping row.
+            # candidate in the first place. A LOCAL_ASSET_KIND row is a
+            # poster-hash record for a collection this service never owned
+            # (row 37) -- deleting it would delete somebody else's collection
+            # over a bookkeeping row.
             results.append(_swept(title, library, (
                 "%r was created by an operator, not any definition; "
                 "the sweep never deletes it" % title
             )))
-            continue
-        load_labels(collection)
-        protecting = protected_label(collection, config.collections.protect_labels or [])
-        if protecting is not None:
+        elif verdict == "protected":
             results.append(_swept(title, library, (
-                "protected: %r carries %r; leaving it untouched" % (title, protecting)
+                "protected: %r carries %r; leaving it untouched" % (title, detail)
             )))
-            continue
-        matched = [one for one in families if has_label(collection, one)]
-        family_title: str | None = None
-        if matched:
-            # A collection can carry more than one family's label (both
-            # reconciled it additively in the same or an earlier pass), so
-            # every matching family must protect it, not just the first one
-            # iteration happens to reach: a candidate only when EVERY family
-            # that labels it ran and NONE of them built it this pass.
-            if any(
-                one not in generated or title in generated[one]
-                for one in matched
-            ):
-                continue
-            family_title = families[matched[0]]
-        if not has_label(collection, label):
+        elif verdict == "unlabelled":
             logger.info(
                 "%s: %r has a managed row but not the %r label; not ours to delete",
                 library, title, label,
             )
-            continue
-        candidates.append((title, collection, rows[title], family_title))
+        elif verdict == "candidate":
+            candidates.append((title, collection, rows[title], detail))
+        # "rebuilt": a family that labels it built it this pass -- managed,
+        # so neither reported nor a candidate.
 
     if not config.collections.delete_unconfigured:
         for title, _, _, family_title in candidates:
@@ -1689,7 +1726,7 @@ async def _sweep(
             ))
             continue
         try:
-            collection.delete()
+            plex_rating_key = await asyncio.to_thread(_delete_collection, collection)
         except Exception:
             # A later candidate's Plex delete is not this candidate's
             # problem: it must not stop the remaining candidates from being
@@ -1702,7 +1739,6 @@ async def _sweep(
             ))
             continue
         await session.delete(row)
-        plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
         # {} rather than {"plex": ""} when Plex gave no ratingKey: an empty
         # string is not a native id, and a reader trusting "refs" at face
         # value must not be handed a fake one.
@@ -1764,6 +1800,63 @@ def _swept(title: str, library: str, action: str, deleting: int = 0) -> Definiti
     )
 
 
+def _sweep_verdicts(entries, protect_labels, families, generated, label):
+    """The sweep's candidate scan, Plex side: ``(verdict, detail)`` per entry,
+    in order, in ONE ``asyncio.to_thread`` hop (perf workstream C1).
+
+    ``load_labels`` is a ``reload()`` GET per candidate, and every rule after
+    it reads ``labels`` off the plexapi object, so the reload and the reads run
+    together on the thread and only plain verdicts come back. The database
+    half of the decision -- is this an operator's collection -- is answered on
+    the loop before the hop and handed in as the entry's third element.
+
+    Verdicts:
+
+    - ``operator``: created by an operator (``ops/blank``) or a row-37
+      bookkeeping row; never swept, and not even reloaded;
+    - ``protected``: a protected label wins, checked before ownership; the
+      detail is the label as the server spells it;
+    - ``rebuilt``: a family that labels it built it this pass. A collection
+      can carry more than one family's label (both reconciled it additively in
+      the same or an earlier pass), so EVERY matching family must protect it:
+      a candidate only when every family that labels it ran and none of them
+      built it this pass;
+    - ``unlabelled``: a managed row without our label -- not ours to delete;
+    - ``candidate``: the detail is the family title, or None for an ordinary
+      orphan.
+    """
+    verdicts: list[tuple[str, str | None]] = []
+    for title, collection, operator in entries:
+        if operator:
+            verdicts.append(("operator", None))
+            continue
+        load_labels(collection)
+        protecting = protected_label(collection, protect_labels)
+        if protecting is not None:
+            verdicts.append(("protected", protecting))
+            continue
+        matched = [one for one in families if has_label(collection, one)]
+        family_title: str | None = None
+        if matched:
+            if any(one not in generated or title in generated[one] for one in matched):
+                verdicts.append(("rebuilt", None))
+                continue
+            family_title = families[matched[0]]
+        if not has_label(collection, label):
+            verdicts.append(("unlabelled", None))
+            continue
+        verdicts.append(("candidate", family_title))
+    return verdicts
+
+
+def _delete_collection(collection) -> str:
+    """Delete one swept collection and return its rating key ("" when Plex gave
+    none), in one ``asyncio.to_thread`` hop (perf C1). The DELETE is a request,
+    and the key is read here so the loop never touches the plexapi object."""
+    collection.delete()
+    return str(getattr(collection, "ratingKey", "") or "")
+
+
 async def _separators(
     session: AsyncSession,
     section,
@@ -1814,10 +1907,13 @@ async def _separators(
     }
     collections = config.collections
     results: list[DefinitionResult] = []
+    # The pass's one listing, awaited once: it is memoised, so this is the
+    # same dict every spec below would have been handed.
+    existing = await listing()
     for spec in specs:
         actions = await reconcile_separator(
             session, section, library, LIBTYPES[library_type], label, spec,
-            listing(), stored,
+            existing, stored,
             collections.adopt, collections.adopt_from or [],
             collections.adopt_removes_prior_label, dry_run,
             collections.protect_labels or [], http, config,

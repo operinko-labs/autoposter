@@ -1,6 +1,7 @@
 """The badge stage inside the per-item pipeline."""
 import asyncio
 import threading
+import time
 from pathlib import Path
 
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from autoposter.render.pipeline import compose_badged_bytes, deliver
 from autoposter.servers.base import CAP_ARTWORK_PROVENANCE, CAP_LOCK_ARTWORK, ServerItemRef
 
 from conftest import seed_media_item
+from plex_offload_doubles import max_loop_lag
 
 ORACLE = Path("tests/fixtures/oracle")
 
@@ -622,3 +624,63 @@ async def test_compose_reports_back_the_fingerprint_it_composed(session, config_
     )
     assert data is not None
     assert out["fingerprint"] == render.badge_fingerprint
+
+
+async def test_the_label_read_and_the_overlay_selection_run_off_the_event_loop(
+    session, config_with_badges, monkeypatch
+):
+    """perf C2: ``labels`` on a partial plexapi item can reload it, and the
+    overlay selection evaluates the operator's predicates over the live item;
+    both run in threads."""
+    from autoposter.render import pipeline
+
+    loop_thread = threading.get_ident()
+    seen = {}
+    config_with_badges.operations.item_overrides_enabled = True
+
+    class Labelled(FakePlexItem):
+        @property
+        def labels(self):
+            seen["labels"] = threading.get_ident()
+            return []
+
+    real = pipeline.select_overlay_definitions
+
+    def recording(definitions, view):
+        seen["select"] = threading.get_ident()
+        return real(definitions, view)
+
+    monkeypatch.setattr(pipeline, "select_overlay_definitions", recording)
+
+    item, render = await _render(session)
+    await _apply(session, config_with_badges, render, item, FakeServer(Labelled()), facts=Facts())
+
+    assert set(seen) == {"labels", "select"}
+    assert loop_thread not in seen.values()
+
+
+async def test_a_slow_label_read_does_not_stall_the_event_loop(session, config_with_badges):
+    """The spec's probe over the pipeline's reads: ``labels`` blocks for 1 s,
+    and a concurrent 50 ms sleep must not wake late. The spec's bound is
+    200 ms; the assertion allows 500 ms (the lane's ruling against ``-n auto``
+    scheduling noise), and the printed figure is what ``pcs-measure.md``
+    records against the spec's bound."""
+    config_with_badges.operations.item_overrides_enabled = True
+
+    class SlowLabels(FakePlexItem):
+        @property
+        def labels(self):
+            time.sleep(1.0)
+            return []
+
+    item, render = await _render(session)
+    _, lag = await max_loop_lag(compose_badged_bytes(
+        session, config_with_badges, render, item,
+        server=FakeServer(SlowLabels()), ref=REF, facts=Facts(),
+    ))
+
+    print(
+        "[pcs-measure] badge label read (item.labels blocks 1 s): "
+        "worst loop lag %.0f ms" % (lag * 1000)
+    )
+    assert lag < 0.5, "the label read stalled the event loop for %.0f ms" % (lag * 1000)

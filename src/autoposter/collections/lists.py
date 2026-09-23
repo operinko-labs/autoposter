@@ -9,8 +9,10 @@ That makes an empty desired-set dangerous. A failed chart fetch returning
 nothing would, taken literally, empty a live collection -- so an empty list
 means "make no changes", never "remove everything".
 """
+import asyncio
 import hashlib
 import logging
+from typing import NamedTuple
 
 import httpx
 from sqlalchemy import func, select
@@ -182,6 +184,141 @@ def _enforce_order(collection, desired: list) -> int:
     return moves
 
 
+class _Claimed(NamedTuple):
+    """What ``_claim`` found: the listing (fetched here if the caller had
+    none), the collection under the title, and either the actions to return
+    at once (``stop``) or the claim's own action string to carry on with."""
+
+    existing: dict
+    collection: object | None
+    stop: list[str] | None
+    claim_action: str | None
+
+
+def _claim(
+    section, existing, title, label, adopt, adopt_from, remove_prior, dry_run,
+    protect_labels,
+) -> _Claimed:
+    """The Plex half of ``reconcile_list_collection`` before its database read,
+    in ONE ``asyncio.to_thread`` hop (perf workstream C1).
+
+    Every step can block: the fallback listing is a request, ``smart`` and
+    ``labels`` are plexapi attributes whose read can reload, and
+    ``resolve_collision`` forces a ``reload()`` and, when it adopts, writes a
+    label. So the whole run moves to a thread rather than call by call -- the
+    ~40-call-site alternative the spec rejects is exactly the one where a lazy
+    attribute read gets missed.
+
+    The shape check comes BEFORE ``resolve_collision``, as it always has: a
+    smart collection this service already owns would otherwise pass the
+    ownership check and go on to ``addItems``, which Plex answers for a smart
+    collection by doing nothing useful and reporting success.
+    """
+    if existing is None:
+        existing = {c.title: c for c in section.collections()}
+    collection = existing.get(title)
+    if collection is None:
+        return _Claimed(existing, None, None, None)
+    conflict = shape_conflict(collection, title, want_smart=False)
+    if conflict is not None:
+        return _Claimed(existing, collection, [conflict], None)
+    ok, message = resolve_collision(
+        collection, label, adopt, adopt_from or [], remove_prior, dry_run,
+        protect_labels or [],
+    )
+    if not ok:
+        return _Claimed(existing, collection, [message] if message else [], None)
+    return _Claimed(existing, collection, None, message)
+
+
+class _Written(NamedTuple):
+    """What ``_write`` did, as values the loop can read without touching
+    plexapi: the (possibly new) collection, the actions in the order they
+    happened, the membership delta, whether every setting landed, and the
+    collection's rating key for the managed row."""
+
+    collection: object
+    created: bool
+    actions: list[str]
+    added: int
+    removed: int
+    settings_ok: bool
+    rating_key: str
+
+
+def _write(
+    section, collection, title, items, label, summary, summary_asserted, sort,
+    sync_mode, settings, config,
+) -> _Written:
+    """Every Plex write of a non-dry pass, in ONE ``asyncio.to_thread`` hop
+    (perf workstream C1).
+
+    The per-member loops are the reason this matters most: ``_enforce_order``
+    is a ``reload()`` plus one ``moveItem`` request per displaced member, and
+    ``_label_members`` is one ``addLabel`` request per member per tag -- on the
+    event loop, a large reordered collection froze every worker for its whole
+    length. Order, actions and deltas are exactly the inline code's:
+
+    - create: ``createCollection`` with every item, the ownership label, the
+      sort, the summary;
+    - update: the summary, because it is part of the members hash -- a
+      corrected summary takes this branch, and writing it only on create
+      would store the new hash while the old summary stayed on the collection
+      forever, every later pass short-circuiting on that hash. The helper is
+      called unconditionally (it skips by itself, and gating it on the text
+      would starve its lock repair); or the clear
+      under ``summary_asserted``; then the diff, and the order under sync only
+      (under append the new members arrive in source order at the end, and the
+      positions already there are left alone);
+    - then the settings and the member labels, on both paths, because the
+      settings are in the members hash -- reaching here at all means the
+      membership or one of them changed.
+    """
+    actions: list[str] = []
+    created = collection is None
+    if created:
+        collection = section.createCollection(title=title, items=items, smart=False)
+        collection.addLabel(label)
+        collection.sortUpdate(sort)
+        if summary:
+            _edit_collection_summary(collection, summary)
+        added, removed = len(items), 0
+        actions.append("created %r with %d item(s)" % (title, len(items)))
+    else:
+        if summary:
+            if getattr(collection, "summary", None) != summary:
+                actions.append("updated the summary of %r" % title)
+            _edit_collection_summary(collection, summary)
+        elif summary_asserted and _clear_collection_summary(collection):
+            # Row 187: the summary is part of the members hash, so a
+            # deleted ``summary:`` reaches this branch; a definition that
+            # never set one finds the field unlocked and writes nothing.
+            # ``summary_asserted`` is what separates that deletion from an
+            # effective summary that could not be RESOLVED this pass
+            # (``engine._summary_for``).
+            actions.append("cleared the summary of %r" % title)
+        adding, removing = member_diff(collection, items, sync_mode)
+        if adding:
+            collection.addItems(adding)
+        if removing:
+            collection.removeItems(removing)
+        moves = 0 if sync_mode == "append" else _enforce_order(collection, items)
+        added, removed = len(adding), len(removing)
+        if adding or removing or moves:
+            actions.append(
+                "updated %r: +%d -%d, %d move(s)" % (title, added, removed, moves)
+            )
+    settings_actions, settings_ok = apply_collection_settings(
+        section, collection, settings, label, config
+    )
+    actions += settings_actions
+    actions += _label_members(items, settings, title)
+    return _Written(
+        collection, created, actions, added, removed, settings_ok,
+        str(getattr(collection, "ratingKey", "") or ""),
+    )
+
+
 async def reconcile_list_collection(
     session: AsyncSession,
     section,
@@ -265,28 +402,15 @@ async def reconcile_list_collection(
     # a sort title that appeared only at write time would never trigger one.
     settings = groups.with_derived_sort_title(settings, sort_prefix, title, sort_order)
 
-    if existing is None:
-        existing = {c.title: c for c in section.collections()}
-    collection = existing.get(title)
-
-    # The shape check, list half. Checked BEFORE ``resolve_collision`` because a smart
-    # collection this service already owns would otherwise pass the ownership
-    # check and go on to ``addItems``, which Plex answers for a smart collection
-    # by doing nothing useful and reporting success.
-    if collection is not None:
-        conflict = shape_conflict(collection, title, want_smart=False)
-        if conflict is not None:
-            return [conflict]
-
-    claim_action = None
-    if collection is not None:
-        ok, message = resolve_collision(
-            collection, label, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
-            protect_labels or [],
-        )
-        if not ok:
-            return [message] if message else []
-        claim_action = message
+    claimed = await asyncio.to_thread(
+        _claim, section, existing, title, label, adopt, adopt_from,
+        adopt_removes_prior_label, dry_run, protect_labels,
+    )
+    if claimed.stop is not None:
+        return claimed.stop
+    existing, collection, claim_action = (
+        claimed.existing, claimed.collection, claimed.claim_action
+    )
 
     record = (
         await session.execute(
@@ -335,60 +459,28 @@ async def reconcile_list_collection(
     added_count = removed_count = 0
 
     if not definition_current:
+        settings_ok = True
+        written = None
         if dry_run:
             actions.append("%s %r with %d item(s)" % (
-                "would update" if collection else "would create", title, len(items)))
-        elif collection is None:
-            collection = section.createCollection(title=title, items=items, smart=False)
-            existing[title] = collection
-            collection.addLabel(label)
-            collection.sortUpdate(sort)
-            if summary:
-                _edit_collection_summary(collection, summary)
-            added_count = len(items)
-            actions.append("created %r with %d item(s)" % (title, len(items)))
+                # ``is not None``, never a truth test: plexapi's
+                # ``Collection.__len__`` is ``len(self.items())`` with no
+                # ``__bool__``, so ``if collection`` would be a membership
+                # fetch on the loop -- and would call an existing EMPTY
+                # collection a create.
+                "would update" if collection is not None else "would create",
+                title, len(items)))
         else:
-            # The summary is part of the members hash, so a corrected summary
-            # takes the update branch. Writing it only on create would mean the
-            # new hash gets stored while the old summary stays on the collection
-            # forever, with every later pass short-circuiting on that hash.
-            #
-            # The helper is called unconditionally -- it skips by itself. The
-            # text comparison here gates only the ACTION MESSAGE: gating the
-            # call on it would starve the helper's lock repair, leaving a
-            # summary whose text already matches but whose field is unlocked
-            # (the Kometa-era state) unlocked forever.
-            if summary:
-                if getattr(collection, "summary", None) != summary:
-                    actions.append("updated the summary of %r" % title)
-                _edit_collection_summary(collection, summary)
-            elif summary_asserted and _clear_collection_summary(collection):
-                # Row 187: the summary is part of the members hash, so a
-                # deleted ``summary:`` reaches this branch; a definition that
-                # never set one finds the field unlocked and writes nothing.
-                # ``summary_asserted`` is what separates that deletion from an
-                # effective summary that could not be RESOLVED this pass.
-                actions.append("cleared the summary of %r" % title)
-
-            adding, removing = member_diff(collection, items, sync_mode)
-            if adding:
-                collection.addItems(adding)
-            if removing:
-                collection.removeItems(removing)
-            # Order is enforced only under sync. ``_enforce_order`` arranges
-            # the collection to be exactly ``items``, which would drag every
-            # appended definition's picks to the front and push whatever else
-            # the collection holds behind them -- a write against members this
-            # mode exists not to touch. Under append the new members arrive in
-            # source order at the end, where addItems puts them, and the
-            # positions that were already there are left alone.
-            moves = 0 if sync_mode == "append" else _enforce_order(collection, items)
-            added_count, removed_count = len(adding), len(removing)
-            if adding or removing or moves:
-                actions.append(
-                    "updated %r: +%d -%d, %d move(s)"
-                    % (title, added_count, removed_count, moves)
-                )
+            written = await asyncio.to_thread(
+                _write, section, collection, title, items, label, summary,
+                summary_asserted, sort, sync_mode, settings, config,
+            )
+            if written.created:
+                existing[title] = written.collection
+            collection = written.collection
+            actions += written.actions
+            added_count, removed_count = written.added, written.removed
+            settings_ok = written.settings_ok
 
         if deltas is not None and not dry_run:
             # After both write paths, so a create (every item added) and an
@@ -398,30 +490,20 @@ async def reconcile_list_collection(
             deltas["added"] = added_count
             deltas["removed"] = removed_count
 
-        # Below both write branches and skipped entirely under dry_run: every
-        # step of this writes to Plex. It runs on an update as well as a create
-        # because the settings are in the hash -- reaching here at all means
-        # either the membership or one of them changed, and which one it was is
-        # not worth a second hash to learn.
-        settings_ok = True
-        if not dry_run and collection is not None:
-            settings_actions, settings_ok = apply_collection_settings(
-                section, collection, settings, label, config
-            )
-            actions += settings_actions
-            actions += _label_members(items, settings, title)
-
         if not dry_run:
+            # Every non-dry pass through this block took the ``_write`` branch
+            # above, so the rating key is always the one it just returned.
+            assert written is not None
             if record is None:
                 record = ManagedCollection(
                     library=library, title=title, kind="manual",
-                    plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
+                    plex_rating_key=written.rating_key,
                     definition_hash=wanted if settings_ok else "",
                 )
                 session.add(record)
             else:
                 record.definition_hash = wanted if settings_ok else ""
-                record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+                record.plex_rating_key = written.rating_key
                 if record.kind != "manual":
                     # A row written under another kind can sit under a title
                     # this definition is later pointed at -- reconciling here

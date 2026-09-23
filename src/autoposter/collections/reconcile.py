@@ -9,6 +9,7 @@ without our ownership label is ever modified: the Movies library holds 305
 collections of which only a handful are ours, the rest being Plex's own
 franchise collections, another tool's, or hand-made by the operator.
 """
+import asyncio
 import hashlib
 import logging
 from types import SimpleNamespace
@@ -786,6 +787,62 @@ def _clear_collection_summary(collection) -> bool:
     return True
 
 
+def _write_separator(section, libtype: str, label: str, spec, collection):
+    """A divider's Plex writes, in ONE ``asyncio.to_thread`` hop (perf C1): the
+    raw-POST create and its ownership label when it does not exist yet, then
+    the summary PUT and the sort title. Returns ``(collection, created, rating
+    key)`` so the loop never reads the plexapi object."""
+    created = collection is None
+    if created:
+        collection = create_blank_collection(section, libtype, spec.title)
+        collection.addLabel(label)
+    _edit_collection_summary(collection, spec.summary)
+    collection.editSortTitle(spec.sort_title)
+    return collection, created, str(getattr(collection, "ratingKey", "") or "")
+
+
+def _ratings_and_listing(resolver, section) -> tuple[set[str], dict]:
+    """The Common Sense family's two Plex reads, in ONE ``asyncio.to_thread``
+    hop (perf C1): what content ratings the library holds, then its collection
+    listing. The order is the shipped one: a vocabulary Plex will not answer
+    refuses the family (``PlexSearchUnavailable`` propagates unchanged) before
+    the listing is paid for."""
+    present = {title for _, title in resolver.choices("content_rating")}
+    return present, {
+        collection.title: collection for collection in section.collections()
+    }
+
+
+def _write_bucket(section, collection, libtype, bucket, url, label, bucket_settings, config):
+    """One bucket's Plex writes, in ONE ``asyncio.to_thread`` hop (perf C1): the
+    create (and its ownership label) or the uri PUT, the summary, and the
+    shared collection settings. Returns ``(collection, created, settings
+    actions, settings ok, rating key)``.
+
+    The smart helpers are imported here for ``reconcile_content_ratings``' own
+    reason: ``smart.py`` imports this module at load time.
+    """
+    from autoposter.collections.smart import (
+        create_smart_collection,
+        update_smart_collection,
+    )
+
+    created = collection is None
+    if created:
+        collection = create_smart_collection(section, libtype, bucket.title, url)
+        collection.addLabel(label)
+    else:
+        update_smart_collection(section, collection, url)
+    _edit_collection_summary(collection, bucket.summary)
+    settings_actions, settings_ok = apply_collection_settings(
+        section, collection, bucket_settings, label, config
+    )
+    return (
+        collection, created, settings_actions, settings_ok,
+        str(getattr(collection, "ratingKey", "") or ""),
+    )
+
+
 async def reconcile_separator(
     session: AsyncSession,
     section,
@@ -859,9 +916,11 @@ async def reconcile_separator(
         ]
 
     if collection is not None:
-        ok, message = resolve_collision(
-            collection, label, adopt, adopt_from, adopt_removes_prior_label, dry_run,
-            protect_labels,
+        # A reload and label reads (and, when adopting, a label write): one
+        # thread hop (perf C1).
+        ok, message = await asyncio.to_thread(
+            resolve_collision, collection, label, adopt, adopt_from,
+            adopt_removes_prior_label, dry_run, protect_labels,
         )
         if message:
             actions.append(message)
@@ -888,29 +947,32 @@ async def reconcile_separator(
     if not definition_current:
         if dry_run:
             actions.append(
-                "%s %r" % ("would update" if collection else "would create", spec.title)
+                # ``is not None``, never a truth test: plexapi's
+                # ``Collection.__len__`` is ``len(self.items())`` with no
+                # ``__bool__``, so ``if collection`` would be a membership
+                # fetch on the loop -- and, a divider being empty by design,
+                # would call every existing one a create.
+                "%s %r" % (
+                    "would update" if collection is not None else "would create",
+                    spec.title,
+                )
             )
         else:
-            if collection is None:
-                collection = create_blank_collection(section, libtype, spec.title)
-                collection.addLabel(label)
-                actions.append("created %r" % spec.title)
-            else:
-                actions.append("updated %r" % spec.title)
-
-            _edit_collection_summary(collection, spec.summary)
-            collection.editSortTitle(spec.sort_title)
+            collection, created, rating_key = await asyncio.to_thread(
+                _write_separator, section, libtype, label, spec, collection
+            )
+            actions.append("%s %r" % ("created" if created else "updated", spec.title))
 
             if record is None:
                 record = ManagedCollection(
                     library=library_name, title=spec.title, kind="separator",
-                    plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
+                    plex_rating_key=rating_key,
                     definition_hash=wanted,
                 )
                 session.add(record)
             else:
                 record.definition_hash = wanted
-                record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+                record.plex_rating_key = rating_key
 
     if (
         posters_on and collection is not None and record is not None
@@ -995,20 +1057,16 @@ async def reconcile_content_ratings(
     Returns a description of every action taken -- or, under ``dry_run``,
     every action that would be taken.
     """
-    # Both imports are local, and both for the same reason ``definition_hash``
-    # imports ``_settings_parts`` locally -- a module-level one would be a
-    # cycle. ``smart.py`` imports from this module at load time
-    # (smart.py:52-58); ``plex_search`` does not, but it lives in the
+    # Local for the same reason ``definition_hash`` imports ``_settings_parts``
+    # locally -- a module-level one would be a cycle, as the ``smart.py``
+    # import in ``_write_bucket`` would be (``smart.py`` imports from this
+    # module at load time). ``plex_search`` does not, but it lives in the
     # ``builders`` package, whose ``__init__`` imports ``cs_bucket``, which
     # imports this module. ``filters`` and ``search_url`` have no such edge and
     # are imported at the top.
     from autoposter.collections.builders.plex_search import (
         LibraryTagResolver,
         PlexSearchUnavailable,
-    )
-    from autoposter.collections.smart import (
-        create_smart_collection,
-        update_smart_collection,
     )
 
     libtype = LIBTYPES[library_type]
@@ -1020,7 +1078,9 @@ async def reconcile_content_ratings(
             SimpleNamespace(library=library_name, run_cache={}), section, libtype,
         )
     try:
-        present = {title for _, title in resolver.choices("content_rating")}
+        present, existing = await asyncio.to_thread(
+            _ratings_and_listing, resolver, section
+        )
     except PlexSearchUnavailable as refusal:
         # The whole family's input. Returned rather than raised: this reconciler
         # is reached through a SMART builder, and ``engine.py``'s smart dispatch
@@ -1029,7 +1089,6 @@ async def reconcile_content_ratings(
         logger.warning("%s: the Common Sense family was not built: %s",
                        library_name, refusal)
         return ["refused the Common Sense collections: %s" % refusal]
-    existing = {collection.title: collection for collection in section.collections()}
 
     stored = {
         row.title: row
@@ -1055,9 +1114,9 @@ async def reconcile_content_ratings(
         collection = existing.get(bucket.title)
 
         if collection is not None:
-            ok, message = resolve_collision(
-                collection, label, adopt, adopt_from or [], adopt_removes_prior_label, dry_run,
-                protect_labels or [],
+            ok, message = await asyncio.to_thread(
+                resolve_collision, collection, label, adopt, adopt_from or [],
+                adopt_removes_prior_label, dry_run, protect_labels or [],
             )
             if message:
                 actions.append(message)
@@ -1138,36 +1197,34 @@ async def reconcile_content_ratings(
             if dry_run:
                 actions.append(
                     "%s %r -> %s"
-                    % ("would update" if collection else "would create",
+                    # ``is not None``, not a truth test: see
+                    # ``reconcile_separator`` -- ``if collection`` would fetch
+                    # the membership on the loop through plexapi's ``__len__``.
+                    % ("would update" if collection is not None else "would create",
                        bucket.title, ", ".join(bucket.values))
                 )
             else:
-                if collection is None:
-                    collection = create_smart_collection(
-                        section, libtype, bucket.title, url
+                collection, created, settings_actions, settings_ok, rating_key = (
+                    await asyncio.to_thread(
+                        _write_bucket, section, collection, libtype, bucket, url,
+                        label, bucket_settings, config,
                     )
-                    collection.addLabel(label)
-                    actions.append("created %r" % bucket.title)
-                else:
-                    update_smart_collection(section, collection, url)
-                    actions.append("updated %r" % bucket.title)
-
-                _edit_collection_summary(collection, bucket.summary)
-                settings_actions, settings_ok = apply_collection_settings(
-                    section, collection, bucket_settings, label, config
+                )
+                actions.append(
+                    "%s %r" % ("created" if created else "updated", bucket.title)
                 )
                 actions += settings_actions
 
                 if record is None:
                     record = ManagedCollection(
                         library=library_name, title=bucket.title, kind="smart",
-                        plex_rating_key=str(getattr(collection, "ratingKey", "") or ""),
+                        plex_rating_key=rating_key,
                         definition_hash=wanted if settings_ok else "",
                     )
                     session.add(record)
                 else:
                     record.definition_hash = wanted if settings_ok else ""
-                    record.plex_rating_key = str(getattr(collection, "ratingKey", "") or "")
+                    record.plex_rating_key = rating_key
 
         if posters_on and collection is not None and record is not None:
             poster_kind = "content_rating_other" if bucket.key == "other" else "content_rating"

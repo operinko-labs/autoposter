@@ -87,6 +87,7 @@ filed rather than built, and its named prerequisite is that the record be seeded
 from the LIVE listing, never from ``titled``. The refusal is logged as well as
 reported (``_refused``) so the freeze is at least audible.
 """
+import asyncio
 import datetime as dt
 import logging
 import re
@@ -780,9 +781,13 @@ class DynamicBuilder:
                 ctx.library_type, row.kinds,
             )
             resolver = LibraryTagResolver(ctx, ctx.section, libtype)
+            # The enumeration is a ``listFilterChoices`` request: one thread
+            # hop (perf C1). The resolver memoises it on the pass's
+            # ``run_cache``, and ``REFUSALS`` below still catches what it raises.
+            choices = await asyncio.to_thread(resolver.choices, row.attribute)
             enumerated = [
                 (choice_key if row.key_from == "key" else choice_title, choice_title)
-                for choice_key, choice_title in resolver.choices(row.attribute)
+                for choice_key, choice_title in choices
             ]
         except REFUSALS as refusal:
             return self._refused(ctx, definition.title, refusal)
@@ -983,7 +988,7 @@ class DynamicBuilder:
         # The pass's one listing, fetched here rather than at context
         # construction so a definition that refuses above costs nothing and a
         # pass with no dynamic definition never fetches it at all.
-        listing = ctx.listing() if ctx.listing is not None else None
+        listing = await ctx.listing() if ctx.listing is not None else None
 
         for unit in titled:
             # ``ABSENT_KEY`` is Plex's "these items have no value for this
@@ -1051,7 +1056,8 @@ class DynamicBuilder:
                 )
                 continue
             try:
-                url = build_search_url(
+                url = await asyncio.to_thread(
+                    build_search_url,
                     parsed,
                     libtype=libtype,
                     sort_by=params.sort_by or row.sort_by,
@@ -1066,7 +1072,7 @@ class DynamicBuilder:
                 )
                 logger.debug("dynamic: %s -> %s", unit.title, url)
                 if params.minimum_items is not None:
-                    matched = count_matches(ctx.section, url)
+                    matched = await asyncio.to_thread(count_matches, ctx.section, url)
                     if matched < params.minimum_items:
                         # Out of the pass's record, which is the WHOLE of
                         # delete-below-minimum: this key is not one the family

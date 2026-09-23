@@ -8,8 +8,10 @@ that signal.
 """
 import asyncio
 import logging
+import threading
 from pathlib import Path
 
+import requests
 from sqlalchemy import select
 
 from autoposter.config.holder import ConfigHolder
@@ -286,3 +288,54 @@ async def test_a_same_value_library_override_still_narrows_the_sweep(session):
     await job.run(session)
     assert server.library.calls == ["section:Movies", "section:TV Shows"]
     assert server.library.sections_asked == ["Movies", "TV Shows"]
+
+
+async def test_the_server_library_is_read_off_the_event_loop(session):
+    """perf C2: plexapi's ``PlexServer.library`` is a ``cached_data_property``
+    whose first read is a request (``self.query('/library')``). Building the
+    call list as ``server.library.emptyTrash`` or ``getattr(server.library,
+    method)`` made that request on the loop, before the ``to_thread`` hop."""
+    loop_thread = threading.get_ident()
+    seen = []
+    library = RecordingLibrary()
+
+    class _Server:
+        @property
+        def library(self):
+            seen.append(threading.get_ident())
+            return library
+
+    job = make_maintenance_job(
+        _holder(clean_bundles=True, empty_trash=True, optimize=True), _Server
+    )
+    summary = await job.run(session)
+
+    assert summary == "ran clean_bundles, empty_trash, optimize"
+    assert seen and loop_thread not in seen
+
+
+async def test_an_unreachable_server_fails_every_operation_by_class_name_only(session):
+    """perf C2 moved the ``server.library`` read onto the thread, so a Plex
+    that cannot be reached now fails INSIDE each operation's call rather than
+    before the loop: every enabled operation is reported failed, none ran,
+    and the served summary still carries the class name only -- never the URL
+    a requests failure's str() embeds (row 213's rule)."""
+    url = "http://plex:32400/library"
+
+    class _Unreachable:
+        @property
+        def library(self):
+            raise requests.exceptions.ConnectionError(url)
+
+    job = make_maintenance_job(
+        _holder(clean_bundles=True, empty_trash=True, optimize=True), _Unreachable
+    )
+    summary = await job.run(session)
+
+    # The order is the job body's own ``wanted`` list.
+    assert summary == (
+        "ran nothing; clean_bundles failed (ConnectionError); "
+        "empty_trash failed (ConnectionError); optimize failed (ConnectionError)"
+    )
+    assert "plex:32400" not in summary
+    assert url not in summary

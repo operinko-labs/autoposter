@@ -46,6 +46,7 @@ One ``listFilterChoices`` per (library, field, libtype) per pass, memoised in
 not known until the pass, which is the same reason ``require_library_type``
 is a build-time check (``builders/base.py:246-269``).
 """
+import asyncio
 import datetime as dt
 import logging
 from typing import Any
@@ -384,53 +385,53 @@ class PlexSearchBuilder:
                 "against, and this context carries no library accessor"
             )
         section = access.section()
-
-        # No separate ``require_sort_for_libtype`` call here any more: it is
-        # the first statement of ``build_search_url`` itself now, which
-        # gives every caller the message
-        # AND -- because it runs ahead of ``_render_group`` -- still costs
-        # this builder zero ``listFilterChoices`` round-trips before a
-        # wrong-libtype sort refuses.
-        #
-        # ``resolve_search_values`` first, against ONE moment for this build
-        # -- the same "one moment for the whole collection" reasoning
-        # ``engine.py``'s own filters pass already uses, not a clock read per
-        # value. ``build_search_url`` stays pure (roadmap row 171's
-        # ``plex_search`` half): a ``_CurrentYear``/
-        # ``_Today`` sentinel left unresolved would reach its plain
-        # ``str(value)``/``value.isoformat()`` branches and render either the
-        # sentinel's own ``repr()`` or raise, rather than the year or date an
-        # operator meant.
-        url = build_search_url(
-            resolve_search_values(params.group, now=dt.datetime.now()),
-            libtype=libtype,
-            search_type=search_type,
-            sort_by=params.sort_by or (),
-            limit=params.limit,
-            resolve_tag=LibraryTagResolver(ctx, section, libtype, search_type=search_type),
+        # The whole query in ONE ``asyncio.to_thread`` hop (perf workstream
+        # C1): building the URL resolves every tag through the resolver, whose
+        # first ``listFilterChoices`` per field is a request, and the search
+        # itself is the request that returns the membership.
+        ids = await asyncio.to_thread(
+            _search_ids, ctx, section, params, libtype, search_type
         )
-        logger.debug("plex_search: %s", url)
-        # Blanket, deliberately, and NOT the three-clause shape
-        # ``LibraryTagResolver._raw_choices`` uses below: this catch never memoises
-        # anything (there is no ``run_cache`` entry a bug could be mistaken
-        # for a library fact), and it is the request that actually returns
-        # the collection's membership, so any failure here -- library bug,
-        # Plex error, dropped connection -- ends the build the same way. The
-        # resolver's finer split exists only because IT caches its verdict
-        # for the rest of the pass and must not cache a coding bug as "Plex
-        # has no such filter".
-        try:
-            items = section.fetchItems(
-                f"/library/sections/{section.key}/all{url}"
-            )
-        except Exception as error:  # class name only, never the message
-            raise PlexSearchUnavailable(
-                "Plex would not answer this search: "
-                f"{type(error).__name__}"
-            ) from None
-        ids = [("plex", str(item.ratingKey)) for item in items]
         logger.debug("plex_search: %d item(s)", len(ids))
         return BuilderResult(ids=ids, level=level)
+
+
+def _search_ids(ctx, section, params, libtype: str, search_type: str) -> list[tuple[str, str]]:
+    """``PlexSearchBuilder.build``'s Plex half: the URL, the search, the ids.
+    Runs in a thread; see the caller.
+
+    No separate ``require_sort_for_libtype`` call here: it is the first
+    statement of ``build_search_url`` itself, so a wrong-libtype sort refuses
+    ahead of ``_render_group`` at zero ``listFilterChoices`` round trips.
+
+    ``resolve_search_values`` first, against ONE moment for this build -- the
+    "one moment for the whole collection" reasoning ``engine.py``'s filters
+    pass uses, not a clock read per value. ``build_search_url`` stays pure
+    (roadmap row 171's ``plex_search`` half).
+
+    The search's catch is blanket, deliberately, and NOT the three-clause
+    shape ``LibraryTagResolver._raw_choices`` uses: it memoises nothing (there
+    is no ``run_cache`` entry a bug could be mistaken for a library fact), and
+    this is the request that returns the membership, so any failure here --
+    library bug, Plex error, dropped connection -- ends the build the same way.
+    """
+    url = build_search_url(
+        resolve_search_values(params.group, now=dt.datetime.now()),
+        libtype=libtype,
+        search_type=search_type,
+        sort_by=params.sort_by or (),
+        limit=params.limit,
+        resolve_tag=LibraryTagResolver(ctx, section, libtype, search_type=search_type),
+    )
+    logger.debug("plex_search: %s", url)
+    try:
+        items = section.fetchItems(f"/library/sections/{section.key}/all{url}")
+    except Exception as error:  # class name only, never the message
+        raise PlexSearchUnavailable(
+            "Plex would not answer this search: "
+            f"{type(error).__name__}"
+        ) from None
+    return [("plex", str(item.ratingKey)) for item in items]
 
 
 # Above ``LibraryTagResolver``, its only user, rather than at the bottom of the
