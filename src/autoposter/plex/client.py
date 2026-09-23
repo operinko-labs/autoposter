@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 import requests
@@ -9,6 +10,7 @@ from plexapi.server import PlexServer
 
 from autoposter.intake.arr import RenderIntent
 from autoposter.plex import artwork as plex_artwork
+from autoposter.queue import job_memo
 from autoposter.render.naming import derive_root_folder
 from autoposter.servers.base import (
     CAP_ARTWORK_PROVENANCE, CAP_FIELD_LOCKS, CAP_LOCK_ARTWORK, CAP_LOGO_UPLOAD,
@@ -73,6 +75,30 @@ FETCH_ITEM_BACKOFF_SECONDS = (2.0, 4.0, 8.0)
 #: ``asyncio`` module object itself and silence sleeping process-wide, for
 #: every other module in the same interpreter.
 _sleep = asyncio.sleep
+
+#: How long ``PlexClient`` trusts its section list (perf workstream B3).
+#: ``library.sections()`` is one GET that every resolve, listing and existence
+#: probe made afresh -- once per item per full pass -- for a list that changes
+#: when an operator adds or edits a library. A resolve that misses re-reads it
+#: at once (``_search_sync``), so a library added inside the window costs one
+#: failed walk, never a deferred job.
+SECTIONS_TTL_SECONDS = 60.0
+
+#: Bound to a module-level name for ``_sleep``'s reason: a test moves the clock
+#: by patching ``autoposter.plex.client._monotonic``.
+_monotonic = time.monotonic
+
+
+def _section_signature(sections) -> list[tuple]:
+    """What makes two section listings different, as plain data. ``key`` is
+    Plex's section id (absent on test doubles, hence ``getattr``)."""
+    return [
+        (
+            getattr(s, "key", None), s.title, s.type,
+            tuple(getattr(s, "locations", None) or ()),
+        )
+        for s in sections
+    ]
 
 
 class PlexPathMismatch(PathMismatch):
@@ -354,8 +380,30 @@ class PlexClient:
         self._http = http
         self.base_url = base_url
         self._headers = {"X-Plex-Token": token} if token else {}
+        # (monotonic time read, section list), or None before the first read.
+        # Written from worker threads; a tuple assignment is atomic, and two
+        # threads refreshing at once each store a correct list.
+        self._sections_cache: tuple[float, list] | None = None
 
-    def _sections(self, *wanted_types: str):
+    def _library_sections(self, *, refresh: bool = False) -> list:
+        """Every section Plex has, cached for ``SECTIONS_TTL_SECONDS``.
+
+        Called from worker threads only (every caller below runs inside
+        ``asyncio.to_thread``), like every other plexapi touch here. The cached
+        ``LibrarySection`` objects are shared by concurrent threads from then
+        on; their lookups (``getGuid``, ``search``) are GETs that set nothing
+        a concurrent caller depends on.
+        """
+        cached = self._sections_cache
+        now = _monotonic()
+        if not refresh and cached is not None and now - cached[0] < SECTIONS_TTL_SECONDS:
+            return cached[1]
+        # plexapi exposes `library` as a property and `sections` as a method.
+        sections = list(self._server.library.sections())
+        self._sections_cache = (now, sections)
+        return sections
+
+    def _sections(self, *wanted_types: str, refresh: bool = False):
         """The non-excluded library sections of the given Plex types
         ("movie"/"show").
 
@@ -365,13 +413,29 @@ class PlexClient:
         `_library_names_sync` below asks for both rather than keeping a second
         copy of "non-excluded and of the right type" that a change to this one
         would not reach.
+
+        Served from ``_library_sections``' cache unless ``refresh`` (perf
+        workstream B3).
         """
-        # plexapi exposes `library` as a property and `sections` as a method.
         return [
             s
-            for s in self._server.library.sections()
+            for s in self._library_sections(refresh=refresh)
             if s.title not in self._excluded and s.type in wanted_types
         ]
+
+    def _sections_changed_on_reread(self) -> bool:
+        """Re-read the section list; True when it differs from the cached one.
+
+        A resolve's miss is the one moment a stale list can cost something --
+        the item may sit in a library added since the cached read -- so a miss
+        re-reads, and the walk runs again only when the list really moved. A
+        genuine miss therefore costs the one listing GET every resolve paid
+        before the cache existed, and nothing more.
+        """
+        cached = self._sections_cache
+        before = cached[1] if cached is not None else None
+        after = self._library_sections(refresh=True)
+        return before is not None and _section_signature(before) != _section_signature(after)
 
     def _library_names_sync(self) -> set[str]:
         return {s.title for s in self._sections("movie", "show")}
@@ -517,7 +581,7 @@ class PlexClient:
             ),
         )
 
-    def _search_sync(self, intent: RenderIntent) -> _RawMatch | None:
+    def _search_sync(self, intent: RenderIntent, *, _reread: bool = False) -> _RawMatch | None:
         wanted = []
         if intent.tmdb_id:
             wanted.append(f"tmdb://{intent.tmdb_id}")
@@ -633,9 +697,44 @@ class PlexClient:
                             if intent.kind == "season" else None
                         ),
                     )
+        # Perf workstream B3: `sections` may be up to SECTIONS_TTL_SECONDS old.
+        # An item in a library added since then misses above; re-read once and,
+        # only if the list moved, walk again. Every caller -- resolve, the
+        # pruner's exists_many -- therefore reaches "not found" only against a
+        # list read just now, exactly as before the cache.
+        if not _reread and self._sections_changed_on_reread():
+            return self._search_sync(intent, _reread=True)
         return None
 
     async def fetch_item(self, rating_key: str):
+        """Fetch the live ``plexapi`` object for a rating key, for writing.
+
+        Distinct from ``resolve()``'s plain-data ``ResolvedItem``: this is
+        the object the writer calls ``.batchEdits()``/``.edit()`` on. The
+        retry policy lives in ``_fetch_item_with_retries``.
+
+        Inside a worker job (perf workstream B3, ``queue/job_memo.py``) the
+        object is memoised by rating key for the rest of the job, so the
+        labels read, the metadata write, the badge stage's media read, the
+        provenance probe and the upload share one fetch. Every write method
+        below evicts it (``_forget``), so a read after a write goes back to
+        Plex. Outside a job this is exactly the plain fetch it always was.
+        """
+        memo = job_memo.current()
+        if memo is None:
+            return await self._fetch_item_with_retries(rating_key)
+        key = (id(self), str(rating_key))
+        if key not in memo:
+            memo[key] = await self._fetch_item_with_retries(rating_key)
+        return memo[key]
+
+    def _forget(self, rating_key) -> None:
+        """Drop one item from the running job's memo, after a write to it."""
+        memo = job_memo.current()
+        if memo is not None:
+            memo.pop((id(self), str(rating_key)), None)
+
+    async def _fetch_item_with_retries(self, rating_key: str):
         """Fetch the live ``plexapi`` object for a rating key, for writing.
 
         Distinct from ``resolve()``'s plain-data ``ResolvedItem``: this is
@@ -770,7 +869,11 @@ class PlexClient:
         if not intent.native_id_on("plex"):
             return False
         wanted_type = "movie" if intent.kind == "movie" else "show"
-        sections = self._sections(wanted_type)
+        # A fresh list, never the cache: this answers the twin merge's
+        # survivor election, and a stale list reading "no" would elect the
+        # wrong row of the pair (keys_resolve's own docstring). One listing per
+        # probe, as before perf workstream B3.
+        sections = self._sections(wanted_type, refresh=True)
         return self._fetch_by_rating_key_sync(intent, sections) is not None
 
     async def keys_resolve(self, intents: list[RenderIntent]) -> list[bool]:
@@ -874,15 +977,26 @@ class PlexClient:
 
     async def upload_artwork(self, ref: ServerItemRef, data: bytes, art_kind: str, lock: bool) -> None:
         item = await self.fetch_item(ref.native_id)
-        await asyncio.to_thread(plex_artwork.upload_artwork, item, data, art_kind, lock)
+        try:
+            await asyncio.to_thread(plex_artwork.upload_artwork, item, data, art_kind, lock)
+        finally:
+            # A write, finished or not: the memoised object no longer describes
+            # Plex (perf workstream B3).
+            self._forget(ref.native_id)
 
     async def upload_logo(self, ref: ServerItemRef, data: bytes, suffix: str = ".png") -> str | None:
         item = await self.fetch_item(ref.native_id)
-        return await asyncio.to_thread(plex_artwork.upload_logo, item, data, suffix)
+        try:
+            return await asyncio.to_thread(plex_artwork.upload_logo, item, data, suffix)
+        finally:
+            self._forget(ref.native_id)
 
     async def clear_logo(self, ref: ServerItemRef) -> None:
         item = await self.fetch_item(ref.native_id)
-        await asyncio.to_thread(plex_artwork.clear_logo, item)
+        try:
+            await asyncio.to_thread(plex_artwork.clear_logo, item)
+        finally:
+            self._forget(ref.native_id)
 
     async def has_clearlogo(self, ref: ServerItemRef) -> bool:
         item = await self.fetch_item(ref.native_id)
@@ -902,7 +1016,12 @@ class PlexClient:
 
     async def reset_artwork_to_agent_default(self, ref: ServerItemRef, art_kind: str) -> bool:
         item = await self.fetch_item(ref.native_id)
-        return await asyncio.to_thread(plex_artwork.reset_artwork_to_agent_default, item, art_kind)
+        try:
+            return await asyncio.to_thread(
+                plex_artwork.reset_artwork_to_agent_default, item, art_kind
+            )
+        finally:
+            self._forget(ref.native_id)
 
     async def item_labels(self, ref: ServerItemRef) -> list[str]:
         item = await self.fetch_item(ref.native_id)
@@ -918,7 +1037,17 @@ class PlexClient:
         from autoposter.plex.writer import apply_facts as plex_apply_facts
 
         item = await self.fetch_item(ref.native_id)
-        return await plex_apply_facts(item, facts, operations, parental_categories, overrides)
+        try:
+            edits = await plex_apply_facts(item, facts, operations, parental_categories, overrides)
+        except BaseException:
+            self._forget(ref.native_id)
+            raise
+        # An empty plan wrote nothing (plex/writer.apply_facts returns before
+        # batchEdits), so the memoised object still describes Plex and the
+        # badge stage may reuse it; any write evicts (perf workstream B3).
+        if edits:
+            self._forget(ref.native_id)
+        return edits
 
     async def check_liveness(self) -> bool:
         """Whether the configured Plex server answers at all.

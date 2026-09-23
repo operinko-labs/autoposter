@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from autoposter.artwork_modes.base import WorkerPause
 from autoposter.db.models import Job
+from autoposter.queue import job_memo
 from autoposter.queue.jobs import (
     DEFER_INTERVAL_SECONDS,
     MAX_ATTEMPTS,
@@ -96,7 +97,10 @@ async def run_once(
     # mode's drain waits for the job to be *finished*, not merely for its
     # handler to have returned.
     tracker = pause.running_job() if pause is not None else contextlib.nullcontext()
-    with tracker:
+    # One memo per job (perf workstream B3, queue/job_memo.py): the handler's
+    # repeated fetches of one Plex item share an object, and nothing survives
+    # into the next job this worker claims.
+    with tracker, job_memo.scope():
         try:
             warnings = await handler(session, job)
         except asyncio.CancelledError:
